@@ -119,8 +119,8 @@ func longReadBackOps() (ops []map[string]any, written []string) {
 // block it cut, and the line that names what it left out.
 func checkBoundedReadBack(t *testing.T, got string, blocks []string) {
 	t.Helper()
-	if len(got) > 2000 {
-		t.Fatalf("written holds %d bytes, want the 2,000-byte bound", len(got))
+	if held := utf8.RuneCountInString(got); held > 2000 {
+		t.Fatalf("written holds %d characters, want the 2,000-character bound", held)
 	}
 	if !utf8.ValidString(got) {
 		t.Fatalf("written = %q, want a cut that never splits a rune", got)
@@ -140,8 +140,8 @@ func checkBoundedReadBack(t *testing.T, got string, blocks []string) {
 	if want := docs.ReadBackCutLine(left, 2); entries[3] != want {
 		t.Fatalf("written ends %q, want %q", entries[3], want)
 	}
-	if len(got) < 1900 {
-		t.Fatalf("written holds %d bytes, want a read-back that fills its bound before it cuts", len(got))
+	if held := utf8.RuneCountInString(got); held < 1900 {
+		t.Fatalf("written holds %d characters, want a read-back that fills its bound before it cuts", held)
 	}
 }
 
@@ -180,4 +180,60 @@ func TestDocumentEditReadBackUnderABlockPreconditionIsTheSame(t *testing.T) {
 		t.Fatalf("applied = %d, want 4", edited.Applied)
 	}
 	checkBoundedReadBack(t, edited.Written, blocks)
+}
+
+// The bound is 2,000 characters (dispatch://INFRA-1520/spec#b-r6-read-back), and a character is
+// one Unicode code point whatever its script, the unit the line that names a cut counts in: a
+// Chinese character is three bytes of UTF-8, and one outside the Basic Multilingual Plane is four
+// bytes and two UTF-16 units. So a paragraph of 2,000 such characters reads back whole, as one of
+// 2,000 Latin letters does, and a paragraph of 2,001 is cut where its 2,000-character bound falls,
+// never inside a character.
+func TestDocumentEditReadBackBoundIsCharactersNotBytes(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		text  string
+		whole bool
+	}{
+		{name: "control: 1000 Latin letters read back whole", text: strings.Repeat("a", 1000), whole: true},
+		{name: "control: 2001 Latin letters are cut", text: strings.Repeat("a", 2001), whole: false},
+		{name: "1000 Chinese characters read back whole", text: strings.Repeat("界", 1000), whole: true},
+		{name: "2000 Chinese characters read back whole", text: strings.Repeat("界", 2000), whole: true},
+		{name: "2001 Chinese characters are cut", text: strings.Repeat("界", 2001), whole: false},
+		{name: "2000 characters outside the BMP read back whole", text: strings.Repeat("𠀀", 2000), whole: true},
+		{name: "2001 characters outside the BMP are cut", text: strings.Repeat("𠀀", 2001), whole: false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			handler := newTestHandler(t)
+			issue := createInteractionIssue(t, handler, "TEST", row.name, "Intro.\n")
+			written := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{
+				"ops": []map[string]any{{"op": "insert", "markdown": row.text, "after": "end"}},
+			}).Written
+			sent, held := utf8.RuneCountInString(row.text), utf8.RuneCountInString(written)
+			t.Logf("sent %d characters (%d UTF-8 bytes), written holds %d characters (%d bytes)",
+				sent, len(row.text), held, len(written))
+			if held > 2000 {
+				t.Fatalf("written holds %d characters, over the 2,000-character bound", held)
+			}
+			if row.whole {
+				if written != row.text {
+					t.Fatalf("a paragraph of %d characters, inside the 2,000-character bound, read back as %d characters: %.80q",
+						sent, held, written)
+				}
+				return
+			}
+			// A cut paragraph reads back as the piece of it the bound left room for, then the line
+			// naming the characters and the one block it did not print.
+			kept, line, _ := strings.Cut(written, "\n\n")
+			printed := utf8.RuneCountInString(kept)
+			if !utf8.ValidString(kept) || !strings.HasPrefix(row.text, kept) {
+				t.Fatalf("written opens %.80q, want a piece of the paragraph cut between two characters", kept)
+			}
+			if want := docs.ReadBackCutLine(sent-printed, 1); line != want {
+				t.Fatalf("written ends %q after %d characters, want %q", line, printed, want)
+			}
+			if printed < 1900 {
+				t.Fatalf("written printed %d of the paragraph's %d characters, want a cut that fills the 2,000-character bound", printed, sent)
+			}
+		})
+	}
 }
