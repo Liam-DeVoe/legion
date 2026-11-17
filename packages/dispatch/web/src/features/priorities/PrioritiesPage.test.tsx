@@ -527,13 +527,15 @@ test("the page carries no estimate, no forecast, no percentage and no written st
   expect(/estimate|forecast|on track|at risk/i.test(text)).toBe(false);
 });
 
-test("the priorities table counts its rows as priorities, as the agreed page reads", async () => {
+// R13: the pager under the priorities table draws the range of rows, the page, its steps and the
+// page size, and no total, as on the Issues tab.
+test("the priorities table's pager draws no total", async () => {
   page(FIFTEEN);
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  // dispatch://INFRA-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
-  // table: a priority is no issue, and a reader counting the rows is told what they count.
-  expect(screen.getByText("3 of 3 priorities")).toBeDefined();
-  expect(screen.queryByText("3 of 3 issues")).toBeNull();
+  const pager = screen.getByTestId("priorities-table-pager");
+  expect(within(pager).getByText("Rows 1–3")).toBeDefined();
+  expect(within(pager).getByText("Page 1 of 1")).toBeDefined();
+  expect(pager.textContent).not.toMatch(/of 3|priorities|issues/);
 });
 
 test("a fault row tells no reader that an issue nobody claims is claimed", async () => {

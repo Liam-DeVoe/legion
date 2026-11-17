@@ -17,6 +17,7 @@ import type {
   EvalItemRow,
   Issue,
   IssueSummary,
+  LegionBoardCard,
   LegionBoardFacts,
   LegionBoardResponse,
   LegionSetting,
@@ -620,13 +621,13 @@ test("leaving the table clears what the bar says it will act on", async () => {
   expect(readSelectedIssues()).toEqual([]);
 });
 
-// The status bar counts what is loaded. With closed issues unloaded it shows no Done segment at
-// all, rather than a cell that reads as a count; the Status filter's own Done option says they
-// load when it is picked.
+// Open's bar counts the rows the table lists. With closed issues unloaded it shows no Done
+// segment at all, rather than a cell that reads as a count; the Status filter's own Done option
+// says they load when it is picked.
 test("the status bar has no Done cell while closed issues are unloaded", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1")]);
-  const bar = await screen.findByRole("group", { name: "Issues by status" });
+  const bar = await screen.findByRole("region", { name: "Issues by status" });
   expect(within(bar).queryByText(/Done/)).toBeNull();
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   expect(screen.getByRole("option", { name: "Done, not loaded" })).toBeDefined();
@@ -2334,4 +2335,282 @@ test("a board push that changes or removes a listed done row's facts reads the i
   await waitFor(() => expect(items).toHaveBeenCalledTimes(3));
   // With CORE-3 out of the map, its close day is read too.
   expect(items.mock.calls[2]?.[2]).toMatchObject({ from: "2026-11-10T00:00:00Z" });
+});
+
+// The bar under the tabs, the pager and the (i) hint.
+
+/** Open's rows: three in progress, two in Todo and one in Triage, given out of the status order,
+ *  and a closed one Open does not list. */
+const BAR_ROWS = (): IssueSummary[] => [
+  issue("CORE-1", { status: "in_progress" }),
+  issue("CORE-2", { status: "todo" }),
+  issue("CORE-3", { status: "triage" }),
+  issue("CORE-4", { status: "in_progress" }),
+  issue("CORE-5", { status: "todo" }),
+  issue("CORE-6", { status: "in_progress" }),
+  issue("CORE-7", { status: "done", closed_at: "2026-11-10T10:00:00Z" }),
+];
+
+/** The bar's segments, each with its status and its width in percent of the bar. */
+const barSegments = (): [string | undefined, number][] =>
+  [...document.querySelectorAll<HTMLElement>("[data-bar-segment]")].map((segment) => [
+    segment.dataset.barSegment,
+    Number.parseFloat(segment.style.width),
+  ]);
+
+/** The bar's legend entries, as they read. */
+const legendEntries = () =>
+  within(screen.getByRole("region", { name: "Issues by status" }))
+    .getAllByRole("button")
+    .map((entry) => entry.textContent);
+
+// R6: Open's bar counts the rows the table lists, by status, in the status order and from the
+// left edge, each segment as wide as its share, with no segment for a status with no row.
+test("Open's bar counts the listed rows by status in the status order, and follows the search", async () => {
+  const user = userEvent.setup();
+  table(BAR_ROWS());
+  await screen.findByRole("region", { name: "Issues by status" });
+  expect(legendEntries()).toEqual(["Triage 1", "Todo 2", "In progress 3"]);
+  const segments = barSegments();
+  expect(segments.map(([status]) => status)).toEqual(["triage", "todo", "in_progress"]);
+  expect(segments[0]?.[1]).toBeCloseTo(100 / 6);
+  expect(segments[2]?.[1]).toBeCloseTo(50);
+  expect(segments.reduce((sum, [, width]) => sum + width, 0)).toBeCloseTo(100);
+  // No count of the strip it replaces: no Legion queue, no running issues, no epics.
+  const bar = screen.getByRole("region", { name: "Issues by status" });
+  expect(bar.textContent).not.toMatch(/queue|running|epic/i);
+
+  await user.type(screen.getByRole("searchbox", { name: "Search issues" }), "CORE-1");
+  await waitFor(() => expect(legendEntries()).toEqual(["In progress 1"]));
+  expect(barSegments()).toEqual([["in_progress", 100]]);
+});
+
+test("with a Status filter of In progress the bar is one segment of every listed row", async () => {
+  table(BAR_ROWS(), "?status=in_progress");
+  await screen.findByRole("region", { name: "Issues by status" });
+  expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-4", "CORE-6"]);
+  expect(legendEntries()).toEqual(["In progress 3"]);
+  expect(barSegments()).toEqual([["in_progress", 100]]);
+  expect(screen.getByRole("tab", { name: "Open, 3 issues, changed" })).toBeDefined();
+});
+
+test("a press on a legend entry narrows the view to that status, and a second press gives Open's statuses back", async () => {
+  const user = userEvent.setup();
+  table(BAR_ROWS());
+  await user.click(await screen.findByRole("button", { name: "Todo 2" }));
+  await waitFor(() => expect(routeSearch()).toBe("?status=todo"));
+  expect(listedKeys().sort()).toEqual(["CORE-2", "CORE-5"]);
+  expect(legendEntries()).toEqual(["Todo 2"]);
+  const todo = screen.getByRole("button", { name: "Todo 2" });
+  expect(todo).toHaveAttribute("aria-pressed", "true");
+
+  await user.click(todo);
+  await waitFor(() => expect(routeSearch()).toBe(""));
+  expect(legendEntries()).toEqual(["Triage 1", "Todo 2", "In progress 3"]);
+});
+
+/** The saved view "Busy": Todo and In progress, as Save view writes one. */
+const BUSY = "status=todo&status=in_progress&cols=key,title,status&layout=table";
+
+// A saved view the reader opened, by its tab or by an address that is its query, stays the open
+// tab while they change it, with the dot of a changed view, so the second press gives back its
+// statuses, not Open's.
+test.each([
+  [
+    "by its tab",
+    "",
+    async (user: UserEvent) =>
+      user.click(await screen.findByRole("tab", { name: "Busy, 5 issues" })),
+  ],
+  ["by its address", `?${BUSY}`, async () => {}],
+])("a saved view opened %s stays open while changed, and the second press gives its statuses back", async (_name, search, open) => {
+  const user = userEvent.setup();
+  keepSavedViews([{ name: "Busy", query: BUSY }]);
+  table(BAR_ROWS(), search);
+  await open(user);
+  const busy = await screen.findByRole("tab", { name: "Busy, 5 issues" });
+  expect(busy).toHaveAttribute("aria-selected", "true");
+  expect(busy.querySelector("[data-view-changed]")).toBeNull();
+  await waitFor(() => expect(legendEntries()).toEqual(["Todo 2", "In progress 3"]));
+
+  await user.click(screen.getByRole("button", { name: "In progress 3" }));
+  await waitFor(() =>
+    expect(new URLSearchParams(routeSearch()).getAll("status")).toEqual(["in_progress"])
+  );
+  expect(legendEntries()).toEqual(["In progress 3"]);
+  const changed = await screen.findByRole("tab", { name: "Busy, 3 issues, changed" });
+  expect(changed).toHaveAttribute("aria-selected", "true");
+  expect(changed.querySelector("[data-view-changed]")).not.toBeNull();
+  expect(screen.getByRole("tab", { name: /^Open/ })).toHaveAttribute("aria-selected", "false");
+
+  await user.click(screen.getByRole("button", { name: "In progress 3" }));
+  await waitFor(() =>
+    expect(new URLSearchParams(routeSearch()).getAll("status")).toEqual(["todo", "in_progress"])
+  );
+  expect(legendEntries()).toEqual(["Todo 2", "In progress 3"]);
+  const restored = await screen.findByRole("tab", { name: "Busy, 5 issues" });
+  expect(restored).toHaveAttribute("aria-selected", "true");
+  expect(restored.querySelector("[data-view-changed]")).toBeNull();
+});
+
+// R6: Done draws no bar and keeps no room for one, and the Board draws none in either grouping.
+test.each([
+  ["Done", "?view=done", () => screen.findByRole("row", { name: "CORE-7 Work CORE-7" })],
+  ["Open's Board", "?layout=board", () => screen.findByRole("region", { name: "Project board" })],
+])("%s draws no bar", async (_name, search, drawn) => {
+  table(BAR_ROWS(), search);
+  await drawn();
+  expect(screen.queryByRole("region", { name: "Issues by status" })).toBeNull();
+  expect(document.querySelector("[data-bar-segment], [data-bar-legend]")).toBeNull();
+});
+
+// R13: a priority's table keeps its status strip, without the strip's numbers.
+test("a priority's table keeps its status strip with no queue or running number", async () => {
+  const advances = [{ id: "PRI-7", inherited: false }];
+  table(
+    [
+      issue("CORE-2", { advances, labels: ["legion"] }),
+      issue("OPS-3", { advances, status: "in_progress" }),
+    ],
+    "",
+    undefined,
+    { listing: { advances: "PRI-7" }, stateKey: "w" }
+  );
+  const strip = await screen.findByRole("group", { name: "Issues by status" });
+  expect(
+    within(strip)
+      .getAllByRole("button")
+      .map((cell) => cell.textContent)
+  ).toEqual(["Todo 1", "In progress 1"]);
+  expect(strip.parentElement?.textContent).toBe("Todo 1In progress 1");
+  expect(screen.queryByRole("region", { name: "Issues by status" })).toBeNull();
+  const pager = screen.getByTestId("issues-table-pager");
+  expect(within(pager).getByText("Rows 1–2")).toBeDefined();
+  expect(pager.textContent).not.toMatch(/of 2|issues/);
+});
+
+// The List's pager draws the range of rows, the page, its steps and the page size, and no total:
+// the tab says how many rows the view lists.
+test("the pager reads Rows and Page, its steps and the page size, and no total", async () => {
+  const user = userEvent.setup();
+  table(Array.from({ length: 120 }, (_, index) => issue(`CORE-${index + 1}`)));
+  expect(await screen.findByRole("tab", { name: "Open, 120 issues" })).toBeDefined();
+  const pager = screen.getByTestId("issues-table-pager");
+  expect(within(pager).getByText("Rows 1–50")).toBeDefined();
+  expect(within(pager).getByText("Page 1 of 3")).toBeDefined();
+  expect(within(pager).getByRole("button", { name: "‹ Previous" })).toBeDefined();
+  expect(within(pager).getByRole("button", { name: "Next ›" })).toBeDefined();
+  const sizes = within(pager).getByRole("combobox", { name: "Rows per page" });
+  expect([...sizes.querySelectorAll("option")].map((option) => option.textContent)).toContain(
+    "All rows"
+  );
+  expect(pager.textContent).not.toMatch(/120|issues/);
+
+  await user.selectOptions(sizes, String(ALL_ROWS));
+  await waitFor(() => expect(pager.querySelector(".ml-auto")?.textContent).toBe("All rows"));
+  expect(pager.textContent).not.toMatch(/120|issues/);
+});
+
+// Done's page is the server's: its range and page count follow the server's count of the done
+// rows, not the one page of them the table holds.
+test("Done's second server page reads Rows 51–100 of the server's count", async () => {
+  const closed = Array.from({ length: 120 }, (_, index) =>
+    issue(`CORE-${index + 10}`, { status: "done", closed_at: "2026-11-04T10:00:00Z" })
+  );
+  const { page } = table(closed, "?view=done&page=2");
+  expect(await screen.findByRole("tab", { name: "Done, 120 issues" })).toBeDefined();
+  expect(page).toHaveBeenCalledWith({
+    project: "CORE",
+    status: ["done"],
+    sort: "-closed_at",
+    limit: 50,
+    offset: 50,
+  });
+  const pager = screen.getByTestId("issues-table-pager");
+  expect(within(pager).getByText("Rows 51–100")).toBeDefined();
+  expect(within(pager).getByText("Page 2 of 3")).toBeDefined();
+  expect(pager.textContent).not.toMatch(/120|issues/);
+});
+
+/** A card of the board's Queue column that waits for capacity, its worker at work. */
+function waitingCard(key: string): LegionBoardCard {
+  return {
+    blocked_by: null,
+    children: 0,
+    key,
+    phase: "admitted",
+    phase_since: "2026-11-17T07:00:00Z",
+    priority: null,
+    roles: ["implementer"],
+    slot: 2,
+    slot_since: "2026-11-17T07:00:00Z",
+    slot_use: "working",
+    title: `Work ${key}`,
+    tree: key,
+    tree_slot: 1,
+    waiting: { reason: "slot", since: "2026-11-17T07:00:00Z", blocked_by: null },
+    waiting_on: null,
+    waiting_place: 1,
+  };
+}
+
+/** Every text the page draws and every name it gives a control or a mark. */
+function pageWords(): string[] {
+  const words = [document.body.textContent ?? ""];
+  for (const element of document.body.querySelectorAll("*"))
+    for (const attribute of ["aria-label", "aria-description", "title", "placeholder", "alt"]) {
+      const value = element.getAttribute(attribute);
+      if (value !== null) words.push(value);
+    }
+  return words;
+}
+
+// R1, R2, R9: the (i) hint follows Save view in a project with a daemon, and holds the capacity,
+// the trees and the last read. No text or name on the tab says "slot".
+test("the (i) hint follows Save view in a project with a daemon, and nothing on the tab says slot", async () => {
+  const user = userEvent.setup();
+  const sockets = liveSockets();
+  table(
+    VIEW_ROWS(),
+    "?cols=key,title,status,legion_phase,waiting_reason,activity",
+    {},
+    {},
+    Promise.resolve(DAEMON)
+  );
+  await answerBoard(sockets, {
+    ...legionBoard({}, { slot_cap: null, slots_in_use: 4, trees: 0 }),
+    columns: [{ id: "queue", label: "Queue", cards: [waitingCard("CORE-1")] }],
+  });
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).getByText("Capacity to go on")
+    ).toBeDefined()
+  );
+  const hint = screen.getByRole("button", { name: "Legion daemon" });
+  const save = screen.getByRole("button", { name: "Save view", hidden: true });
+  expect(save.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(pageWords().filter((words) => /slot/i.test(words))).toEqual([]);
+
+  await user.click(hint);
+  const panel = screen.getByRole("dialog", { name: "Legion daemon" });
+  expect(
+    [...panel.querySelectorAll("dt")].map((name) => [
+      name.textContent,
+      name.nextElementSibling?.textContent,
+    ])
+  ).toEqual([
+    ["Capacity", "4"],
+    ["Trees", "0"],
+    ["Last read", expect.any(String)],
+  ]);
+  expect(pageWords().filter((words) => /slot/i.test(words))).toEqual([]);
+
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  expect(pageWords().filter((words) => /slot/i.test(words))).toEqual([]);
+});
+
+test("a project with no daemon has no (i) hint", async () => {
+  table(VIEW_ROWS());
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(screen.queryByRole("button", { name: "Legion daemon" })).toBeNull();
 });

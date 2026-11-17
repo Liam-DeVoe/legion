@@ -2,7 +2,14 @@ import { afterEach, expect, mock, test } from "bun:test";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
-import { IssueViewTabs, LayoutSwitch, ToggleButton, ViewControls } from "./IssueViewTabs";
+import type { LegionBoardHeader } from "../../api/types";
+import {
+  DaemonHint,
+  IssueViewTabs,
+  LayoutSwitch,
+  ToggleButton,
+  ViewControls,
+} from "./IssueViewTabs";
 import { BUILT_IN_VIEWS, checkViewName, type SavedView } from "./issues-views";
 
 afterEach(() => cleanup());
@@ -234,4 +241,90 @@ test("the layout switch and a Board toggle say which choice is pressed", async (
   expect(toggle).toHaveAttribute("aria-pressed", "false");
   await user.click(toggle);
   expect(onToggle).toHaveBeenCalledWith(true);
+});
+
+/** The board's header after a good read five minutes ago: 3 issues run of a cap of 4, 2 trees. */
+function header(overrides: Partial<LegionBoardHeader> = {}): LegionBoardHeader {
+  return {
+    facts_cursor_age_seconds: 12,
+    facts_updated_at: null,
+    legion_issues: 9,
+    queue_length: 5,
+    read_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    read_error: null,
+    read_ok: true,
+    slot_cap: 4,
+    slots_in_use: 3,
+    trees: 2,
+    ...overrides,
+  };
+}
+
+/** Opens the (i) hint and gives its panel. */
+async function openHint(): Promise<HTMLElement> {
+  const trigger = screen.getByRole("button", { name: "Legion daemon" });
+  expect(trigger).toHaveAttribute("title", "Legion daemon");
+  expect(trigger).toHaveAttribute("data-control", "view-panel");
+  await userEvent.setup().click(trigger);
+  return screen.getByRole("dialog", { name: "Legion daemon" });
+}
+
+/** Each line of the hint: its name and its value. */
+const hintLines = (panel: HTMLElement) =>
+  [...panel.querySelectorAll("dt")].map((name) => [
+    name.textContent,
+    name.nextElementSibling?.textContent,
+  ]);
+
+// R1, R2: the (i) hint gives the capacity in use of its cap, the trees and the last read, and no
+// other text: no queue length, and no word "slot".
+test("the (i) hint gives Capacity of the cap, Trees and Last read, and no other text", async () => {
+  render(<DaemonHint header={header()} reading={false} />);
+  const panel = await openHint();
+  expect(hintLines(panel)).toEqual([
+    ["Capacity", "3 of 4"],
+    ["Trees", "2"],
+    ["Last read", "5 minutes ago"],
+  ]);
+  expect(panel.textContent).toBe("Capacity3 of 4Trees2Last read5 minutes ago");
+  expect(document.body.innerHTML).not.toMatch(/slot/i);
+});
+
+// D13: a good read whose header names no cap gives the issues in use alone, and Trees its 0.
+test("after a good read with no cap the hint gives Capacity alone, and Trees 0", async () => {
+  render(
+    <DaemonHint header={header({ slot_cap: null, slots_in_use: 4, trees: 0 })} reading={false} />
+  );
+  const panel = await openHint();
+  expect(hintLines(panel)).toEqual([
+    ["Capacity", "4"],
+    ["Trees", "0"],
+    ["Last read", "5 minutes ago"],
+  ]);
+  expect(document.body.innerHTML).not.toMatch(/slot/i);
+});
+
+test("before any read of the daemon the hint says only that", async () => {
+  render(
+    <DaemonHint
+      header={header({ read_at: null, read_ok: false, slot_cap: null, slots_in_use: 0, trees: 0 })}
+      reading={false}
+    />
+  );
+  const panel = await openHint();
+  expect(panel.textContent).toBe("Dispatch has not read the daemon yet.");
+  expect(panel.querySelector("dl")).toBeNull();
+  expect(document.body.innerHTML).not.toMatch(/slot/i);
+});
+
+// Before the board answers, the hint says the read is out; after a failed board read, it says
+// so in the alert line's words.
+test("before the board answers the hint says it loads, and after a failed board read it says so", async () => {
+  const { rerender } = render(<DaemonHint header={undefined} reading />);
+  const panel = await openHint();
+  expect(panel.textContent).toBe("Loading…");
+  rerender(<DaemonHint header={undefined} reading={false} />);
+  expect(screen.getByRole("dialog", { name: "Legion daemon" }).textContent).toBe(
+    "Could not read the Legion board."
+  );
 });

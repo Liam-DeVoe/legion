@@ -15,13 +15,7 @@ import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
-import {
-  borderDefault,
-  issueStatusScale,
-  surfaceMutedBg,
-  textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { borderDefault, issueStatusScale, surfaceMutedBg } from "../../theme/classes";
 import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
@@ -31,11 +25,15 @@ import {
   type Item,
   isDefaultStatus,
   readUrl,
-  runningIssueStatuses,
   UNCLAIMED_FACET,
   writeUrl,
 } from "./issues-table-model";
 
+/**
+ * A priority page's status strip: every status of the rows the table holds, each as wide as its
+ * count, a press showing only that status and a second press every status. It draws no other
+ * count (R13).
+ */
 export function IssueTableStatus({
   table,
   items,
@@ -46,26 +44,10 @@ export function IssueTableStatus({
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
   const statusCounts = new Map<string, number>();
-  let queuedCount = 0;
-  let runningCount = 0;
-  for (const item of items) {
+  for (const item of items)
     statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
-    if (item.queue !== undefined) queuedCount += 1;
-    if ((runningIssueStatuses as readonly string[]).includes(item.issue.status)) runningCount += 1;
-  }
   return (
     <div className={`rounded-xl border p-3 ${borderDefault}`}>
-      <div
-        className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
-      >
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in Legion's
-          queue
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
-        </span>
-      </div>
       <fieldset
         aria-label="Issues by status"
         className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}

@@ -1,10 +1,12 @@
 import { type ReactNode, useId, useState } from "react";
+import type { LegionBoardHeader } from "../../api/types";
 import { CONTROL } from "../../components/control-names";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
   borderDefault,
+  borderTransparent,
   dangerText,
   focusVisibleRing,
   surfaceBg,
@@ -15,12 +17,13 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { Timestamp } from "../refs/Timestamp";
 import type { ActiveView, BuiltInView, SavedView, ViewLayout, ViewNameCheck } from "./issues-views";
 
 /**
  * The Issues tab's own parts above the table: the row of view tabs with their counts and the
- * alert line under it, and the page's own controls in the control row (Save view, the Table and
- * Board switch, the Board's toggles). None of them narrows the rows.
+ * alert line under it, and the page's own controls in the control row (Save view, the (i) hint,
+ * the Table and Board switch, the Board's toggles). None of them narrows the rows.
  */
 
 const countClass = `rounded-full px-1.5 text-[11px] font-medium tabular-nums ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
@@ -60,7 +63,7 @@ function ViewTab({
       className={`inline-flex min-h-11 shrink-0 flex-col items-center justify-center border-b-2 px-2 py-1 text-[13px] leading-tight whitespace-nowrap md:min-h-9 md:flex-row md:gap-1.5 md:py-2 ${focusVisibleRing} ${
         active
           ? `font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-          : `border-transparent ${textSecondaryOnCanvas}`
+          : `${borderTransparent} ${textSecondaryOnCanvas}`
       }`}
       onClick={onSelect}
       role="tab"
@@ -390,6 +393,61 @@ export function ViewControls({
       </span>
       {children}
     </>
+  );
+}
+
+/**
+ * The (i) hint, after Save view in a project with a Legion daemon: what the board's header says
+ * of the daemon, and no other text. Capacity is the issues the daemon runs of its cap ("3 of
+ * 4"), or the issues alone where the header names no cap; Trees is its tree count; Last read is
+ * when Dispatch last read the daemon. Before any read, the panel says only that. Its trigger and
+ * its panel are named "Legion daemon".
+ */
+export function DaemonHint({
+  header,
+  reading,
+}: {
+  /** The board's header, once the board has answered. */
+  header: LegionBoardHeader | undefined;
+  /** The board's read is still out. */
+  reading: boolean;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  return (
+    <PanelTrigger
+      align="right"
+      control={CONTROL.viewPanel}
+      label="i"
+      onOpenChange={setOpen}
+      open={open}
+      title="Legion daemon"
+      triggerClassName={`inline-flex size-11 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas} ${focusVisibleRing}`}
+    >
+      {() => (
+        <div className={`p-2 text-xs ${textSecondaryOnCanvas}`}>
+          {header === undefined ? (
+            <p>{reading ? "Loading…" : "Could not read the Legion board."}</p>
+          ) : header.read_at === null ? (
+            <p>Dispatch has not read the daemon yet.</p>
+          ) : (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              <dt className={textMutedOnCanvas}>Capacity</dt>
+              <dd className="tabular-nums">
+                {header.slot_cap === null
+                  ? header.slots_in_use
+                  : `${header.slots_in_use} of ${header.slot_cap}`}
+              </dd>
+              <dt className={textMutedOnCanvas}>Trees</dt>
+              <dd className="tabular-nums">{header.trees}</dd>
+              <dt className={textMutedOnCanvas}>Last read</dt>
+              <dd>
+                <Timestamp at={header.read_at} />
+              </dd>
+            </dl>
+          )}
+        </div>
+      )}
+    </PanelTrigger>
   );
 }
 

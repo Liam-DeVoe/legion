@@ -378,12 +378,47 @@ test("a server's page is drawn whole and paged by the server's row count", async
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(listed(table)).toHaveLength(10);
   expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  expect(screen.getByText("Rows 1–10 of 23")).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Next ›" }));
 
-  // The page index moved; the rows are the caller's until it hands the next page in.
+  // The page index moved; the rows are the caller's until it hands the next page in. The range
+  // is counted against the server's rows, not the one page the table holds.
   expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
+  expect(screen.getByText("Rows 11–20 of 23")).toBeInTheDocument();
   expect(listed(table)).toEqual(rows.map((row) => row.id));
+});
+
+// A caller that counts its rows elsewhere (the Issues tab, on its tabs) asks for no total: the
+// line keeps the range, the page, its steps and the page size. Every other caller keeps it.
+test("a pager with no total draws the range, the page, its steps and the page size", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) => ({
+    id: `d${index + 1}`,
+    minutes: index,
+    region: "eu",
+    service: `service ${index + 1}`,
+    state: "live",
+  }));
+  draw(
+    <Deploys
+      pageSize={10}
+      pager={{ allRows: 50, pageSizes: [10, 50], testId: "deploys-pager", totals: false }}
+      rows={rows}
+    />
+  );
+
+  await screen.findByRole("table", { name: "Deploys deploys" });
+  const pager = screen.getByTestId("deploys-pager");
+  expect(within(pager).getByText("Rows 1–10")).toBeInTheDocument();
+  expect(within(pager).getByText("Page 1 of 2")).toBeInTheDocument();
+  expect(within(pager).getByRole("button", { name: "‹ Previous" })).toBeInTheDocument();
+  expect(within(pager).getByRole("button", { name: "Next ›" })).toBeInTheDocument();
+  expect(pager.textContent).not.toMatch(/12|deploys/);
+
+  await user.selectOptions(within(pager).getByRole("combobox", { name: "Rows per page" }), "50");
+  expect(within(pager).getAllByText("All rows")).toHaveLength(2);
+  expect(pager.textContent).not.toMatch(/12|deploys/);
 });
 
 // The press that reaches the last page, or the first, leaves the reader on the button they

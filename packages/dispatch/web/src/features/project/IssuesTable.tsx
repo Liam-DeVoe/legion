@@ -52,6 +52,7 @@ import { useUserPreference } from "../shell/userPreference";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { IssueBoard } from "./IssueBoard";
 import {
+  DaemonHint,
   IssueViewTabs,
   LayoutSwitch,
   type ReadFailure,
@@ -60,6 +61,7 @@ import {
 } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
+import { countStatuses, IssueStatusBar } from "./issues-table-bar";
 import {
   issueTableLayout,
   listingColumns,
@@ -180,11 +182,14 @@ const ISSUE_TABLE_NOUN: RowNoun = {
   one: "issue",
 };
 
-/** The line under the List: its page sizes, the one that means every row, and its test id. */
+/** The line under the List: its page sizes, the one that means every row, and its test id. It
+ *  counts no total: the Issues tab's count of the open view is on its tab, and the priority pages'
+ *  tables draw none (R13). */
 const ISSUE_TABLE_PAGER: PagerOptions = {
   allRows: ALL_ROWS,
   pageSizes: PAGE_SIZES,
   testId: "issues-table-pager",
+  totals: false,
 };
 
 /** The Issues tab's table in the address: the project table's own spelling, with the view it
@@ -372,10 +377,16 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
     if (rewritten !== undefined) update(() => copyAddress(rewritten));
   }, [rewritten, update]);
   const saved = useSavedViews(project);
-  // The saved view the reader opened by its tab, which stays the open tab while they change it.
+  // The saved view the reader opened, which stays the open tab while they change it: by its tab,
+  // or by an address that is its query, which opens it as a press on its tab does. An address
+  // that is another saved view's query, while the open one is changed, opens that one instead.
   const [chosen, setChosen] = useState<string | undefined>(undefined);
-  const savedView =
-    saved.views.find((view) => view.name === chosen) ?? matchSavedView(saved.views, params);
+  const chosenView = saved.views.find((view) => view.name === chosen);
+  const matched = matchSavedView(saved.views, params);
+  const opened =
+    matched !== undefined && (chosenView === undefined || isSavedViewChanged(params, chosenView));
+  if (opened) setChosen(matched.name);
+  const savedView = opened ? matched : chosenView;
   const base = viewFor(expandView(params).get("view"));
   const active: ActiveView =
     savedView === undefined
@@ -969,7 +980,8 @@ function IssueTableBody({
       />
     );
   // Save view, in the control row after the Columns menu: the view as the address has it, with
-  // the columns it shows and its layout, under a name the reader gives. The (i) hint follows it.
+  // the columns it shows and its layout, under a name the reader gives. The (i) hint follows it,
+  // in a project with a Legion daemon.
   const viewControls =
     tab === undefined ? null : (
       <ViewControls
@@ -986,7 +998,9 @@ function IssueTableBody({
           tab.choose(answer.name);
           update(() => copyAddress(query));
         }}
-      />
+      >
+        {hasLegion ? <DaemonHint header={header} reading={board.isPending} /> : null}
+      </ViewControls>
     );
   const layoutSwitch =
     tab === undefined ? null : <LayoutSwitch layout={tab.layout} onLayout={tab.setLayout} />;
@@ -1047,8 +1061,33 @@ function IssueTableBody({
                 Loading closed issues…
               </p>
             ) : null}
-            {/* Issues by status: a click shows only that status, a second click every status. */}
-            <IssueTableStatus table={table} items={allItems} />
+            {tab === undefined ? (
+              // A priority page's table: its strip of every status the table holds, a press
+              // showing only that status and a second press every status.
+              <IssueTableStatus table={table} items={allItems} />
+            ) : tab.base.bar && counted ? (
+              // The rows the table lists by status; a server's page of done rows counts its
+              // total, which is every row it lists.
+              <IssueStatusBar
+                counts={
+                  doneTotal === undefined
+                    ? countStatuses(listedRows.map((row) => row.original.issue.status))
+                    : new Map([["done", doneTotal]])
+                }
+                narrowTo={(status) => {
+                  const column = table.getColumn("status");
+                  if (status !== undefined) {
+                    column?.setFilterValue([status]);
+                    return;
+                  }
+                  const own = expandView(tab.ownAddress);
+                  column?.setFilterValue(
+                    own.get("nofilter") === "1" ? undefined : own.getAll("status")
+                  );
+                }}
+                picked={statusPicks}
+              />
+            ) : null}
           </>
         ) : null}
 

@@ -59,11 +59,13 @@ const NAMES: DataTableNames = {
   linkAttribute: PRIORITY_LINK_ATTRIBUTE,
   rowAttribute: PRIORITY_ROW_ATTRIBUTE,
 };
-/** The line under the table: the page sizes the issue tables offer, and its own test id. */
+/** The line under the table: the page sizes the issue tables offer, and its own test id. It
+ *  counts no total, as on the Issues tab (R13). */
 const PAGER: PagerOptions = {
   allRows: ALL_ROWS,
   pageSizes: PAGE_SIZES,
   testId: "priorities-table-pager",
+  totals: false,
 };
 /** The whole key the priorities table keeps its layout under: one table, one deployment, one
  *  stored layout, under the key the page has always written it to. */

@@ -115,7 +115,9 @@ export const tableStorageKey = (project: string) => `dispatch.project-table.${pr
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
 export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
 export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
-/** The statuses an issue is being worked in, as the status bar counts them. */
+/** The statuses an issue is being worked in, which the priority pages count and list together.
+ *  No status bar counts them as one: Open's `IssueStatusBar` on the Issues tab and the priority
+ *  pages' `IssueTableStatus` count each status on its own. */
 export const runningIssueStatuses: readonly IssueStatus[] = [
   "in_progress",
   "testing",
