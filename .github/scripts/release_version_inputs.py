@@ -115,8 +115,12 @@ class Reader(NamedTuple):
 
 BUILT = "steps.version.outputs.skip != 'true'"
 CONFIRMED = "steps.confirm.outputs.release == 'true'"
+ON_MAIN = "github.ref == 'refs/heads/main'"
+# The four jobs that compute or carry out a checked decision lead their entries with their own
+# if: (position 0): a job `if: false` skips every reader in it at once.
 DECISION_READERS = {
     (RELEASE, "legion_build"): (
+        Reader(ON_MAIN, position=0),
         Reader(BUILT, id="setup-go"),
         Reader(BUILT, position=5),
         Reader(BUILT, name="Build legion"),
@@ -127,6 +131,7 @@ DECISION_READERS = {
         Reader(f"{BUILT} && steps.notes.outputs.notes == 'true'", position=11),
     ),
     (RELEASE, "publish"): (
+        Reader(f"always() && {ON_MAIN}", position=0),
         # Not itself a reader of the decision, but legion_pair's if: reads its ok output: an `if:
         # false` here skips the chain as surely, so it is listed with the readers.
         Reader("${{ !cancelled() }}", id="pair"),
@@ -143,6 +148,7 @@ DECISION_READERS = {
                name="legion: Write the changelog into the release body"),
     ),
     (LISTENER, "release_build"): (
+        Reader(ON_MAIN, position=0),
         Reader(BUILT, position=3),
         Reader(BUILT, id="notes"),
         Reader(f"{BUILT} && steps.notes.outputs.notes == 'true'", position=5),
@@ -152,6 +158,8 @@ DECISION_READERS = {
         Reader(BUILT, position=9),
     ),
     (LISTENER, "release_publish"): (
+        Reader(f"always() && {ON_MAIN} && needs.build.result == 'success' && needs.image_index.result == 'success' && "
+               "needs.targets.result == 'success'", position=0),
         Reader(CONFIRMED, position=6),
         Reader(CONFIRMED, position=7),
         Reader(CONFIRMED, id="assets"),

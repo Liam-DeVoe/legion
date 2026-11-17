@@ -662,6 +662,31 @@ check "exits 1 on a module that lists legion_pair without the step it reads" "$(
 check "names the step read and the reader" \
   "$(contains "$out" "the step with id legion_pair of publish reads steps.pair, which $plan_file's DECISION_READERS does not list for publish")"
 
+# The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
+# false` there skips every reader of the job at once.
+echo "case: a decision job's own if: false"
+root=$(written job-if-legion-build)
+replace "$root/.github/workflows/release.yaml" $'    if: "github.ref == \'refs/heads/main\'"\n' $'    if: false\n'
+run_check "$root"
+check "exits 1 on legion_build" "$(is "$status" 1)"
+check "names the job's if: and the module's" \
+  "$(contains "$out" "the job's own if: of legion_build has the if: \`false\`, where $readers_rule \`github.ref == 'refs/heads/main'\` for it")"
+root=$(written job-if-publish)
+replace "$root/.github/workflows/release.yaml" $'    if: "always() && github.ref == \'refs/heads/main\'"\n' $'    if: false\n'
+run_check "$root"
+check "exits 1 on publish" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the job's own if: of publish has the if: \`false\`")"
+root=$(written job-if-release-build)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    if: "github.ref == \'refs/heads/main\'"\n' $'    if: false\n'
+run_check "$root"
+check "exits 1 on the listener's release_build" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the job's own if: of release_build has the if: \`false\`")"
+root=$(written job-if-removed)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    if: "always() && github.ref == \'refs/heads/main\'' $'    if: "github.ref == \'refs/heads/main\''
+run_check "$root"
+check "exits 1 on release_publish's if: changed" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the job's own if: of release_publish has the if: \`github.ref == 'refs/heads/main' && needs.build.result")"
+
 echo "case: a new step that reads release"
 root=$(written reader-new)
 printf '      - name: Announce the release\n        if: steps.confirm.outputs.release == %s\n        run: echo released\n' "'true'" \
