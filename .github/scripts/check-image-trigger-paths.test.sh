@@ -2846,6 +2846,18 @@ check "a filters file that refuses the open is refused" "$(is "$status" 1)"
 check "  and named as there and refusing it" \
   "$(contains "$out" '::error file=.github/ci-filters.yaml::.github/ci-filters.yaml is there and refuses the open (IsADirectoryError: Is a directory)')"
 
+# js-yaml, which the action reads the file with, refuses a mapping holding one key twice, so a
+# filters file repeating a filter name is refused naming the file, the key and both lines, never
+# read as its last copy.
+root=$(fixture filters-file-repeated)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+second=$(($(wc -l <"$root/.github/ci-filters.yaml") + 1))
+printf "worker_image:\n  - 'docs/**'\n" >> "$root/.github/ci-filters.yaml"
+run_check "$root"
+check "a filters file that holds one filter name twice is refused" "$(is "$status" 1)"
+check "  and named, with the key and the line of each copy" \
+  "$(contains "$out" "::error file=.github/ci-filters.yaml::.github/ci-filters.yaml is not valid YAML: the mapping key 'worker_image' of line $second is the key of line 1 again: ")"
+
 for shape in 'alternation:{docker/**,.dockerignore}' 'closer:docker/}'; do
   pattern=${shape#*:}
   root=$(fixture "excludes-brace-${shape%%:*}")

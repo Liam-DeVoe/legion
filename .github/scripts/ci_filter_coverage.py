@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
+from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -104,9 +104,11 @@ def read_repository_text(path: Path) -> str:
 
 
 def load_repository_yaml(path: Path):
-    """Parse a repository YAML file, retaining its path if the parser refuses it."""
+    """Parse a repository YAML file, retaining its path if the parser refuses it. A mapping that
+    holds one key twice is refused (UniqueKeyLoader), as js-yaml and GitHub's workflow parser
+    refuse it, rather than read as its last copy."""
     try:
-        return yaml.safe_load(read_repository_text(path))
+        return yaml.load(read_repository_text(path), Loader=UniqueKeyLoader)
     except RepositoryInputError:
         raise
     except yaml.YAMLError as exc:
@@ -114,9 +116,10 @@ def load_repository_yaml(path: Path):
 
 
 def load_repository_yaml_text(path: str, text: str):
-    """Parse YAML obtained from a repository file field, retaining that file's path."""
+    """Parse YAML obtained from a repository file field, retaining that file's path. A repeated
+    key is refused, as load_repository_yaml refuses it."""
     try:
-        return yaml.safe_load(text)
+        return yaml.load(text, Loader=UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise RepositoryInputError(path, exc) from exc
 

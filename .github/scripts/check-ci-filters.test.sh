@@ -284,7 +284,7 @@ check_report_section() {
 }
 
 unescaped_workflow_commands() {
-  local line unsafe= token stopped=false
+  local line unsafe='' token stopped=false
   while IFS= read -r line; do
     if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
       token=${BASH_REMATCH[1]}
@@ -403,6 +403,33 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file and says it holds none" \
   "$(contains "$out" '::error file=.github/ci-filters.yaml::this file holds no filter: dorny/paths-filter reads it as a mapping of filter name to patterns')"
+
+# dorny/paths-filter reads the file with js-yaml, which refuses a mapping holding one key twice,
+# so every job the file gates is skipped; yaml.safe_load would keep the last copy and this check
+# would judge filters other than the ones written. So a repeated key is a refused read, naming the
+# file, the key and the line of each copy, in a mapping at any depth: here a filter name of the
+# filters file, and a key of the paths-filter step that hands the action that file.
+echo "case: a filters file that holds one filter name twice"
+root=$(fixture filters-repeated)
+run_check "$root"
+check "the fixture as written passes" "$(is "$status" 0)"
+first=$(grep -n '^app:$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
+second=$(($(wc -l <"$root/.github/ci-filters.yaml") + 1))
+printf "app:\n  - 'docs/**'\n" >> "$root/.github/ci-filters.yaml"
+run_check "$root"
+check_input_parse_error ".github/ci-filters.yaml"
+check "names the file, the key and the line of each copy" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::cannot read repository input: the mapping key 'app' of line $second is the key of line $first again: ")"
+check "and judges nothing by either copy" "$(is "$(contains "$out" '^report: ')" false)"
+
+root=$(fixture filters-step-repeated)
+first=$(grep -n '^          filters: .github/ci-filters.yaml$' "$root/.github/workflows/ci.yaml" | cut -d: -f1)
+replace "$root/.github/workflows/ci.yaml" '          filters: .github/ci-filters.yaml' \
+  $'          filters: .github/ci-filters.yaml\n          filters: .github/ci-filters.yaml'
+run_check "$root"
+check_input_parse_error ".github/workflows/ci.yaml"
+check "a key repeated in a nested mapping is refused the same way" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml::cannot read repository input: the mapping key 'filters' of line $((first + 1)) is the key of line $first again: ")"
 
 echo "case: importing an unsafe data string cannot inject warning commands"
 root=$(fixture import-warning-command)
@@ -2148,8 +2175,8 @@ READS = (
 )
 
 # Every filter of the changes job, which its one paths-filter step hands the action as this
-# file's path rather than as a string of its own.
-filters = yaml.safe_load(Path(sys.argv[1]).read_text())
+# file's path rather than as a string of its own, read refusing a repeated key as the action does.
+filters = yaml.load(Path(sys.argv[1]).read_text(), Loader=wp.UniqueKeyLoader)
 
 
 def flat(entry):

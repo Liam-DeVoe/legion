@@ -1950,6 +1950,8 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_workflow_files_test", "Test the workflow file check", f"{SCRIPTS}/check-workflow-files.test.sh", [
         (f"{SCRIPTS}/check-workflow-files.sh", "the script under test"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh:55 imports repeated_keys from it, beside the "
+                                         "script's own file that every fixture links in"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
@@ -3135,7 +3137,8 @@ GATES = [
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
-        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
+        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
+                                              "check-workflow-files.sh imports its repeated-key test"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
         (GO_TARGETS, "ci_job_reads.py expands the notices and pack runs over it"),
         (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),

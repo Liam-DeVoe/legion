@@ -38,13 +38,21 @@
 # in ci.yaml's test job.
 set -euo pipefail
 
+# The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
+# check reads .github/ci-filters.yaml with runs, imported from beside this script's own file: a
+# test fixture links only this script in, and the link leads back to the module CI runs. Resolved
+# before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the
+# import from leaving a __pycache__ in the tree.
+scripts=$(dirname "$(readlink -f "$0")")
+
 cd "$(dirname "$0")/../.."
 
-python3 <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
 import sys
 from pathlib import Path
 
 import yaml
+from workflow_paths import repeated_keys
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -110,25 +118,19 @@ def check_folded_keys(path: Path, root: object) -> None:
             continue
         seen.add(id(node))
         if isinstance(node, yaml.MappingNode):
-            first_seen: dict[str, yaml.ScalarNode] = {}
+            for first, name in repeated_keys(node, lambda key: key.value.upper()):
+                line = name.start_mark.line + 1
+                problem(
+                    path,
+                    f"{path}:{line}: the mapping key '{name.value}' is the key "
+                    f"'{first.value}' of line {first.start_mark.line + 1} again after "
+                    f"upper-casing. GitHub's workflow parser compares keys without regard "
+                    f"to case and refuses the file, while YAML keeps the last of the two "
+                    f"and reports nothing.",
+                    line=line,
+                )
             for name, value in node.value:
-                if isinstance(name, yaml.ScalarNode):
-                    folded = name.value.upper()
-                    first = first_seen.get(folded)
-                    if first is None:
-                        first_seen[folded] = name
-                    else:
-                        line = name.start_mark.line + 1
-                        problem(
-                            path,
-                            f"{path}:{line}: the mapping key '{name.value}' is the key "
-                            f"'{first.value}' of line {first.start_mark.line + 1} again after "
-                            f"upper-casing. GitHub's workflow parser compares keys without regard "
-                            f"to case and refuses the file, while YAML keeps the last of the two "
-                            f"and reports nothing.",
-                            line=line,
-                        )
-                else:
+                if not isinstance(name, yaml.ScalarNode):
                     stack.append(name)
                 stack.append(value)
         elif isinstance(node, yaml.SequenceNode):
