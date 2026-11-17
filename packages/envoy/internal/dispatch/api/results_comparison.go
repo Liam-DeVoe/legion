@@ -142,9 +142,9 @@ func noBases(reason string) comparison {
 // that resolves to no repository because the two part every answer below: nothing to compare
 // with is a fact about the work and leaves no pass standing, while a read Dispatch could not
 // make is model.ReasonReadFailed and leaves the gate's question open. One nil for both is how
-// a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522). It holds
-// what one read of the canonical name of a repository a result's row names as holding its
-// commit said too (linkedRepositoryOf), which names a repository wherever it answered.
+// a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
+// It holds what one read of the canonical name of a repository a result's row names as holding
+// its commit said too (linkedRepositoryOf), which names a repository wherever it answered.
 type repositoryAnswer struct {
 	repo     *string
 	answered bool
