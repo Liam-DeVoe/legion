@@ -312,7 +312,8 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
       ["2", 1, PLAN_WORDS.no_size, expect.stringContaining("left: 66.6")],
     ]);
     // The row is named by what it draws, which begins with the task's first line, and says
-    // what the step needs and the statement it serves, as a link to that statement.
+    // what the step needs and the statement it serves, as a chip holding a link to that
+    // statement.
     const step = rowOf(view, "t3");
     expect(step.querySelector("[data-node-words]")?.textContent).toBe("Task t3");
     expect(
@@ -324,7 +325,7 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
     expect(
       [...step.querySelectorAll("[data-plan-serve]")].map((one) => [
         one.textContent,
-        one.getAttribute("href"),
+        one.querySelector("a")?.getAttribute("href"),
       ])
     ).toEqual([["The outline draws one body", `/issues/${KEY}/spec#b-r2`]]);
     expect(rowOf(view, "t1").querySelectorAll("[data-plan-need]")).toHaveLength(0);
@@ -532,6 +533,47 @@ test("the control switches to the ordered steps, which are the outline's own row
     await userEvent.click(view.getByRole("button", { name: PLAN_WORDS.chart }));
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(1);
     expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.chart }));
+  } finally {
+    view.unmount();
+  }
+});
+
+// The focus leaving the chart lets go of its row by the outline's own rule (part I's
+// `useReleaseFocus`, decision 105 of dispatch://INFRA-1196 as amended; dispatch://INFRA-3938 R6):
+// with no press under way, the row's mark and its heavier curves go at once, and Details goes back
+// to the issue's facts with them; a press that takes the focus elsewhere keeps the row while it
+// is under way, and lets go of it once it has ended, in the task after its release, where its
+// click has landed.
+test("a row lets go of its mark when the focus leaves the chart for another control, at once or once the press has ended", async () => {
+  setViewport(1440);
+  const view = renderBody(
+    issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2", { needs: ["t3"] })])
+  );
+  try {
+    const chart = view.getByRole("button", { name: PLAN_WORDS.chart });
+    const place = view.container.querySelector("[data-place]");
+    const marked = () => rowOf(view, "t2").classList.contains("bg-page-step-tint");
+    const curve = () =>
+      view.container
+        .querySelector(`[data-plan-link="${D("t3")} ${D("t2")}"]`)
+        ?.getAttribute("stroke-width");
+    act(() => rowOf(view, "t2").focus());
+    expect([marked(), curve(), place?.getAttribute("data-focused")]).toEqual([true, "2", D("t2")]);
+    act(() => chart.focus());
+    expect([marked(), curve(), place?.getAttribute("data-focused")]).toEqual([false, "1.4", ""]);
+
+    const user = userEvent.setup();
+    act(() => rowOf(view, "t2").focus());
+    await user.pointer({ keys: "[MouseLeft>]", target: chart });
+    expect(document.activeElement).toBe(chart);
+    expect([marked(), curve()]).toEqual([true, "2"]);
+    await user.pointer({ keys: "[/MouseLeft]", target: chart });
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect([marked(), curve(), place?.getAttribute("data-focused")]).toEqual([false, "1.4", ""]);
   } finally {
     view.unmount();
   }

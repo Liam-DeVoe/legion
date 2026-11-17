@@ -1,5 +1,4 @@
-import { primarySpec, roleDocument } from "../../../api/issue-cache";
-import type { Artifact, IssueDetails } from "../../../api/types";
+import type { Artifact } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
 import { documentOfNode } from "../issue-artifacts";
 import type { NodeChip, TreeNode } from "../issue-tree";
@@ -26,10 +25,9 @@ import { blockNodeId } from "../tree-drafts";
  * task this plan does not hold waits on nothing: its row says the target is gone or names an
  * address nothing answers to (`NodeRow.tsx`'s `Chip`), and the order is the plan's own.
  *
- * The plan's own order is the order its tasks are written in (`writtenOrder`), and the view
- * draws once the blocks of the documents it draws from are held (`planDocumentIds`): both are
- * read off what the page already holds. The module is pure: it holds no React, reads no model of
- * its own and makes no request.
+ * The plan's own order is the order its tasks are written in (`writtenOrder`), read off the
+ * blocks the page already holds. The module is pure: it holds no React, reads no model of its
+ * own and makes no request.
  */
 
 /** One step of the plan: a task the order puts after every task in its `needs`. */
@@ -125,22 +123,22 @@ export function taskDocumentIds(
  * serves, which is the spec's order and not the plan's, so the view hands them to `planOrder`
  * through this.
  *
- * `written` holds the block ids of each document `taskDocumentIds` names, by the document's id,
+ * `written` holds the block ids of each document the tasks are blocks of, by the document's id,
  * in the order the document writes them, as the page's blocks read holds them (`useIssueTree.ts`
- * reads them under the same key, so the view sends no request of its own); a document whose
- * read is out holds none. The documents stand in `taskDocumentIds`' order, and a task the page
- * holds no place for - its document unread or not the issue's, its block not in the list -
+ * reads them under the same key, so the view sends no request of its own). The documents stand
+ * in the map's own order, and a document whose read has not answered is not in it: a task the
+ * page holds no place for - its document unread or not the issue's, its block not in the list -
  * keeps the place `tasks` gives it, after the rest.
  */
 export function writtenOrder(
   tasks: readonly TreeNode[],
   artifacts: ReadonlyMap<string, Artifact>,
-  written: ReadonlyMap<string, readonly string[] | undefined>
+  written: ReadonlyMap<string, readonly string[]>
 ): readonly TreeNode[] {
   const places = new Map<string, number>();
   let place = 0;
-  for (const id of taskDocumentIds(tasks, artifacts)) {
-    for (const block of written.get(id) ?? []) {
+  for (const [id, blocks] of written) {
+    for (const block of blocks) {
       places.set(`${id} ${block}`, place);
       place += 1;
     }
@@ -329,33 +327,4 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
   return task.chips.find((chip) => neededId(task, chip) === needed.id);
-}
-
-/**
- * The documents the Plan view draws from, whose blocks it waits on before it draws
- * (`slots/view-plan.tsx`): the spec, whose statements the tasks serve, and the plan, whose
- * blocks are the tasks, each once and where the issue holds it. Each is the one the issue read
- * names by its id (`primarySpec`, `roleDocument`), as the tree chooses the documents it reads
- * (`useIssueTree.ts`'s `treeDocumentIds`), and never by the artifact's own `role`: the server
- * names a plan.md that has no role as the issue's plan (`api/artifacts.go`'s `documentPlays`),
- * so a reading by role would leave that plan out and the view would say the issue has no task
- * while its tasks are still arriving (dispatch://INFRA-3938 R1). Being the tree's, the ids
- * subscribe the view to no read the tree does not make: a document in the `plan` role that the
- * issue does not name is read by neither (dispatch://INFRA-3938 R2).
- */
-export function planDocumentIds(
-  issue: Pick<
-    IssueDetails,
-    | "artifacts"
-    | "decisions_artifact_id"
-    | "plan_artifact_id"
-    | "primary_artifact_id"
-    | "verification_artifact_id"
-  >
-): readonly string[] {
-  const ids = new Set<string>();
-  for (const document of [primarySpec(issue), roleDocument(issue, "plan")]) {
-    if (document !== undefined) ids.add(document.id);
-  }
-  return [...ids];
 }

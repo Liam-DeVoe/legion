@@ -29,8 +29,7 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
-import { focusedNodeOf, IssueTree, useReleaseFocus } from "../IssueTree";
-import { bringOnScreen } from "../identity-block";
+import { focusedNodeOf, holdOnScreen, IssueTree, useReleaseFocus } from "../IssueTree";
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
@@ -115,19 +114,21 @@ export function PlanFilterBody({
   const { artifacts } = tree;
   // The documents the plan's tasks are blocks of, and each one's block ids in the order it is
   // written (`writtenOrder`): every task of the plan, so a words filter changes no task's place
-  // (R2).
+  // (R2). A document whose read has not answered is left out, so its tasks keep the places the
+  // view gives them.
   const documentIds = useMemo(() => taskDocumentIds(plan, artifacts), [artifacts, plan]);
   const written = useQueries({
     combine: blockIdsOf,
     queries: documentIds.map((id) => artifactBlocksQuery(id)),
   });
-  const entries = useMemo(
-    () =>
-      planOrder(
-        writtenOrder(plan, artifacts, new Map(documentIds.map((id, rank) => [id, written[rank]])))
-      ),
-    [artifacts, documentIds, plan, written]
-  );
+  const entries = useMemo(() => {
+    const held = new Map<string, readonly string[]>();
+    for (const [rank, id] of documentIds.entries()) {
+      const blocks = written[rank];
+      if (blocks !== undefined) held.set(id, blocks);
+    }
+    return planOrder(writtenOrder(plan, artifacts, held));
+  }, [artifacts, documentIds, plan, written]);
   // The view's tasks by id, each as the view gives it and once, as the order holds it: the
   // places drawn are those holding one of them (R4).
   const inView = useMemo(() => {
@@ -337,11 +338,6 @@ const FOCUSED =
 /** Every row of the chart, a step's and a cycle's, in the order it is drawn. */
 const CHART_ROW = "[data-plan-bar-row], [data-plan-cycle-row]";
 
-/** What the reader does that ends the hold of the address's row on screen: a key, a press, a
- *  wheel and a touch, as the outline's own list (`IssueTree.tsx`'s `READER_ACTS`, which that
- *  file keeps to itself). */
-const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
-
 /** One place the chart draws: its row, the key its focus and its tab stop are held under, and
  *  the task it stands for, which is the step's own, or for a cycle the task its row gives to
  *  Details and to Enter. */
@@ -374,11 +370,13 @@ interface DrawnPlace {
  * inside a row - the row's own, or a link of it that a pointer went down on - is the focus on
  * that row, as it is on the outline's (`NodeRow.tsx`): the row takes the mark, the heavier
  * curves, Details and the Tab stop, and the keys, which find the row that holds the focus
- * (`at`), move from there. The chart lets go of its focused row by the outline's own rule (part
- * I's `useReleaseFocus`, decision 105 of dispatch://INFRA-1196): Details goes back to the
- * issue's facts when that rule says so, and the row's mark and heavier curves go when it runs
- * `onLeave`, so the chart keeps or drops its mark exactly as the outline keeps or drops its
- * row's (dispatch://INFRA-3938 R6).
+ * (`at`), move from there. The focus leaving the chart lets go of its focused row by the
+ * outline's own rule (part I's `useReleaseFocus`, decision 105 of dispatch://INFRA-1196 as
+ * amended): with no press under way - Tab, Escape, a script's blur - the row's mark and its
+ * heavier curves go at once, and where a press took the focus elsewhere they go once that press
+ * has ended, unless the focus is back in the chart by then. Details goes back to the issue's
+ * facts as the focus leaves, unless it goes to Details or the control that opens it
+ * (dispatch://INFRA-3938 R6).
  *
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
  * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
@@ -456,18 +454,21 @@ function PlanChart({
     },
     [setFocusedNode]
   );
-  // The chart releases its focused row by the outline's own rule (part I's `useReleaseFocus`;
-  // decision 105 and R14 of dispatch://INFRA-1196): Details goes back to the issue's own facts
-  // when that rule says so, and the row's mark and heavier curves go when it runs `onLeave`, so
-  // the chart keeps or drops its mark exactly as the outline keeps or drops its row's
-  // (dispatch://INFRA-3938 R6). A focus moving within the chart is no leave. The chart edits no
-  // row (Enter goes to the conversation), so no edit holds the focus.
+  // The chart lets go of its focused row by the outline's own rule (part I's `useReleaseFocus`;
+  // decision 105, as amended, and R14 of dispatch://INFRA-1196): the focus leaving the chart with
+  // no press under way runs `leave` at once, and a press that takes it elsewhere runs it once
+  // that press has ended, unless the focus is back in the chart by then, so the row's mark and
+  // its heavier curves go as the outline's row lets go of its look (dispatch://INFRA-3938 R6).
+  // Details goes back to the issue's own facts as the focus leaves. A focus moving within the
+  // chart is no leave. The chart edits no row (Enter goes to the conversation), so no edit holds
+  // the focus.
   const leave = useCallback(() => setFocused(undefined), []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // An address that names a task puts the focus on its row, a cycle's included, and holds the
-  // row on screen until the reader acts, as the outline's address does (`IssueTree.tsx`): the
-  // rows around it are still arriving and push it down the page. A row already inside the
-  // viewport is focused where it stands; one outside it is brought in by the focus, then placed
+  // row on screen until the reader acts, by the outline's own hold (`IssueTree.tsx`'s
+  // `holdOnScreen`, decision 94 of dispatch://INFRA-1196): the rows around it are still arriving
+  // and push it down the page. A row already inside the viewport is focused where it stands, as
+  // the outline focuses its address's row; one outside it is brought in by the focus, then placed
   // by the row's own rule (`useRowOnScreen`). A key, a press, a wheel or a touch ends the hold,
   // and so does a focus that has moved off the row.
   const landingHold = useRef<AbortController | undefined>(undefined);
@@ -482,18 +483,7 @@ function PlanChart({
     const box = row.getBoundingClientRect();
     row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
     landingHold.current?.abort();
-    const hold = new AbortController();
-    landingHold.current = hold;
-    for (const type of READER_ACTS) {
-      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
-    }
-    if (typeof ResizeObserver === "undefined") return;
-    const grown = new ResizeObserver(() => {
-      if (document.activeElement === row) bringOnScreen(row);
-      else hold.abort();
-    });
-    grown.observe(document.body);
-    hold.signal.addEventListener("abort", () => grown.disconnect());
+    landingHold.current = holdOnScreen(row);
   }, [land, onLanded, rows]);
 
   // The lines between a bar and the bars it needs, from where the browser laid the bars out:
@@ -600,8 +590,8 @@ function PlanChart({
       palette: false,
       run: () => {
         const held = items();
-        const stop = held.findIndex((row) => row.tabIndex === 0);
-        moveTo(held, stop === -1 ? 0 : stop);
+        const tabbed = held.findIndex((row) => row.tabIndex === 0);
+        moveTo(held, tabbed === -1 ? 0 : tabbed);
       },
       when: () =>
         (document.activeElement === null || document.activeElement === document.body) &&
@@ -986,21 +976,25 @@ function BarRow({
       >
         {serves.map((one) => {
           const route = one.reference === undefined ? undefined : parseNodeReference(one.reference);
-          // The chip's border and padding are drawn on a box of its own, and its link inside it
-          // draws none, as G's `Chip` holds its link (`NodeRow.tsx`): below 1280 px a
-          // `dispatch-inline-link` takes 6 px of padding above and below (`styles.css`), which
-          // an inline link inside the box's 18 px line takes without growing the box. A long
-          // first word wraps inside the column rather than run past it (R5).
+          // The chip is a box of its own, `data-plan-serve` for either kind, which draws its
+          // border and padding and wraps a long first word inside the column rather than run past
+          // it (R5). A linked chip's link inside it draws none: below 1280 px a
+          // `dispatch-inline-link` takes 6 px of padding above and below (`styles.css`), which an
+          // inline link inside the box's 18 px line takes without growing the box. G's `Chip`
+          // (`NodeRow.tsx`) draws no border or padding, so its link is the whole of it. This chip
+          // draws both around its link, so the link is stretched over the whole box, its border
+          // included (the link's `::after`, laid over the box it is `relative` to): a press
+          // anywhere on the chip opens the statement (R4: each chip "a link to that statement"),
+          // where a press on its edge would land on the row and give the row the focus.
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
           return route === undefined ? (
             <span className={look} data-plan-serve="" key={one.line} {...authorText}>
               {chipWords(one.line)}
             </span>
           ) : (
-            <span className={look} key={one.reference}>
+            <span className={`relative ${look}`} data-plan-serve="" key={one.reference}>
               <Link
-                className="dispatch-inline-link"
-                data-plan-serve=""
+                className="dispatch-inline-link after:absolute after:-inset-px after:content-['']"
                 tabIndex={-1}
                 to={buildReferencePath(route)}
                 {...authorText}

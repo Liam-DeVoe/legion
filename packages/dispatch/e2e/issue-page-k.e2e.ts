@@ -64,8 +64,9 @@ import { assertPageFits } from "./unclipped";
  * `seedPlanOrder`, whose second write deletes the gone task by its block id; row (5) reads part
  * F's names (decisions 49 and 51 of dispatch://INFRA-1196: a block chip named by the words of its
  * `text_tree`, and a number label kept with its sentence) as part G's chip draws them (decision
- * 66). One reading of row (2) at 390 px waits for part P (dispatch://INFRA-3943), which is not
- * under K's base: it is a comment in that row and no assertion (t13 of the plan).
+ * 66); and row (2) reads at 390 px that a card the keys move to stands clear of what stays at
+ * the top of the screen, whose height part P publishes for the rows to be placed below
+ * (dispatch://INFRA-3943, t13 of the plan).
  */
 
 /** The phone every row reads: 390 px wide, and as tall as the iPhone 13's viewport. */
@@ -158,7 +159,8 @@ const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
 /** R1 before the reads it needs answer: opened with every document's blocks read held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
  *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
- *  draws the view once the blocks it draws from are held); let go, it draws the chart. */
+ *  draws the view once every document the tree reads holds its blocks, part F's `blocksHeld`);
+ *  let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -252,8 +254,8 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
 // waits on dispatch://INFRA-1950 R5, which is the state the model holds none of today. The
 // tester's F19 is read here too: each task is drawn once, and after every task it needs.
 // Beyond the check (t10 of the plan): the head row's three columns, the box's place, R4's name
-// and R6's group, the breakpoints at 760, 761, 1240 and 1241 px and 1000 px, and the words
-// filter, which keeps the whole plan's places.
+// and R6's group, a press on the edge of a statement chip, the breakpoints at 760, 761, 1240 and
+// 1241 px and 1000 px, and the words filter, which keeps the whole plan's places.
 // The plan is I's `seedPlanOrder` (e2e/issue-layout-seed.ts), whose second write deletes the gone
 // task by its block id, which leaves the loose task's need pointing at no task the plan holds.
 // SLOW(>=2s): a seeded plan read at seven widths, under both drawings and at a second address.
@@ -383,10 +385,36 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
       .toHaveLength(2);
     await expect(
       nodeRow(page, step(T.first)).locator(
-        `a[data-plan-serve][href$="#b-${requirementBlockId(1)}"]`
+        `[data-plan-serve] a[href$="#b-${requirementBlockId(1)}"]`
       ),
       `${T.first} does not link the statement it serves`
     ).toHaveCount(1);
+    // The whole chip is the link, its edge included (R4: each chip "a link to that statement"):
+    // a press 2 px inside its left edge, on its padding, and one 1 px under its top edge, above
+    // the words, each open the statement, where they would land on the row and give it the
+    // focus. At 1280 px and up the link takes no padding of its own (`styles.css`'s
+    // `.dispatch-inline-link`), so neither place is in the link's own box. Each press is read on
+    // the statement's address, and the page goes back to the chart after it.
+    const statement = new RegExp(`${presetPath(seeded.key, "spec")}#b-${requirementBlockId(1)}$`);
+    const chip = nodeRow(page, step(T.first))
+      .first()
+      .locator(`[data-plan-serve]:has(a[href$="#b-${requirementBlockId(1)}"])`);
+    for (const edge of ["left", "top"] as const) {
+      await chip.scrollIntoViewIfNeeded();
+      const edges = await boxOf(chip, `${T.first}'s statement chip`);
+      await page.mouse.click(
+        edge === "left" ? edges.x + 2 : edges.x + edges.width / 2,
+        edge === "left" ? edges.y + edges.height / 2 : edges.y + 1
+      );
+      await expect(
+        page,
+        `a press on the ${edge} edge of ${T.first}'s statement chip does not open the statement`
+      ).toHaveURL(statement);
+      await page.goBack();
+      await expect(planView(page, "chart")).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(() => chartOrder(page)).toEqual(charted);
+      await expect(chip).toHaveCount(1);
+    }
     // The lines between a step and the steps it needs: two on this plan.
     await expect(
       planChart(page).locator("svg[data-plan-links] path[data-plan-link]"),
@@ -574,8 +602,9 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
 // address naming a task of a cycle puts the focus on the cycle's row, an address naming a node
 // that is no task draws the plan as /plan does, Escape gives a row back from its link, and a
 // press of the switch under an address leaves the focus on the button pressed.
-// The plan is I's `seedPlanOrder`, as row (1) reads it. Its readings at 390 px after End and
-// after Home wait for part P, and are a comment at the row's end.
+// The plan is I's `seedPlanOrder`, as row (1) reads it. At 390 by 664 px, after End and after
+// Home, the focused card stands on screen, clear of what stays at the top, whose height part P
+// publishes.
 // SLOW(>=2s): a seeded plan walked by the keyboard at two widths and at five addresses.
 test("the Plan view's chart is reached in order with the keyboard @phone", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -663,7 +692,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     await page.keyboard.press("f");
     await expect(
       nodeRow(page, step(T.first)).locator(
-        `a[data-plan-serve][href$="#b-${requirementBlockId(1)}"]`
+        `[data-plan-serve] a[href$="#b-${requirementBlockId(1)}"]`
       ),
       `f does not reach ${T.first}'s statement link`
     ).toBeFocused();
@@ -798,12 +827,32 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     await nodeRow(page, step(T.third)).first().focus();
     await expect.poll(() => focusedNodeId(page)).toBe(step(T.third));
     for (const next of [T.second, T.first, T.loose]) await reach("ArrowDown", step(next));
-    // Held for part P (dispatch://INFRA-3943; decision 8 of the plan): at 390 by 664 px, after
-    // End and after Home, `onScreen` is to hold for the focused card. At 760 px and below the
-    // view row stays at the top of the screen, and until P publishes the height of the band that
-    // stays at the top (`--issue-identity-height`), the rows' own hook cannot place a card clear
-    // of it, so a card can stand under that band. The reading goes in once P is under K's base
-    // (t13 of the plan).
+    // After End and after Home the focused card stands on screen, clear of the view row that
+    // stays at the top at 760 px and below (`onScreen`): the rows' own hook places it below the
+    // height part P publishes for that band (`useRowOnScreen`, `bringOnScreen`,
+    // `--issue-identity-height`; dispatch://INFRA-3943). Each key is pressed with the page put
+    // at its far end from the card the key goes to, so that card is off the screen until its
+    // placing puts it on.
+    const first = nodeRow(page, step(T.third)).first();
+    const last = nodeRow(page, step(T.loose)).first();
+    await page.evaluate(() =>
+      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    );
+    expect(await onScreen(first), `${T.third}'s card is on screen before Home`).toBe(false);
+    await reach("Home", step(T.third), "Home");
+    await expect
+      .poll(() => onScreen(first), {
+        message: "Home leaves the focused card under what stays at the top at 390 px",
+      })
+      .toBe(true);
+    await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
+    expect(await onScreen(last), `${T.loose}'s card is on screen before End`).toBe(false);
+    await reach("End", step(T.loose), "End");
+    await expect
+      .poll(() => onScreen(last), {
+        message: "End leaves the focused card off the screen at 390 px",
+      })
+      .toBe(true);
   });
 });
 
