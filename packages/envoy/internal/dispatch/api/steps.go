@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -124,19 +125,19 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
-	// answer reads the issue's runs in the write's own transaction, as GET would after it.
+	// answer reads the issue's runs in the write's own transaction, as GET would after it. That
+	// read lists the run: the write made it part of the issue, or found it part of the issue.
 	steps, err := workflowstore.IssueSteps(r.Context(), tx, issue)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	record := stepRecord(workflowstore.StepRead{Step: written})
-	for _, step := range steps {
-		if step.ID == written.ID {
-			record = stepRecord(step)
-			break
-		}
+	index := slices.IndexFunc(steps, func(step workflowstore.StepRead) bool { return step.ID == written.ID })
+	if index < 0 {
+		s.writeHandlerError(w, fmt.Errorf("the read of %s does not list step %s, which this write holds", issue, written.ID))
+		return
 	}
+	record := stepRecord(steps[index])
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
