@@ -366,13 +366,17 @@ function focusedNodeIn(view: RenderResult): { id: string; type: string } {
   };
 }
 
-/** The error line that says `line`, which holds its Retry. */
+/** The failed-read line whose alert says `line`: the alert names the failure, and the line beside
+ *  it holds its Retry. */
 function alertSaying(view: RenderResult, line: string): HTMLElement {
   const alert = [...view.container.querySelectorAll<HTMLElement>('[role="alert"]')].find(
     (one) => one.textContent?.includes(line) === true
   );
-  if (alert === undefined) throw new Error(`the body draws no error line saying "${line}"`);
-  return alert;
+  const drawn = alert?.closest<HTMLElement>("[data-failed-read]");
+  if (drawn === undefined || drawn === null) {
+    throw new Error(`the body draws no error line saying "${line}"`);
+  }
+  return drawn;
 }
 
 // R17: the legend names each mark in the words the Verification filter says how a statement
