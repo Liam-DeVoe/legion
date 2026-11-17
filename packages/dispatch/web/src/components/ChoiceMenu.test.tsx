@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
 import { ChoiceMenu, type MenuChoice } from "./ChoiceMenu";
+import { causedByReader, useFocusRescue } from "./focus-place";
 
 const CHOICES: readonly MenuChoice<string>[] = [
   { digit: "1", label: "Later today", value: "later" },
@@ -339,6 +341,97 @@ test("a press on the trigger or in its menu stays out of a draggable parent", as
     fireEvent.touchStart(item("Tomorrow"));
     expect(menu()).toBeInTheDocument();
     expect(reached).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Two keyed rows of one list, the first with a menu whose pick moves its row below the other,
+ *  as a snooze moves its row down into Later: React takes the row's node out and puts it back. */
+function MovingRows() {
+  const [order, setOrder] = useState(["ask-a", "ask-b"]);
+  return (
+    <ul>
+      {order.map((id) => (
+        <li data-inbox-row={id} key={id}>
+          {id === "ask-a" ? (
+            <ChoiceMenu
+              choices={CHOICES}
+              label="Snooze CORE-1"
+              marks={{}}
+              onChoose={() => setOrder(["ask-b", "ask-a"])}
+              triggerClassName=""
+            >
+              Snooze
+            </ChoiceMenu>
+          ) : (
+            <button type="button">Other row</button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// INFRA-2160: a pick in a menu is the reader's press on the control that opened it, though the
+// menu is portalled out of that control's row. So the focus the pick's write takes away with the
+// row - a snooze that folds the card, a priority that moves the card into another lane, a bulk
+// snooze that takes the selection bar away - is a loss the reader caused, which the page hands on
+// to the control now at its place and scrolls into view, rather than leaving it on the body.
+test("a pick in the menu is the reader's own press on its trigger and the row it sits in", async () => {
+  const rescue = renderHook(() => useFocusRescue({ current: null }));
+  const user = userEvent.setup();
+  const view = render(<MovingRows />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
+    const other = screen.getByRole("button", { name: "Other row" });
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    await user.keyboard("2");
+    expect(causedByReader(trigger)).toBe(true);
+    // A row the press was not in, nor the menu it landed in, is not the reader's doing.
+    expect(causedByReader(other)).toBe(false);
+  } finally {
+    view.unmount();
+    rescue.unmount();
+  }
+});
+
+// INFRA-2160, R2 at 390 px: the pick hands the focus back to the trigger, and its write then moves
+// the row down the page - a snooze takes it down into Later - out of the window. The trigger is
+// kept in sight as it moves, so its later going is not read as one the reader scrolled away from,
+// until the reader's own next act.
+test("the element a pick hands the focus back to is kept in view as the write moves it, until the reader acts", async () => {
+  const user = userEvent.setup();
+  const view = render(<MovingRows />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
+    const scrolled: unknown[] = [];
+    trigger.scrollIntoView = (options) => scrolled.push(options);
+    act(() => trigger.focus());
+    await user.keyboard("{Enter}");
+    // Drawn in the window while its row is first, below the window's foot once the write has
+    // moved its row down.
+    trigger.getBoundingClientRect = () =>
+      DOMRect.fromRect({
+        height: 44,
+        width: 80,
+        x: 0,
+        y: trigger.closest("li")?.previousElementSibling === null ? 10 : 5000,
+      });
+    await user.keyboard("2");
+    expect(
+      [...document.querySelectorAll("[data-inbox-row]")].map((row) =>
+        row.getAttribute("data-inbox-row")
+      )
+    ).toEqual(["ask-b", "ask-a"]);
+    expect(trigger).toHaveFocus();
+    expect(scrolled).toEqual([{ block: "nearest" }]);
+
+    // The reader's next press ends it: a later commit moves nothing into view.
+    await user.keyboard("{Shift}");
+    view.rerender(<MovingRows />);
+    expect(scrolled).toHaveLength(1);
   } finally {
     view.unmount();
   }

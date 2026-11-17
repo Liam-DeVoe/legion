@@ -1,5 +1,5 @@
 import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
-
+import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
@@ -310,14 +310,28 @@ export function outOfSight(element: Element): boolean {
 let rescueMounted = false;
 
 /** The reader's latest act, a `pointerdown`, a `keydown` or a `change` they committed, with when
- *  it was made: what tells a loss the reader caused from one an update made under them. */
-let lastPress: { at: number; target: Element } | null = null;
+ *  it was made: what tells a loss the reader caused from one an update made under them. `opener`
+ *  is the control that opened the panel the act landed in (`openerOf`), read as the act is made,
+ *  while the panel still stands. */
+let lastPress: { at: number; opener: Element | null; target: Element } | null = null;
 
 /** The reader's latest press while it is still recent enough to have caused a loss: within the
  *  rescue's wait (`RESCUE_WAIT_MS`), the bound a write a press started can take. */
-function recentPress(): { target: Element } | null {
+function recentPress(): { opener: Element | null; target: Element } | null {
   if (lastPress === null) return null;
   return performance.now() - lastPress.at <= RESCUE_WAIT_MS ? lastPress : null;
+}
+
+/** The control that opened the panel `target` is in: the one naming that panel as what it opened
+ *  (`aria-controls`), a menu's trigger or a list's. Null outside every panel. A pick in a menu is
+ *  the reader's act on the control that opened it: a snooze picked from the selection bar's
+ *  menu, which closes the menu, hands the focus back to its trigger and then takes the bar away,
+ *  is a press the reader made in the bar. */
+function openerOf(target: Element): Element | null {
+  const panel = target.closest(`[${PANEL_ATTRIBUTE}][id]`);
+  return panel === null
+    ? null
+    : document.querySelector(`[aria-controls="${CSS.escape(panel.id)}"]`);
 }
 
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
@@ -335,7 +349,8 @@ function pressPlaces(element: Element): Element[] {
  * Whether the reader caused the loss of `element`'s focus: an act of theirs - a `pointerdown`, a
  * `keydown`, or a `change` they committed (a select's pick) - came within the wait before it and
  * landed on the element, inside the row it was in, or inside the dialog, panel or selection bar it
- * was lost from (`pressPlaces`). A loss the
+ * was lost from (`pressPlaces`), itself or in a panel a control there opened (`openerOf`). A loss
+ * the
  * reader caused keeps the hand-off that pulls the focus to the control now at the lost one's
  * place; one they did not - a live update taking a row away, a refetch emptying a bar - moves the
  * focus into no row and scrolls nothing. The rescue and every component hand-off that can move the
@@ -345,8 +360,10 @@ export function causedByReader(element: Element): boolean {
   if (!rescueMounted) return true;
   const press = recentPress();
   if (press === null) return false;
-  return pressPlaces(element).some(
-    (place) => place === press.target || place.contains(press.target)
+  return pressPlaces(element).some((place) =>
+    [press.target, press.opener].some(
+      (landed) => landed !== null && (place === landed || place.contains(landed))
+    )
   );
 }
 
@@ -818,7 +835,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  after it can be told from one an update made under them (`causedByReader`). */
     const notePress = (event: Event) => {
       if (event.target instanceof Element) {
-        lastPress = { at: performance.now(), target: event.target };
+        lastPress = { at: performance.now(), opener: openerOf(event.target), target: event.target };
       }
     };
     const readerMoved = (event: Event) => {

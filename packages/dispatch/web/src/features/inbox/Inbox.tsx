@@ -91,6 +91,7 @@ import {
   inFieldFilter,
   LATER_GROUP_KEY,
   sortRows,
+  withBand,
 } from "./grouping";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
@@ -2092,8 +2093,14 @@ export function Inbox({
   }
 
   // The held row is drawn in the band the reader saw it in, after the row it then followed.
-  // A band the held row has left is empty, and an empty band has nothing to head.
-  const drawn = bands
+  // A band the held row has left is empty, and an empty band has nothing to head - but the band a
+  // row still listed is held in is drawn even where the change that moved it to another band took
+  // its last other row away, or the row would be drawn nowhere for that commit (`withBand`).
+  const drawn = (
+    held === undefined || listed === undefined
+      ? bands
+      : withBand(bands, held.group, groupBy, titles)
+  )
     .map((band) => {
       const banded = withHeld(
         band.rows.filter((row) => rowId(row) !== (held === undefined ? "" : rowId(held.row))),

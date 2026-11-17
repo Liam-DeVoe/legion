@@ -3285,14 +3285,17 @@ test("the keys act on the selected row and the pane: Enter, 1-9, x, h and Escape
   }
 });
 
-test("p opens the priority menu of an ask of an issue, and is not offered on a document's ask", async () => {
+test("p opens the priority menu of an ask of an issue, keeps the focus on its row after a pick, and is not offered on a document's ask", async () => {
   const user = userEvent.setup();
   const first = inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 2 });
   const rows = [first, artifactAsk("alice")];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const patchIssue = answerIssuePatches().mockResolvedValue({
-    ...narrowIssueOf(first, "alice"),
-    priority: 0,
+  // The server's answer moves with the write, so the refetch it triggers reads the new priority.
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => {
+    const priority = input.priority ?? null;
+    served = served.map((row) => (row.id === first.id ? { ...row, priority } : row));
+    return { ...narrowIssueOf(first, "alice"), priority };
   });
   const getAsk = mockAskReads(rows);
   const { unmount } = renderInbox();
@@ -3326,6 +3329,21 @@ test("p opens the priority menu of an ask of an issue, and is not offered on a d
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
     expect(patchIssue).toHaveBeenCalledTimes(1);
+    // The ask was the only one at P2, so the pick took the last row out of the band the reader
+    // has it in. The list keeps the row there, under the reader's focus, rather than drawing it
+    // in no band for a commit and handing the focus to the page.
+    await waitFor(() =>
+      expect(
+        within(issueRow).getByRole("button", { name: "Priority of CORE-1" })
+      ).toHaveTextContent("P0")
+    );
+    expect(rowOf("ask-a")).toBe(issueRow);
+    expect(issueRow).toHaveFocus();
+    // The focus is still on the row, so the next `p` opens its menu again, on P0.
+    await user.keyboard("p");
+    expect(screen.getByRole("menuitemradio", { name: "P0" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(issueRow).toHaveFocus();
 
     // A question on a project document has no issue, so no priority to open.
     act(() => rowOf("ask-1").focus());
@@ -3336,6 +3354,52 @@ test("p opens the priority menu of an ask of an issue, and is not offered on a d
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a priority picked from the column's head keeps the column on its ask, though the pick empties the band the ask was in", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 2 });
+  const rows = [first, inboxIssue("ask-b", "CORE-2", "Which format?")];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => {
+    const priority = input.priority ?? null;
+    served = served.map((row) => (row.id === first.id ? { ...row, priority } : row));
+    return { ...narrowIssueOf(first, "alice"), priority };
+  });
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    const row = shortRow("ask-a");
+    act(() => row.focus());
+    await user.keyboard("p");
+    expect(screen.getByRole("menuitemradio", { name: "P2" })).toHaveFocus();
+    await user.keyboard("0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("inbox-pane")).getByRole("button", { name: "Priority of CORE-1" })
+      ).toHaveTextContent("P0")
+    );
+    // The selection and the focus stay on the ask whose priority changed.
+    expect(selectedIds()).toEqual(["ask-a"]);
+    expect(shortRow("ask-a")).toBe(row);
+    expect(row).toHaveFocus();
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
     patchIssue.mockRestore();
   }
 });

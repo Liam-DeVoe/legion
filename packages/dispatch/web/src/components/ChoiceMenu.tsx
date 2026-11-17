@@ -134,6 +134,9 @@ export function ChoiceMenu<V extends string>({
   const opensOn = useRef(0);
   // Where the focus goes back to as the menu closes, recorded as it opens.
   const returnTo = useRef<HTMLElement | null>(null);
+  // The element a pick handed the focus back to, followed until the reader's next act (`follow`).
+  const followed = useRef<HTMLElement | null>(null);
+  const unfollow = useRef<() => void>(() => undefined);
   const radio = checked !== undefined;
   const highlighted = Math.min(active, choices.length - 1);
 
@@ -147,9 +150,34 @@ export function ChoiceMenu<V extends string>({
     setOpen(false);
     wayBack()?.focus();
   };
+  /** Follows the element `close` handed the focus back to, until the reader presses, wheels or
+   *  moves the focus: the pick's write can move it on the page - a snooze takes its row down into
+   *  Later, a priority sorts a list or a board anew - and the focus it holds is kept in sight as
+   *  it moves, so a later going of that element hands the focus on rather than reading as one
+   *  the reader scrolled away from (`focus-place.ts`'s `outOfSight`). */
+  const follow = (element: HTMLElement | null) => {
+    unfollow.current();
+    followed.current = element;
+    if (element === null) return;
+    const stop = () => {
+      followed.current = null;
+      for (const type of ["keydown", "pointerdown", "wheel"]) {
+        document.removeEventListener(type, stop, true);
+      }
+      unfollow.current = () => undefined;
+    };
+    for (const type of ["keydown", "pointerdown", "wheel"]) {
+      document.addEventListener(type, stop, true);
+    }
+    unfollow.current = stop;
+  };
   const choose = (choice: MenuChoice<V>) => {
     close();
-    if (choice.value !== checked) onChoose(choice.value);
+    if (choice.value === checked) return;
+    // The key or the click that picked is past the document's capture phase already, so it is
+    // not the act that ends the following.
+    follow(wayBack());
+    onChoose(choice.value);
   };
   const highlight = (index: number) => {
     setActive(index);
@@ -172,6 +200,23 @@ export function ChoiceMenu<V extends string>({
   useEffect(() => {
     if (open) choiceRefs.current[opensOn.current]?.focus();
   }, [open]);
+
+  // After every commit, the pick's write among them: the followed element, while it holds the
+  // focus, scrolled the least that brings it into the window. Passive, so it runs after a list's
+  // own keeping of its rows in place (`ViewportAnchor`, in the layout phase).
+  useEffect(() => {
+    const element = followed.current;
+    if (element === null) return;
+    if (document.activeElement !== element) {
+      unfollow.current();
+      return;
+    }
+    const box = element.getBoundingClientRect();
+    if (box.top < 0 || box.bottom > window.innerHeight) {
+      element.scrollIntoView?.({ block: "nearest" });
+    }
+  });
+  useEffect(() => () => unfollow.current(), []);
 
   // The press outside, in the capture phase: a board card's priority and an ask's hand-on stop
   // their own presses from bubbling, and a press on either must still close this menu.
