@@ -1724,6 +1724,15 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
+	// RaiseStepStarts counts one more start of place on issue, with agent as the agent that start
+	// names, and answers the count with it: the start of a step's record raises it in its own
+	// transaction (workflow's startStep). ClearGeneration and ClearTreeGeneration leave the count:
+	// the generation is part of the record's id already, and the count only rises.
+	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string) (int64, error)
+	// StepStarts is the count of starts of place on issue and the agent of the latest, unchanged,
+	// which the end of the step running there writes its record under (workflow's endStep); the
+	// zero StepStart where no start was counted.
+	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
