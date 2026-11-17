@@ -76,9 +76,9 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 			}
 			return nil
 		},
-		relations: func(setting map[string]any) []tuple {
+		relations: func(setting map[string]string) []tuple {
 			if report, sets := setting[AttributeReport]; sets {
-				return []tuple{{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report.(string)}}
+				return []tuple{{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report}}
 			}
 			return nil
 		},
@@ -110,8 +110,9 @@ type nodeWrite struct {
 	// this write makes); a refusal is answered as it is. Nil takes every write.
 	check func(held map[string]json.RawMessage) error
 	// relations are the relation tuples the write states beside its attributes and its
-	// `part_of`, from the attributes it sets. Nil states none.
-	relations func(setting map[string]any) []tuple
+	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
+	// name. Nil states none.
+	relations func(setting map[string]string) []tuple
 }
 
 // errNoNode is a write that finds no node and does not name the identity that would make one; the
@@ -184,19 +185,21 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 	}
 
 	setting := map[string]any{}
+	texts := map[string]string{}
 	var tuples []tuple
 	for _, attribute := range write.stated {
 		if _, holds := held[attribute.name]; holds {
 			continue
 		}
 		setting[attribute.name] = attribute.value
+		texts[attribute.name] = attribute.text
 		tuples = append(tuples, tuple{fromID: write.id, kind: attribute.name, toKind: KindValue, toID: attribute.text})
 	}
 	if made {
 		tuples = append(tuples, tuple{fromID: write.id, kind: RelationPartOf, toKind: KindIssue, toID: write.issue})
 	}
 	if write.relations != nil {
-		tuples = append(tuples, write.relations(setting)...)
+		tuples = append(tuples, write.relations(texts)...)
 	}
 	if len(setting) == 0 {
 		return heldText, nil
