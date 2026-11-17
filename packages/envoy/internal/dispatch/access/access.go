@@ -116,6 +116,17 @@ func ViewerFlag(viewerParam, flag string) string {
 	return fmt.Sprintf(`coalesce((%s::jsonb->>'%s')::boolean, false)`, viewerParam, flag)
 }
 
+// ViewerPerson is the person of the visibility argument viewerParam binds, as text: null for a
+// viewer that names no person, so an equality with it is null and passes no row.
+func ViewerPerson(viewerParam string) string { return viewerParam + "::jsonb->>'person'" }
+
+// ListsClause passes a row of the project projectExpr names when the credential of the viewer
+// bound at viewerParam lists that project (Viewer.Lists); a credential that lists none passes no
+// row.
+func ListsClause(projectExpr, viewerParam string) string {
+	return clause("ListsClause", "(("+viewerParam+"::jsonb->'lists') ? ("+projectExpr+"))")
+}
+
 // ProjectClause passes a row of the project projectExpr names when the viewer sees that project.
 func ProjectClause(projectExpr, viewerParam string) string {
 	return clause("ProjectClause", fmt.Sprintf(`(%s or (%s::jsonb->'sees') ? (%s))`,
@@ -234,8 +245,8 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	listed := actor.Credential.Projects
 	broker := actor.Credential.Session != ""
 	agent := actor.Kind != "user" || actor.Act != nil
-	viewer := model.Viewer{Person: login, Listed: len(listed) > 0}
-	if viewer.Listed {
+	viewer := model.Viewer{Person: login}
+	if len(listed) > 0 {
 		viewer.Lists = listed
 	}
 	if actor.Kind == "session" {
@@ -245,6 +256,6 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate); err != nil {
 		return model.Viewer{}, fmt.Errorf("resolve what the caller sees: %w", err)
 	}
-	viewer.Open = !viewer.Restricted && !viewer.Listed
+	viewer.Open = !viewer.Restricted && len(viewer.Lists) == 0
 	return viewer, nil
 }

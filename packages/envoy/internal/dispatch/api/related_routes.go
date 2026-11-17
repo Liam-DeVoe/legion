@@ -103,7 +103,7 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 // (postRelated and getRelated say why).
 func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
 		return
 	}
@@ -281,7 +281,7 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	var report model.RelatedChecksReport
 	if project := strings.TrimSpace(query.Get("project")); project != "" {
-		if !projectKeyPattern.MatchString(project) {
+		if !contracts.ValidProjectKey(project) {
 			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 			return
 		}

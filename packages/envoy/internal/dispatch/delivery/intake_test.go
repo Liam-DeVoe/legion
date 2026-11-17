@@ -72,7 +72,7 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 // everyViewer is the visibility argument of the server's own viewer (model.ServerViewer), which
 // sees every project and every repository: the reads that hold their rows to a viewer answer these
 // tests everything the store holds.
-var everyViewer = refs.VisibilityArg(model.Actor{Viewer: model.ServerViewer})
+var everyViewer = refs.VisibilityArg(model.ServerReader)
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
 // this package drops to make a write of it fail the way a write fails (withoutBranchCommits).

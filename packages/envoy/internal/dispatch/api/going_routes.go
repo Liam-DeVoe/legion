@@ -134,7 +134,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(input.Project)
-	if project != "" && !projectKeyPattern.MatchString(project) {
+	if project != "" && !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return
 	}

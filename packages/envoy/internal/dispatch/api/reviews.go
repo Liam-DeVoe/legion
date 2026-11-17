@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -102,7 +103,7 @@ var openApprovalAsksStatement = `
 		  and document ->> 'artifact_id' = any($1::text[])
 		  and exists (select 1 from artifacts named_document
 		              where named_document.id = any($1::text[]::uuid[]) and named_document.id::text = document ->> 'artifact_id'
-		                and ` + documentClause("named_document", "$2") + `)
+		                and ` + access.DocumentClause("named_document", "$2") + `)
 	`
 
 // openApprovalRequest is one document's open approval request: who asked, whose turn it is, and

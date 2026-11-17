@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -462,8 +461,7 @@ func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
-	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id,
-		access.IssueProjectClause("advancing.from_id", "$2"), refs.VisibilityArg(who))
+	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

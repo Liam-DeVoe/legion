@@ -76,12 +76,12 @@ func seededCallers() []seededCaller {
 		{"bob", cookie(bob), model.Viewer{Person: bob, Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}},
 		{"carol", cookie(carol), model.Viewer{Person: carol, Open: true, Sees: []string{"PRIV", "PUB"}, AnyPrivate: true}},
 		{"dave", cookie(dave), model.Viewer{Person: dave, Open: true, Sees: []string{"OTHER", "PUB"}, AnyPrivate: true}},
-		{"carol's token naming PRIV", personalToken(carol, "PRIV"), model.Viewer{Person: carol, Listed: true, Sees: []string{"PRIV"}, AnyPrivate: true, Lists: []string{"PRIV"}}},
-		{"alice's token naming PRIV", personalToken(alice, "PRIV"), model.Viewer{Person: alice, Listed: true, Sees: []string{}, AnyPrivate: true, Lists: []string{"PRIV"}}},
+		{"carol's token naming PRIV", personalToken(carol, "PRIV"), model.Viewer{Person: carol, Sees: []string{"PRIV"}, AnyPrivate: true, Lists: []string{"PRIV"}}},
+		{"alice's token naming PRIV", personalToken(alice, "PRIV"), model.Viewer{Person: alice, Sees: []string{}, AnyPrivate: true, Lists: []string{"PRIV"}}},
 		{"carol's token naming no project", personalToken(carol), model.Viewer{Person: carol, Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
 		{"the shared agent token", model.Actor{Credential: &model.Credential{}}, model.Viewer{Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
 		{"a service-account token naming PRIV", model.Actor{Service: new("system:serviceaccount:legion:worker"), Credential: &model.Credential{Projects: []string{"PRIV"}}},
-			model.Viewer{Listed: true, Sees: []string{}, AnyPrivate: true, Lists: []string{"PRIV"}}},
+			model.Viewer{Sees: []string{}, AnyPrivate: true, Lists: []string{"PRIV"}}},
 		{"a broker token of a person with no people row", model.Actor{Kind: "session", ID: "ses_newbie", Owner: new(newbie), Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_newbie"}},
 			model.Viewer{Person: newbie, Session: "ses_newbie", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
 	}
@@ -248,6 +248,7 @@ func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 		"VisibleProjectsSQL":   VisibleProjectsSQL(),
 		"ProjectClause":        ProjectClause("p.key", "$1"),
 		"OpenClause":           OpenClause("$1"),
+		"ListsClause":          ListsClause("p.key", "$1"),
 		"IssueProjectClause":   IssueProjectClause("i.key", "$1"),
 		"ItemOwnerClause":      ItemOwnerClause("c.issue_key", "c.artifact_id", "$1"),
 		"MessageClause":        MessageClause("m", "$1"),
@@ -359,6 +360,6 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 }
 
 func viewersEqual(a, b model.Viewer) bool {
-	return a.Person == b.Person && a.Session == b.Session && a.Restricted == b.Restricted && a.Listed == b.Listed &&
+	return a.Person == b.Person && a.Session == b.Session && a.Restricted == b.Restricted &&
 		a.Open == b.Open && a.All == b.All && a.AnyPrivate == b.AnyPrivate && slices.Equal(a.Sees, b.Sees) && slices.Equal(a.Lists, b.Lists)
 }

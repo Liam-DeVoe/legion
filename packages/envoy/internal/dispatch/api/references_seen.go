@@ -23,10 +23,11 @@ import (
 // A link stored across projects stays stored, and a reader who sees both ends reads it.
 //
 // The rule has one form per kind of object, which every read binds: in a statement, the access
-// package's clause for the kind (access.IssueProjectClause for an issue by key, documentClause for
-// a document by id, access.SessionClause for a session, access.PersonClause for a person by
-// login); and over a decoded answer - a stored event's payload - seenReferences, which asks those
-// same clauses of every object the answer names in one statement.
+// package's clause for the kind (access.IssueProjectClause for an issue by key,
+// access.DocumentClause for a document by id, access.SessionClause for a session,
+// access.PersonClause for a person by login); and over a decoded answer - a stored event's
+// payload - seenReferences, which asks those same clauses of every object the answer names in one
+// statement.
 
 // referenceKind is a kind of object a read's answer names by its id.
 type referenceKind string
@@ -86,7 +87,7 @@ var seenReferencesSQL = `
 	union all
 	select 'document', named.id from unnest($2::text[]) as named (id)
 	where exists (select 1 from artifacts seen_document where seen_document.id = ` + store.CastableUUID("named.id") + `
-		and ` + documentClause("seen_document", "$5") + ` offset 0)
+		and ` + access.DocumentClause("seen_document", "$5") + ` offset 0)
 	union all
 	select 'session', named.id from unnest($3::text[]) as named (id)
 	where ` + access.SessionClause("named.id", "$5") + `

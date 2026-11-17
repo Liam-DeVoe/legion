@@ -56,10 +56,7 @@ import (
 // (duplicateTitleKeyPattern) take the same shape from it.
 const issueKeyShape = `[A-Z][A-Z0-9]{1,9}-[0-9]+`
 
-var (
-	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern   = regexp.MustCompile(`^` + issueKeyShape + `$`)
-)
+var issueKeyPattern = regexp.MustCompile(`^` + issueKeyShape + `$`)
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it
 // came in and the rule, worded once in contracts (PROJECT_KEY_RULE) so the dispatch command and
@@ -293,7 +290,7 @@ type DepsInput struct {
 // NewDeps parses boot configuration once and returns API dependencies.
 func NewDeps(input DepsInput) (Deps, error) {
 	defaultProject := strings.TrimSpace(input.DefaultProject)
-	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
+	if defaultProject != "" && !contracts.ValidProjectKey(defaultProject) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
 	}
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
@@ -387,7 +384,7 @@ func ParseRepoProjects(raw string) (map[string]string, error) {
 		part = strings.TrimSpace(part)
 		repo, project, ok := strings.Cut(part, "=")
 		project = strings.TrimSpace(project)
-		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
+		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !contracts.ValidProjectKey(project) {
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
 		canonical, _, err := externalRef(repo + "#1")

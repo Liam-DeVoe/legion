@@ -173,10 +173,10 @@ func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 	}
 	unlisted := decodeBody[listedToken](t, open)
 
-	if got := viewerOf(t, deps, bearerOf(listed.Token)); !got.Listed || got.Open || !slices.Equal(got.Sees, []string{privateProject}) {
+	if got := viewerOf(t, deps, bearerOf(listed.Token)); len(got.Lists) == 0 || got.Open || !slices.Equal(got.Sees, []string{privateProject}) {
 		t.Fatalf("carol's token listing PRIV sees %+v, want PRIV alone, as a viewer holding a list", got)
 	}
-	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); got.Listed || !got.Open || !slices.Equal(got.Sees, []string{publicProject}) {
+	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); len(got.Lists) > 0 || !got.Open || !slices.Equal(got.Sees, []string{publicProject}) {
 		t.Fatalf("carol's token listing nothing sees %+v, want the public projects carol sees, as an open viewer", got)
 	}
 	if projects, present := tokenListOf(t, handler, accessCarol, listed.ID); !present || !slices.Equal(projects, []string{privateProject}) {
@@ -211,7 +211,7 @@ func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 	if edited.Code != http.StatusOK || !slices.Equal(decodeBody[listedToken](t, edited).Projects, []string{privateProject}) {
 		t.Fatalf("an edit naming PRIV under the PRIV token: status=%d body=%s, want 200 listing PRIV", edited.Code, edited.Body.String())
 	}
-	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); !got.Listed || !slices.Equal(got.Sees, []string{privateProject}) {
+	if got := viewerOf(t, deps, bearerOf(unlisted.Token)); len(got.Lists) == 0 || !slices.Equal(got.Sees, []string{privateProject}) {
 		t.Fatalf("the edited token sees %+v, want PRIV alone", got)
 	}
 	// An edit that names no projects leaves the token's list as it stands.
@@ -283,7 +283,7 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 	}
 
 	makePrivate(t, database, privateProject)
-	if got := viewerOf(t, deps, bearerOf(token.Token)); !got.Listed || got.Open || len(got.Sees) != 0 {
+	if got := viewerOf(t, deps, bearerOf(token.Token)); len(got.Lists) == 0 || got.Open || len(got.Sees) != 0 {
 		t.Fatalf("alice's PRIV token sees %+v once PRIV is private, want nothing, as a viewer holding a list", got)
 	}
 	var stored []string
@@ -352,7 +352,7 @@ func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
 			})
 			t.Run("sees the public projects only", func(t *testing.T) {
 				got := viewerOf(t, rig.deps, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
-				if !slices.Equal(got.Sees, []string{publicProject}) || got.Listed != named.listed || got.Open == named.listed {
+				if !slices.Equal(got.Sees, []string{publicProject}) || (len(got.Lists) > 0) != named.listed || got.Open == named.listed {
 					t.Fatalf("%s sees %+v, want PUB alone, listed %v", named.name, got, named.listed)
 				}
 			})

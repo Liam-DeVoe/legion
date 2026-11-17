@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -249,7 +250,8 @@ func itemNotFound(notFound, prefix string) string {
 
 // documentRefKey is the ref_key of the document id names, the address refs.Scope holds a
 // document under; "" for an id that is no uuid, that no document has, or whose document who may
-// not read (documentClause), which is an id the route behind this is about to refuse anyway.
+// not read (access.DocumentClause), which is an id the route behind this is about to refuse
+// anyway.
 //
 // The id is the one this layer canonicalized a step earlier (canonicalizeUUIDPath), so it is
 // sent as it stands, and the parse here decides one thing only: whether the value is an id at
@@ -259,7 +261,7 @@ func (s *server) documentRefKey(ctx context.Context, who model.Actor, id string)
 		return "", nil
 	}
 	var refKey string
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid and `+documentClause("artifacts", "$2"),
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid and `+access.DocumentClause("artifacts", "$2"),
 		id, refs.VisibilityArg(who)).Scan(&refKey); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil

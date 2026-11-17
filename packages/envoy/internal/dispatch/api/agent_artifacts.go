@@ -77,9 +77,9 @@ func (target artifactTarget) ownsEvents() bool {
 }
 
 // loadAgentArtifact reads the artifact the request's session_id and slug name, as who may read
-// it: a file of a conversation who is no party of answers as one no row holds (documentClause).
-// A conversation holds no document, so its artifacts are read by slug alone, with no filename
-// falling back to a document as an issue's or a project's reference does
+// it: a file of a conversation who is no party of answers as one no row holds
+// (access.DocumentClause). A conversation holds no document, so its artifacts are read by slug
+// alone, with no filename falling back to a document as an issue's or a project's reference does
 // (loadArtifactByDocumentReference).
 func (s *server) loadAgentArtifact(ctx context.Context, q queryer, who model.Actor, r *http.Request) (model.Artifact, error) {
 	session, err := requestSessionID(r)

@@ -70,7 +70,7 @@ func eventReadableSQL(eventAlias, viewerParam string) string {
 		when ` + e + `.type like 'message.%'
 			then ` + access.PartyClause(access.MessagePartiesSQL(`coalesce(`+e+`.payload->>'message_id', `+e+`.payload->>'id')`), viewerParam) + `
 		when ` + e + `.type = 'user_agent_state.updated'
-			then coalesce(` + e + `.payload->>'login' = ` + viewerParam + `::jsonb->>'person', false)
+			then coalesce(` + e + `.payload->>'login' = ` + access.ViewerPerson(viewerParam) + `, false)
 				or (` + access.OpenClause(viewerParam) + ` and ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
 		else ` + access.OpenClause(viewerParam) + `
 	end) and (` + e + `.type not in (` + sessionSubjectEvents + `)

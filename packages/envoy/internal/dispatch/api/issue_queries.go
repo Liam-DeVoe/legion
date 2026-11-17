@@ -1323,7 +1323,7 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 var issueDesignGatesStatement = `
 		select g.step, g.artifact_id from design_gates g where g.issue = $1 and ` + access.IssueProjectClause("$1", "$3") + `
 			and not exists (select 1 from artifacts gate_document where gate_document.id = ` + store.CastableUUID("g.artifact_id") + `
-				and not ` + documentClause("gate_document", "$3") + ` offset 0)
+				and not ` + access.DocumentClause("gate_document", "$3") + ` offset 0)
 		order by array_position($2::text[], g.step)
 	`
 
