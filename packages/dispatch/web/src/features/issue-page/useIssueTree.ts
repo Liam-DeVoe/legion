@@ -22,33 +22,16 @@ import {
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
 import {
-  type TreeBlocksRead,
-  type TreeFilter,
+  REFRESHED_BY_EVENTS,
+  TREE_FILTERS,
+  type TreeRead,
   useTreeRead,
   viewQuery,
 } from "./tree-read/tree-read";
 
-/** The issue's tree, and how far the tree read it is built from has got. */
-export interface IssueTreeView {
-  /** Whether the tree read holds an answer for every page, which `root` is built from: what a
-   *  view that draws from the blocks it holds waits on. A refetch that fails over an answer
-   *  already held keeps it held - TanStack keeps a query's data through a failed refetch, and
-   *  `root` is still built from it - so the view keeps the text it drew, which waiting on
-   *  `blocksRead` would blank, since that failure turns it false (dispatch://INFRA-1196 decision
-   *  98). That is the one case where the two differ: both are false before the first answer and
-   *  after a first read that fails. */
-  readonly blocksHeld: boolean;
-  /** The typed blocks of the document that plays `role` - the spec, the plan, the Verification
-   *  document - from the tree read, answered as that document's blocks read answered them
-   *  (`tree-read/tree-nodes.ts`'s `blocksOfRole`, dispatch://INFRA-4062 R5), so a view reads its
-   *  blocks here and costs no request of its own. */
-  readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
-  /** Whether the tree read has answered every page. Until then a typed block - the spec's
-   *  summary among them - may be missing from `root` because it has not arrived rather than
-   *  because the issue holds none, which is what the head waits on before it says a spec has no
-   *  summary (`IssueThreeThings.tsx`). A read that failed has not answered either: the page
-   *  cannot say what a read it could not make holds. */
-  readonly blocksRead: boolean;
+/** The issue's tree, and how far the tree read it is built from has got (`TreeRead`): `root` is
+ *  built from what that read holds, and keeps standing on it through a refetch that fails. */
+export interface IssueTreeView extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead"> {
   readonly root: TreeNode;
 }
 
@@ -118,20 +101,27 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   const read = useTreeRead(issue);
-  const coverage = useQuery(issueCoverageQuery(key));
-  const decisions = useQuery(issueDecisionsQuery(key, true));
-  const results = useQuery(issueResultsQuery(key));
+  // Each read an event refreshes is read again by that event alone, never by its age, so a slot
+  // the stage mounts again later sends none of them (`REFRESHED_BY_EVENTS`).
+  const coverage = useQuery({ ...issueCoverageQuery(key), ...REFRESHED_BY_EVENTS });
+  const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...REFRESHED_BY_EVENTS });
+  const results = useQuery({ ...issueResultsQuery(key), ...REFRESHED_BY_EVENTS });
   const asks = useQuery({
+    ...REFRESHED_BY_EVENTS,
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
   });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
   const comments = useQuery({
+    ...REFRESHED_BY_EVENTS,
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),
   });
+  // Under the key the history and the margin read too, and one of the reads the names wait on
+  // (`answered`); the model reads no message from it, since the tree read answers each as a node.
   const messages = useQuery({
+    ...REFRESHED_BY_EVENTS,
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),
   });
@@ -140,13 +130,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery(whoAmIQuery());
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
-  // and holds whatever `ViewReadProvider` read for the load.
+  // and holds whatever `ViewReadProvider` read for the load; the answers in `TREE_FILTERS`' order.
   const [specView, verificationView, planView] = useQueries({
-    queries: [
-      { ...viewQuery(key, "spec"), enabled: false },
-      { ...viewQuery(key, "verification"), enabled: false },
-      { ...viewQuery(key, "plan"), enabled: false },
-    ],
+    queries: TREE_FILTERS.map((filter) => ({ ...viewQuery(key, filter), enabled: false })),
   });
   const spec = specView?.data;
   const verification = verificationView?.data;
@@ -168,7 +154,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       coverage: coverage.data,
       decisions: decisions.data,
       issue,
-      messages: messages.data,
       results: results.data,
       tree: read.answer,
       viewer,
@@ -179,7 +164,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       coverage.data,
       decisions.data,
       issue,
-      messages.data,
       read.answer,
       results.data,
       viewer,
@@ -216,6 +200,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // long as one read, where a dropped one is the whole page's names at once.
   const targets = useQuery({
     ...referenceTargetsQuery(answered ? refs : []),
+    ...REFRESHED_BY_EVENTS,
     placeholderData: keepPreviousData,
   });
   const first = useMemo(
@@ -237,6 +222,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   }, [first, firstTree, refs]);
   const more = useQuery({
     ...referenceTargetsQuery(extra),
+    ...REFRESHED_BY_EVENTS,
     placeholderData: keepPreviousData,
   });
   // Both answers, the second's standing for an address both name. Where nothing is left for the

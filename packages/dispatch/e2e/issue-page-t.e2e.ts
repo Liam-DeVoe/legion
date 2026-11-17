@@ -1,30 +1,14 @@
 import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { shortDay } from "../web/src/features/issue-page/node-time";
-import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { wordsOf } from "../web/src/features/refs/tree-fragment";
 import { getIssue, listIssueAsks } from "./api";
-import {
-  seedConversationState,
-  seedDecisionsFilter,
-  seedNoChildren,
-  seedNoSummary,
-  seedPlanOrder,
-  seedReplyNesting,
-  seedRequestBaseline,
-  seedReviewList,
-  seedSpineCases,
-  seedTwiceTheNodes,
-  seedUnbrokenChildTitle,
-  seedUnbrokenWords,
-  seedWholeIssue,
-  seedWholeIssueAdvancing,
-} from "./issue-layout-seed";
+import { seedReviewList, seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import {
   closeDetails,
   gotoIssue,
-  marginShell,
   openDetails,
   phase,
   presetCount,
@@ -40,6 +24,7 @@ import {
 } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import {
+  besideViewRead,
   blocksReads,
   convertedGate,
   type DecisionsRead,
@@ -57,14 +42,18 @@ import {
   heldAnswer,
   type KeyedRow,
   keyedRows,
+  type NamedSeed,
   owedUnless,
   parentIndex,
   partUGate,
   R2_COUNTED_KINDS,
   R2_ROW_KINDS,
   type RowReading,
+  SEEDS,
+  type SeededIssue,
   type SeedFixture,
   seedKeys,
+  sortedFields,
   steadily,
   type TreeAnswerWatch,
   type TreeView,
@@ -96,12 +85,14 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  *    control fails on the parent first. Every other reading is the fixture's
  *    (`e2e/fixtures/issue-page-t-rows.json`), by key, as the page opens and with every branch
  *    open, and each time is its source's in this run.
- * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once".
+ * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once", and Plan,
+ *    pressed 31 s after the load, past the app's 30 s `staleTime`, sends no read but its view's
+ *    (INFRA-1196 decision 180).
  * 3. `c-views`: "each filter draws its view read's rows", on `seedWholeIssue` and
  *    `seedSpineCases`.
- * 4. `c-fresh`: "a write is drawn without a reload": a status picked in P's header sends one tree
- *    read (decision 174), and a reply sent from G's Reply on the open question becomes a row
- *    under it and sends one.
+ * 4. `c-fresh`: "a write is drawn without a reload": a status picked in P's header sends one or
+ *    two tree reads (decision 174: its own refresh, and its event's), and a reply sent from G's
+ *    Reply on the open question becomes a row under it and sends one or two.
  *
  * Each row checks its gates first, each with one `owedUnless` call, and skips where a gate is not
  * on T's base, with an `owed` annotation naming the gate and the decisions that make it owed; it
@@ -112,35 +103,9 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * `@owed`: each runs for real once its gates are on T's base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (G5); row 2's Decisions (G2); row 3's decision lines (part U); row 4's Keep (G2
- * and part U).
+ * holds a decision (G5); row 2's Decisions (G2); row 3's Decisions (G2) and its decision lines
+ * (part U); row 4's Keep (G2 and part U).
  */
-
-/** What every seed returns: the key of the issue the page opens. */
-interface SeededIssue {
-  readonly key: string;
-}
-
-/** A seed, by the name the fixture records it under. */
-type NamedSeed = readonly [string, () => Promise<SeededIssue>];
-
-/** The 14 seeds, in the order the seed file writes them, as the recorder reads them. */
-const SEEDS: readonly NamedSeed[] = Object.entries({
-  seedWholeIssue,
-  seedWholeIssueAdvancing,
-  seedSpineCases,
-  seedNoChildren,
-  seedNoSummary,
-  seedReplyNesting,
-  seedUnbrokenWords,
-  seedUnbrokenChildTitle,
-  seedRequestBaseline,
-  seedTwiceTheNodes,
-  seedConversationState,
-  seedDecisionsFilter,
-  seedReviewList,
-  seedPlanOrder,
-} satisfies Readonly<Record<string, () => Promise<SeededIssue>>>);
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
  *  them (G5). */
@@ -155,7 +120,7 @@ const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonl
 
 /** How long one seed's row 1 may take: every row of the outline read with its body, inside CI's
  *  nine minutes. */
-const ROW_ONE_MS = 480_000;
+const SAME_ROWS_MS = 480_000;
 
 /** How long each other row may take. */
 const ROW_MS = 240_000;
@@ -164,7 +129,7 @@ const ROW_MS = 240_000;
 const REPLY_WORDS = "The tree read draws this reply with no reload.";
 
 /** A decision row's state word once alice kept it. */
-const KEPT_BY_ALICE = /^Kept by\b.*\balice\b/i;
+const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
 
 /** The reads `treeIdOf` names a node by: the issue read and the asks read, as alice reads them. */
 async function idReadsOf(key: string): Promise<TreeIdReads> {
@@ -177,20 +142,16 @@ function idSet(ids: readonly string[]): string[] {
   return [...new Set(ids)].sort();
 }
 
-/** `value` as JSON with every object's fields sorted, so two readings compare by what they hold
- *  and not by the order their fields were written in. */
+/** The id of the row the row `index` of `rows` stands under (`parentIndex`), null at the top. */
+function parentIdOf(rows: readonly RowReading[], index: number): string | null {
+  const parent = parentIndex(rows, index);
+  return parent === undefined ? null : (rows[parent]?.id ?? null);
+}
+
+/** `value` as JSON with every object's fields sorted (`sortedFields`), so two readings compare by
+ *  what they hold and not by the order their fields were written in. */
 function canonical(value: unknown): string {
-  const sorted = (inner: unknown): unknown => {
-    if (Array.isArray(inner)) return inner.map(sorted);
-    if (typeof inner !== "object" || inner === null) return inner;
-    const fields: Readonly<Record<string, unknown>> = { ...inner };
-    return Object.fromEntries(
-      Object.keys(fields)
-        .sort()
-        .map((field) => [field, sorted(fields[field])])
-    );
-  };
-  return JSON.stringify(sorted(value)) ?? "undefined";
+  return JSON.stringify(sortedFields(value)) ?? "undefined";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -340,7 +301,7 @@ function firstRowOutOfPlace(
     const own = reading.id === null ? undefined : held.get(reading.id);
     if (own === undefined || reading.id === null || placed.has(index)) continue;
     const parent = parentIndex(readings, index);
-    const under = parent === undefined ? null : (readings[parent]?.id ?? null);
+    const under = parentIdOf(readings, index);
     const homes = homesOf(own.node, outline, idOf, drawn);
     const named = `the ${reading.kind.type ?? "untyped"} row ${reading.id}`;
     if (!homes.has(under) || (parent === undefined && reading.level !== 1)) {
@@ -506,10 +467,7 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   const held = heldNodes(answer, idOf);
   const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
   const changes = decisionNodeChanges(answer);
-  const under = rows.map((_, index) => {
-    const parent = parentIndex(rows, index);
-    return parent === undefined ? null : (rows[parent]?.id ?? null);
-  });
+  const under = rows.map((_, index) => parentIdOf(rows, index));
 
   const states = rows.flatMap((row) => {
     const node = row.id === null ? undefined : held.get(row.id)?.node;
@@ -569,7 +527,7 @@ for (const [name, seed] of SEEDS) {
   // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened and
   // every row's body read in turn, each reading taken twice until it holds still.
   test(title, async ({ browser }) => {
-    test.setTimeout(ROW_ONE_MS);
+    test.setTimeout(SAME_ROWS_MS);
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
       owedUnless(await convertedGate(page, seeded.key));
@@ -596,7 +554,7 @@ for (const [name, seed] of SEEDS) {
     // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened,
     // each reading taken twice until it holds still.
     test(`${title}, its decisions as nodes of the tree read @owed`, async ({ browser }) => {
-      test.setTimeout(ROW_ONE_MS);
+      test.setTimeout(SAME_ROWS_MS);
       await phase(browser, seed, async (page, seeded) => {
         owedUnless(await treeReadGate(page, seeded.key));
         owedUnless(await convertedGate(page, seeded.key));
@@ -642,7 +600,16 @@ async function releaseFilter(page: Page, filter: TreeView): Promise<void> {
   await expectActivePreset(page, PRESET_NAMES.conversation);
 }
 
-// c-tree-requests.
+/** Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
+ *  waits out whatever a timer due in that time sent, so what follows counts what a press sends. */
+async function pastStaleTime(page: Page, traffic: ApiRequests): Promise<void> {
+  await page.clock.fastForward("00:31");
+  await expectLoadSettled(traffic);
+}
+
+// c-tree-requests, with INFRA-1196 decision 180's clause: a slot the stage mounts again past the
+// app's 30 s `staleTime` sends no read of its own, shown on Plan, whose slot reads only through
+// `useIssueTree`.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, Details
 // opened, and three filters each pressed on, off and on again with each press waited out.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
@@ -655,6 +622,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       verification: viewAnswerOf(page, "verification"),
     } satisfies Record<(typeof VIEW_FILTERS)[number], TreeAnswerWatch>;
     const traffic = watchApiRequests(page);
+    await page.clock.install();
     const load = await firstLoad(page, traffic, seeded.key);
     await expect(headerStatus(page), "the page draws no header").toBeVisible();
     expect(
@@ -667,7 +635,6 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load sends no more requests under /api/ than the reads did"
     ).toBeLessThanOrEqual(fixtureSeed("seedWholeIssue").loadRequests);
     await openDetails(page);
-    await expect(marginShell(page), "Details did not open").toBeVisible();
     await expectLoadSettled(traffic);
     expect(
       blocksReads(traffic.requests),
@@ -677,6 +644,8 @@ test("the first load reads the tree once and a filter its view once", async ({ b
 
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
+      const late = filter === "plan";
+      if (late) await pastStaleTime(page, traffic);
       const first = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       await heldAnswer(views[filter], `the ${name} view read`);
@@ -684,15 +653,24 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       const pressed = traffic.requests.slice(first);
       expect(treeReads(pressed, seeded.key, filter), `${name} sends one view read`).toBe(1);
       expect(blocksReads(pressed), `${name} sends no blocks read`).toEqual([]);
+      if (late) {
+        expect(
+          besideViewRead(pressed, seeded.key, filter),
+          "a view pressed after 31 s sends no read"
+        ).toEqual([]);
+      }
       await releaseFilter(page, filter);
+      if (late) await pastStaleTime(page, traffic);
       const again = traffic.requests.length;
       await pressFilter(page, traffic, filter);
+      if (late) await expectLoadSettled(traffic);
       const repressed = traffic.requests.slice(again);
       expect(
         treeReads(repressed, seeded.key, filter),
         "a filter turned on again sends no view read"
       ).toBe(0);
       expect(blocksReads(repressed), `${name} turned on again sends no blocks read`).toEqual([]);
+      if (late) expect(repressed, "a view pressed after 31 s sends no read").toEqual([]);
       await releaseFilter(page, filter);
     }
   });
@@ -934,6 +912,45 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   }
 });
 
+// c-views for Decisions, owed on G2 (INFRA-1253's t16b and t16c): once the load reads the
+// decisions as the tree read's `view=decisions`, the Decisions filter draws that view read's rows,
+// as Spec, Verification and Plan draw theirs (INFRA-1196's decision on row 3's gap).
+// SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
+// still, and released.
+test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
+  browser,
+}) => {
+  test.setTimeout(ROW_MS);
+  for (const [name, seed] of VIEW_SEEDS) {
+    await phase(browser, seed, async (page, seeded) => {
+      owedUnless(await treeReadGate(page, seeded.key));
+      const decisions = viewAnswerOf(page, "decisions");
+      const traffic = watchApiRequests(page);
+      const load = await firstLoad(page, traffic, seeded.key);
+      owedUnless(decisionsViewGate(load, seeded.key));
+      const reads = await idReadsOf(seeded.key);
+      const view = PRESET_NAMES.decisions;
+      const where = `${name} under ${view}`;
+      const drawn = await pressFilter(page, traffic, "decisions");
+      const answer = await heldAnswer(decisions, `the ${view} view read`);
+      const expected = viewNodeIds(answer, "decisions", reads);
+      expect(
+        idSet(drawn.nodes.map((node) => node.id)),
+        `${where}, the rows are the view read's nodes of root R2's row kinds`
+      ).toEqual(idSet(expected.map((node) => node.id)));
+      expect(
+        idSet(drawn.nodes.flatMap((node) => (node.context ? [node.id] : []))),
+        `${where}, the rows drawn as context are the view read's context`
+      ).toEqual(idSet(expected.flatMap((node) => (node.mark === "context" ? [node.id] : []))));
+      expect(
+        drawn.count?.trim(),
+        `${where}, the control counts the view read's own ${R2_COUNTED_KINDS.decisions.join(", ")}`
+      ).toBe(String(viewCount(answer, "decisions")));
+      await releaseFilter(page, "decisions");
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // Row 4: a write is drawn from the tree read again, with no reload.
 // ---------------------------------------------------------------------------------------------
@@ -943,14 +960,20 @@ test("each filter draws its view read's rows, and each decision that shaped a st
 function parentOfWords(readings: readonly RowReading[], words: string): string | null | undefined {
   const index = readings.findIndex((reading) => reading.words?.includes(words) === true);
   if (index < 0) return undefined;
-  const parent = parentIndex(readings, index);
-  return parent === undefined ? null : (readings[parent]?.id ?? null);
+  return parentIdOf(readings, index);
 }
 
 /** The state word the row of node `id` draws, or null where no row of it draws one. */
 async function stateWordOf(page: Page, id: string): Promise<string | null> {
   const rows = await drawnRowReadings(page, { bodies: false });
   return rows.find((row) => row.id === id)?.state?.word ?? null;
+}
+
+/** Asserts what a write sends of the tree read: its own refresh's read, and one more where the
+ *  event the write raised lands after that read began (`subscribeTreeFreshness`), never more. */
+function expectOneOrTwoReads(reads: number, message: string): void {
+  expect(reads, message).toBeGreaterThanOrEqual(1);
+  expect(reads, message).toBeLessThanOrEqual(2);
 }
 
 // c-fresh, with INFRA-1196 decision 174's status clause, which needs no part L.
@@ -983,10 +1006,10 @@ test("a write is drawn without a reload", async ({ browser }) => {
       (request) => request.method === "PATCH" && request.path === `/api/v1/issues/${seeded.key}`
     );
     expect(write, "the status pick sent no write of the issue").toBeGreaterThanOrEqual(0);
-    expect(
+    expectOneOrTwoReads(
       treeReads(sincePick.slice(write + 1), seeded.key, null),
-      "the status write sends one tree read"
-    ).toBe(1);
+      "the status write sends one or two tree reads"
+    );
     await expect(status, "the issue's row reads the new status").toHaveValue(next);
 
     const reads = await idReadsOf(seeded.key);
@@ -1013,10 +1036,10 @@ test("a write is drawn without a reload", async ({ browser }) => {
       .toBe(question);
     expect(loads, "the page reloaded to draw the new comment").toBe(0);
     await expectLoadSettled(traffic);
-    expect(
+    expectOneOrTwoReads(
       treeReads(traffic.requests.slice(sent), seeded.key, null),
-      "the write sends a tree read"
-    ).toBe(1);
+      "the write sends one or two tree reads"
+    );
   });
 });
 

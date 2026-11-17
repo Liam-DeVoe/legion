@@ -1277,12 +1277,14 @@ export class DispatchApiClient {
    *  (`view`), from the node `cursor` names on (`IssueTreeAnswer.cursor`). The route is
    *  INFRA-1253's plan task t16a, which the document does not hold yet, so its answer's shape is
    *  named here (`IssueTreeAnswer`) and it goes through `json` with `routeUrl`, as the events
-   *  read does; INFRA-4062's task t11 moves both onto the generated contract. */
+   *  read does; INFRA-4062's task t11 moves both onto the generated contract. A caller passes the
+   *  `signal` of the read it is still interested in, so a read given up ends its page in flight. */
   async getIssueTree(
     key: string,
-    query: { cursor?: string; view?: "spec" | "verification" | "plan" } = {}
+    query: { cursor?: string; view?: "spec" | "verification" | "plan" } = {},
+    init: { signal?: AbortSignal } = {}
   ): Promise<IssueTreeAnswer> {
-    return this.json<IssueTreeAnswer>(routeUrl("/api/v1/issues/{key}/tree", { key }, query));
+    return this.json<IssueTreeAnswer>(routeUrl("/api/v1/issues/{key}/tree", { key }, query), init);
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
