@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    The daemon boots when its project has no repository mapped in Dispatch, where it refused the
+    boot and its supervisor restarted it into the same refusal. It serves none and admits nothing,
+    saying why on each issue; it logs one ERROR line naming the project and where repositories are
+    mapped (Settings → Repositories → Projects), and plain `legion state` prints a `repositories:`
+    line naming the condition. While it serves no repository, because the project maps none or
+    every repository it maps lacks an App, it reads the mapping again on its own, 30 s doubling to
+    10 min, as well as on each mapping change, so a repository mapped later or an App installed
+    after its repository was mapped is served with no restart. The reads stop once any repository
+    is served, and a project that serves one boots as before.
+time: 2026-11-17T00:58:03Z
+custom:
+    Issue: pr4255
