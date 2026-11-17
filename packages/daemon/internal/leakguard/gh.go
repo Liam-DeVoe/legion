@@ -51,11 +51,10 @@ type GhRequest struct {
 	WritesNothing bool
 	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
 	// caller's rule for WritesNothing was proven against. `legion gh` hands the digest compiled
-	// into it (cmd/legion's ghReadsProvenCheck), and only where the deployment's checker its role
-	// is told (CheckerVar) is that same digest; it hands none otherwise. WritesNothing is honoured
-	// only where the public_leak_check.py beside the resolved check hashes to it (provenCheck), so
-	// a check of another version, or one edited under the same tag, gets the whole guard, and so
-	// does every call where it is empty.
+	// into it (cmd/legion's ghReadsProvenCheck) for every call, whatever checker its role is told
+	// (CheckerVar). WritesNothing is honoured only where the public_leak_check.py beside the
+	// resolved check hashes to it (provenCheck), so a check of another version, or one edited
+	// under the same tag, gets the whole guard, and so does every call where it is empty.
 	ProvenCheck string
 	// StdinSent is a call that sends its standard input to GitHub as content: a file option
 	// given `-`, or a field given `@-`. A caller that parsed the command (Files not nil) says so;

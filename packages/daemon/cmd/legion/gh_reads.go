@@ -4,8 +4,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-
-	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // ghCheckedOnlyVisibility is the call log's visibility for a call the shared check alone read
@@ -19,34 +17,23 @@ const ghCheckedOnlyVisibility = "checked-only"
 // which is the tag the worker image pins (`ARG LEAK_CHECK_TAG` in
 // packages/daemon/docker/worker.Dockerfile, which TestGhReadsAreProvenAgainstThePinnedCheck holds
 // to this one), and the sha256 of that tag's leak-check/public_leak_check.py. The digest is
-// compiled in because it is what the rule was compared with: `legion gh` trusts the rule only
-// where the deployment's checker its role is told (leakguard.CheckerVar, the operator's
-// `leak_check.checker_sha256`) is this digest (ghProvenCheckOf), and the guard then lets the
-// shared check alone read a call that writes nothing only where the public_leak_check.py beside
-// the check it resolved hashes to it (leakguard.GhRequest.ProvenCheck). So a deployment that names
-// another check's sha256, a pod under another pin, a tmux pane's check of another version, a
-// check edited under the same tag, and every role of a deployment that names no checker get the
-// whole guard. A bump of the pin fails that test until the tag, the sha256 and the tests' port of
-// the check all move: port the new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and
-// api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (both in
-// gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness against it with 0 mismatching
-// rows, then write its tag here and the sha256 of its public_leak_check.py, `git show
-// <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository, which
-// is also the checker the deployment names.
+// compiled in because it is what the rule was compared with: `legion gh` hands the guard this
+// digest for every call (leakguard.GhRequest.ProvenCheck), and the guard lets the shared check
+// alone read a call that writes nothing only where the public_leak_check.py beside the check it
+// resolved hashes to it. The checker a role is told (leakguard.CheckerVar) plays no part in it: it
+// says only that the deployment runs a check. So a deployment whose check is another, a pod under
+// another pin, a tmux pane's check of another version and a check edited under the same tag get
+// the whole guard, whatever checker the role is told, and the proven check keeps its checked-only
+// reads under any checker or none. A bump of the pin fails that test until the tag, the sha256
+// and the tests' port of the check all move: port the new check's gh_guard, is_read, READ_ALL,
+// READ_TWO, collect and api_read into ghPinnedCheckReads and its sha256 into
+// ghPinnedCheckPortSHA256 (both in gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness
+// against it with 0 mismatching rows, then write its tag here and the sha256 of its
+// public_leak_check.py, `git show <tag>:leak-check/public_leak_check.py | sha256sum` in the shared
+// check's own repository, which is also the checker the deployment names.
 var ghReadsProvenCheck = struct{ tag, sha256 string }{
 	tag:    "leak-check-v15",
 	sha256: "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554",
-}
-
-// ghProvenCheckOf is the sha256 `legion gh` hands the guard as the check its read rule was proven
-// against (leakguard.GhRequest.ProvenCheck): ghReadsProvenCheck's own where the deployment's
-// checker env names (leakguard.CheckerVar) is that digest, and none otherwise, so the guard runs
-// whole under a checker the rule was never compared with.
-func ghProvenCheckOf(env map[string]string) string {
-	if env[leakguard.CheckerVar] != ghReadsProvenCheck.sha256 {
-		return ""
-	}
-	return ghReadsProvenCheck.sha256
 }
 
 // ghRateLimitRead is the exact `gh api rate_limit`, a GitHub API call with no repository content,

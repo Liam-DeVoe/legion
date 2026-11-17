@@ -278,7 +278,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 // names is worker.Dockerfile's `ARG LEAK_CHECK_TAG`, its sha256 is one of a public_leak_check.py,
 // and it is the sha256 of the public_leak_check.py the tests' port of the check was written
 // against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). That sha256 is the gate `legion gh`
-// trusts the rule under, whatever checker a role is told (ghProvenCheckOf). A bump of the pin
+// hands the guard for every call, whatever checker a role is told. A bump of the pin
 // fails here until the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
 	const prove = "port the check's gh_guard, is_read, collect and api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck, and have the deployment name that sha256 as leak_check.checker_sha256"
@@ -669,27 +669,21 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 	}
 }
 
-// `legion gh` trusts its read rule under the checker its role is told (leakguard.CheckerVar) only
-// where it is the digest the rule was proven against: a read under the proven stand-in check, its
-// role told that check's own checker, is read by the check alone; the same read under the same
-// check, its role told another checker or none — a deployment that names no checker — gets the
-// whole guard, the visibility read included.
+// The checker a role is told (leakguard.CheckerVar) does not decide whether `legion gh` reads a call
+// by the check alone; the check's program does. Under the proven stand-in check, a read is read by
+// the check alone whether the role is told that check's own checker, another checker, or none at
+// all, as a pane of a tmux daemon that names no setting is: `legion gh` hands the guard the digest
+// it holds for every call, as main does, and the guard compares the resolved check's program with
+// it.
 func TestGhReadsUnderTheDeploymentsChecker(t *testing.T) {
 	args := []string{"pr", "view", "1", "-R", "acme/widgets"}
-	for _, tc := range []struct {
-		name, checker string
-		checkedOnly   bool
-	}{
-		{name: "the check's own checker", checker: ghProvenProgramSHA256, checkedOnly: true},
+	for _, tc := range []struct{ name, checker string }{
+		{name: "the check's own checker", checker: ghProvenProgramSHA256},
 		{name: "another checker", checker: strings.Repeat("0", 64)},
 		{name: "no checker", checker: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ghGuardRigWith(t, tc.checker)(t, ghCheckAt(t, ghCheckPasses), "", args...)
-			if !tc.checkedOnly {
-				guardedWhole(t, got, args)
-				return
-			}
 			if got.code != 7 || strings.Contains(got.gh, "visibility ") || !strings.Contains(got.log, `visibility="checked-only"`) {
 				t.Errorf("legion gh %q = exit %d, gh %q, log %q; want gh's own 7, no visibility read and a checked-only line", args, got.code, got.gh, got.log)
 			}
@@ -699,7 +693,7 @@ func TestGhReadsUnderTheDeploymentsChecker(t *testing.T) {
 
 // A deployment that names another check's sha256 as its checker gets the whole guard for a read,
 // though its own check's public_leak_check.py hashes to that checker: the read rule was never
-// compared with that check, so `legion gh` hands the guard no proven check (ghProvenCheckOf) and
+// compared with that check, whose program is not the one the digest `legion gh` holds names, so
 // the guard reads the call's visibility and runs the private-name pass as for a write.
 func TestARoleCheckerNamingAnotherDigestGetsTheWholeGuard(t *testing.T) {
 	const another = "# another shared check, which the read rule was never compared with\n"

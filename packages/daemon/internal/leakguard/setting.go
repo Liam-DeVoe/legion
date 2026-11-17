@@ -37,11 +37,11 @@ const SHA256Var = "LEGION_LEAK_CHECK_SHA256"
 // CheckerVar is the name the runtime tells every role it starts the deployment's checker
 // (Setting.CheckerSHA256) under (runtime/sandbox's mainEnvironment, runtime/tmux's panePairs). In a
 // role's environment it is the one sign that the deployment runs a shared leak check: a role's
-// shim reads the pod's install only under it (Installed), the guard refuses a write for want of a
-// check only under it (Guard.sharedCheck), and `legion gh` trusts its read rule only where it
-// names the digest that rule was proven against (GhRequest.ProvenCheck). It is exported because
-// each of those reads it, and a second copy of the string in any of them is one an edit here would
-// silently part from.
+// shim reads the pod's install only under it (Installed), and the guard refuses a write for want
+// of a check only under it (Guard.sharedCheck). It does not decide `legion gh`'s checked-only
+// reads, which only the resolved check's program does (GhRequest.ProvenCheck). It is exported
+// because each of those reads it, and a second copy of the string in any of them is one an edit
+// here would silently part from.
 const CheckerVar = "LEGION_LEAK_CHECKER_SHA256"
 
 // configured is whether env names the deployment's checker (CheckerVar): the role runs under a

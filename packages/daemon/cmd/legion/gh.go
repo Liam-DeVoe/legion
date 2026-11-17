@@ -138,12 +138,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	//
 	// A call that writes nothing (ghWritesNothing, decided from the words it is typed with) is
 	// handed to the guard as one (leakguard.GhRequest.WritesNothing), with the sha256 of the
-	// shared check its rule was proven against, which this binary holds (ghReadsProvenCheck) and
-	// hands only where the deployment's checker its role is told (leakguard.CheckerVar) is that
-	// same digest (ghProvenCheckOf). Under that check the guard runs the check and nothing more,
-	// and says so (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only; under any
-	// other, and where the role is told another checker or none, it runs whole. Every other call
-	// is guarded whole, the visibility read and the private-name pass included.
+	// shared check its rule was proven against, which this binary holds (ghReadsProvenCheck).
+	// Under that check the guard runs the check and nothing more, and says so
+	// (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only; under any other it
+	// runs whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every
+	// other call is guarded whole, the visibility read and the private-name pass included.
 	//
 	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
 	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
@@ -186,7 +185,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			Files:         target.files,
 			StdinSent:     target.stdinSent,
 			WritesNothing: mode == ghReadCall,
-			ProvenCheck:   ghProvenCheckOf(env),
+			ProvenCheck:   ghReadsProvenCheck.sha256,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
