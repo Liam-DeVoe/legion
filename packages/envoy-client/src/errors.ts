@@ -59,6 +59,11 @@ export function withoutUserinfo(url: string): string {
   return shown.endsWith("/") && !url.endsWith("/") ? shown.slice(0, -1) : shown;
 }
 
+/** Whether `status` is a redirect's: no request of this client follows one or reads its body. */
+export function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status < 400;
+}
+
 /**
  * The origin a redirect points at, for the line that refuses it: the scheme and the host (with a
  * port that is not the scheme's own) of `response`'s `Location`, read against `url`, the request
@@ -68,7 +73,7 @@ export function withoutUserinfo(url: string): string {
  */
 export function redirectOrigin(response: Response, url: string): string | undefined {
   const location = response.headers.get("Location");
-  if (response.status < 300 || response.status > 399 || location === null) return undefined;
+  if (!isRedirectStatus(response.status) || location === null) return undefined;
   try {
     const target = new URL(location, url);
     return target.protocol === "http:" || target.protocol === "https:" ? target.origin : undefined;

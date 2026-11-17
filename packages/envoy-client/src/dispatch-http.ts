@@ -100,7 +100,7 @@ import type { ZodType } from "zod";
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
 import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
-import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
+import { isRedirectStatus, messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 
 export type {
   CredentialPendingResponse,
@@ -298,11 +298,12 @@ export class DispatchWriteLandedError extends Error {
 }
 
 /**
- * A 2xx of a POST that stores nothing (`rowStores`: Dispatch's parse of a text, the related-item
- * check) that is not this call's answer: no JSON, an empty body, JSON that is not its row, a
- * replay whose first answer Dispatch did not keep, or an answer naming another request's key back.
- * The call made nothing, so this is no landing and leaves no outcome unknown, and asking again is
- * safe. `code` is `DISPATCH_ANSWER_LOST`.
+ * An answer of a POST that stores nothing (`rowStores`: Dispatch's parse of a text, the
+ * related-item check) that is not this call's answer: a 2xx with no JSON, an empty body, JSON that
+ * is not its row, a replay whose first answer Dispatch did not keep, or an answer naming another
+ * request's key back, and a `409 IDEMPOTENCY_KEY_COMMITTED`. The call made nothing, so this is no
+ * landing and leaves no outcome unknown, and asking again is safe. `code` is
+ * `DISPATCH_ANSWER_LOST`.
  */
 export class DispatchAnswerMissingError extends Error {
   override readonly name = "DispatchAnswerMissingError";
@@ -319,6 +320,37 @@ export class DispatchAnswerMissingError extends Error {
       `${method} ${withoutUserinfo(url)} answered ${status} without the answer it asks for ` +
         `(${DISPATCH_ANSWER_LOST}); it stores nothing, so nothing was made, and asking again is safe.`,
       options
+    );
+  }
+}
+
+/** Whether a value of a URL path names nothing: empty, only white space, or `.` or `..`, a step of
+ *  the path, which the URL parser drops (`/api/v1/agents/../answers` is `/api/v1/answers`). */
+function namesNothing(segment: string): boolean {
+  return segment.trim() === "" || segment === "." || segment === "..";
+}
+
+/**
+ * A call whose path holds a value that names nothing (`namesNothing`, `DispatchClient.#url`),
+ * refused before any request: sent, `POST /api/v1/comments//resolve` names no comment, and
+ * Dispatch's router answers it with a redirect to another path, and `GET /api/v1/agents/../answers`
+ * asks another route. The message names the place of that value in the route.
+ */
+export class DispatchEmptyPathError extends Error {
+  override readonly name = "DispatchEmptyPathError";
+
+  constructor(path: readonly string[]) {
+    const route = path
+      .map((segment) =>
+        segment === ""
+          ? "{empty}"
+          : namesNothing(segment)
+            ? `{${JSON.stringify(segment)}}`
+            : segment
+      )
+      .join("/");
+    super(
+      `/${route} holds a value that names nothing where the call names what it is about (empty, only white space, or a step of a path, which the URL drops), so nothing was sent: a variable that gives it may be empty or unset`
     );
   }
 }
@@ -683,9 +715,10 @@ function keyNamedBack(response: Response): string {
 }
 
 /** Whether `response` names back the key its request sent, which says the answer came through
- *  Dispatch's keyed layer. */
+ *  Dispatch's keyed layer. An empty key names no request, so no answer names it back: an answer
+ *  that names no key is not this call's for a caller that gave an empty key of its own. */
 function keyEchoed(response: Response, key: string): boolean {
-  return keyNamedBack(response) === key;
+  return key !== "" && keyNamedBack(response) === key;
 }
 
 /** A request body encoded once, so every attempt of a write sends the bytes the first one did. */
@@ -821,7 +854,9 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
  */
 async function writeAnswer(response: Response, key: string): Promise<WriteAnswer> {
   const echoed = keyEchoed(response, key);
-  if (response.ok || NULL_BODY_STATUSES.has(response.status)) {
+  // A redirect is a definitive answer whose body is never read (`#response`), so it is handed on
+  // as it came.
+  if (response.ok || NULL_BODY_STATUSES.has(response.status) || isRedirectStatus(response.status)) {
     return {
       response,
       again: false,
@@ -2689,6 +2724,11 @@ export class DispatchClient {
         headers: { Accept: "application/json", ...headers },
         signal: bound,
       });
+      // A redirect's body is not read, whatever its type says: it is no word of Dispatch's.
+      if (isRedirectStatus(response.status)) {
+        response.body?.cancel().catch(() => undefined);
+        return false;
+      }
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
       return (
@@ -2729,7 +2769,10 @@ export class DispatchClient {
     throw refusal;
   }
 
+  /** The URL of `path` under the base URL, with `query`. A path value that names nothing is refused
+   *  here, before any request, for every call (`namesNothing`, `DispatchEmptyPathError`). */
   #url(path: readonly string[], query?: object): string {
+    if (path.some(namesNothing)) throw new DispatchEmptyPathError(path);
     const url = new URL(
       `${path.map((segment) => encodeURIComponent(segment)).join("/")}`,
       `${this.#baseUrl}/`
@@ -2775,7 +2818,23 @@ export class DispatchClient {
     written?: { readonly row: WriteRow; readonly call: WriteCall }
   ): Promise<T> {
     if (response.ok && written !== undefined) {
-      return this.#writtenRow<T>(method, url, response, written.row, written.call);
+      return this.#writtenRow<T>(method, url, response, written);
+    }
+    // A redirect no request follows names the origin it points at, and nothing else of the answer:
+    // its body is neither read nor kept, since a redirector writes its target, path and query with
+    // it, into the body too, and Dispatch answers no route with a redirect. It is cancelled, and
+    // nothing waits on it.
+    if (isRedirectStatus(response.status)) {
+      response.body?.cancel().catch(() => undefined);
+      const target = redirectOrigin(response, url);
+      throw this.#gateway(
+        method,
+        url,
+        response,
+        undefined,
+        gatewayAdvice(method, response.status),
+        target === undefined ? "" : `redirecting to ${target}, `
+      );
     }
     const text = await response.text();
     let payload: unknown = text;
@@ -2794,20 +2853,8 @@ export class DispatchClient {
           error.code === IDEMPOTENCY_KEY_COMMITTED &&
           written !== undefined
         ) {
-          if (!keyEchoed(response, written.call.key)) {
-            throw this.#notThisCallsAnswer(
-              method,
-              url,
-              response,
-              this.#bodyText(text, "the write's answer"),
-              written.call
-            );
-          }
-          throw new DispatchWriteLandedError(
-            IDEMPOTENCY_KEY_COMMITTED,
-            response.status,
-            method,
-            url
+          throw this.#notTheRow(method, url, response, written, IDEMPOTENCY_KEY_COMMITTED, () =>
+            this.#bodyText(text, "the write's answer")
           );
         }
         throw new DispatchServiceError(
@@ -2820,15 +2867,12 @@ export class DispatchClient {
           retryAfterMs(response) || null
         );
       }
-      // A redirect no request follows names the origin it points at, never its path or query.
-      const target = redirectOrigin(response, url);
       throw this.#gateway(
         method,
         url,
         response,
         this.#bodyText(text, "Dispatch's error JSON"),
-        gatewayAdvice(method, response.status),
-        target === undefined ? "" : `redirecting to ${target}, `
+        gatewayAdvice(method, response.status)
       );
     }
     return payload as T;
@@ -2851,22 +2895,24 @@ export class DispatchClient {
 
   /**
    * The `DispatchGatewayError` of an answer that is not Dispatch's: the request (its URL's user and
-   * password left out), the status and reason phrase, `body` as `#bodyText` names it, what else
-   * the caller says of it (`also`, before the page clause), and `advice`.
+   * password left out), the status and reason phrase, `body` as `#bodyText` names it (none for a
+   * redirect, whose body this line does not quote), what else the caller says of it (`also`,
+   * before the page clause), and `advice`.
    */
   #gateway(
     method: string,
     url: string,
     response: Response,
-    body: string,
+    body: string | undefined,
     advice: string,
     also = ""
   ): DispatchGatewayError {
     const reasonPhrase = excerpt(response.statusText, this.token);
     const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
+    const quoted = body === undefined ? "" : ` with ${body}`;
     return new DispatchGatewayError(
       response.status,
-      `${method} ${withoutUserinfo(url)} answered ${response.status}${reason} with ${body}, ${also}${GATEWAY_PAGE}`,
+      `${method} ${withoutUserinfo(url)} answered ${response.status}${reason}${quoted}, ${also}${GATEWAY_PAGE}`,
       advice
     );
   }
@@ -2874,21 +2920,20 @@ export class DispatchClient {
   /**
    * A write's 2xx read by one rule. Dispatch's keyed layer names the call's key back on every
    * answer it gives a keyed write (`keyedWrites`, packages/envoy/internal/dispatch/api/
-   * request_keys.go, held by `TestEveryKeyedAnswerNamesItsKey`), and Dispatch answers a write's
-   * 2xx only after the write committed. So:
+   * request_keys.go, held by `TestEveryKeyedAnswerNamesItsKey`), on every `POST` and `PATCH` route
+   * of its table, and Dispatch answers a write's 2xx only after the write committed. So:
    * - a 2xx that names this call's key back is Dispatch's own: its row (`dispatch-write-rows.ts`,
    *   the members the method's callers read, in the forms the route answers) is the call's answer,
    *   and a body that gives no row — cut, stalled past the deadline, no JSON whatever its type
    *   says, empty, or JSON that is not the row — is a landing whose answer was lost
    *   (`DISPATCH_ANSWER_LOST`), as is a replay whose first answer Dispatch did not keep
    *   (`answerNotKept`);
-   * - a 2xx that names no key back and gives the row is the answer of a Dispatch that runs no keyed
-   *   layer, the build before it, which this client still writes to (`#runsKeyedLayer`);
-   * - every other 2xx — one that names another request's key back, or names none and gives no row
-   *   (a proxy's page, a server that is not Dispatch, or a Dispatch older than the key's echo that
-   *   lost the body after it stored) — is no answer this client can take as Dispatch's to this
-   *   call, and the write may have reached Dispatch behind what answered it: its outcome is
-   *   unknown (`#notThisCallsAnswer`).
+   * - every other 2xx — one that names another request's key back, or names none (a proxy's page,
+   *   a server that is not Dispatch, a proxy or a cache that answers one write with another's, or
+   *   one that drops the header) — is no answer this client can take as Dispatch's to this call,
+   *   whatever it holds, and the write may have reached Dispatch behind what answered it: its
+   *   outcome is unknown (`#notThisCallsAnswer`). No member of such an answer is compared with
+   *   what the call sent: an equal value tells this call's write from no other.
    * A route that stores nothing (`rowStores`) made nothing either way, so a 2xx of it that is not
    * its answer is a `DispatchAnswerMissingError`. The row is the answer as it came, so a caller
    * reads every member Dispatch sent, the ones the check names among them.
@@ -2897,11 +2942,10 @@ export class DispatchClient {
     method: string,
     url: string,
     response: Response,
-    row: WriteRow,
-    call: WriteCall
+    written: { readonly row: WriteRow; readonly call: WriteCall }
   ): Promise<T> {
-    const named = keyNamedBack(response);
-    const echoed = named === call.key;
+    const { row, call } = written;
+    const echoed = keyEchoed(response, call.key);
     let text: string | undefined;
     let payload: unknown;
     let unread: unknown;
@@ -2915,31 +2959,51 @@ export class DispatchClient {
     if (parsed && echoed) {
       const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
       if (answerNotKept(response.status, replayed, payload)) {
-        if (!rowStores(row)) throw new DispatchAnswerMissingError(response.status, method, url);
-        throw new DispatchWriteLandedError(
-          IDEMPOTENCY_ANSWER_NOT_KEPT,
-          response.status,
-          method,
-          url
-        );
+        throw this.#notTheRow(method, url, response, { row, call }, IDEMPOTENCY_ANSWER_NOT_KEPT);
       }
     }
     const read = parsed ? row.safeParse(payload) : undefined;
-    if (read?.success === true && (echoed || named === "")) return payload as T;
+    if (read?.success === true && echoed) return payload as T;
     const cause = read?.error ?? unread;
-    if (!rowStores(row)) {
-      throw new DispatchAnswerMissingError(response.status, method, url, { cause });
+    throw this.#notTheRow(
+      method,
+      url,
+      response,
+      { row, call },
+      DISPATCH_ANSWER_LOST,
+      () =>
+        text === undefined
+          ? `a body that could not be read whole (${messageFor(unread)})`
+          : this.#bodyText(text, "the write's answer"),
+      cause
+    );
+  }
+
+  /**
+   * What a write's answer that is not its row is, by the one rule of a landing: a route that
+   * stores nothing (`rowStores`) made nothing, so its answer is missing, a
+   * `DispatchAnswerMissingError`; an answer that names the call's key back is Dispatch's word that
+   * the write committed under it, a landing whose answer is gone (`code`); any other is no verdict
+   * of Dispatch's on this call, and the write's outcome is unknown (`#notThisCallsAnswer`, whose
+   * line names `body` as `#bodyText` does).
+   */
+  #notTheRow(
+    method: string,
+    url: string,
+    response: Response,
+    written: { readonly row: WriteRow; readonly call: WriteCall },
+    code: DispatchLandedCode,
+    body: () => string = () => "",
+    cause?: unknown
+  ): Error {
+    const options = cause === undefined ? undefined : { cause };
+    if (!rowStores(written.row)) {
+      return new DispatchAnswerMissingError(response.status, method, url, options);
     }
-    if (echoed) {
-      throw new DispatchWriteLandedError(DISPATCH_ANSWER_LOST, response.status, method, url, {
-        cause,
-      });
+    if (keyEchoed(response, written.call.key)) {
+      return new DispatchWriteLandedError(code, response.status, method, url, options);
     }
-    const body =
-      text === undefined
-        ? `a body that could not be read whole (${messageFor(unread)})`
-        : this.#bodyText(text, "the write's answer");
-    throw this.#notThisCallsAnswer(method, url, response, body, call);
+    return this.#notThisCallsAnswer(method, url, response, body(), written.call);
   }
 
   /**

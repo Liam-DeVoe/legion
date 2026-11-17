@@ -12,7 +12,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
+import { isRedirectStatus, messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -78,6 +78,15 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// as an absent key (a listener that predates the field), or as a real array. The reader answers []
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
+const StringListWireSchema = z
+  .array(z.string())
+  .nullish()
+  .transform((list) => list ?? []);
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -92,9 +101,9 @@ const SessionWireSchema = z.object({
   dir: z.string(),
   port: z.number().int(),
   title: z.string(),
-  topics: z.array(z.string()),
-  roles: z.array(z.string()).optional(),
-  capabilities: z.array(z.string()).optional(),
+  topics: StringListWireSchema,
+  roles: StringListWireSchema,
+  capabilities: StringListWireSchema,
   self_subscribed: z.boolean(),
   last_seen: z.number().int().optional(),
   state: WireStateSchema,
@@ -740,18 +749,25 @@ export class EnvoyApiError extends Error {
     }
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
+    // A redirect's body is not read: a redirector writes its target, path and query with it, into
+    // the body too, and the line names the redirect's origin alone.
+    const redirect = isRedirectStatus(details.status);
     try {
-      const result = ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
-      if (result.success) parsed = result.data;
+      const result = redirect
+        ? undefined
+        : ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
+      if (result?.success) parsed = result.data;
     } catch {
       // A non-JSON error remains useful in the transport diagnostic.
     }
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
-      parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}${details.redirectedTo === undefined ? "" : `, redirecting to ${details.redirectedTo}`}: ${details.responseBody}`
-        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
+      redirect
+        ? `${details.method} ${details.url} failed with ${details.status}${details.redirectedTo === undefined ? "" : `, redirecting to ${details.redirectedTo}`}`
+        : parsed === undefined
+          ? `${details.method} ${details.url} failed with ${details.status}: ${details.responseBody}`
+          : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
     this.code = parsed?.code;
@@ -945,6 +961,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           { cause: unminted }
         ),
       };
+    }
+    // A redirect's body is neither read nor kept: a redirector writes its target, path and query,
+    // into it, and the line names the redirect's origin alone (`EnvoyApiError`). It is cancelled,
+    // and nothing waits on it.
+    if (isRedirectStatus(response.status)) {
+      response.body?.cancel().catch(() => undefined);
+      return { response, body: "" };
     }
     // The body is read under the same deadline. A refusal whose body does not arrive is still the
     // listener's refusal; any other answer whose body does not arrive is no answer.

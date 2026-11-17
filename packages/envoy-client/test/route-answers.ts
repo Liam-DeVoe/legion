@@ -16,7 +16,12 @@ interface OpenApiDocument {
   readonly paths: Readonly<
     Record<
       string,
-      Readonly<Record<string, { readonly responses: Readonly<Record<string, Schema>> }>>
+      Readonly<
+        Record<
+          string,
+          { readonly responses: Readonly<Record<string, Schema>>; readonly requestBody?: Schema }
+        >
+      >
     >
   >;
 }
@@ -190,8 +195,8 @@ export function routeOf(method: string, path: string): string | undefined {
 /**
  * The status and the body a stand-in of Dispatch answers a keyed write of `method` to `path` with,
  * where it has no answer of its own for that write: the route's first declared 2xx and its least
- * answer (`routeAnswer`), so the write reads its row as it reads Dispatch's. Undefined where the
- * document holds no such route.
+ * answer (`instance`, an object or a list as the route declares), so the write reads its row as it
+ * reads Dispatch's. Undefined where the document holds no such route.
  */
 export function leastAnswerFor(
   method: string,
@@ -201,7 +206,7 @@ export function leastAnswerFor(
   if (route === undefined) return undefined;
   const first = answersOf(route)[0];
   if (first === undefined) return undefined;
-  return { status: first.status, body: routeAnswer(route, {}, first.status) };
+  return { status: first.status, body: instance(first.schema, "least") };
 }
 
 /** Each way `body` is not an answer `route` declares for `status`, as Ajv words it; none for an

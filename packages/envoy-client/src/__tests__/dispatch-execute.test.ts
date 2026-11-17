@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -25,6 +25,7 @@ import {
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
+import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
@@ -32,7 +33,7 @@ import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
   dispatchRefFromUrl,
-  executeDispatchTool,
+  executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   goBlankPattern,
   positionText,
@@ -42,8 +43,10 @@ import {
   DISPATCH_ANSWER_LOST,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
+  DispatchEmptyPathError,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
+  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -52,6 +55,27 @@ import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
 
+// Each row is a run of its own, as each command is a process of its own: what an earlier row's
+// Dispatch taught the process of its keyed layer does not carry over.
+beforeEach(forgetKeyedLayerMemory);
+
+/**
+ * The executor (`executeDispatchTool` of `dispatch-execute.ts`) against the stand-in of Dispatch
+ * a row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * gives a write names the write's key back, as Dispatch's own answers do, unless the row's
+ * `layer` says otherwise. Every row of this file runs the executor through here.
+ */
+function executeDispatchTool(
+  input: Parameters<typeof executeTool>[0] & { readonly layer?: KeyedLayerOptions }
+): Promise<DispatchToolResult> {
+  const { layer, ...rest } = input;
+  return executeTool(
+    rest.fetchImpl === undefined
+      ? rest
+      : { ...rest, fetchImpl: keyedLayer(rest.fetchImpl, layer) as typeof fetch }
+  );
+}
+
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -59,16 +83,11 @@ function response(body: unknown, status = 200): Response {
   });
 }
 
-/** A fetch that answers every request with `body` and names the request's `Idempotency-Key`
- *  back, as Dispatch's keyed layer does, so a write reads the 2xx as Dispatch's own. */
-function echoing(body: unknown) {
-  return async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
-    new Response(JSON.stringify(body), {
-      headers: {
-        "Content-Type": "application/json",
-        "Idempotency-Key": (init?.headers as Record<string, string>)["Idempotency-Key"] ?? "",
-      },
-    });
+/** A fetch that answers every request with `body`, which the keyed layer names a write's key
+ *  back on (`executeDispatchTool`, or `keyedLayer` for a client a row builds). */
+function answering(body: unknown) {
+  return async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+    new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 }
 
 /**
@@ -5204,15 +5223,7 @@ describe("executeDispatchTool", () => {
         pathname,
         ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
       });
-      const key = new Headers(init?.headers).get("Idempotency-Key");
-      const echoed = (given: Response): Response => {
-        if (key === null || !(given.headers.get("Content-Type") ?? "").includes("application/json"))
-          return given;
-        const copy = new Response(given.body, given);
-        copy.headers.set("Idempotency-Key", key);
-        return copy;
-      };
-      if (pathname === "/api/v1/issues/ACME-175/messages") return echoed(answers.message());
+      if (pathname === "/api/v1/issues/ACME-175/messages") return answers.message();
       if (pathname !== "/api/v1/issues/ACME-175") {
         throw new Error(`unexpected request: ${method} ${pathname}`);
       }
@@ -5227,9 +5238,12 @@ describe("executeDispatchTool", () => {
           external_links: [],
         });
       }
-      return echoed(answers.patch());
+      return answers.patch();
     };
-    return { requests, fetchImpl: fetchImpl as typeof fetch };
+    // Its own answers, JSON of any status, are the keyed layer's, which names the write's key back.
+    const judged = (given: Response) =>
+      (given.headers.get("Content-Type") ?? "").includes("application/json");
+    return { requests, fetchImpl: keyedLayer(fetchImpl, { judged }) as typeof fetch };
   }
 
   const refusal = (status: number, code: string, error: string) =>
@@ -5773,9 +5787,9 @@ describe("executeDispatchTool", () => {
       parent: null,
       external_links: [],
     };
-    // The read and the PATCH both answer the issue without its components; the PATCH names its
-    // key back, as Dispatch's keyed layer does, so the answer is Dispatch's own.
-    const fetchImpl = echoing(issue);
+    // The read and the PATCH both answer the issue without its components; the keyed layer names
+    // the PATCH's key back, so the answer is Dispatch's own.
+    const fetchImpl = answering(issue);
     for (const components of [
       { mode: "explicit", ids: ["web"] },
       { mode: "none", reason: "hiring, not code" },
@@ -5810,7 +5824,7 @@ describe("executeDispatchTool", () => {
       config,
       env: {},
       exec: repoExec("owner/repo"),
-      fetchImpl: echoing({ key: "LEGION-216", title: "Architecture work" }) as typeof fetch,
+      fetchImpl: answering({ key: "LEGION-216", title: "Architecture work" }) as typeof fetch,
       sleep: async () => {},
     }).then(
       () => undefined,
@@ -5850,7 +5864,7 @@ describe("executeDispatchTool", () => {
         return response([{ id: "p-1", type: "paragraph", from: 0, to: 12 }]);
       }
       if (target.pathname === "/api/v1/artifacts/artifact-42/approval-requests") {
-        return echoing(answer)(url, init);
+        return answering(answer)(url, init);
       }
       throw new Error(`unexpected request: ${target.pathname}`);
     };
@@ -12023,7 +12037,7 @@ describe("executeDispatchTool", () => {
   // 2xx of either that gives no answer made nothing: no landing that says what it made, a line that
   // says nothing was made and that asking again is safe. Dispatch's own such 2xx names the key back.
   test("dispatch_related answered without its answer says it stores nothing and made nothing", async () => {
-    const fetchImpl = echoing({});
+    const fetchImpl = answering({});
     const failure = await executeDispatchTool({
       tool: "dispatch_related",
       args: { project: "ACME", title: "Retry failed webhook deliveries" },
@@ -12046,11 +12060,10 @@ describe("executeDispatchTool", () => {
   });
 
   test("the round trip answered without its text says it stores nothing and made nothing", async () => {
-    const fetchImpl = echoing({});
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      fetchImpl as typeof fetch
+      keyedLayer(answering({})) as typeof fetch
     );
 
     const failure = await client.markdownRoundTrip("# Notes\n").then(
@@ -15770,6 +15783,42 @@ test("refuses to resolve a comment named by an ask reference", async () => {
       fetchImpl,
     })
   ).rejects.toThrow("comment must be a bare comment id or a dispatch://.../comment/<id> reference");
+  expect(requests).toBe(0);
+});
+
+// A model's tool call reaches the executor with no parse of flags, and the tools' schemas take an
+// empty value, white space, `.` or `..` for an id that goes into a URL path. The client refuses each
+// before any request (`DispatchEmptyPathError`), naming its place in the route: sent, `..` is a step
+// of the path, which the URL drops, and `POST /api/v1/comments/../resolve` asks another route.
+test("a path value that names nothing, as a tool call gives it, is refused before any request", async () => {
+  let requests = 0;
+  const fetchImpl = (() => {
+    requests += 1;
+    throw new Error("network must not be called");
+  }) as unknown as typeof fetch;
+  for (const [tool, args, place] of [
+    ["dispatch_resolve_comment", { comment: ".." }, '/api/v1/comments/{".."}/resolve'],
+    ["dispatch_claim", { issue: "" }, "/api/v1/issues/{empty}/claim"],
+    ["dispatch_read", { issue: "." }, '/api/v1/issues/{"."}'],
+    ["dispatch_result", { retract: " ", reason: "Wrong commit." }, '/api/v1/results/{" "}/retract'],
+  ] as const) {
+    const refusal = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(refusal, tool).toBeInstanceOf(DispatchEmptyPathError);
+    expect((refusal as Error).message, tool).toContain(place);
+  }
   expect(requests).toBe(0);
 });
 

@@ -1,21 +1,27 @@
 // Every keyed write of the client (`#write`, `#writeAnswer`, `#upload`: each POST and PATCH) reads
 // its 2xx into the row its callers read (`dispatch-write-rows.ts`) by one rule, which turns on
 // whether the 2xx names the call's `Idempotency-Key` back, as Dispatch's keyed layer does on every
-// 2xx it gives a keyed write. A 2xx that names it back is Dispatch's: its row is the answer, and a
-// body that gives no row is a landing whose answer was lost (`ANSWER_LOST`). A 2xx that names no
-// key back and gives the row is the answer of a Dispatch with no keyed layer. Any other 2xx is not
-// Dispatch's answer to the call, so the write's outcome is unknown. A route that stores nothing
-// made nothing either way. A row check stricter than Dispatch's true answer would turn a good
-// answer into a landing, so each method is driven here against the answers its route's operation
-// declares in the OpenAPI document the server generates (`test/route-answers.ts` reads it):
-// two instances of each 2xx schema, the least one the schema admits (every optional member
-// absent, every nullable member null, every list empty) and the most one (every member present,
-// none null, every list holding one item), each an answer the route declares. The answers the
-// other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
+// answer it gives a keyed write, on every write route. A 2xx that names it back is Dispatch's: its
+// row is the answer, and a body that gives no row is a landing whose answer was lost
+// (`ANSWER_LOST`). Any other 2xx, one that names no key back or another request's, is not
+// Dispatch's answer to the call, whatever it holds, so the write's outcome is unknown. A route that
+// stores nothing made nothing either way. A row check stricter than Dispatch's true answer would
+// turn a good answer into a landing, so each method is driven here against the answers its
+// route's operation declares in the OpenAPI document the server generates (`test/route-answers.ts`
+// reads it): two instances of each 2xx schema, the least one the schema admits (every optional
+// member absent, every nullable member null, every list empty) and the most one (every member
+// present, none null, every list holding one item), each an answer the route declares. The answers
+// the other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
 // route's schema.
 import { describe, expect, test } from "bun:test";
-import { type Actor, IDEMPOTENCY_ANSWER_NOT_KEPT, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
-import type { z } from "zod";
+import {
+  type Actor,
+  IDEMPOTENCY_ANSWER_NOT_KEPT,
+  IDEMPOTENCY_KEY_COMMITTED,
+  IDEMPOTENCY_KEY_HEADER,
+} from "@legion/contracts";
+import { z } from "zod";
+import { keyedLayer } from "../../test/keyed-layer";
 import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import {
@@ -288,9 +294,11 @@ const CASES: readonly WriteRowCase[] = [
  *  none, as a Dispatch with no keyed layer or something in Dispatch's place does, or another. */
 type Echo = "this" | "none" | "other";
 
-/** A Dispatch that answers the case's route with `status` and `body` under `type`, naming back
- *  the key `echo` says (and its fallback's first route with no route for it), with the headers
- *  `extra` adds, recording each request it was sent. */
+/** A Dispatch that answers the case's route with `status` and `body` under `type`, behind a keyed
+ *  layer that names back the key `echo` says (`keyedLayer`: the call's own on every answer it
+ *  gives the route, none, or another request's, which the stand-in names itself), with the headers
+ *  `extra` adds, recording each request it was sent. Its fallback's first route has no route for
+ *  it: the router answers that, before the layer. */
 function dispatchAnswering(
   row: WriteRowCase,
   status: number,
@@ -300,6 +308,17 @@ function dispatchAnswering(
   extra: Readonly<Record<string, string>> = {}
 ) {
   const sent: string[] = [];
+  const routed = keyedLayer(
+    async (request: Request) => {
+      const headers: Record<string, string> = { "Content-Type": type, ...extra };
+      if (echo === "other") {
+        headers[IDEMPOTENCY_KEY_HEADER] =
+          `${request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? ""}-another`;
+      }
+      return new Response(body, { status, headers });
+    },
+    echo === "none" ? { noKeyedLayer: true } : { judged: () => true }
+  );
   const fetchImpl = (async (input: Request | string | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const path = new URL(request.url).pathname;
@@ -311,11 +330,7 @@ function dispatchAnswering(
         { status: 404 }
       );
     }
-    const headers: Record<string, string> = { "Content-Type": type, ...extra };
-    const key = request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "";
-    if (echo === "this") headers[IDEMPOTENCY_KEY_HEADER] = key;
-    if (echo === "other") headers[IDEMPOTENCY_KEY_HEADER] = `${key}-another`;
-    return new Response(body, { status, headers });
+    return routed(request);
   }) as typeof fetch;
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     sleep: async () => undefined,
@@ -359,7 +374,8 @@ function noAnswer(
 }
 
 /** Each path inside `schema` at which an object refuses a member it does not name (a
- *  `z.strictObject`, whose catchall is `never`), against the rule that a row keeps each one. */
+ *  `z.strictObject`, whose catchall is `never`), against the rule that a row keeps each one. A
+ *  kind it does not open is refused, naming it: it could hold such an object. */
 function strictPaths(schema: z.core.$ZodType, at: string): string[] {
   // `$ZodTypes` is zod's union of its own types, which a switch on the definition's type narrows.
   const def = (schema as z.core.$ZodTypes)._zod.def;
@@ -389,8 +405,21 @@ function strictPaths(schema: z.core.$ZodType, at: string): string[] {
     case "prefault":
     case "catch":
       return strictPaths(def.innerType, at);
-    default:
+    // A value that holds no member holds no closed object.
+    case "string":
+    case "number":
+    case "boolean":
+    case "bigint":
+    case "null":
+    case "undefined":
+    case "unknown":
+    case "any":
+    case "enum":
+    case "literal":
+    case "date":
       return [];
+    default:
+      throw new Error(`strictPaths opens no ${def.type} schema (${at})`);
   }
 }
 
@@ -410,6 +439,19 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
   test("no row refuses a member it does not name, at any depth", () => {
     const strict = Object.entries(WRITE_ROWS).flatMap(([method, row]) => strictPaths(row, method));
     expect(strict).toEqual([]);
+  });
+
+  // The walk above opens every kind a row is built of, and reads a value that holds no member as
+  // holding no closed object. A kind it does not open (a tuple, a lazy schema) could hold one, so
+  // it is refused by name rather than read as clean.
+  test("the walk refuses a kind it does not open, naming it", () => {
+    for (const [kind, schema] of [
+      ["tuple", z.tuple([z.strictObject({ id: z.string() })])],
+      ["lazy", z.lazy(() => z.strictObject({ id: z.string() }))],
+    ] as const) {
+      expect(() => strictPaths(schema, "row"), kind).toThrow(`opens no ${kind} schema (row)`);
+    }
+    expect(strictPaths(z.looseObject({ id: z.string(), n: z.number().int() }), "row")).toEqual([]);
   });
 
   test("an issue update whose advance and link carry a member the row does not name is its answer", async () => {
@@ -471,21 +513,23 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     const first = answers[0];
     if (first === undefined) throw new Error(`${row.route} declares no 2xx answer`);
     const status = first.status;
-    const least = JSON.stringify(instance(first.schema, "least"));
-    // Every Dispatch 2xx to a keyed write names its key back (`TestEveryKeyedAnswerNamesItsKey`,
-    // packages/envoy/internal/dispatch/api/request_keys_test.go); a Dispatch that runs no keyed
-    // layer names none, and its answer is still the call's.
-    test(`${label}: the least ${status} answer naming no key back is the call's answer`, async () => {
-      const got = await outcome(row, status, "application/json", least, "none");
-      expect({
-        landed: got.landed,
-        unknown: got.unknown,
-        missing: got.missing,
-        thrown: got.thrown,
-      }).toEqual({ landed: undefined, unknown: undefined, missing: undefined, thrown: undefined });
+    const least = instance(first.schema, "least");
+    // Dispatch's keyed layer names the key back on every answer of every write route
+    // (`TestEveryKeyedAnswerNamesItsKey`, packages/envoy/internal/dispatch/api/
+    // request_keys_test.go), so its own least answer naming no key back came from something in its
+    // place: it is no answer of the call's, whatever it holds, and the client compares none of it
+    // with what the call sent. A route that stores nothing made nothing either way.
+    test(`${label}: the least ${status} answer naming no key back is not the call's answer`, async () => {
+      const got = await outcome(row, status, "application/json", JSON.stringify(least), "none");
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+        landed: undefined,
+        unknown: undefined,
+        missing: undefined,
+        ...noAnswer(row, "none"),
+      });
     });
     test(`${label}: the least ${status} answer naming another key back is not this call's`, async () => {
-      const got = await outcome(row, status, "application/json", least, "other");
+      const got = await outcome(row, status, "application/json", JSON.stringify(least), "other");
       expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
@@ -514,13 +558,35 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
         ...notKept,
       });
     });
+    // A 409 KEY_COMMITTED that names the key back says Dispatch committed the write under it and
+    // kept no answer: a landing where the route stores, and by the same rule as the 2xx path, the
+    // missing answer where it stores nothing.
+    const committed: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+      WRITE_ROWS[row.method]
+    )
+      ? { landed: IDEMPOTENCY_KEY_COMMITTED }
+      : { missing: DISPATCH_ANSWER_LOST };
+    test(`${label}: a 409 KEY_COMMITTED naming its key back is ${"landed" in committed ? "KEY_COMMITTED" : "no answer"}`, async () => {
+      const body = JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "committed" });
+      const got = await outcome(row, 409, "application/json", body, "this");
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+        landed: undefined,
+        unknown: undefined,
+        missing: undefined,
+        ...committed,
+      });
+    });
     for (const echo of ["this", "none"] as const) {
       const named = echo === "this" ? "naming its key back" : "naming no key back";
       for (const [name, type, body] of [
         ["an HTML page", "text/html", "<html><body>not json</body></html>"],
         ["an empty body", "application/json", ""],
         ["JSON null", "application/json", "null"],
-        ...(READS_NOTHING[row.method] ? [] : [["the JSON {}", "application/json", "{}"]]),
+        // `{}` is the row of a method no caller reads the answer of, so it is that call's answer
+        // where it names the key back, and no answer where it names none.
+        ...(READS_NOTHING[row.method] && echo === "this"
+          ? []
+          : [["the JSON {}", "application/json", "{}"]]),
       ] as const) {
         const expected = noAnswer(row, echo);
         const reads =

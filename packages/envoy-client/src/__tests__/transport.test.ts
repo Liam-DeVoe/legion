@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
@@ -1072,9 +1073,10 @@ describe("EnvoyClient", () => {
 
     // A listener that names no state lists only sessions it holds a registration for, so every
     // row of its answer is live; reading the absence as anything else buries working sessions.
+    // A row without roles or capabilities reads as holding none, so the lists are always there.
     expect(sessions).toEqual([
-      { ...unversioned, state: "live" },
-      { ...versioned, state: "live" },
+      { ...unversioned, state: "live", roles: [], capabilities: [] },
+      { ...versioned, state: "live", roles: [], capabilities: [] },
     ]);
     expect(recorded.requests[0]?.url).toBe("http://listener/v1/sessions");
   });
@@ -1102,9 +1104,9 @@ describe("EnvoyClient", () => {
     // Every row carries the state the listener put the session in, and one that names none
     // reads as live, so the delivery each row reports is read beside its state.
     expect(sessions).toEqual([
-      { ...relayed, state: "live" },
-      { ...core, state: "live" },
-      { ...unreported, state: "live" },
+      { ...relayed, state: "live", roles: [], capabilities: [] },
+      { ...core, state: "live", roles: [], capabilities: [] },
+      { ...unreported, state: "live", roles: [], capabilities: [] },
     ]);
     expect(sessions.map((session) => session.delivery)).toEqual(["consumer", "", undefined]);
   });
@@ -1151,8 +1153,102 @@ describe("EnvoyClient", () => {
 
     // A row carrying a place still parses, which is what keeps an older reader working against a
     // listener that answers one.
-    expect(sessions[0]).toEqual({ ...row, state: "live" });
-    expect(sessions[1]).toEqual({ ...row, session_id: "ses_newer", state: "live" });
+    expect(sessions[0]).toEqual({ ...row, state: "live", roles: [], capabilities: [] });
+    expect(sessions[1]).toEqual({
+      ...row,
+      session_id: "ses_newer",
+      state: "live",
+      roles: [],
+      capabilities: [],
+    });
+  });
+
+  test("reads a listener's null topics as an empty list and keeps the row's other values", async () => {
+    const recorded = recordFetch([jsonResponse([noInterestsFixture.before_this_change])]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    // updated_at is absent: the schema does not read it, so zod drops it.
+    expect(sessions).toEqual([
+      {
+        session_id: "ses_infra742_no_interests",
+        state: "live",
+        machine_id: "envoy-fixture",
+        host: "envoy-fixture",
+        dir: "/work/infra-742-fixture",
+        port: 0,
+        title: "INFRA-742 fixture session",
+        topics: [],
+        roles: [],
+        capabilities: [],
+        self_subscribed: true,
+        last_seen: 0,
+        delivery: "consumer",
+      },
+    ]);
+  });
+
+  test("reads the fixed listener's empty lists unchanged", async () => {
+    const recorded = recordFetch([jsonResponse([noInterestsFixture.after_this_change])]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    expect(sessions[0]).toMatchObject({ topics: [], roles: [], capabilities: [] });
+  });
+
+  // Inline rather than in the fixture: the fixture states what a listener on main writes, and
+  // these two rows — every list null, and every list's key absent — are what a tolerant reader
+  // must also accept from a listener it does not deploy with.
+  test("reads null and absent topics, roles and capabilities as empty lists", async () => {
+    const base = {
+      session_id: "ses_null",
+      machine_id: "host-a",
+      dir: "/work",
+      port: 13381,
+      title: "Envoy QA",
+      self_subscribed: false,
+    };
+    const recorded = recordFetch([
+      jsonResponse([
+        { ...base, topics: null, roles: null, capabilities: null },
+        { ...base, session_id: "ses_absent" },
+      ]),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    const empty = { topics: [], roles: [], capabilities: [] };
+    expect(sessions).toEqual([
+      { ...base, state: "live", ...empty },
+      { ...base, session_id: "ses_absent", state: "live", ...empty },
+    ]);
+  });
+
+  // The tolerance reads a null or an absent key, nothing more: a wrong element type is still a
+  // contract break and must fail rather than read as empty.
+  test("still rejects a session row whose topics hold a wrong element type", async () => {
+    const recorded = recordFetch([
+      jsonResponse([
+        {
+          session_id: "ses_bad",
+          machine_id: "host-a",
+          dir: "/work",
+          port: 13381,
+          title: "Envoy QA",
+          topics: [1],
+          self_subscribed: false,
+        },
+      ]),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    // The row is otherwise valid, so the one issue is the element's type.
+    await expect(client.listSessions()).rejects.toMatchObject({
+      issues: [{ code: "invalid_type", path: [0, "topics", 0] }],
+    });
   });
 
   test("keeps an unresponsive row's state and its last registration, and asks for it by name", async () => {
@@ -2001,6 +2097,75 @@ describe("a listener answer that redirects to another origin", () => {
         expect(message, location).not.toContain(part);
       }
     }
+  });
+
+  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
+  // as text or as a link's text), so the line quotes nothing of a redirect's body.
+  test("is refused with a line that quotes nothing of its body, where a redirector writes its target", async () => {
+    // The path and the query of the target are made for this run.
+    const path = `login-${crypto.randomUUID()}`;
+    const state = crypto.randomUUID();
+    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fv1`;
+    for (const [type, body] of [
+      ["text/plain", `Found. Redirecting to ${target}`],
+      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
+      ["application/json", JSON.stringify({ error: `moved to ${target}` })],
+    ] as const) {
+      const client = createEnvoyClient({
+        baseUrl: "http://listener.test/",
+        fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(body, {
+            status: 302,
+            headers: { Location: target, "Content-Type": type },
+          })) as typeof fetch,
+        retry: false,
+      });
+      const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EnvoyApiError);
+      const { message } = failure as EnvoyApiError;
+      expect({
+        origin: message.endsWith("failed with 302, redirecting to https://sso.example.com"),
+        path: message.includes(path),
+        query: message.includes(state),
+      }).toEqual({ origin: true, path: false, query: false });
+    }
+  });
+
+  // The client reads no body of a redirect and keeps none: the error of a 3xx holds no text of it,
+  // and a body that never ends delays nothing, since nothing waits on it.
+  test("is refused with no body read or kept in its error", async () => {
+    const target = `https://sso.example.com/login-${crypto.randomUUID()}`;
+    let pulls = 0;
+    let cancelled = false;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener.test/",
+      fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls += 1;
+              if (pulls === 1)
+                controller.enqueue(new TextEncoder().encode(`Redirecting to ${target}`));
+              // Then nothing more: the body never ends.
+              return new Promise<void>(() => {});
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 302, headers: { Location: target, "Content-Type": "text/plain" } }
+        )) as typeof fetch,
+      retry: false,
+      timeoutMs: 30_000,
+    });
+    const started = performance.now();
+    const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(EnvoyApiError);
+    expect({
+      responseBody: (failure as EnvoyApiError).details.responseBody,
+      cancelled,
+      atOnce: performance.now() - started < 10_000,
+    }).toEqual({ responseBody: "", cancelled: true, atOnce: true });
   });
 });
 

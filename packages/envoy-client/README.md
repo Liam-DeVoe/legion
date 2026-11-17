@@ -545,7 +545,9 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
 Every write `DispatchClient` makes carries one key. `#send`, which every JSON, multipart and file
-call goes through, mints a `crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call and
+call goes through, mints a `crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, or
+uses the key its caller gives (`docEdit` and a project's upload take one, and an empty key names
+nothing: [`docs/write-answers.md`](docs/write-answers.md)), and
 sends it on every attempt of that call, so Dispatch runs the write once however many attempts
 reach it and answers a repeat with the first answer (`packages/envoy/cmd/dispatch/README.md`,
 "Keyed writes"); a `GET`, `PUT` or `DELETE` carries none and is sent once. The body is encoded once
@@ -611,94 +613,12 @@ calls share, so a clock set back between two calls stretches the five minutes by
 calls racing in one session can bring back a sighting one of them set aside, which still ends
 five minutes after the answer that showed it.
 
-A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
-`error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
-`fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
-did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
-names the method, the URL with its query and without the user and password it may carry (never
-the bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
-body, and what asking again can do. The excerpt
-drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
-reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
-of the client's bearer's characters (a shorter bearer only whole), so a copy cut short, split by
-markup or overlapping another leaves no such piece. A body none of whose read part is text is named
-by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
-answers the same until the Dispatch URL, or whatever
-answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, and so
-may a write answered 408 or 429, the gateway's own timeout or rate limit, which it sends before it
-forwards anything (`mayHaveReachedDispatch` false); a write answered 5xx may or may not have reached
-Dispatch, so the advice is to check whether it took effect before retrying. The error's `answer`,
-`advice`, `transient` and `mayHaveReachedDispatch` let a caller that knows more about its own
-request, such as `dispatch issue-update`'s close path, give its own advice instead. The executor
-reads a status as Dispatch's meaning (a 404 as no linked issue, no such document, or a server
-without the route) only when `fromDispatch` is true.
-
-A write whose attempts run out is thrown as the last attempt's own error, with its usual message,
-except where that last answer alone would say the write never took effect while an earlier attempt
-may have reached Dispatch: a gateway's 408 or 429, Dispatch's own 429, and `409 KEY_IN_FLIGHT`.
-Those are a `DispatchWriteUnsettledError`, deliberately not a `DispatchServiceError`, since a
-caller reads one as a refusal Dispatch decided: its message is the last answer, the number of
-attempts, whether an earlier attempt may have reached Dispatch or Dispatch was still running one,
-and that the write may or may not have taken effect, so check before running it again - a new
-command is a new key. A write that ends with no answer at all is one too, naming the request: its
-last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
-deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
-definitive answer when its deadline ended it"); `last` is the cut or the timeout. An attempt the
-deadline ends before it goes out is not sent, and neither it nor a presentation of the credential
-that failed counts as one that may have reached Dispatch; a pause the deadline ends after answers
-that reached no handler ends the write with the last one.
-What the attempts showed is a fact of the whole call (`WriteCall`), not of one series of them: a
-write carries one key across its no-route retries and its re-send after a dead token, which the
-keyed layer, wrapping each route's handler, stores nothing under, and once one attempt may have
-reached a handler the call ends as a `DispatchWriteUnsettledError` unless its last answer is the
-keyed layer's verdict on the key, a kept one (a definitive answer that names the key back and that
-the layer keeps as the key's outcome: the stored result, a replay, a landed answer, or the
-handler's refusal, but neither an echoed 401, which can come after the handler committed, nor
-`422 KEY_REUSED`, which says only that this request was not run). A no-route answer, Dispatch's
-check of the token, a dead token or a credential that could not present proves nothing of the
-earlier attempt. The caller's own cancellation is thrown as it is.
-`writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown: a
-`DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
-5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
-is. A connection that was never opened (refused, a name that did not resolve, no route) reached
-nothing, and so did a request Dispatch's check of its broker token turned away before any handler
-ran (`tokenNotChecked`: `429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`), which counts
-as no attempt that may have reached Dispatch. A refusal carries its `Retry-After` as
-`retryAfterMs`. A write Dispatch
-made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
-`status`): `409 KEY_COMMITTED` that names the request's key back, a write that landed before its
-answer was lost, which Dispatch will not run again, a replayed 2xx (`Idempotency-Replayed: ?1`)
-reading `ANSWER_NOT_KEPT`, a first answer larger than Dispatch keeps (`answerNotKept`, shared with
-the page), or a write's 2xx that names its key back and whose body gives no row, the client's own
-`ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a write's 2xx only after the write
-committed. Every `POST` and `PATCH` of the client reads its 2xx into
-the row its callers read (`dispatch-write-rows.ts`: those members, in the forms the route answers
-them), by the key the 2xx names back: Dispatch's keyed layer names the request's
-`Idempotency-Key` back on every answer it gives a keyed write. A 2xx that names it back is
-Dispatch's own, so a body cut or stalled past the deadline, one that is no JSON whatever its type
-says, an empty one and JSON that is not that row are each this landing. A 2xx that names no key
-back and gives the row is the answer of a Dispatch with no keyed layer. Every other 2xx, and a
-`409 KEY_COMMITTED` that names no key back or another request's, is no answer the client can take
-as Dispatch's to this write: a proxy's page, a server that is not Dispatch, or a Dispatch that
-stored the write and whose answer came without the key and without its row (a build older than
-the key's echo, or one behind a proxy that drops the header). The write's outcome is unknown, a
-`DispatchWriteUnsettledError`, so check whether it took effect before asking again. No request of
-the client, its reads, its writes and the `/healthz` probe, follows a redirect: Dispatch's API
-routes answer none with a 3xx, so a 3xx is a refusal of whatever answered in its place, and it
-names the origin the redirect points at (`redirectOrigin`: the scheme and the host, never the path
-or the query). The round trip and the related-item
-check store nothing, so a 2xx of either that is not its answer, a replay whose first answer
-Dispatch did not keep among them, is a `DispatchAnswerMissingError`
-(`ANSWER_LOST`), which says nothing was made. A landing is no refusal and no
-`DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
-`landed_without_answer: <code>` in its ledger entry. A step before the
-command's own write that lands this way fails the command (exit 1) with that line and what it
-means: a picture upload (nothing else was written: run the call again, which uploads it as its
-next version), or the closing reason of `issue-update --status done` (the close was not sent: read
-the issue's messages for the reason, then close with one that points at it). The close's own
-`PATCH` landing this way is the command's write, and exits 0.
+[`docs/write-answers.md`](docs/write-answers.md) says what each answer of Dispatch becomes, and
+what the `dispatch` command prints for each. It covers Dispatch's refusal, a gateway's page, a
+refused redirect, a path value that names nothing, and a write whose outcome is unknown. It also
+covers a landing whose answer is gone, and a 2xx that names no key back, which is never the call's
+answer. A landing needs the key that Dispatch names back. The line of a refused redirect names the
+target's origin and nothing of the body.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -891,8 +811,28 @@ first `: `; a label holding `: ` goes in `--options-json`, which the generated c
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
 stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
-names a local file. An empty `--issue`, `--project` or `--check`, as an empty variable gives it, is
-refused the same way, naming the flag, since it names nothing and sent it reaches no route.
+names a local file. The command refuses an empty value of each flag that names what a call is
+about or narrows a read, before any request. These flags are `--issue`, `--project`, `--check`,
+`--commit`, `--at`, `--retract`, `--comment`, `--session` of `dispatch send-to-agent`, and
+`--parent` of `dispatch issues` and `dispatch issue` (`IDENTIFIER_FIELDS` in
+`dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed,
+so a value of only white space is refused too, and it refuses `.` and `..` for `--issue`,
+`--project`, `--retract`, `--comment` and `--session`, whose value goes into a URL path. The
+refusal names the flag, and the command exits 2. Sent, such a value named nothing. In a path it
+reached no route, a redirect of Dispatch's router, or another route: the URL drops `.` and `..`
+as steps of the path, so `dispatch read --issue ..` asked `GET /api/v1/`. A read that it narrowed
+came back wider: `dispatch search --project ""` answered every project's rows, and
+`dispatch issues --project ""` or `" "` every project's issues. `dispatch issues --parent ""`
+answered every issue of its project, and `dispatch results --at ""` as with no `--at`. An empty
+`--check` of `dispatch results --project` answered the results of every check at the commit.
+`dispatch issue --parent ""` made the issue under no parent. Dispatch refused at once
+`dispatch open-asks --project ""`, an empty `--commit` of `dispatch results`, and an empty
+`--check` or `--commit` of `dispatch result`. To search every project, leave `--project` out.
+`dispatch issue-update --parent ""` clears the parent, as its help says, so it is not refused. No
+URL path of this client holds a value that names nothing either: empty, only white space, `.` or
+`..`. `DispatchClient` refuses one before any request, for every caller (`DispatchEmptyPathError`),
+which a model's tool call can reach; no argument of the command reaches it, since the command
+refuses each such value of a flag first.
 `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would

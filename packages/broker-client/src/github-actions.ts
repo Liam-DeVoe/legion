@@ -45,7 +45,11 @@ export function githubActionsIdentity(options: GitHubActionsIdentityOptions): To
       const signals = [AbortSignal.timeout(TIMEOUT_MS), ...(signal === undefined ? [] : [signal])];
       let answer: Response;
       try {
+        // No redirect is followed: fetch would send the runner's bearer on to a target on the
+        // runner's own origin, and take a token another origin minted. A 3xx is then the
+        // endpoint's refusal, named by its status as every other one is, its body unread.
         answer = await fetchImpl(url, {
+          redirect: "manual",
           headers: { Authorization: `Bearer ${options.requestToken}`, Accept: "application/json" },
           signal: AbortSignal.any(signals),
         });

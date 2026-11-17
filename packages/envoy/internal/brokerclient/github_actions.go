@@ -3,6 +3,7 @@
 package brokerclient
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 // actionsTimeout bounds one read of the runner's OIDC token endpoint.
@@ -61,10 +63,11 @@ func (g *GitHubActionsIdentity) Token(ctx context.Context) (string, string, erro
 	}
 	request.Header.Set("Authorization", "Bearer "+g.RequestToken)
 	request.Header.Set("Accept", "application/json")
-	client := g.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
+	// No redirect is followed: net/http would send the runner's bearer on to a target on the
+	// runner's own origin, and take a token another origin minted. A 3xx is then the endpoint's
+	// refusal, named by its status as every other one is. A later change of the redirect work
+	// moves this client to the one constructor of a client that carries a credential.
+	client := redirects.Refused(cmp.Or(g.HTTP, http.DefaultClient))
 	response, err := client.Do(request)
 	if err != nil {
 		// The URL carries the audience, which a public run log must not print, so the error is
