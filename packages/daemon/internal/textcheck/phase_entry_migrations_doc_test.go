@@ -25,10 +25,11 @@ import (
 // tests must see, and nothing else of the daemon.
 //
 // The list is what a reader sees of it: a name inside an HTML comment counts for nothing, since
-// the rendered guide does not show it. A name counts wherever else it stands in the list, because
-// one entry may speak for several migrations. So a migration named only in passing inside
-// another's entry would pass for one the list describes: name a migration in the list only in the
-// entry that says what the block does to it.
+// the rendered guide does not show it. A migration the list describes is one an entry says what
+// the block does to: it opens the entry, or opens a clause of it after ", and", so one entry may
+// speak for several migrations (entrySubjects). A name anywhere else in an entry is a mention in
+// passing, which tells the operator nothing of what the block does to that migration, so it
+// describes nothing; the list's every name is still held to the embedded set.
 const (
 	// phaseEntryMigration is the migration whose way back the list follows, by the name the guide
 	// (wayBackGuide, way_back_doc_test.go) writes. The list's subject is every embedded migration
@@ -50,25 +51,32 @@ var (
 	// show. One never closed is read as hiding the rest of the list, since a comment that opens a
 	// line runs to the end of the document.
 	htmlComment = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)`)
+	// entrySubjects is where an entry says what the block does to a migration: the migrations
+	// that open the entry, or open a clause of it after ", and", alone or several joined by
+	// " and ", each perhaps followed by the ", of <reference>," of the change it came with. Its
+	// group holds those names.
+	entrySubjects = regexp.MustCompile(`(?:^|, and )(\d{14}_\w+(?:, of \S+,)?(?: and \d{14}_\w+(?:, of \S+,)?)*)`)
 )
 
-// Every migration the daemon embeds above the phase entry is named in the list after the phase
-// entry's way back. An operator who rolls back by the list is told nothing of a migration it
-// leaves out: neither that the block holds over it nor that it must be reversed first.
+// Every migration the daemon embeds above the phase entry is described in the list after the
+// phase entry's way back. An operator who rolls back by the list is told nothing of a migration
+// it leaves out, or names only in passing: neither that the block holds over it nor that it must
+// be reversed first.
 func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 	above, _ := embeddedMigrationsAboveThePhaseEntry(t)
-	named := phaseEntryListNames(t)
+	described, _ := phaseEntryList(t)
 	var missing []string
 	for _, name := range above {
-		if !slices.Contains(named, name) {
+		if !slices.Contains(described, name) {
 			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
-		t.Errorf("%s's list of the migrations recorded above %s does not name %s where a reader sees "+
-			"it, outside an HTML comment: give each an entry "+
-			"beside the one it belongs with, saying what it adds or changes and what the phase entry's "+
-			"block does to it", wayBackGuide, phaseEntryMigration, strings.Join(missing, ", "))
+		t.Errorf("%s's list of the migrations recorded above %s describes no %s: give each an entry "+
+			"beside the one it belongs with, opening on its name or with a clause after \", and\" that "+
+			"does, saying what it adds or changes and what the phase entry's block does to it; a name "+
+			"inside an HTML comment, or in passing elsewhere in an entry, does not count", wayBackGuide,
+			phaseEntryMigration, strings.Join(missing, ", "))
 	}
 }
 
@@ -77,7 +85,7 @@ func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 // block has nothing to do with, or misspells one it has.
 func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 	above, all := embeddedMigrationsAboveThePhaseEntry(t)
-	named := phaseEntryListNames(t)
+	_, named := phaseEntryList(t)
 	slices.Sort(named)
 	for _, name := range slices.Compact(named) {
 		switch {
@@ -122,9 +130,56 @@ func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 			"20990101000001_seen and 20990101000003_seen_with_it touch none of the six.\n",
 			[]string{"20990101000001_seen", "20990101000003_seen_with_it"}},
 	} {
-		got := phaseEntryListNamesIn(t, list.shape, opening+list.entries+end)
-		if !slices.Equal(got, list.want) {
-			t.Errorf("%s: the list counts %v, want %v: %q", list.shape, got, list.want, list.entries)
+		described, named := phaseEntryListIn(t, list.shape, opening+list.entries+end)
+		if !slices.Equal(described, list.want) || !slices.Equal(named, list.want) {
+			t.Errorf("%s: the list describes %v and names %v, want %v for both: %q", list.shape, described,
+				named, list.want, list.entries)
+		}
+	}
+}
+
+// A migration counts as described only where an entry says what the block does to it: where it
+// opens the entry, or opens a clause of it after ", and", alone or with others joined by "and",
+// each perhaps followed by the ", of <reference>," of the change it came with. A name anywhere
+// else in an entry is a mention in passing, which tells the operator nothing of what the block
+// does to that migration, so it describes nothing, while the list still names it and the other
+// test still holds that name to the embedded set. The cases are the shapes the guide's entries
+// take, and two mentions in passing.
+func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntryOrAClause(t *testing.T) {
+	const (
+		opening = "The migrations recorded above this one at contract 146 are these.\n"
+		end     = "The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`.\n"
+	)
+	for _, list := range []struct {
+		shape, entry        string
+		described, mentions []string
+	}{
+		{"one migration opening its entry",
+			"20990101000001_alone adds a column and touches none of the six.",
+			[]string{"20990101000001_alone"}, nil},
+		{"one migration and the change it came with",
+			"20990101000001_alone, of owner/repo#1, adds a column and touches none of the six.",
+			[]string{"20990101000001_alone"}, nil},
+		{"several migrations joined by and",
+			"20990101000001_first and 20990101000002_second, of owner/repo#2, and 20990101000003_third, " +
+				"of owner/repo#3, touch none of the six either.",
+			[]string{"20990101000001_first", "20990101000002_second", "20990101000003_third"}, nil},
+		{"a migration opening a clause after \", and\"",
+			"20990101000001_first writes into three of the six, and 20990101000002_second adds the table " +
+				"it marks, so the block above reverses both first.",
+			[]string{"20990101000001_first", "20990101000002_second"}, nil},
+		{"a mention in parentheses",
+			"20990101000001_alone adds a column. (The same release also includes 20990101000002_passing.)",
+			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
+		{"a mention after and inside a clause",
+			"20990101000001_alone adds a column and 20990101000002_passing reads it.",
+			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
+	} {
+		described, named := phaseEntryListIn(t, list.shape, opening+list.entry+"\n"+end)
+		if want := append(slices.Clone(list.described), list.mentions...); !slices.Equal(described, list.described) ||
+			!slices.Equal(named, want) {
+			t.Errorf("%s: the list describes %v and names %v, want %v described and %v named: %q", list.shape,
+				described, named, list.described, want, list.entry)
 		}
 	}
 }
@@ -152,20 +207,19 @@ func embeddedMigrationsAboveThePhaseEntry(t *testing.T) (above, all []string) {
 	return all[at+1:], all
 }
 
-// phaseEntryListNames is every migration name the list in the guide carries
-// (phaseEntryListNamesIn).
-func phaseEntryListNames(t *testing.T) []string {
+// phaseEntryList is what the list in the guide describes and names (phaseEntryListIn).
+func phaseEntryList(t *testing.T) (described, named []string) {
 	t.Helper()
-	return phaseEntryListNamesIn(t, wayBackGuide, shippedText(t, wayBackGuide))
+	return phaseEntryListIn(t, wayBackGuide, shippedText(t, wayBackGuide))
 }
 
-// phaseEntryListNamesIn is every migration name the list in text, the guide called name,
-// carries where a reader sees it: the lines after its opening sentence, up to the line
-// phaseEntryListEnd opens, with every HTML comment taken out. A text with no such sentence or
-// with two, with no such line after it, or whose list names no migration stops the test: each
-// would otherwise read as a list that names nothing, which
-// TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes.
-func phaseEntryListNamesIn(t *testing.T, name, text string) []string {
+// phaseEntryListIn reads the list in text, the guide called name, where a reader sees it: the
+// lines after its opening sentence, up to the line phaseEntryListEnd opens, with every HTML
+// comment taken out. It answers the migrations the list describes and every migration name it
+// carries. A text with no such sentence or with two, with no such line after it, or whose list
+// names no migration stops the test: each would otherwise read as a list that names nothing,
+// which TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes.
+func phaseEntryListIn(t *testing.T, name, text string) (described, named []string) {
 	t.Helper()
 	lines := strings.Split(text, "\n")
 	start := -1
@@ -190,9 +244,14 @@ func phaseEntryListNamesIn(t *testing.T, name, text string) []string {
 			name, phaseEntryListEnd, start+1, phaseEntryMigration)
 	}
 	visible := htmlComment.ReplaceAllString(strings.Join(lines[start+1:start+1+end], "\n"), "")
-	names := migrationNameInGuide.FindAllString(visible, -1)
-	if len(names) == 0 {
+	named = migrationNameInGuide.FindAllString(visible, -1)
+	if len(named) == 0 {
 		t.Fatalf("%s's list after line %d names no migration", name, start+1)
 	}
-	return names
+	for _, entry := range strings.Split(visible, "\n") {
+		for _, subjects := range entrySubjects.FindAllStringSubmatch(strings.TrimLeft(entry, " \t"), -1) {
+			described = append(described, migrationNameInGuide.FindAllString(subjects[1], -1)...)
+		}
+	}
+	return described, named
 }
