@@ -28,7 +28,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 	runs := 0
 	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
 		end := day.AddDate(0, 0, 1)
-		own, err := delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
+		own, err := delivery.ReadMergedRows(ctx, pool, settings, day, end)
 		if err != nil {
 			t.Fatalf("read the rows of %s: %v", day, err)
 		}

@@ -7,6 +7,7 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -396,16 +397,7 @@ type WaitingPullRequest struct {
 // bound this needs. The shipping run is read here rather than from the window's own runs, which
 // start at the window and so can miss a run created before it.
 func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
-	rows, err := pool.Query(ctx, `
-		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
-		from delivery_pull_requests pr
-		`+shippingRunJoin("$1", "$2", "$5")+`
-		where pr.repo = $1 and pr.merged_at < $3 and pr.merged_at >= coalesce((
-			`+latestShipBefore("$1", "$2", "$5", "$3")+`
-		), '-infinity')
-		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
-		limit $4
-	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep)
+	rows, err := pool.Query(ctx, pullRequestsWaitingAtQuery, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep)
 	if err != nil {
 		return nil, err
 	}
@@ -423,44 +415,86 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo
 	return waiting, rows.Err()
 }
 
-// shippingRunJoin is the SQL of when a deploy ships a pull request, the one statement of the rule
-// FirstShippingApply states in Go (containment.go), which TestTheWaitingSQLAgreesWithTheShippingRule
-// keeps in step with it: a lateral join on the alias pr of delivery_pull_requests that finds, as
-// ship.run_id and ship.completed_at (both null while nothing has shipped it), the earliest-finishing
-// successful production job of a deploy run on main that GitHub created after pr's merge
-// (runCreatedAt), judged by Production.Conclusion. A run on another branch, or one stored before
-// head_branch was (null until the reconcile's backfill fills it), ships nothing. repo, jobNames and
-// applyStep are the placeholders of the query that embeds it, bound to the deploy repository,
-// Production.JobNames and Production.ApplyStep. ListPullRequestsWaitingAt and listUnrecordedShipped
-// (deployed.go) both embed it, so the timeline's waiting line and the issue.deployed event cannot
-// disagree on which run shipped a pull request.
-func shippingRunJoin(repo, jobNames, applyStep string) string {
-	return `left join lateral (
-			select r.run_id, j.completed_at
-			from delivery_runs r
+// pullRequestsWaitingAtQuery is ListPullRequestsWaitingAt's read, built once, at start.
+var pullRequestsWaitingAtQuery = `
+		select ` + PullRequestColumns + `, ship.run_id, ship.completed_at
+		from delivery_pull_requests pr
+		` + shippingRunJoin("$1", "$2", "$5") + `
+		where pr.repo = $1 and pr.merged_at < $3 and pr.merged_at >= coalesce((
+			` + latestShipBefore("$1", "$2", "$5", "$3") + `
+		), '-infinity')
+		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
+		limit $4`
+
+// shippingJobs is the from and where clauses every statement of the shipping rule reads by: the
+// listed production jobs (jobNames), alias j, of the deploy runs on main of repo, alias r, that
+// succeeded as Production.Conclusion reads a job, applyStep being the rule's step. A run on another
+// branch, or one stored before head_branch was (null until the reconcile's backfill fills it),
+// ships nothing. Each statement that embeds it adds its own bounds on j.completed_at and on the
+// run's creation (runCreatedAt). repo, jobNames and applyStep are the placeholders of the query
+// that embeds it, bound to the deploy repository, Production.JobNames and Production.ApplyStep.
+func shippingJobs(repo, jobNames, applyStep string) string {
+	return `from delivery_runs r
 			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any(` + jobNames + `)
 			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
-				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')
-				and j.completed_at is not null and ` + runCreatedAt + ` > pr.merged_at
-			order by j.completed_at
+				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')`
+}
+
+// firstShipCompletion is the SQL of the completion of a successful production job (shippingJobs)
+// of the deploy run on main GitHub created first among those created after a moment, created
+// being the condition on the run's creation that says after what (`> pr.merged_at`), or null when
+// no such run holds one. It bounds the runs that can ship first what merged before that moment: a
+// run's job completes after the run is created (latestShipBefore), so a run created after this
+// completion completes after it too, while this run, created after the moment, completes by then.
+// The run that ships such a pull request first (FirstShippingApply) was therefore created after
+// the moment and by this completion, whichever of a run's jobs or of the runs created in one
+// instant it is read from. The read of delivery_runs_kind_created oldest first ends at the first
+// run holding such a job, rather than probing the jobs of every run created since.
+func firstShipCompletion(repo, jobNames, applyStep, created string) string {
+	return `select j.completed_at
+			` + shippingJobs(repo, jobNames, applyStep) + `
+				and j.completed_at is not null and ` + runCreatedAt + ` ` + created + `
+			order by ` + runCreatedAt + `
+			limit 1`
+}
+
+// shippingRunJoin is the SQL of when a deploy ships a pull request, the one statement of the rule
+// FirstShippingApply states in Go (containment.go), which TestTheWaitingSQLAgreesWithTheShippingRule
+// keeps in step with it: lateral joins on the alias pr of delivery_pull_requests that find, as
+// ship.run_id and ship.completed_at (both null while nothing has shipped it), the earliest-finishing
+// successful production job (shippingJobs) of a deploy run on main that GitHub created after pr's
+// merge (runCreatedAt), the lower run id among those finishing together, as compareApplies orders
+// them. The runs it reads are those created after the merge and by firstShipCompletion's bound on
+// them, a handful: read with every run created since the merge, the 84-day timeline's waiting line
+// probed the production jobs of every deploy run of its window, 14 to 20 ms of its first paint's
+// database time at INFRA's size (dispatch://INFRA-2916, R8).
+// repo, jobNames and applyStep are shippingJobs'. ListPullRequestsWaitingAt and
+// listUnrecordedShipped (deployed.go) both embed it, so the timeline's waiting line and the
+// issue.deployed event cannot disagree on which run shipped a pull request.
+func shippingRunJoin(repo, jobNames, applyStep string) string {
+	return `left join lateral (
+			` + firstShipCompletion(repo, jobNames, applyStep, "> pr.merged_at") + `
+		) first_ship on true
+		left join lateral (
+			select r.run_id, j.completed_at
+			` + shippingJobs(repo, jobNames, applyStep) + `
+				and j.completed_at is not null and ` + runCreatedAt + ` > pr.merged_at and ` + runCreatedAt + ` <= first_ship.completed_at
+			order by j.completed_at, r.run_id
 			limit 1
 		) ship on true`
 }
 
 // latestShipBefore is the SQL of the latest creation (runCreatedAt) among the deploy runs on main
-// whose production job succeeded, by shippingRunJoin's judgement, before at: a pull request merged
-// before it had shipped by at, since that run was created after the merge and its job succeeded
-// before at. A run's job completes after the run is created, so every such run was created before
-// at too, which the statement says: the read of delivery_runs_kind_created newest first starts at
-// at rather than at the newest run, whose jobs every later run would make it probe. repo,
-// jobNames, applyStep and at are the placeholders of the query that embeds it.
-// ListPullRequestsWaitingAt and readLatestShipBefore both embed it.
+// whose production job succeeded (shippingJobs) before at: a pull request merged before it had
+// shipped by at, since that run was created after the merge and its job succeeded before at. A
+// run's job completes after the run is created, so every such run was created before at too, which
+// the statement says: the read of delivery_runs_kind_created newest first starts at at rather than
+// at the newest run, whose jobs every later run would make it probe. repo, jobNames and applyStep
+// are shippingJobs', and at the placeholder of the moment. ListPullRequestsWaitingAt and
+// readLatestShipBefore both embed it.
 func latestShipBefore(repo, jobNames, applyStep, at string) string {
 	return `select ` + runCreatedAt + `
-			from delivery_runs r
-			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any(` + jobNames + `)
-			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
-				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')
+			` + shippingJobs(repo, jobNames, applyStep) + `
 				and j.completed_at < ` + at + ` and ` + runCreatedAt + ` < ` + at + `
 			order by ` + runCreatedAt + ` desc
 			limit 1`
@@ -576,13 +610,20 @@ const runCreatedAt = `coalesce(r.created_at, r.started_at)`
 
 // ScanRun decodes one RunColumns row into a DeliveryRun.
 func ScanRun(row pgx.Row) (DeliveryRun, error) {
+	return scanRun(row)
+}
+
+// scanRun is ScanRun for a row that selects more columns after RunColumns, scanned into extra in
+// order.
+func scanRun(row pgx.Row, extra ...any) (DeliveryRun, error) {
 	var run DeliveryRun
 	var kind string
 	var conclusion *string
-	if err := row.Scan(
+	dest := []any{
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
 		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event,
-	); err != nil {
+	}
+	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryRun{}, err
 	}
 	run.Kind = DeliveryRunKind(kind)
@@ -899,16 +940,18 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 // key for each run and name it asks for, and never a run's other jobs.
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
-// runJobsNamedOrFailedForRunsQuery is listRunJobsNamedOrFailedForRuns' read: the jobs named $3 of
-// each run, through the primary key as runJobsNamedForRunsQuery reads them, and each run's failed
-// jobs of any other name, through delivery_run_jobs_failed (migration 20261114154233), the partial
-// index of the failed jobs alone, keyed by the run. `name <> all($3)` leaves a named job that
-// failed to the first part, so no job is answered twice. The failure is written into the
-// statement, not bound, so the planner proves the index's predicate from the statement under a
-// generic plan too; and since the index's predicate states it, Postgres plans no condition for it
-// either, so the plan's index condition of that part is the repository and the run alone.
-const runJobsNamedOrFailedForRunsQuery = runJobsNamedForRunsQuery + ` union all select ` + JobColumns +
-	` from delivery_run_jobs where repo = $1 and run_id = any($2) and conclusion = 'failure' and name <> all($3)`
+// runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
+// $3, through delivery_run_jobs_failed (migration 20261114154233), the partial index of the failed
+// jobs alone, keyed by the run. `name <> all($3)` leaves a named job that failed to the read by
+// name (runJobsNamedForRunsQuery), so the two answer no job in common. The failure is written
+// into the statement, not bound, so the planner proves the index's predicate from the statement
+// under a generic plan too; and since the index's predicate states it, Postgres plans no condition
+// for it either, so the plan's index condition is the repository and the run alone. It is a
+// statement of its own rather than a `union all` with the read by name: Postgres planned that union
+// as a Parallel Append under a Gather, whose worker read the named part in 12 ms where the read by
+// name alone read the same rows in 3.3 ms, and the union cost 21 to 24 ms of the 84-day timeline's
+// first paint at INFRA's size (dispatch://INFRA-2916, R8).
+const runJobsFailedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and conclusion = 'failure' and name <> all($3)`
 
 // everyRunJobForRunsQuery is listEveryRunJobForRuns' read: every job of each run.
 const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2)`
@@ -922,9 +965,9 @@ const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_job
 // the deploy workflow holds a handful of jobs and a pull-request run dozens, and the read with no
 // name in it cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13),
 // where `name = any($3)` keys each run's read to the jobs asked for (runJobsNamedForRunsQuery).
-// No name is no read. listRunJobsNamedOrFailedForRuns is the read for a caller that needs a run's
-// failed jobs beside the named ones, and listEveryRunJobForRuns for one that needs every job a
-// run ran.
+// No name is no read. listRunJobsFailedForRuns is the read for a caller that needs a run's failed
+// jobs beside the named ones (namedAndFailedJobs), and listEveryRunJobForRuns for one that needs
+// every job a run ran.
 //
 // Returns a map keyed by run id for a caller to index directly, each run's jobs in ListRunJobs'
 // order; a run holding none of the names has no entry.
@@ -935,19 +978,45 @@ func ListRunJobsForRuns(ctx context.Context, pool *store.Pool, repo string, runI
 	return runJobsByRun(ctx, pool, runIDs, runJobsNamedForRunsQuery, repo, runIDs, names)
 }
 
-// listRunJobsNamedOrFailedForRuns lists, of every run in runIDs on repo, the jobs named names and
-// every job that failed, whatever its name, in one query (runJobsNamedOrFailedForRunsQuery), each
-// run's in ListRunJobs' order: the timeline's read of the deploy runs it lists. It judges each run
-// by its production jobs (Production.JudgedJobNames), as every other reader does, and lists each
-// with its failed jobs and the job that failed first (FailedJobs, RootFailingJob), which keep the
-// jobs whose conclusion is failure alone and so answer from these jobs what they answer from
-// every job. It reads each run's failed jobs through an index that holds no other, so it reads in
-// proportion to the runs' failures, where a read of every job read all of a run's jobs to judge
-// its one production job. names empty reads the failed jobs alone.
-func listRunJobsNamedOrFailedForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64, names []string) (map[int64][]DeliveryRunJob, error) {
+// listRunJobsFailedForRuns lists, of every run in runIDs on repo, every job that failed and is not
+// named names, in one query (runJobsFailedForRunsQuery), each run's in ListRunJobs' order: with
+// the jobs ListRunJobsForRuns reads by names (namedAndFailedJobs), the timeline's read of the
+// deploy runs it lists. It judges each run by its production jobs (Production.JudgedJobNames), as
+// every other reader does, and lists each with its failed jobs and the job that failed first
+// (FailedJobs, RootFailingJob), which keep the jobs whose conclusion is failure alone and so
+// answer from these jobs what they answer from every job. It reads each run's failed jobs through
+// an index that holds no other, so it reads in proportion to the runs' failures, where a read of
+// every job read all of a run's jobs to judge its one production job. names empty reads every
+// failed job.
+func listRunJobsFailedForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64, names []string) (map[int64][]DeliveryRunJob, error) {
 	// A nil list binds as NULL, under which `name <> all($3)` holds for no job; an empty one holds
 	// for every job.
-	return runJobsByRun(ctx, pool, runIDs, runJobsNamedOrFailedForRunsQuery, repo, runIDs, nonNil(names))
+	return runJobsByRun(ctx, pool, runIDs, runJobsFailedForRunsQuery, repo, runIDs, nonNil(names))
+}
+
+// namedAndFailedJobs is, of each of runs, its jobs named holds (ListRunJobsForRuns) and those
+// failed holds (listRunJobsFailedForRuns, nil for none), in ListRunJobs' order, with no entry for a
+// run neither holds a job of: what one read of both answers. The two reads answer no job in
+// common. A run with no failed job keeps named's own list.
+func namedAndFailedJobs(runs []DeliveryRun, named, failed map[int64][]DeliveryRunJob) map[int64][]DeliveryRunJob {
+	jobs := make(map[int64][]DeliveryRunJob, len(runs))
+	for _, run := range runs {
+		id := run.RunID
+		own, failedOwn := named[id], failed[id]
+		switch {
+		case len(failedOwn) == 0 && len(own) == 0:
+			continue
+		case len(failedOwn) == 0:
+			jobs[id] = own
+		case len(own) == 0:
+			jobs[id] = failedOwn
+		default:
+			both := slices.Concat(own, failedOwn)
+			slices.SortFunc(both, compareRunJobs)
+			jobs[id] = both
+		}
+	}
+	return jobs
 }
 
 // listEveryRunJobForRuns lists every job of every run in runIDs on repo, as ListRunJobsForRuns
@@ -1030,6 +1099,95 @@ func listRuns(ctx context.Context, pool *store.Pool, repo string, kind DeliveryR
 		runs = append(runs, run)
 	}
 	return runs, rows.Err()
+}
+
+// windowApplyRunsCreated is the creation of a window's apply runs (listWindowRuns) over the alias
+// r: at $2, the window's start, or later, and no later than firstShipCompletion's bound of the
+// deploy runs created at or after $3, the window's end. A pull request merged before the end, the
+// window's own and those merged before it that its deploys can ship (Deploys.Earlier), ships first
+// with a run created by that bound or with none, so a run created after it decides nothing a
+// route answers; and the measures of a window in the past read every run from its start to the
+// present without it, twice the window's own for the 84-day compare range, which cost 37 to 49 ms
+// of its first paint at INFRA's size (dispatch://INFRA-2916, R8). A window ending at the present
+// holds no run created after it, so nothing bounds it. $4 and $5 are Production.JobNames and
+// Production.ApplyStep.
+var windowApplyRunsCreated = runCreatedAt + ` >= $2 and ` + runCreatedAt + ` <= coalesce((
+			` + firstShipCompletion("$1", "$4", "$5", ">= $3") + `
+		), 'infinity')`
+
+// windowApplyRunsQuery is listWindowRuns' read of a window's apply runs alone, each flagged as an
+// apply run and as no deploy of the window, oldest creation first.
+var windowApplyRunsQuery = `
+		select ` + RunColumns + `, true, false
+		from delivery_runs r
+		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated + `
+		order by ` + runCreatedAt + `, r.run_id
+		limit $6`
+
+// windowRunsQuery is listWindowRuns' read of a window's apply runs and of its deploys, the deploy
+// runs on main started in [$2, $3), as one list oldest creation first, each run flagged by which of
+// the two it is: the apply runs, then each run started in the window that is not one of them.
+// Nearly every deploy of a window is one of its apply runs, so the second part reads the window's
+// runs through delivery_runs_kind_started_at and answers the few GitHub created before its start.
+var windowRunsQuery = `
+		select ` + RunColumns + `, applies, started from (
+			select ` + RunColumns + `, true as applies, r.started_at >= $2 and r.started_at < $3 as started
+			from delivery_runs r
+			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated + `
+			union all
+			select ` + RunColumns + `, ` + runCreatedAt + ` >= $2, true
+			from delivery_runs r
+			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.started_at >= $2 and r.started_at < $3
+				and not (` + windowApplyRunsCreated + `)
+		) runs
+		order by coalesce(created_at, started_at), run_id
+		limit $6`
+
+// listWindowRuns lists the apply runs of [from, to) of the deploy repository repo, oldest creation
+// first (windowApplyRunsCreated): the runs listRuns lists from from, but for those created after
+// the bound. With started it lists the window's deploys too, the runs listRunsStartedIn lists of
+// it on main, oldest start first and those started in one instant by run id: one read of both,
+// whose runs are nearly all one list's and the other's, rather than two. production is the rule
+// the bound judges a deploy by. Bounded by maxRunsPerWindow, as listRuns is.
+func listWindowRuns(ctx context.Context, pool *store.Pool, repo string, production Production, from, to time.Time, started bool) (windowRuns, error) {
+	query := windowApplyRunsQuery
+	if started {
+		query = windowRunsQuery
+	}
+	rows, err := pool.Query(ctx, query, repo, from, to, production.JobNames, production.ApplyStep, maxRunsPerWindow)
+	if err != nil {
+		return windowRuns{}, err
+	}
+	defer rows.Close()
+	listed := windowRuns{apply: []DeliveryRun{}, started: []DeliveryRun{}}
+	for rows.Next() {
+		var applies, inWindow bool
+		run, err := scanRun(rows, &applies, &inWindow)
+		if err != nil {
+			return windowRuns{}, err
+		}
+		listed.ids = append(listed.ids, run.RunID)
+		if applies {
+			listed.apply = append(listed.apply, run)
+		}
+		if inWindow {
+			listed.started = append(listed.started, run)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return windowRuns{}, err
+	}
+	slices.SortFunc(listed.started, func(a, b DeliveryRun) int {
+		return cmp.Or(a.StartedAt.Compare(b.StartedAt), cmp.Compare(a.RunID, b.RunID))
+	})
+	return listed, nil
+}
+
+// windowRuns is listWindowRuns' answer: a window's apply runs, oldest creation first, its deploys,
+// oldest start first, and the id of every run either list holds, once each.
+type windowRuns struct {
+	apply, started []DeliveryRun
+	ids            []int64
 }
 
 // listRunsStartedIn lists every run of kind on repo with started_at in [from, to), oldest start

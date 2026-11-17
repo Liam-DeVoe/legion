@@ -342,7 +342,7 @@ func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.Da
 // (evalRangeReads): change-fail-rate's pull requests and its deploys both read them.
 func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead) (delivery.MergedRows, error) {
 	if read.shared.merged == nil {
-		merged, err := delivery.ReadMergedRows(ctx, s.deps.Store.Pool, *read.settings, read.rng.days.From, read.rng.days.To, false)
+		merged, err := delivery.ReadMergedRows(ctx, s.deps.Store.Pool, *read.settings, read.rng.days.From, read.rng.days.To)
 		if err != nil {
 			return delivery.MergedRows{}, err
 		}

@@ -229,7 +229,7 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 			if applyRows != nil {
 				merged, err = delivery.MergedRowsWith(ctx, pool, *applyRows, day, end)
 			} else {
-				merged, err = delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
+				merged, err = delivery.ReadMergedRows(ctx, pool, settings, day, end)
 			}
 			if err != nil {
 				return fmt.Errorf("read the pull requests of %s: %w", day.Format(time.DateOnly), err)

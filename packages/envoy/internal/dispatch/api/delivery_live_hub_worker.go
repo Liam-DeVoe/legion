@@ -346,6 +346,11 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 		if issue != nil {
 			read.issues[*issue] = struct{}{}
 		}
+		// A population read without its labels (a measures view selecting nothing) shows no
+		// session by its title, so no session's new title moves its answer.
+		if !read.pop.labels {
+			return
+		}
 		for _, session := range sessions {
 			read.sessions[session] = delivery.SessionTitle(read.pop.titles, session)
 		}

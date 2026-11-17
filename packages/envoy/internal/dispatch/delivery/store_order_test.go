@@ -97,10 +97,20 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 				t.Fatalf("ListRunJobsForRuns: %v", err)
 			}
 			// notify-slack is named and did not fail; deploy is named and failed, and comes back once.
-			namedOrFailed, err := listRunJobsNamedOrFailedForRuns(ctx, planned, "acme/widgets", runs, []string{"notify-slack", "deploy"})
+			timelineNames := []string{"notify-slack", "deploy"}
+			timelineNamed, err := ListRunJobsForRuns(ctx, planned, "acme/widgets", runs, timelineNames)
 			if err != nil {
-				t.Fatalf("listRunJobsNamedOrFailedForRuns: %v", err)
+				t.Fatalf("ListRunJobsForRuns: %v", err)
 			}
+			failed, err := listRunJobsFailedForRuns(ctx, planned, "acme/widgets", runs, timelineNames)
+			if err != nil {
+				t.Fatalf("listRunJobsFailedForRuns: %v", err)
+			}
+			listedRuns := make([]DeliveryRun, len(runs))
+			for i, id := range runs {
+				listedRuns[i] = DeliveryRun{RunID: id}
+			}
+			namedAndFailed := namedAndFailedJobs(listedRuns, timelineNamed, failed)
 			for _, id := range runs {
 				if got := names(every[id]); !slices.Equal(got, want) {
 					t.Errorf("%s, listEveryRunJobForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
@@ -108,8 +118,8 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 				if got, want := names(named[id]), []string{"setup", "deploy", "test / unit"}; !slices.Equal(got, want) {
 					t.Errorf("%s, ListRunJobsForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
-				if got := names(namedOrFailed[id]); !slices.Equal(got, want) {
-					t.Errorf("%s, listRunJobsNamedOrFailedForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
+				if got := names(namedAndFailed[id]); !slices.Equal(got, want) {
+					t.Errorf("%s, the named and failed jobs of run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}
 		}

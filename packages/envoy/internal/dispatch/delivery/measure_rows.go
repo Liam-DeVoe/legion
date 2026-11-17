@@ -10,9 +10,10 @@ import (
 
 // The rows the delivery and CI measures count, read by one function for every reader that counts
 // them: the delivery routes (api's readDeliveryRows and readPipelinePopulation) read their
-// window's, and the eval registry's day rows (the refresher's read of a day, evals'
-// readDeliveryDay) one UTC day's, so a route and a day row count the same rows by the same reads,
-// and a deploy's shipped pull requests by the same rule (Deploys.ShippedBy).
+// window's (ReadWindowRows), and the eval registry's day rows (the refresher's read of a day, evals'
+// readDeliveryDay) one UTC day's (ReadMergedRows, ReadDeploys), so a route and a day row count the
+// same rows by the same rules, and a deploy's shipped pull requests by the same rule
+// (Deploys.ShippedBy).
 
 // MergedRows is the population pull requests merged in a window and the deploy runs that can have
 // shipped them.
@@ -20,28 +21,27 @@ type MergedRows struct {
 	// PullRequests is every population pull request merged in [from, to), as
 	// ListPullRequestsInWindow lists them.
 	PullRequests []DeliveryPullRequest
-	// ApplyRuns is every deploy run on main of the deploy repository that GitHub created at or
-	// after from (listRuns), unbounded past to: a pull request merged just before to may first
-	// ship after it, so bounding the read to [from, to) would read it as waiting. A production job
-	// on another branch ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged
+	// ApplyRuns is the deploy runs on main of the deploy repository that GitHub created at or
+	// after from, oldest creation first, unbounded past to: a pull request merged just before to
+	// may first ship after it, so bounding the read to [from, to) would read it as waiting.
+	// ReadMergedRows reads every such run (listRuns); ReadWindowRows those created by the bound
+	// past which no run ships a pull request first (windowApplyRunsCreated). A production job on
+	// another branch ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged
 	// by (Production.JudgedJobNames), which judge each run as its every job would, and with them,
 	// for the timeline, each of the run's jobs that failed.
 	ApplyRuns []DeliveryRun
 	ApplyJobs map[int64][]DeliveryRunJob
 }
 
-// ReadMergedRows reads MergedRows for [from, to): the pull requests, and the apply runs followed by
-// their jobs, side by side. failedJobs reads each apply run's failed jobs beside its production
-// jobs, which the timeline lists each deploy run with (its failed jobs and the job that failed
-// first, FailedJobs and RootFailingJob, can be any job, and keep the failed ones alone); every
-// other reader judges a run by its production jobs alone.
-func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs bool) (MergedRows, error) {
-	return readMergedRows(ctx, pool, settings, from, to, nil, failedJobs)
+// ReadMergedRows reads MergedRows for [from, to): the pull requests, and every apply run followed
+// by their production jobs, side by side.
+func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
+	return readMergedRows(ctx, pool, settings, from, to, nil)
 }
 
 // readMergedRows is ReadMergedRows, and with createdBefore set only the apply runs GitHub created
 // before it.
-func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time, failedJobs bool) (MergedRows, error) {
+func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
 	err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
@@ -49,7 +49,7 @@ func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 			return err
 		},
 		func(ctx context.Context) error {
-			applies, err := readApplyRows(ctx, pool, settings, from, createdBefore, failedJobs)
+			applies, err := readApplyRows(ctx, pool, settings, from, createdBefore)
 			rows.ApplyRuns, rows.ApplyJobs = applies.Runs, applies.Jobs
 			return err
 		})
@@ -73,11 +73,11 @@ type ApplyRows struct {
 // of every window starting at or after from: MergedRows.ApplyRuns and ApplyJobs as ReadMergedRows
 // reads them for a window from from.
 func ReadApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time) (ApplyRows, error) {
-	return readApplyRows(ctx, pool, settings, from, nil, false)
+	return readApplyRows(ctx, pool, settings, from, nil)
 }
 
-// readApplyRows is ReadApplyRows, with createdBefore and failedJobs as readMergedRows takes them.
-func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time, failedJobs bool) (ApplyRows, error) {
+// readApplyRows is ReadApplyRows, with createdBefore as readMergedRows takes it.
+func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time) (ApplyRows, error) {
 	runs, err := listRuns(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 	if err != nil {
 		return ApplyRows{}, err
@@ -86,15 +86,77 @@ func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 	for i, run := range runs {
 		runIDs[i] = run.RunID
 	}
-	read := ListRunJobsForRuns
-	if failedJobs {
-		read = listRunJobsNamedOrFailedForRuns
-	}
-	jobs, err := read(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
+	jobs, err := ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
 	if err != nil {
 		return ApplyRows{}, err
 	}
 	return ApplyRows{from: from, Runs: runs, Jobs: jobs}, nil
+}
+
+// ReadWindowRows is a delivery route's read of [from, to): MergedRows, with failedJobs each apply
+// run's failed jobs beside its production jobs, which the timeline lists each deploy run with (its
+// failed jobs and the job that failed first, FailedJobs and RootFailingJob, can be any job, and
+// keep the failed ones alone), and with deploys the window's Deploys, as ReadDeploys reads them.
+// The two lists of runs are nearly one, the runs of the window, so they are read in one statement
+// (listWindowRuns) and the production jobs of both in one more, where reading each list and its
+// jobs apart read the window's production jobs twice, three times the window's for the measures
+// of a compare range, whose apply runs reached to the present (dispatch://INFRA-2916, R8). The apply
+// runs are those a pull request of the window or of Deploys.Earlier can ship first with
+// (windowApplyRunsCreated), so every pull request's deploy is the one ReadMergedRows' runs give it.
+// The pull requests are read side by side with the runs and their jobs.
+func ReadWindowRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (MergedRows, Deploys, error) {
+	var rows MergedRows
+	var window Deploys
+	err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) (err error) {
+			rows.PullRequests, err = ListPullRequestsInWindow(ctx, pool, from, to)
+			return err
+		},
+		func(ctx context.Context) error {
+			applies, started, err := readWindowRuns(ctx, pool, settings, from, to, failedJobs, deploys)
+			rows.ApplyRuns, rows.ApplyJobs = applies.Runs, applies.Jobs
+			if err != nil || !deploys {
+				return err
+			}
+			window, err = deploysOf(ctx, pool, settings, from, started)
+			return err
+		})
+	if err != nil {
+		return MergedRows{}, Deploys{}, err
+	}
+	return rows, window, nil
+}
+
+// readWindowRuns reads ReadWindowRows' runs with their jobs: the apply runs, and with deploys the
+// deploys of the window, each with its production jobs, read for both lists in one statement, and
+// with failedJobs the apply runs' failed jobs too, in another beside it.
+func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (applies, started RunsWithJobs, err error) {
+	production := settings.Production()
+	listed, err := listWindowRuns(ctx, pool, settings.DeployRepo, production, from, to, deploys)
+	if err != nil {
+		return RunsWithJobs{}, RunsWithJobs{}, err
+	}
+	names := production.JudgedJobNames()
+	var named, failed map[int64][]DeliveryRunJob
+	reads := []func(ctx context.Context) error{func(ctx context.Context) (err error) {
+		named, err = ListRunJobsForRuns(ctx, pool, settings.DeployRepo, listed.ids, names)
+		return err
+	}}
+	if failedJobs {
+		applyIDs := make([]int64, len(listed.apply))
+		for i, run := range listed.apply {
+			applyIDs[i] = run.RunID
+		}
+		reads = append(reads, func(ctx context.Context) (err error) {
+			failed, err = listRunJobsFailedForRuns(ctx, pool, settings.DeployRepo, applyIDs, names)
+			return err
+		})
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+		return RunsWithJobs{}, RunsWithJobs{}, err
+	}
+	return RunsWithJobs{Runs: listed.apply, Jobs: namedAndFailedJobs(listed.apply, named, failed)},
+		RunsWithJobs{Runs: listed.started, Jobs: namedAndFailedJobs(listed.started, named, nil)}, nil
 }
 
 // MergedRowsWith is ReadMergedRows of [from, to), its production jobs alone, with the apply rows
@@ -147,11 +209,17 @@ type Deploys struct {
 // earlier still, so that run is among the apply runs. Nothing earlier is read where the window
 // holds no deploy, or since is not before from.
 func ReadDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (Deploys, error) {
-	production := settings.Production()
-	started, err := listRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, production.JudgedJobNames())
+	started, err := listRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, settings.Production().JudgedJobNames())
 	if err != nil {
 		return Deploys{}, err
 	}
+	return deploysOf(ctx, pool, settings, from, started)
+}
+
+// deploysOf is the Deploys of a window from from whose deploy runs, with the jobs each is judged by,
+// are started: the deploys among them, and the earlier rows ReadDeploys reads.
+func deploysOf(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, started RunsWithJobs) (Deploys, error) {
+	production := settings.Production()
 	deploys := Deploys{Started: started, Applies: ProductionApplies(started.Runs, started.Jobs, production).Applies}
 	if len(deploys.Applies) == 0 {
 		return deploys, nil
@@ -168,7 +236,7 @@ func ReadDeploys(ctx context.Context, pool *store.Pool, settings DeliverySetting
 	if !since.Before(from) {
 		return deploys, nil
 	}
-	if deploys.Earlier, err = readMergedRows(ctx, pool, settings, since, from, &from, false); err != nil {
+	if deploys.Earlier, err = readMergedRows(ctx, pool, settings, since, from, &from); err != nil {
 		return Deploys{}, err
 	}
 	return deploys, nil
@@ -176,11 +244,11 @@ func ReadDeploys(ctx context.Context, pool *store.Pool, settings DeliverySetting
 
 // ShippedBy is, for each of d.Applies that ships a pull request, the pull requests it ships first
 // (ContainingRun over the apply runs of window and of d.Earlier), whenever they merged: those of
-// window (ReadMergedRows of d's window) and those merged before it, of d.Earlier, each list in that
-// order. A deploy is one with pull requests when it ships one, whenever the pull request merged
-// (dispatch://INFRA-2916): the deploy-frequency measure's with_prs (measures.Run.ShippedPRs) is
-// this rule on the delivery routes and on the eval day rows alike. The pointers are into window's
-// and d.Earlier's lists.
+// window (ReadMergedRows or ReadWindowRows of d's window) and those merged before it, of
+// d.Earlier, each list in that order. A deploy is one with pull requests when it ships one,
+// whenever the pull request merged (dispatch://INFRA-2916): the deploy-frequency measure's
+// with_prs (measures.Run.ShippedPRs) is this rule on the delivery routes and on the eval day rows
+// alike. The pointers are into window's and d.Earlier's lists.
 func (d Deploys) ShippedBy(window MergedRows, settings DeliverySettings) map[int64][]*DeliveryPullRequest {
 	production := settings.Production()
 	// The two listings hold no run in common (Earlier's were created before the window, window's

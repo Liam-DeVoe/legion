@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
@@ -72,16 +73,16 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	}
 }
 
-// The timeline's read of its deploy runs' jobs (runJobsNamedOrFailedForRunsQuery) reads the named
-// jobs of each run through the primary key, as the read by name does, and each run's failed jobs
-// through delivery_run_jobs_failed, the partial index that holds the failed jobs alone, so it
-// reads in proportion to the runs' failures rather than every job they ran: `EXPLAIN (ANALYZE,
-// BUFFERS)` of its statement reads delivery_run_jobs through each of the two indexes once and
+// The timeline's reads of its deploy runs' jobs read the named jobs of each run through the
+// primary key (runJobsNamedForRunsQuery) and each run's failed jobs through
+// delivery_run_jobs_failed (runJobsFailedForRunsQuery), the partial index that holds the failed
+// jobs alone, so they read in proportion to the runs' failures rather than every job they ran:
+// `EXPLAIN (ANALYZE, BUFFERS)` of each statement reads delivery_run_jobs through its one index and
 // through nothing else. Postgres plans no condition a partial index's predicate implies, so the
-// failed part's index condition is the repository and the run, and its failure predicate is the
-// index's own, read from pg_index. Each run's jobs it answers are its named jobs and its failed
-// ones, in ListRunJobs' order, and FailedJobs, RootFailingJob, Production.Job and the deploys
-// answer from them what they answer from every job the run holds.
+// failed read's index condition is the repository and the run, and its failure predicate is the
+// index's own, read from pg_index. Each run's jobs the two answer (namedAndFailedJobs) are its
+// named jobs and its failed ones, in ListRunJobs' order, and FailedJobs, RootFailingJob,
+// Production.Job and the deploys answer from them what they answer from every job the run holds.
 func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -135,23 +136,28 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	}
 	names := production.JudgedJobNames()
 
-	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedOrFailedForRunsQuery, "acme/widgets", runs, names)
-	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
-		t.Fatalf("the timeline's run jobs read reads %v; want delivery_run_jobs alone:\n%s", read, raw)
-	}
-	if explaintest.SeqScansRelation(t, plan, "delivery_run_jobs") {
-		t.Fatalf("the timeline's run jobs read scans delivery_run_jobs whole:\n%s", raw)
-	}
-	named := indexScanOf(t, plan, raw, "delivery_run_jobs", "delivery_run_jobs_pkey")
-	for _, key := range []string{"repo =", "run_id = ANY", "name = ANY"} {
-		if !strings.Contains(named.Cond, key) {
-			t.Fatalf("the named part's index condition %q holds no %q; want each of repo, run_id and name to key the primary key:\n%s", named.Cond, key, raw)
+	named, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, names)
+	failedPlan, failedRaw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsFailedForRunsQuery, "acme/widgets", runs, names)
+	for _, read := range []struct {
+		what, index string
+		plan        json.RawMessage
+		raw         string
+		keys        []string
+	}{
+		{"named", "delivery_run_jobs_pkey", named, raw, []string{"repo =", "run_id = ANY", "name = ANY"}},
+		{"failed", "delivery_run_jobs_failed", failedPlan, failedRaw, []string{"repo =", "run_id = ANY"}},
+	} {
+		if scanned := scannedRelations(t, read.plan); !slices.Equal(scanned, []string{"delivery_run_jobs"}) {
+			t.Fatalf("the timeline's %s jobs read reads %v; want delivery_run_jobs alone:\n%s", read.what, scanned, read.raw)
 		}
-	}
-	failed := indexScanOf(t, plan, raw, "delivery_run_jobs", "delivery_run_jobs_failed")
-	for _, key := range []string{"repo =", "run_id = ANY"} {
-		if !strings.Contains(failed.Cond, key) {
-			t.Fatalf("the failed part's index condition %q holds no %q; want repo and run_id to key delivery_run_jobs_failed:\n%s", failed.Cond, key, raw)
+		if explaintest.SeqScansRelation(t, read.plan, "delivery_run_jobs") {
+			t.Fatalf("the timeline's %s jobs read scans delivery_run_jobs whole:\n%s", read.what, read.raw)
+		}
+		scan := indexScanOf(t, read.plan, read.raw, "delivery_run_jobs", read.index)
+		for _, key := range read.keys {
+			if !strings.Contains(scan.Cond, key) {
+				t.Fatalf("the %s read's index condition %q holds no %q; want each of %q to key %s:\n%s", read.what, scan.Cond, key, read.keys, read.index, read.raw)
+			}
 		}
 	}
 	var predicate string
@@ -162,10 +168,15 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 		t.Fatalf("delivery_run_jobs_failed's predicate = %q, want (conclusion = 'failure'::text): the index holds the failed jobs alone", predicate)
 	}
 
-	byRun, err := listRunJobsNamedOrFailedForRuns(ctx, pool, "acme/widgets", runs, names)
+	namedJobs, err := ListRunJobsForRuns(ctx, pool, "acme/widgets", runs, names)
 	if err != nil {
-		t.Fatalf("listRunJobsNamedOrFailedForRuns: %v", err)
+		t.Fatalf("ListRunJobsForRuns: %v", err)
 	}
+	failedJobs, err := listRunJobsFailedForRuns(ctx, pool, "acme/widgets", runs, names)
+	if err != nil {
+		t.Fatalf("listRunJobsFailedForRuns: %v", err)
+	}
+	byRun := namedAndFailedJobs(listed, namedJobs, failedJobs)
 	every, err := listEveryRunJobForRuns(ctx, pool, "acme/widgets", runs)
 	if err != nil {
 		t.Fatalf("listEveryRunJobForRuns: %v", err)
@@ -208,16 +219,16 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 		t.Errorf("the deploys of every job = %+v, want run 842's alone", applies)
 	}
 
-	none, err := listRunJobsNamedOrFailedForRuns(ctx, pool, "acme/widgets", runs, nil)
+	none, err := listRunJobsFailedForRuns(ctx, pool, "acme/widgets", runs, nil)
 	if err != nil {
-		t.Fatalf("listRunJobsNamedOrFailedForRuns with no name: %v", err)
+		t.Fatalf("listRunJobsFailedForRuns with no name: %v", err)
 	}
 	failures := 0
 	for _, id := range runs {
 		failures += len(FailedJobs(every[id]))
 		for _, job := range none[id] {
 			if job.Conclusion == nil || *job.Conclusion != failure {
-				t.Errorf("listRunJobsNamedOrFailedForRuns with no name answers run %d's %s, which did not fail", id, job.Name)
+				t.Errorf("listRunJobsFailedForRuns with no name answers run %d's %s, which did not fail", id, job.Name)
 			}
 		}
 	}
@@ -226,6 +237,6 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 		answered += len(jobs)
 	}
 	if answered != failures {
-		t.Errorf("listRunJobsNamedOrFailedForRuns with no name answers %d jobs, want the %d that failed", answered, failures)
+		t.Errorf("listRunJobsFailedForRuns with no name answers %d jobs, want the %d that failed", answered, failures)
 	}
 }
