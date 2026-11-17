@@ -424,7 +424,12 @@ export function useGoingOperations({
       );
       if (proposal === undefined || automatic.length > 0) {
         const waiting = stage?.kind === "preparing";
-        const label = rowLabel(acted, actedOffer && offerWith(actedOffer, automatic));
+        // The row names what its press sends: every automatic invocation no write still settles,
+        // a refused one included, as the confirm step it may open lists them.
+        const sends = runIndexes(actedOffer, "auto").filter(
+          (index) => !settled.has(`${acted}:${index}`)
+        );
+        const label = rowLabel(acted, actedOffer && offerWith(actedOffer, sends));
         options.push({
           hint: waiting ? (
             <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>Preparing…</span>

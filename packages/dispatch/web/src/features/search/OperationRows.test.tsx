@@ -750,6 +750,8 @@ test("a confirm step after a refusal of the route and a refusal for the setting 
         screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
       ).toEqual(["ISSUE_NOT_FOUND", "GOING_CONFIRMATION_REQUIRED"])
     );
+    // The row names what its press sends, as the confirm step it opens lists it.
+    await screen.findByRole("option", { name: /^Run issue update on LEGION-3 and LEGION-4/ });
     await submit(user);
     const step = await screen.findByTestId("going-confirm-step");
     expect(
