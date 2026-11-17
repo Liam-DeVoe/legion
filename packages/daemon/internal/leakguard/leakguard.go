@@ -1,24 +1,31 @@
 // Package leakguard is the one check a Legion write to a public GitHub repository passes before
-// it writes. Two checks run, in this order, and either one refuses the write:
+// it writes. Up to three checks run, in this order, and any one of them refuses the write:
 //
 //   - The shared public leak check, a script this repository does not hold, found at each call
 //     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
 //     GitHub reports public.
+//   - For a push to such a destination, the forbidden lists of the knives registry entries that
+//     name it (KnivesRegistriesVar), matched over the files the push adds as `knives audit`
+//     matches them. That audit was a step an agent had to remember before each push to a fork,
+//     and the records of the oh-my-pi fork's pushes on 2026-11-17 show most pushes went out
+//     without it (Guard.Push).
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of two answers from a refused write: a *Refusal, which is about the text the write
 // carries, and a *SetupFailure, which is the check missing, the check failing, the engine failing,
-// or a destination whose visibility cannot be read. Both refuse the write; they are two types so
-// that a call site can say which one it met, the way the shared check itself keeps
-// "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
+// a destination whose visibility cannot be read, or a knives registry that cannot be. Both refuse
+// the write; they are two types so that a call site can say which one it met, the way the shared
+// check itself keeps "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
 //
 // What the guard reports is the record and the class: never the text that matched, never the
 // component of a path that matched, and never anything the detection engine itself printed. The
 // classes are the descriptions of the rules in private-names.toml, and a path in a report has
 // every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does (its lines 145-154).
+// .github/scripts/check-private-names.sh does (its lines 145-154). The knives pass reports a
+// term by its number in its entry's list, and writes a path component that holds a term as
+// "<forbidden>".
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -65,15 +72,17 @@ type Options struct {
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
 	// Env is the environment the guard's children start from: the shared check, the visibility
-	// reads, and the git commands a push's records are read with. Nil means this process's own
-	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
-	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
-	// a credential prompt fail closed (promptsNothing), and each child's own names on top of those.
+	// reads, the git commands a push's records and remote URLs are read with, and the gh reads of
+	// the knives registries. It is also where the guard reads KnivesRegistriesVar. Nil means this
+	// process's own (os.Environ()). Every child keeps all of it but the read with no credential
+	// (Guard.lsRemote), which keeps only the names lsRemoteInherits allows. The guard adds to it
+	// the names that make a credential prompt fail closed (promptsNothing), and each child's own
+	// names on top of those.
 	Env []string
 }
 
-// Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
-// guard of its own for the one write it is about to make (cmd/legion's gh and leak-check,
+// Guard runs the checks. It holds no answer of an earlier call: every call site builds a guard of
+// its own for the one write it is about to make (cmd/legion's gh and leak-check,
 // internal/ghbranch), and each entry point reads a destination's visibility at most once, so
 // there is nothing a shared answer would spare.
 type Guard struct {

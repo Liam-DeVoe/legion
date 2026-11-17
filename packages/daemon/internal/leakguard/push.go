@@ -105,11 +105,17 @@ func PushName(remote string) string {
 	return "the push to " + remote
 }
 
-// Push checks a push before it is made. The shared check runs in its pre-push shape — the update
-// lines on its standard input, the repository as its working directory — and then, for a
-// destination GitHub reports public, this repository's own rules read the push's records: each
-// ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line.
+// Push checks a push before it is made, in three passes, and the first that refuses it is the
+// answer. The shared check runs in its pre-push shape — the update lines on its standard input,
+// the repository as its working directory. Then, for a destination GitHub reports public, two
+// passes read the push's records (pushRecords): this repository's own private-name rules, and,
+// over the records of the files the push adds, the forbidden lists of the knives registry entries
+// that name the push's destination (Guard.knives). A refusal of the rules is the answer before
+// any registry is read.
+//
+// The third pass is the check knives makes before a push to a fork, `knives audit`, which was a
+// step an agent had to remember to run: the records of the oh-my-pi fork's pushes on 2026-11-17
+// show most of them went out without one. As a pass of the push, it needs nobody to remember it.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.Resolve()
@@ -141,13 +147,17 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	return g.rules(ctx, what, records)
+	if err := g.rules(ctx, what, records); err != nil {
+		return err
+	}
+	return g.knives(ctx, what, req, records)
 }
 
-// pushRecords is everything a push would publish, as records: one per ref name, and for each
-// commit the push would add, one for the author identity, one for the committer identity, one
-// for the message, one for each added or renamed path and one for each added line. A commit
-// reached by two of the push's refs is read once.
+// pushRecords is everything a push would publish, as records, which the second and the third of
+// Push's passes both read, the third the records of files alone: one per ref name, and for each
+// commit the push would add, one for the author identity, one for the committer identity, one for
+// the message, one for each added or renamed path and one for each added line. A commit reached by
+// two of the push's refs is read once.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
 	var records []Record
 	read := map[string]bool{}

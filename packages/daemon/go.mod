@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats.go v1.53.1
 	github.com/nats-io/nkeys v0.4.16
+	github.com/pelletier/go-toml/v2 v2.2.3
 	github.com/sjawhar/envoy v0.0.0
 	github.com/spf13/viper v1.19.0
 	github.com/testcontainers/testcontainers-go v0.41.0
@@ -146,7 +147,6 @@ require (
 	github.com/nwaples/rardecode/v2 v2.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
-	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/pganalyze/pg_query_go/v6 v6.2.5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
