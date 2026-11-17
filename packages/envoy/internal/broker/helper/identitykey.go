@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/fileowner"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // identityKeyPEMType is the PEM block a P-256 key is kept in, the one `agent-secrets keygen`
@@ -21,17 +20,8 @@ import (
 const identityKeyPEMType = "PRIVATE KEY"
 
 // IdentityKeyNamed is how every message names the identity key file: where it lives under HOME,
-// never by its path. The file holds the key this machine's launcher credential is bound to, so
-// no message repeats the path it was read from, and an os error about it prints through
-// redact.File, which drops every path.
+// never by its path, since the file holds the key this machine's launcher credential is bound to.
 const IdentityKeyNamed = "the helper's identity key (~/.config/agent-secrets/identity-key.pem under HOME)"
-
-// identityKeyError is err, from a call on the identity key file or its directory, as a message
-// may print it: what the helper was doing to IdentityKeyNamed, and the call's operation and
-// reason alone (redact.File). It unwraps to err, so errors.Is(err, os.ErrNotExist) still holds.
-func identityKeyError(doing string, err error) error {
-	return fmt.Errorf("%s %s: %w", doing, IdentityKeyNamed, redact.File(err))
-}
 
 // LoadOrMakeIdentityKey is the key a machine that proves an identity of its own trades with: the
 // one its launcher credential is bound to, and the one the broker names that credential by, since
@@ -86,11 +76,11 @@ func LoadOrMakeIdentityKey(path string) (key *ecdsa.PrivateKey, made bool, err e
 func loadIdentityKey(path string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, identityKeyError("read", err)
+		return nil, fileError("read", IdentityKeyNamed, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, identityKeyError("stat", err)
+		return nil, fileError("stat", IdentityKeyNamed, err)
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("%s is mode %04o, which lets others read the key this machine's launcher credential is bound to; run chmod 600 on it", IdentityKeyNamed, perm)
@@ -122,7 +112,7 @@ func keepIdentityKey(path string, key *ecdsa.PrivateKey) (kept bool, err error) 
 	}
 	defer func() {
 		if err != nil {
-			err = identityKeyError("keep", err)
+			err = fileError("keep", IdentityKeyNamed, err)
 		}
 	}()
 	dir := filepath.Dir(path)

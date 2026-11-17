@@ -251,8 +251,6 @@ func New(cfg Config) (*Client, error) {
 		return nil, errors.New("brokerclient: no subject token source: nothing names the identity to trade")
 	}
 	if oauthwire.ValidProjects(cfg.Projects) != nil {
-		// Not the list itself: it is read from ProjectsVar (TradeProjects), and a value that
-		// variable cannot hold is where a credential pasted into the wrong variable shows up.
 		return nil, fmt.Errorf("brokerclient: the projects to trade for are not at most %d project keys, sorted and each named once", oauthwire.MaxProjects)
 	}
 	client := &Client{

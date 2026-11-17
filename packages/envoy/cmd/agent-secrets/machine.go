@@ -22,6 +22,14 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// refuseUnexpectedArgument prints form's refusal of an argument it does not take and answers
+// exitUsageError. The argument itself is not printed: an argument a form does not take is where
+// a credential pasted in the wrong place shows up.
+func refuseUnexpectedArgument(stderr io.Writer, form string) int {
+	fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n", form)
+	return exitUsageError
+}
+
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
 // login, prints the broker's confirmation code and where to type it — AGENT_SECRETS_APPROVE_URL's
 // /credentials/machine when that is set, else the broker's verification_uri the helper relays,
@@ -34,8 +42,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintln(stderr, "agent-secrets machine login: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)")
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "machine login")
 	}
 	sock, _ := helperSocket()
 	resp, err := helper.Call(sock, helper.Request{Op: "login"}, helper.BrokerCallWait)
@@ -110,8 +117,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintln(stderr, "agent-secrets machine login-status: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)")
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "machine login-status")
 	}
 	sock, _ := helperSocket()
 	resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second)
@@ -196,8 +202,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)\n", form)
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, form)
 	}
 	base, signer, err := machineContext()
 	if err != nil {

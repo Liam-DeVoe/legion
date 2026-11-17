@@ -8,9 +8,8 @@ import (
 // TestMetadataDescribeNeverPrintsTheAudiencesCredential: AGENT_SECRETS_MACHINE_AUDIENCE is a
 // configured value, usually the broker's URL. Describe is in every trade's log line
 // (Client.logf, "identity") and every trade error ("trade %s at %s"), so an audience carrying a
-// credential, or one that is no URL, prints as internal/redact's fixed phrase beside its setting,
-// as ProjectedToken.Describe names AGENT_SECRETS_MACHINE_TOKEN_FILE. Control: a plain audience
-// still prints whole.
+// credential, or one that is no URL, prints by its setting alone, as ProjectedToken.Describe
+// names AGENT_SECRETS_MACHINE_TOKEN_FILE. Control: a plain audience prints whole.
 func TestMetadataDescribeNeverPrintsTheAudiencesCredential(t *testing.T) {
 	const secret = "hunter2audpw7c1"
 	for _, audience := range []string{

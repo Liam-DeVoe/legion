@@ -29,8 +29,8 @@ import (
 // TestAPodTokenFileIsNamedByItsFlagNeverItsPath: a token pasted where --pod-token-file wants the
 // token's file, and a file that is there but blank, are refused by enroll --pod and by renew
 // naming --pod-token-file, and neither the pasted token nor the file's path is printed - nor, for
-// enroll, recorded in enrollment.error. A file that holds a token still enrols, and the renewal
-// command the enrolment prints still names that file, as it always did.
+// enroll, recorded in enrollment.error. A file that holds a token enrols, and the renewal command
+// the enrolment prints names that file.
 func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
 	const pasted = "hunter2pw-podtoken-7f3c91"
 	blankDir := filepath.Join(t.TempDir(), "hunter2pw-tokendir-0d4e55")
@@ -62,12 +62,7 @@ func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
 				t.Fatalf("read %s: %v", enrollmentErrorFile, err)
 			}
 			for what, text := range map[string]string{"stderr": stderr.String(), enrollmentErrorFile: string(recorded)} {
-				if strings.Contains(text, row.secret) {
-					t.Errorf("%s %q holds %q", what, text, row.secret)
-				}
-				if !strings.Contains(text, "--pod-token-file") {
-					t.Errorf("%s %q does not name --pod-token-file", what, text)
-				}
+				wantNamedNotPrinted(t, what, text, []string{"--pod-token-file"}, row.secret)
 			}
 			if n := len(calls()); n != 0 {
 				t.Fatalf("the broker was asked %d times, want none", n)
@@ -82,12 +77,7 @@ func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
 			if code := cmdRenew([]string{"--pod-token-file", row.path}, io.Discard, &stderr); code != exitUsageError {
 				t.Fatalf("exit %d, want %d (stderr %q)", code, exitUsageError, stderr.String())
 			}
-			if strings.Contains(stderr.String(), row.secret) {
-				t.Errorf("stderr %q holds %q", stderr.String(), row.secret)
-			}
-			if !strings.Contains(stderr.String(), "--pod-token-file") {
-				t.Errorf("stderr %q does not name --pod-token-file", stderr.String())
-			}
+			wantNamedNotPrinted(t, "stderr", stderr.String(), []string{"--pod-token-file"}, row.secret)
 			if n := len(calls()); n != 0 {
 				t.Fatalf("the broker was asked %d times, want none", n)
 			}
@@ -114,7 +104,7 @@ func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
 // that holds a key is still the key the enrolment keeps.
 func TestKeyPemInTheOutDirectoryIsNamedByItsFlagNeverItsPath(t *testing.T) {
 	const secret = "hunter2pw-outdir-3a9e42"
-	parserWords := []string{"x509:", "asn1:"}
+	leaked := []string{secret, "hunter2pw-keybytes-1e8f60", "x509:", "asn1:"}
 	for _, row := range []struct {
 		name  string
 		write func(t *testing.T, key string)
@@ -155,16 +145,7 @@ func TestKeyPemInTheOutDirectoryIsNamedByItsFlagNeverItsPath(t *testing.T) {
 				t.Fatalf("read %s: %v", enrollmentErrorFile, err)
 			}
 			for what, text := range map[string]string{"stderr": stderr.String(), enrollmentErrorFile: string(recorded)} {
-				for _, leaked := range append([]string{secret, "hunter2pw-keybytes-1e8f60"}, parserWords...) {
-					if strings.Contains(text, leaked) {
-						t.Errorf("%s %q holds %q", what, text, leaked)
-					}
-				}
-				for _, want := range []string{"key.pem in the directory --out", row.want} {
-					if !strings.Contains(text, want) {
-						t.Errorf("%s %q does not say %q", what, text, want)
-					}
-				}
+				wantNamedNotPrinted(t, what, text, []string{"key.pem in the directory --out", row.want}, leaked...)
 			}
 		})
 	}
@@ -208,16 +189,7 @@ func TestPodTokenClaimsThatCannotBeReadSayFixedText(t *testing.T) {
 			if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, &stdout, &stderr); code != 1 {
 				t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
 			}
-			for _, leaked := range []string{row.token, "hunter2pw", row.decoder} {
-				if strings.Contains(stderr.String(), leaked) {
-					t.Errorf("stderr %q holds %q", stderr.String(), leaked)
-				}
-			}
-			for _, want := range []string{"--pod-token-file", row.want} {
-				if !strings.Contains(stderr.String(), want) {
-					t.Errorf("stderr %q does not say %q", stderr.String(), want)
-				}
-			}
+			wantNamedNotPrinted(t, "stderr", stderr.String(), []string{"--pod-token-file", row.want}, row.token, "hunter2pw", row.decoder)
 			if n := len(calls()); n != 0 {
 				t.Fatalf("the broker was asked %d times, want none", n)
 			}
@@ -236,7 +208,7 @@ func TestPodTokenClaimsThatCannotBeReadSayFixedText(t *testing.T) {
 
 // TestAPodBrokerAnswerItCannotReadPrintsThroughWords: a token login or an enrolment the broker
 // answers 2xx with a body the client cannot decode is refused with the decoder's error as
-// brokeraddr.Address.Words lets it print: whole beside a clean AGENT_SECRETS_URL, as before, and
+// brokeraddr.Address.Words lets it print: whole beside a clean AGENT_SECRETS_URL, and
 // WordsNotPrinted beside one that carries a credential, where whoever answers can repeat that
 // credential in any text of its answer. The credential itself is never printed or recorded.
 func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {

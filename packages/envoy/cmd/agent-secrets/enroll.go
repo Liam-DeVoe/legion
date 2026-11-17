@@ -58,8 +58,7 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 		*out = os.Getenv("AGENT_SECRETS_KEY_DIR")
 	}
 	if len(positional) > 0 {
-		fmt.Fprintln(stderr, "agent-secrets enroll: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)")
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "enroll")
 	}
 	if *podFlag && *helperFlag {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --pod and --helper are mutually exclusive: a pod proves who it is with its own projected token, and needs no machine login")
@@ -171,8 +170,7 @@ func enrollRetryingDrain(sock string, req helper.Request) (helper.Response, erro
 func cmdUnenroll(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"enrollment": true})
 	if len(positional) > 0 {
-		fmt.Fprintln(stderr, "agent-secrets unenroll: unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)")
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "unenroll")
 	}
 	flags := newFlagSet("unenroll", stderr)
 	enrollmentID := flags.String("enrollment", "", "the enrollment id to revoke")

@@ -42,15 +42,16 @@ type machineFileJSON struct {
 // MachineFileNamed is how every message names the machine file: by the setting that names it,
 // never by its path. The file holds the machine's key and refresh token, and the setting is where
 // a person who pasted a secret in place of a path put it, so no message repeats the setting's
-// value, and an os error about the file prints through redact.File, which drops every path.
+// value.
 const MachineFileNamed = "the machine file AGENT_SECRETS_MACHINE_FILE names (default ~/.config/agent-secrets/machine.json)"
 
-// machineFileError is err, from a call on the machine file, its directory or a file beside it,
-// as a message may print it: what the helper was doing to MachineFileNamed, and the call's
-// operation and reason alone (redact.File). It unwraps to err, so errors.Is(err, os.ErrNotExist)
-// still holds.
-func machineFileError(doing string, err error) error {
-	return fmt.Errorf("%s %s: %w", doing, MachineFileNamed, redact.File(err))
+// fileError is err, from a call on one of the helper's own files, its directory or a file beside
+// it, as a message may print it: what the helper was doing to named (the file as
+// MachineFileNamed, IdentityKeyNamed, RecordsNamed or operatorFileNamed names it), and the call's
+// operation and reason alone (redact.File), which drops every path. It unwraps to err, so
+// errors.Is(err, os.ErrNotExist) still holds.
+func fileError(doing, named string, err error) error {
+	return fmt.Errorf("%s %s: %w", doing, named, redact.File(err))
 }
 
 // decodeKeyDER reads the shape both of this package's files keep a key in: PKCS#8 DER, base64
@@ -90,11 +91,11 @@ func encodeKeyDER(key *ecdsa.PrivateKey) (string, error) {
 func LoadMachineFile(path string) (*MachineFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, machineFileError("read", err)
+		return nil, fileError("read", MachineFileNamed, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, machineFileError("stat", err)
+		return nil, fileError("stat", MachineFileNamed, err)
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("%s is mode %04o, which lets others read the machine's key; run chmod 600 on it", MachineFileNamed, perm)
@@ -163,13 +164,13 @@ func (f *MachineFile) save(path string, write func(*os.File, []byte) (int, error
 		return err
 	}
 	if err := replaceFile(path, data, write); err != nil {
-		return machineFileError("save", err)
+		return fileError("save", MachineFileNamed, err)
 	}
 	return nil
 }
 
 // replaceFile is save's write of data over path, through a fresh temporary file beside it that a
-// failure removes; its error is the os call's own, for save to print through machineFileError.
+// failure removes; its error is the os call's own, for save to print through fileError.
 func replaceFile(path string, data []byte, write func(*os.File, []byte) (int, error)) (err error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -208,7 +209,7 @@ func replaceFile(path string, data []byte, write func(*os.File, []byte) (int, er
 // names the file as MachineFileNamed.
 func RemoveMachineFile(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return machineFileError("remove", err)
+		return fileError("remove", MachineFileNamed, err)
 	}
 	return nil
 }
@@ -220,12 +221,12 @@ func RemoveMachineFile(path string) error {
 func RemoveLeftoverMachineTemps(path string) error {
 	temps, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".machine-*.json.tmp"))
 	if err != nil {
-		return machineFileError("list the temporary files a save left beside", err)
+		return fileError("list the temporary files a save left beside", MachineFileNamed, err)
 	}
 	var errs []error
 	for _, temp := range temps {
 		if err := os.Remove(temp); err != nil && !errors.Is(err, os.ErrNotExist) {
-			errs = append(errs, machineFileError("remove a temporary file a save left beside", err))
+			errs = append(errs, fileError("remove a temporary file a save left beside", MachineFileNamed, err))
 		}
 	}
 	return errors.Join(errs...)

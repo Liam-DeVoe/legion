@@ -16,6 +16,21 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// wantNamedNotPrinted fails t unless text names each of named and holds none of secrets.
+func wantNamedNotPrinted(t *testing.T, what, text string, named []string, secrets ...string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(text, secret) {
+			t.Errorf("%s holds %q: %s", what, secret, text)
+		}
+	}
+	for _, name := range named {
+		if !strings.Contains(text, name) {
+			t.Errorf("%s does not name %q: %s", what, name, text)
+		}
+	}
+}
+
 // TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt: an AGENT_SECRETS_APPROVE_URL that
 // carries a credential, or that is no plain http(s) URL, is not printed, and the line names the
 // setting in its place; a plain one still prints as the page under it, and names the setting too.
@@ -39,16 +54,8 @@ func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
 			if exit != 0 {
 				t.Fatalf("exit %d, want 0 (stdout %q, stderr %q)", exit, stdout, stderr)
 			}
-			for _, secret := range row.secrets {
-				if strings.Contains(stdout+stderr, secret) {
-					t.Errorf("stdout %q, stderr %q hold %q", stdout, stderr, secret)
-				}
-			}
-			for _, want := range []string{row.want, "AGENT_SECRETS_APPROVE_URL"} {
-				if !strings.Contains(stdout, want) {
-					t.Errorf("stdout %q does not say %q", stdout, want)
-				}
-			}
+			wantNamedNotPrinted(t, "stdout and stderr", stdout+stderr, nil, row.secrets...)
+			wantNamedNotPrinted(t, "stdout", stdout, []string{row.want, "AGENT_SECRETS_APPROVE_URL"})
 		})
 	}
 }
@@ -72,14 +79,9 @@ func TestEnrollHelpPrintsNoKeyDirectory(t *testing.T) {
 		if code := cmdEnroll(row.args, &stdout, &stderr); code != row.exit {
 			t.Fatalf("enroll %v: exit %d, want %d (stderr %q)", row.args, code, row.exit, stderr.String())
 		}
-		if strings.Contains(stdout.String()+stderr.String(), secret) {
-			t.Errorf("enroll %v printed the key dir: %q", row.args, stderr.String())
-		}
-		for _, want := range []string{"AGENT_SECRETS_KEY_DIR when not given", `(default "` + defaultPodTokenFile + `")`} {
-			if !strings.Contains(stderr.String(), want) {
-				t.Errorf("enroll %v: stderr %q does not say %q", row.args, stderr.String(), want)
-			}
-		}
+		enroll := "enroll " + strings.Join(row.args, " ")
+		wantNamedNotPrinted(t, enroll+"'s stdout and stderr", stdout.String()+stderr.String(), nil, secret)
+		wantNamedNotPrinted(t, enroll+"'s stderr", stderr.String(), []string{"AGENT_SECRETS_KEY_DIR when not given", `(default "` + defaultPodTokenFile + `")`})
 	}
 }
 
@@ -100,12 +102,7 @@ func TestAnAirlockProxyURLThatCannotBeUsedIsNotPrinted(t *testing.T) {
 			if err == nil {
 				t.Fatalf("airlockProxyURL accepted %q", row.proxy)
 			}
-			if strings.Contains(err.Error(), row.secret) {
-				t.Errorf("the refusal %q holds %q", err, row.secret)
-			}
-			if !strings.Contains(err.Error(), "airlock proxy URL") {
-				t.Errorf("the refusal %q does not name the airlock proxy URL", err)
-			}
+			wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"airlock proxy URL"}, row.secret)
 		})
 	}
 	t.Run("control: a URL that names a host", func(t *testing.T) {
@@ -134,14 +131,7 @@ func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesNoPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("prepareAirlock put its directory in place over a file")
 	}
-	if strings.Contains(err.Error(), secret) {
-		t.Errorf("the refusal %q holds the path %q", err, secret)
-	}
-	for _, want := range []string{"put the airlock directory in place", "rename: not a directory"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal %q does not say %q", err, want)
-		}
-	}
+	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", "rename: not a directory"}, secret)
 
 	t.Run("control: nothing in the way", func(t *testing.T) {
 		if err := os.Remove(filepath.Join(root, "grant-one")); err != nil {

@@ -38,16 +38,6 @@ func wantNamedNotPrinted(t *testing.T, what, text string, named []string, secret
 	}
 }
 
-// readOnlyDir makes dir readable and searchable but not writable, for the rest of the test, so a
-// file in it can be read and neither made nor removed.
-func readOnlyDir(t *testing.T, dir string) {
-	t.Helper()
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-}
-
 // underAFile is a path whose parent directory is a regular file, so every call on it fails
 // "not a directory".
 func underAFile(t *testing.T, dir, name string) string {
@@ -143,7 +133,7 @@ func TestTheMachineFileIsNamedBySettingNeverByPath(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(locked, ".machine-1.json.tmp"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		readOnlyDir(t, locked)
+		unwritable(t, lockedFile)
 		err := RemoveMachineFile(lockedFile)
 		if err == nil {
 			t.Fatal("RemoveMachineFile in a read-only directory = nil")
@@ -199,7 +189,7 @@ func TestTheBrokersMachineFileLogLinesNameTheSettingNeverThePath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".machine-1.json.tmp"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	readOnlyDir(t, dir)
+	unwritable(t, path)
 
 	var out syncBuffer
 	resumed := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: first.OperatorFile, MachineFile: path, HTTP: f.srv.Client(),
@@ -309,8 +299,9 @@ func TestTheIdentityKeyIsNamedNeverByPath(t *testing.T) {
 			if err := os.MkdirAll(locked, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			readOnlyDir(t, locked)
-			return filepath.Join(locked, "identity-key.pem")
+			p := filepath.Join(locked, "identity-key.pem")
+			unwritable(t, p)
+			return p
 		}, "permission denied"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -391,8 +382,8 @@ func TestTheSessionRecordsAreNamedBySettingNeverByPath(t *testing.T) {
 }
 
 // TestARecordedKeyThatDoesNotParseIsFixedText: a record's key is the records file's content, so
-// the error for one that is not a P-256 PKCS#8 key is the helper's own words, not the base64 or
-// x509 parser's.
+// the error for one that does not decode is the helper's own words, not the base64 or x509
+// parser's.
 func TestARecordedKeyThatDoesNotParseIsFixedText(t *testing.T) {
 	for name, encoded := range map[string]string{
 		"not base64": "hunter2pw!not*base64",

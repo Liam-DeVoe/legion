@@ -9,8 +9,8 @@ import (
 
 // TestEnrollPodNeverPrintsTheOutDirectory: the directory --out (or AGENT_SECRETS_KEY_DIR) names
 // holds key.pem, a file that holds a credential, so -h keeps its value out (enroll.go) and
-// outKeyFile names key.pem by the flag. A refusal about the directory itself names it the same
-// way: a directory that cannot be made and a lock that cannot be opened in it printed its path.
+// outKeyFile names key.pem by the flag. A refusal about the directory itself, one that cannot be
+// made or a lock that cannot be opened in it, names it the same way.
 // Control: an --out holding the secret that is made fine, with the refusal elsewhere (the token
 // file is missing), prints no part of it.
 func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
@@ -38,12 +38,7 @@ func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
 			if exit == 0 || stderr == "" {
 				t.Fatalf("exit %d with stderr %q; want a refusal", exit, stderr)
 			}
-			if strings.Contains(stderr, secret) {
-				t.Errorf("stderr prints the directory: %q", stderr)
-			}
-			if !strings.Contains(stderr, row.setting) {
-				t.Errorf("stderr %q does not name %s", stderr, row.setting)
-			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.setting}, secret)
 		})
 	}
 }

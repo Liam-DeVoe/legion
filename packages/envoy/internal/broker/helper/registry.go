@@ -15,13 +15,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // RecordsNamed is how every message names the records file: by the setting that names it, never
 // by its path. A named session's record holds that session's signing key, and the default path
-// sits beside the machine file, so its path repeats AGENT_SECRETS_MACHINE_FILE's value; an os
-// error about the file prints through redact.File, which drops every path.
+// sits beside the machine file, so its path repeats AGENT_SECRETS_MACHINE_FILE's value.
 const RecordsNamed = "the session records AGENT_SECRETS_STATE_FILE names (default sessions.json beside the machine file)"
 
 // Session is one registered host process and the broker identity the helper holds for it. Key
@@ -1067,7 +1065,7 @@ func (r *Registry) Save() error {
 		return err
 	}
 	if err := writeFileOwnerOnly(r.path, data); err != nil {
-		return fmt.Errorf("write %s: %w", RecordsNamed, redact.File(err))
+		return fileError("write", RecordsNamed, err)
 	}
 	return nil
 }
@@ -1105,7 +1103,7 @@ func LoadRecords(path string) ([]Record, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", RecordsNamed, redact.File(err))
+		return nil, fileError("read", RecordsNamed, err)
 	}
 	var recs []Record
 	if err := json.Unmarshal(data, &recs); err != nil {

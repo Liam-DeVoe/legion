@@ -3,7 +3,7 @@
 // What this package prints of a setting, a credential file or a server's answer: never a part of
 // a credential a person put where a setting expected a URL, a file's path or a plain value, and
 // never the content of a file that holds one. Each refusal still names the setting to look at,
-// and a clean value prints as it did, which is each test's control.
+// and a clean value prints whole, which is each test's control.
 
 package brokerclient
 
@@ -39,6 +39,16 @@ func holdsNoSecret(t *testing.T, what, text string) {
 	}
 }
 
+// namesAll fails t unless text names each of named.
+func namesAll(t *testing.T, what, text string, named ...string) {
+	t.Helper()
+	for _, name := range named {
+		if !strings.Contains(text, name) {
+			t.Errorf("%s = %q, want it to name %q", what, text, name)
+		}
+	}
+}
+
 // TestATokenFilePrintsItsSettingAndNeverItsPath: AGENT_SECRETS_MACHINE_TOKEN_FILE names a file
 // that holds a credential, and a person who pasted the token itself there would see it in every
 // refusal and in every log line naming the identity. So the file prints as its setting: in the
@@ -51,15 +61,9 @@ func TestATokenFilePrintsItsSettingAndNeverItsPath(t *testing.T) {
 		t.Fatal("Token read a token file that is not there")
 	}
 	holdsNoSecret(t, "the missing file's error", err.Error())
-	for _, want := range []string{MachineTokenFileVar, "no such file or directory"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the missing file's error = %q, want it to name %q", err, want)
-		}
-	}
+	namesAll(t, "the missing file's error", err.Error(), MachineTokenFileVar, "no such file or directory")
 	holdsNoSecret(t, "Describe", missing.Describe())
-	if !strings.Contains(missing.Describe(), MachineTokenFileVar) {
-		t.Errorf("Describe = %q, want it to name %s", missing.Describe(), MachineTokenFileVar)
-	}
+	namesAll(t, "Describe", missing.Describe(), MachineTokenFileVar)
 
 	empty := filepath.Join(dir, "empty-"+printedSecret)
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
@@ -101,11 +105,7 @@ func TestASecretFileThatCannotBeReadIsNamedBySetting(t *testing.T) {
 		t.Fatal("SignInFlow read a secret file that is not there")
 	}
 	holdsNoSecret(t, "SignInFlow's error", err.Error())
-	for _, want := range []string{SignInClientSecretFileVar, "no such file or directory"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("SignInFlow's error = %q, want it to name %q", err, want)
-		}
-	}
+	namesAll(t, "SignInFlow's error", err.Error(), SignInClientSecretFileVar, "no such file or directory")
 	// Control: a file that is there is read.
 	secretFile := filepath.Join(t.TempDir(), "client-secret")
 	if err := os.WriteFile(secretFile, []byte("example-secret\n"), 0o600); err != nil {
@@ -121,7 +121,7 @@ func TestASecretFileThatCannotBeReadIsNamedBySetting(t *testing.T) {
 // TestARefusedSettingIsNamedAndNotEchoed: a value this package refuses from the environment - an
 // identity kind it does not know, a project list that is not one - is where a credential pasted
 // into the wrong variable shows up, so the refusal names the setting and what it takes, and not
-// the value. A value it accepts is read as before.
+// the value. A value it accepts is read.
 func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	env := map[string]string{IdentityVar: printedSecret}
 	getenv := func(name string) string { return env[name] }
@@ -130,11 +130,7 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 		t.Fatal("MachineIdentity took an identity kind it does not know")
 	}
 	holdsNoSecret(t, "MachineIdentity's error", err.Error())
-	for _, want := range []string{IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("MachineIdentity's error = %q, want it to name %q", err, want)
-		}
-	}
+	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool)
 
 	for _, projects := range []string{"lower-" + printedSecret, "HUNTER2 HUNTER2"} {
 		env[ProjectsVar] = projects
@@ -188,9 +184,7 @@ func TestAnIssuerThatCarriesACredentialIsNotPrinted(t *testing.T) {
 					t.Fatalf("%s reached an issuer that is not there", name)
 				}
 				holdsNoSecret(t, name+"'s error", err.Error())
-				if !strings.Contains(err.Error(), SignInIssuerVar) {
-					t.Errorf("%s's error = %q, want it to name %s", name, err, SignInIssuerVar)
-				}
+				namesAll(t, name+"'s error", err.Error(), SignInIssuerVar)
 			}
 		})
 	}
@@ -234,9 +228,7 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		t.Fatal("Start read a discovery document the issuer did not serve")
 	} else {
 		holdsNoSecret(t, "the failed discovery", err.Error())
-		if !strings.Contains(err.Error(), "500") {
-			t.Errorf("the failed discovery = %q, want its status", err)
-		}
+		namesAll(t, "the failed discovery", err.Error(), "500")
 	}
 	discoveryFails = false
 	flow = exampleFlow(base)
@@ -244,19 +236,13 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		t.Fatal("Start took a device code the issuer refused")
 	} else {
 		holdsNoSecret(t, "the refused device code", err.Error())
-		if !strings.Contains(err.Error(), "502") {
-			t.Errorf("the refused device code = %q, want its status", err)
-		}
+		namesAll(t, "the refused device code", err.Error(), "502")
 	}
 	if _, err := flow.Refresh(context.Background(), "a-refresh-token"); err == nil {
 		t.Fatal("Refresh took a refresh the issuer refused")
 	} else {
 		holdsNoSecret(t, "the refused refresh", err.Error())
-		for _, want := range []string{"400", "invalid_client"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("the refused refresh = %q, want it to name %q", err, want)
-			}
-		}
+		namesAll(t, "the refused refresh", err.Error(), "400", "invalid_client")
 	}
 }
 
@@ -295,17 +281,13 @@ func TestTheSignInStorePrintsItsSettingAndNeverItsPathOrContent(t *testing.T) {
 		t.Fatal("Write kept a record under a file")
 	} else {
 		holdsNoSecret(t, "Write's error", err.Error())
-		if !strings.Contains(err.Error(), SignInDirVar) {
-			t.Errorf("Write's error = %q, want it to name %s", err, SignInDirVar)
-		}
+		namesAll(t, "Write's error", err.Error(), SignInDirVar)
 	}
 	if _, err := (SignInStore{Dir: blocked}).List(); err == nil {
 		t.Fatal("List read a directory that is a file")
 	} else {
 		holdsNoSecret(t, "List's error", err.Error())
-		if !strings.Contains(err.Error(), SignInDirVar) {
-			t.Errorf("List's error = %q, want it to name %s", err, SignInDirVar)
-		}
+		namesAll(t, "List's error", err.Error(), SignInDirVar)
 	}
 
 	dir := filepath.Join(parent, "store-"+printedSecret)

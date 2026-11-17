@@ -3,6 +3,7 @@ package redact
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -55,7 +56,7 @@ func TestClassPrintsTheFailuresKindAlone(t *testing.T) {
 		{"an OAuth answer with a code of its own", &oauth2.RetrieveError{
 			Response: &http.Response{StatusCode: http.StatusUnauthorized}, ErrorCode: failureSecret,
 		}, "the server answered HTTP 401"},
-		{"a deadline", fmtWrap(context.DeadlineExceeded), "timed out"},
+		{"a deadline", fmt.Errorf("call %s: %w", failureSecret, context.DeadlineExceeded), "timed out"},
 		{"anything else", errors.New("refused " + failureSecret), "the request failed"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -98,17 +99,6 @@ func TestAnsweredNamesTheStatusAndARegisteredCodeAlone(t *testing.T) {
 		})
 	}
 }
-
-// fmtWrap is err under a wrapper whose text repeats the secret, as a caller's %w would.
-func fmtWrap(err error) error { return &wrapped{"call " + failureSecret, err} }
-
-type wrapped struct {
-	text string
-	err  error
-}
-
-func (w *wrapped) Error() string { return w.text + ": " + w.err.Error() }
-func (w *wrapped) Unwrap() error { return w.err }
 
 // TestFilePrintsTheOperationAndTheSystemsReasonAlone: a file call's error names its operation and
 // the system's reason for it, never the path it was handed - which, for a setting that names a

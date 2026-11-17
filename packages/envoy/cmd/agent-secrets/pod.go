@@ -205,9 +205,10 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 //
 // No line here names the key directory or the token file by its path but the renewal command
 // printed on success: it is a command to paste, and both paths were just used (the token file
-// read and its token accepted, the directory made and key.pem written in it), so it names the
-// paths the run used, as the GCP forms' retry commands name the credentials file that signed
-// them in. Every other line names them by their flags (outDir, outKeyFile, --pod-token-file).
+// read and its token accepted, the directory holding the key.pem the broker enrolled), so it
+// names the paths the run used, as the GCP forms' retry commands name the credentials file that
+// signed them in. Every other line names them by their flags (outDir, outKeyFile,
+// --pod-token-file).
 func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run

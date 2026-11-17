@@ -30,13 +30,12 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
-	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // operatorFileNamed is how every message names the operator file: by the setting that names it,
-// never by its path, which is where a person who pasted a secret in place of a path put it.
+// never by its path, as MachineFileNamed names the machine file.
 const operatorFileNamed = "the operator file AGENT_SECRETS_OPERATOR_FILE names (default ~/.config/agent-secrets/operator)"
 
 // noCredentialMsg is the exact instruction returned whenever the helper has no machine
@@ -296,7 +295,7 @@ func (e *BrokerError) says(phrase string) bool {
 func (b *Broker) readOperator() (string, error) {
 	data, err := os.ReadFile(b.OperatorFile)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", operatorFileNamed, redact.File(err))
+		return "", fileError("read", operatorFileNamed, err)
 	}
 	operator := strings.TrimSpace(string(data))
 	if operator == "" {
@@ -1665,8 +1664,6 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	}
 	if out != nil && len(data) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {
-			// The decoder's words quote the answer's text (a time error, the whole value), which
-			// beside an address that is not clean can repeat the credential the address carries.
 			return fmt.Errorf("the broker's answer is not the JSON the helper reads: %s", b.URL.Words(err.Error()))
 		}
 	}

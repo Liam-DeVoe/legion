@@ -38,14 +38,7 @@ func TestAnAirlockFileThatCannotBeWrittenNamesNoPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("prepareAirlock wrote the trust bundle at a path longer than PATH_MAX")
 	}
-	if strings.Contains(err.Error(), secret) {
-		t.Errorf("the refusal %q holds the path %q", err, secret)
-	}
-	for _, want := range []string{"write the trust bundle", "open: file name too long"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal %q does not say %q", err, want)
-		}
-	}
+	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"write the trust bundle", "open: file name too long"}, secret)
 
 	t.Run("control: a root whose files fit", func(t *testing.T) {
 		fits := filepath.Join(t.TempDir(), secret)

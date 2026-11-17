@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -40,14 +39,7 @@ func TestARevokeThatCannotReachTheBrokerPrintsNoID(t *testing.T) {
 	if err == nil {
 		t.Fatal("the revoke reached a broker that is not there")
 	}
-	if strings.Contains(err.Error(), typed) {
-		t.Errorf("the revoke's error = %q, which prints the id it was given", err)
-	}
-	for _, want := range []string{closed, "/v1/enrollments/", "connection refused"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the revoke's error = %q, want it to name %q", err, want)
-		}
-	}
+	wantNamedNotPrinted(t, "the revoke's error", err.Error(), []string{closed, "/v1/enrollments/", "connection refused"}, typed)
 	if !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Errorf("the revoke's error = %v, want it to unwrap to the refused connection", err)
 	}
