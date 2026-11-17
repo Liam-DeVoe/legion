@@ -1945,10 +1945,10 @@ export async function executeEnvoyTool(
     case EnvoyToolOperation.unsubscribe: {
       const args = parseArguments(spec, input)
       const { removed, registrationError } = await runtime.session.unfollow(args.topics)
-      // pi-envoy's answer. `kept` names each subject another plugin opened while this session
-      // holds its role, which the tool keeps followed. It is always empty here, since nothing in
-      // this server opens a subject while it holds a role, and this server sends it all the same;
-      // pi-envoy leaves `kept` out of its answer when it is empty.
+      // pi-envoy's answer, except that `kept` is always sent: pi-envoy leaves an empty `kept` out.
+      // `kept` names each subject another plugin opened while this session holds its role, which
+      // the tool keeps followed. Nothing in this server opens a subject while it holds a role, so
+      // `kept` is always empty here.
       return {
         removed,
         kept: [],

@@ -1798,9 +1798,11 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 }
 
 // A row for a session that has expired from the session cache still carries its last heartbeat
-// while the cache retains it, as the listener retains it for as long as the interest reaper can
-// still hold the row: the heartbeat, not the row's older updated_at. The read comes more than one
-// TTL after the session left, past the default retention, so only WithLastSeenRetention keeps it.
+// while the cache retains it, as a listener without the state bucket retains it for as long as the
+// interest reaper can still hold the row: the heartbeat, not the row's older updated_at. The read
+// comes more than one TTL after the session left, so the shortest retention, one TTL, would not
+// keep it. The minute WithLastSeenRetention sets here keeps it, and the default,
+// session.LastSeenMemory, would too.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
 	const (
 		expired    = "ses_heartbeat_expired"
@@ -5047,16 +5049,17 @@ func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucket
 }
 
 // The listener sets no last-seen retention of its own: it opens the session registry on
-// session.LastSeenMemory, the package's own value, which must outlast both deadlines a listener
-// without a delivery lease, which keeps last-seen times in process, reads a departed session's
-// last heartbeat for. The interest reaper can hold a dead session's row until
+// session.LastSeenMemory, the package's own value. A listener without a delivery lease keeps
+// last-seen times in process for that retention, which must outlast the two deadlines it reads a
+// departed session's last heartbeat for. The interest reaper can hold a dead session's row until
 // store.InterestReapAllowance after its last write, and /v1/interests/ gives that row's session
 // its real last heartbeat; and a refusal for a session past the gone horizon says when it last
 // registered. A retention shorter than either - the fifteen minutes the listener used to set -
 // leaves a row listed with no heartbeat to give and a gone session's refusal unable to say when
 // it was last seen. A listener with a delivery lease reads the time from its state bucket, whose
-// 20 minute age ends the answer before the gone horizon, and before the reaper's deadline unless
-// the session TTL and that allowance fit in those 20 minutes (main.go, where the bucket is wired).
+// age, listenerStateMaxAge (20 minutes), ends the answer before the gone horizon. It ends the
+// answer before the reaper's deadline too, unless the session TTL and that allowance fit in those
+// 20 minutes (main.go, where the bucket is wired).
 func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
 	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {
 		t.Fatalf("session.LastSeenMemory is %s and the interest reaper holds a dead session's row for %s, so a row it still lists can have no last heartbeat", session.LastSeenMemory, allowance)

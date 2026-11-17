@@ -74,8 +74,8 @@ func (h *expiryHeap) Pop() any {
 
 // scheduleLocked sets the deadline of id's kind of expiry to deadline, in place when one is already
 // scheduled, and re-arms the expiry timer when the earliest deadline moved earlier. A lastSeen
-// deadline only ever moves later: the revision fence it ends must outlive every time the id left
-// the cache by the retention. A non-positive ttl or a zero deadline schedules nothing: such an
+// deadline only ever moves later: the per-process record it ends must outlive every time the id
+// left the cache by the retention. A non-positive ttl or a zero deadline schedules nothing: such an
 // entry never expires. A registry built from a struct literal has no heap, index or timer until its
 // first schedule. Callers must hold r.mu for writing.
 func (r *SessionRegistry) scheduleLocked(id string, kind expiryKind, deadline time.Time) {
@@ -150,9 +150,9 @@ func (r *SessionRegistry) armExpiryLocked() {
 // removal; the removal only schedules the id's last-seen deadline.
 //
 // A last-seen deadline removes the id's seenLocal record. It changes no entry, so it reports
-// nothing: a read already answered the id as gone when its entry left. The fence entry outlives
-// it and is dropped by the next completed read that finds the bucket no longer holds the key
-// (kvwatch.Copy.CompleteRead).
+// nothing: a read already answered the id as gone when its entry left. The fence entry does not
+// leave with it: the next completed read that finds the bucket no longer holds the key drops it
+// (kvwatch.Copy.CompleteRead), which can come before or after this deadline.
 func (r *SessionRegistry) expireDue() {
 	r.mu.Lock()
 	defer r.unlockAndNotify()

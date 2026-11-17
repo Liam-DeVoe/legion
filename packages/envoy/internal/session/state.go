@@ -33,9 +33,8 @@ const (
 	GoneHorizon = time.Hour
 	// LastSeenMemory is how long after a session left the cache the registry still answers its
 	// final registration time (WithLastSeenRetention). It is longer than the gone horizon, so a
-	// caller told a session is gone can still say when that session was last seen, where the
-	// registry keeps that time itself. With the listener state bucket (WithLastSeenBucket) the
-	// bucket's own age ends the answer first (lastseen.go).
+	// caller told a session is gone can still say when that session was last seen, unless the
+	// listener state bucket ends the answer first (WithLastSeenRetention says when).
 	LastSeenMemory = 2 * time.Hour
 )
 

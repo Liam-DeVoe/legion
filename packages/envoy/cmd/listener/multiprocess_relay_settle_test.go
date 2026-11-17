@@ -79,11 +79,10 @@ func mpStartRelayRow(t *testing.T, sessionID string, hold mpRelayHold, lanes boo
 	case <-time.After(20 * time.Second):
 		t.Fatalf("%s never relayed %s to the session", a.instance, held.event)
 	}
-	// Every row's next step ends the pod's term with that frame unanswered - a stop, a kill, a lost
-	// receive connection - and unless the stopping relay's settle acks it first, the successor's
-	// relay restarts the consumer at its ack floor, which deletes the consumer holding it and
-	// creates it again. The wait reads only what the server holds, so the warm message's
-	// acknowledgement is waited for first.
+	// Every row's next step ends the pod's term with no done for that frame: a stop, a kill or a
+	// lost receive connection. Unless the stopping relay's settle acks the frame first, the
+	// successor's restart at the ack floor recreates this consumer. The wait reads only what the
+	// server holds, so the warm message's acknowledgement is waited for first.
 	mpEventually(t, 10*time.Second, "the session's consumer to hold only the frame in hand unacknowledged", func() bool {
 		return publisher.sessionAckPending(sessionID) == 1
 	})
@@ -138,8 +137,7 @@ func TestTwoPodsARelayedFrameTheLinksDroppedUnderIsRepeatedAtMostOnceWithItsId(t
 	case <-time.After(20 * time.Second):
 		t.Fatalf("%s never relayed %s to the session", a.instance, m.event)
 	}
-	// The drop below ends the relay's pull, and at the reconnect the relay restarts the consumer at
-	// its ack floor, which deletes the consumer holding that frame and creates it again.
+	// The relay's restart at the ack floor after the drop below recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 
 	healSessions := a.lanes.drop(mpSessionConsumerConnection)

@@ -490,8 +490,7 @@ func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testin
 	// The term's end reaches the old pod's relays, and the next holder's relays take a term.
 	old.relays.setOwned(nil)
 	next := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
-	// The next holder's relay restarts the consumer at its ack floor, which deletes the consumer
-	// holding that unanswered message and creates it again.
+	// The next holder's restart at the ack floor recreates this consumer.
 	awaitSessionConsumerStored(t, old.harness.client.Conn, sessionID)
 	next.relays.setOwned(endlessTerm())
 	frame := standIn.collect(t, 1, 15*time.Second)[0]

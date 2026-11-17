@@ -217,9 +217,7 @@ func TestTwoPodsSIGKILLHandsOverInOrderWithin15s(t *testing.T) {
 	})
 
 	killed := a.kill(t)
-	// The standby takes the lease over a lease TTL after the kill, and its relay restarts the
-	// blocked session's consumer at its ack floor, which deletes the consumer holding both its
-	// messages and creates it again; the killed pod changes that consumer no more.
+	// The standby's restart at the ack floor after the kill recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, blocked)
 	stop := publisher.every(100*time.Millisecond, queued, other)
 	mpEventually(t, mpHardBound, b.instance+" to take the lease over", b.active)
@@ -298,9 +296,7 @@ func TestTwoPodsARefusedFrameReachesItsSessionAcrossAStopAndAKill(t *testing.T) 
 	serving.fail(sessionID)
 	overTheStop := publisher.mustPublish(t, sessionID)
 	mpEventually(t, 10*time.Second, a.instance+"'s push to be refused", func() bool { return serving.failures(sessionID) > 0 })
-	// The refused message still awaits an ack, so once the stop hands the lease over the standby's
-	// relay restarts the consumer at its ack floor, which deletes the consumer holding it and
-	// creates it again.
+	// The standby's restart at the ack floor after the stop recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 	signalled := a.Terminate(t)
 	a.WaitExit(t, "SIGTERM")
@@ -317,9 +313,7 @@ func TestTwoPodsARefusedFrameReachesItsSessionAcrossAStopAndAKill(t *testing.T) 
 	overTheKill := publisher.mustPublish(t, sessionID)
 	mpEventually(t, 10*time.Second, b.instance+"'s push to be refused", func() bool { return serving.failures(sessionID) > refused })
 	killed := b.kill(t)
-	// pod-c takes the lease over a lease TTL after the kill, and its relay restarts the consumer
-	// at its ack floor, which deletes the consumer holding the refused message and creates it
-	// again; the killed pod changes the consumer no more.
+	// pod-c's restart at the ack floor after the kill recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 	mpWaitActive(t, c, mpHardBound)
 	serving.accept(sessionID)
@@ -530,9 +524,7 @@ func TestTwoPodsGracefulStopDeliversWithin10s(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("%s never sent %s a frame", a.instance, slow)
 	}
-	// The stop hands the frame in hand back unanswered, and the standby's relay restarts the slow
-	// session's consumer at its ack floor, which deletes the consumer holding it and creates it
-	// again.
+	// The standby's restart at the ack floor after the stop recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, slow)
 	signalled := a.Terminate(t)
 	time.Sleep(6 * time.Second) // publish on through the hand-over

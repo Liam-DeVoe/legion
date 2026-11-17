@@ -797,7 +797,7 @@ test("a subscribe whose registration fails answers its error, and a restart foll
 
 // pi-envoy's `envoy_unsubscribe` sends the listener no role's topic: the listener's release of one
 // frees this process's role claim, and the role claim holds that topic, not the follow. The topic
-// still leaves the follows, and the answer has pi-envoy's shape, `kept` included.
+// still leaves the follows. The answer carries an empty `kept`, which pi-envoy leaves out.
 test("an unsubscribe of a role's topic drops the follow and sends the listener no release of it", async () => {
   const stateDirectory = scratchState()
   const releases: Array<readonly string[]> = []

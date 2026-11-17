@@ -217,10 +217,13 @@ func WithSessionMaxAge(d time.Duration) SessionRegistryOption {
 }
 
 // WithLastSeenRetention sets how long after a session leaves the cache LastSeen still answers its
-// final heartbeat. The default is LastSeenMemory (2 hours), longer than the gone horizon so that
-// a caller told a session is gone can still say when it was last seen; any value shorter than the
-// bucket's TTL is one TTL. With WithLastSeenBucket the bucket's own age ends the answer where it
-// is shorter than this retention, as the listener's 20 minutes are (lastseen.go).
+// final heartbeat: the answer ends one TTL plus this retention after that heartbeat (seenUntil).
+// The default is LastSeenMemory (2 hours), longer than the gone horizon so that a caller told a
+// session is gone can still say when it was last seen; any value shorter than the session
+// bucket's TTL is one TTL. With WithLastSeenBucket the answer also ends when the listener state
+// bucket drops the session's `seen.` record, its MaxAge after the last write. That end comes
+// first where the MaxAge is shorter than one TTL plus this retention, as listenerStateMaxAge (20
+// minutes) is at the default retention (lastseen.go).
 func WithLastSeenRetention(d time.Duration) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.lastSeenRetention = d }
 }

@@ -4236,8 +4236,8 @@ A read-only broker token carries no project either, but none of the three checks
   So the answer lasts 20 minutes past the last write.
   That is shorter than the gone horizon (1 hour), so a caller told a session is gone can no longer be told when it was last seen, and it covers the session TTL and the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`, `store.InterestReapAllowance`, 15 minutes) only at the default 5 minute TTL (`cmd/listener/README.md`, "Last seen").
   The state bucket's `MaxAge` (`listenerStateMaxAge`, 20 minutes) bounds how long the shared record itself stands, and every open raises a bucket an earlier build created with a shorter age.
-  An id's revision fence leaves with its last-seen record, the retention after the id left the cache, expired or deleted, so the fence map holds only live ids and ids that left within the retention;
-  since the retention is at least one TTL, a late delivery of an older revision then has a deadline already passed and is not cached.
+  An id's revision fence does not leave with its per-process last-seen record: the last-seen deadline (`expireDue`) drops only that record.
+  The next completed read that finds the bucket no longer holds the key drops the fence (`kvwatch.Copy.CompleteRead`).
   A non-positive TTL schedules nothing.
   The interest reaper (`store.Registry.Reap`) copies the session id and revision of each cached interest past its grace (the grace window plus `store.InterestRefreshAge`) under the interest registry's read lock and releases it, then calls the liveness check (`isAlive`, the session cache's `Get`) with no interest lock held, so a subscribe never waits on a pass's liveness checks.
   It re-reads each candidate before deleting it, skips one whose revision changed or that is now within grace, and deletes it only at the revision it checked:

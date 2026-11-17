@@ -105,7 +105,7 @@ The tool returns `removed`, `kept`,
 and `registrationError` when the unsubscribe failed.
 pi-envoy keeps a subject that another plugin opened while the session holds its role.
 Nothing in this server opens such a subject, so `kept` is always empty here,
-and this server sends it all the same, where pi-envoy leaves an empty `kept` out of its answer.
+and the tool returns it all the same, where pi-envoy leaves an empty `kept` out of its answer.
 
 `runEnvoyChannelServer` dials NATS with the shared options of
 `@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a ping every 10 s and the

@@ -205,9 +205,7 @@ func TestTwoPodsRepeatAtMostOnceWhatAKilledPodDelivered(t *testing.T) {
 	swallowed()
 	mpEventually(t, 10*time.Second, a.instance+"'s frame to "+sessionID+" to have landed", func() bool { return serving.framesTo(sessionID) == 1 })
 	killed := a.kill(t)
-	// The standby takes the lease over a lease TTL after the kill, and its relay restarts the
-	// consumer at its ack floor, which deletes the consumer holding that frame and creates it
-	// again; the killed pod changes the consumer no more.
+	// The standby's restart at the ack floor after the kill recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 
 	mpEventually(t, mpHardBound, b.instance+" to take the lease over", b.active)
@@ -242,9 +240,7 @@ func TestTwoPodsDeliverWhatAKilledPodOnlyAttempted(t *testing.T) {
 		t.Fatalf("%s never sent %s a frame", a.instance, sessionID)
 	}
 	killed := a.kill(t)
-	// The standby takes the lease over a lease TTL after the kill, and its relay restarts the
-	// consumer at its ack floor, which deletes the consumer holding that frame and creates it
-	// again; the killed pod changes the consumer no more.
+	// The standby's restart at the ack floor after the kill recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 
 	const bound = mpHardBound
@@ -500,8 +496,7 @@ func TestTwoPodsEveryQueuedMessageReachesTheSessionAtMostTwiceAcrossAReceiveLost
 	}
 	serving.awaitAll(t, delivered, 20*time.Second)
 
-	// The cut below ends the pod's term, and the standby's relay restarts the consumer at its ack
-	// floor, which deletes the consumer holding those three and creates it again.
+	// The standby's restart at the ack floor after the cut below recreates this consumer.
 	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 
 	heal := a.lanes.cut(mpReceiveConnection(a.instance))

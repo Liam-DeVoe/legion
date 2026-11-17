@@ -99,11 +99,12 @@ func TestEveryPodReportsALapsedSessionsLastSeenAlike(t *testing.T) {
 
 // Every pod answers a lapsed session's last-seen time out of the bucket's `seen.` record alone,
 // so a pod that watched the session answers exactly what a pod that never saw it answers for as
-// long as the window lasts, and nothing once the record is gone. The bucket is sized to keep the
-// record past that window (listenerStateMaxAge), so a live deployment never reaches the second
-// case; this is what it would answer if it did. A pod that kept an answer of its own would go on
-// reporting the session after the bucket's record was gone, and two pods would answer
-// GET /v1/interests/ differently for one session.
+// long as the window lasts, and nothing once the record is gone. At the registry's default
+// retention (LastSeenMemory) the window outlasts the record, which the bucket drops
+// listenerStateMaxAge (20 minutes) after its write, so a live deployment reaches the second case
+// (lastseen.go). A pod that kept an answer of its own would go on reporting the session after the
+// bucket's record was gone, and two pods would answer GET /v1/interests/ differently for one
+// session.
 func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	const (
 		sessionID = "ses_outlives_record"
@@ -124,8 +125,8 @@ func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	if onA, onB := a.LastSeen(context.Background(), sessionID), b.LastSeen(context.Background(), sessionID); onA != onB {
 		t.Fatalf("pod a reports %s last seen %d while the record stands; pod b, started after it lapsed, reports %d", sessionID, onA, onB)
 	}
-	// What the bucket's MaxAge would do to the record, were the window longer than the bucket
-	// keeps it.
+	// This delete does what the bucket's MaxAge does to the record listenerStateMaxAge after its
+	// write, a time inside the window at the default retention.
 	if err := a.seen.Delete(lastSeenKey(sessionID)); err != nil {
 		t.Fatalf("remove %s's seen record: %v", sessionID, err)
 	}
