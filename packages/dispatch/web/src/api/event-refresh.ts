@@ -1463,6 +1463,9 @@ function askThreadsOn(issue: string): RefreshTarget {
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
  * naming none, as an older server sends it) renames every address to that issue, since a names
  * read names an issue by its title, so it refreshes them too.
+ * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
+ * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
+ * name nothing (`gone`), so each refreshes them too.
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
@@ -1480,6 +1483,8 @@ function askThreadsOn(issue: string): RefreshTarget {
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
     case "artifact.version":
     case "ask.edited":
     case "comment.edited":

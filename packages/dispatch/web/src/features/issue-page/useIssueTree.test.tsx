@@ -863,7 +863,8 @@ function feedEvent(type: EventType, payload: Record<string, unknown>): DispatchE
 // dispatch://INFRA-1196 decision 184: a names read is keyed by the addresses it names, so only
 // words that change under an address already named need a rule - a comment's edit, an ask's edit
 // and a document's new version - and each refreshes every names read the app holds, by the key's
-// prefix; so does an issue's write that changes its title, which names every address to it. A new
+// prefix; so do a document's rename and its removal, which rename or empty every address to it,
+// and an issue's write that changes its title, which names every address to it. A new
 // comment is a new address, which the tree reads under a key of its own, a person's edit of a
 // document is the notice after the versions that already refreshed them, and an issue's write that
 // leaves its title alone renames nothing.
@@ -872,6 +873,8 @@ test("an edited comment or ask and a document's new version refresh every names 
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
     feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
     feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
+    feedEvent("artifact.renamed", { artifact: plan }),
+    feedEvent("artifact.removed", { artifact: plan }),
     feedEvent("issue.updated", { changed: ["title"] }),
   ];
   for (const event of editsWords) {
