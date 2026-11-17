@@ -1372,8 +1372,9 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 // record of the step it ends would keep none. The request first waits for the claim's machine to
 // handle what the stream had queued (supervision.awaitStream): while the machine still decides,
 // the wait runs out its bound and says so in one line naming the claim and how long it waited;
-// once the machine has handled the answer, the wait ends and the read names the model. A claim the
-// daemon does not supervise has nothing to wait for.
+// once the machine has handled the answer, the wait ends on the machine's mark, before its bound
+// and with no line logged, and the read names the model. A claim the daemon does not supervise
+// has nothing to wait for.
 func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testing.T) {
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -1416,12 +1417,15 @@ func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testin
 		!strings.Contains(lines[0], "claim="+string(tester)) || !strings.Contains(lines[0], "waited=") {
 		t.Fatalf("the log of a wait the machine outlasted = %q, want one line naming the claim and how long it waited", logs.String())
 	}
+	logs.Reset()
 	held.open()
 	s.awaitStreamWithin(ctx, tester, time.Minute)
+	if logs.Len() != 0 {
+		t.Fatalf("the wait once the machine was free logged %q, want it ended by the machine's mark, not its bound", logs.String())
+	}
 	if got := w.stepAgent(tester); got != (workflow.StepAgent{Session: "ses_tester", Model: "second/tester-model"}) {
 		t.Fatalf("the agent read after the wait = %+v, want its session and the model that answered", got)
 	}
-	logs.Reset()
 	s.awaitStreamWithin(ctx, mustClaimToken(t, "LEGION-208", claim.RoleReviewer), 50*time.Millisecond)
 	if logs.Len() != 0 {
 		t.Fatalf("the wait for a claim the daemon does not supervise logged %q, want it answered at once", logs.String())
