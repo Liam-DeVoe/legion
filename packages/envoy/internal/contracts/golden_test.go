@@ -69,19 +69,23 @@ func TestGithubEnvelopeGoldens(t *testing.T) {
 				Payload:        payload,
 			}
 
+			// The golden is json.MarshalIndent's output and a newline, byte for byte: biome.json's
+			// formatter excludes the directory, as it does the other generated JSON, and the bytes
+			// check below holds the file to what -update writes, so neither a formatter nor a hand
+			// edit moves it.
 			goldenPath := filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", fixture.name+".json")
+			encoded, err := json.MarshalIndent(got, "", "  ")
+			if err != nil {
+				t.Fatalf("encode golden: %v", err)
+			}
+			encoded = append(encoded, '\n')
 			if *updateGoldens {
-				encoded, err := json.MarshalIndent(got, "", "  ")
-				if err != nil {
-					t.Fatalf("encode golden: %v", err)
-				}
 				if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 					t.Fatalf("create golden directory: %v", err)
 				}
-				if err := os.WriteFile(goldenPath, append(encoded, '\n'), 0o644); err != nil {
+				if err := os.WriteFile(goldenPath, encoded, 0o644); err != nil {
 					t.Fatalf("write golden: %v", err)
 				}
-				return
 			}
 
 			goldenBytes, err := os.ReadFile(goldenPath)
@@ -94,6 +98,9 @@ func TestGithubEnvelopeGoldens(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("normalized envelope mismatch\ngot:  %#v\nwant: %#v", got, want)
+			}
+			if string(goldenBytes) != string(encoded) {
+				t.Fatalf("%s holds the envelope but not the bytes -update writes (json.MarshalIndent and a newline); write it again with `go test -run TestGithubEnvelopeGoldens ./internal/contracts/ -update`", goldenPath)
 			}
 		})
 	}
