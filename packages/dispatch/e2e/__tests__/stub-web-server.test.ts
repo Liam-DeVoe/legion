@@ -19,8 +19,9 @@
  *
  *  Each row runs the real Playwright runner over this config with a filter that matches no row and
  *  `--pass-with-no-tests`: the hooks still run, so the server starts and stops, and no browser
- *  starts. The server serves a directory of this test's own (`DISPATCH_E2E_STUB_DIST`), so the
- *  rows need no build of `web/dist`. */
+ *  starts. That run is a bounded child of the `short` bound: it starts no browser and no stack,
+ *  and it reads about three seconds. The server serves a directory of this test's own
+ *  (`DISPATCH_E2E_STUB_DIST`), so the rows need no build of `web/dist`. */
 
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -31,13 +32,12 @@ import type { Server } from "bun";
 
 import { stubListeningLine } from "../stub/origin";
 
+import { rowLimit, runBounded } from "./bounded-subprocess";
+
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** The port the stubbed layer was served on before its server bound port 0. */
 const oldStubPort = 4319;
-
-/** One run of the Playwright runner, its hooks and nothing else: about three seconds. */
-const runTimeout = 60_000;
 
 const dist = mkdtempSync(join(tmpdir(), "stub-web-server-dist-"));
 writeFileSync(join(dist, "index.html"), "<!doctype html><title>stub-web-server.test.ts</title>\n");
@@ -56,8 +56,8 @@ interface Run {
 /** A run of the config with `projects` that runs no row. `env` is all the environment it gets on
  *  top of `HOME` and `PATH`, so a variable of the machine's cannot change what it does. */
 async function runOf(projects: readonly string[], env: Record<string, string> = {}): Promise<Run> {
-  const child = Bun.spawn(
-    [
+  const { code, named, stderr, stdout } = await runBounded({
+    argv: [
       "bunx",
       "playwright",
       "test",
@@ -68,24 +68,17 @@ async function runOf(projects: readonly string[], env: Record<string, string> = 
       "a title no row of this suite holds, 5d4c0a",
       "--pass-with-no-tests",
     ],
-    {
-      cwd: dispatchPackage,
-      env: {
-        DISPATCH_E2E_STUB_DIST: dist,
-        HOME: process.env.HOME ?? "",
-        PATH: process.env.PATH ?? "",
-        ...env,
-      },
-      stderr: "pipe",
-      stdout: "pipe",
-    }
-  );
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
-  const output = `${stdout}${stderr}`;
+    bound: "short",
+    cwd: dispatchPackage,
+    env: {
+      DISPATCH_E2E_STUB_DIST: dist,
+      HOME: process.env.HOME ?? "",
+      PATH: process.env.PATH ?? "",
+      ...env,
+    },
+    from: import.meta.url,
+  });
+  const output = `${named}\n${stdout}${stderr}`;
   const served = [...output.matchAll(listening)].map((match) => ({
     dist: match[2].trim(),
     port: Number(match[1]),
@@ -118,7 +111,7 @@ test(
         "holds no stubbed row must start no static file server."
     ).toEqual([]);
   },
-  runTimeout
+  rowLimit("short")
 );
 
 test(
@@ -141,7 +134,7 @@ test(
       rival?.stop(true);
     }
   },
-  runTimeout
+  rowLimit("short")
 );
 
 test(
@@ -149,7 +142,8 @@ test(
   async () => {
     // A socket bound and never listening: a test of the port finds nothing there, and a bind of
     // it fails. That is a port taken between a test and a bind. Python binds without listening;
-    // Bun and node bind only to listen.
+    // Bun and node bind only to listen. The row drives that program and stops it, so it starts
+    // outside the bounded children.
     const rival = Bun.spawn(
       [
         "python3",
@@ -177,5 +171,5 @@ test(
       await rival.exited;
     }
   },
-  runTimeout
+  rowLimit("short")
 );
