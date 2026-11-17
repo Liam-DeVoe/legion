@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// v-production, with one merge: under `production_check: tester`, an issue whose plan is
+// A production check after one merge: under `production_check: tester`, an issue whose plan is
 // `implementer tester` is done at its merge, and the check the merge opens gives its first look to
 // the tester's own session, the one that tested the task: the claim takes it where its pane still
 // runs, and a resume of that session where the close's suspension has stopped it. An issue whose

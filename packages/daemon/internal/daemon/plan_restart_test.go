@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// Review focus: the daemon restarts between the start of a step and its completion. An issue's
+// The daemon restarts between the start of a step and its completion. An issue's
 // owner gives the plan `implementer reviewer`, and the implementer starts: one launch, one start of
 // task a's step 1 (step_starts) and its start record. The daemon stops and a second one boots on the
 // same store: it launches no implementer again, raises no new entry, counts no second start, and the
@@ -149,7 +149,7 @@ func (r *ownerStepsRig) waitBoots(count int) {
 	})
 }
 
-// C2-1, the real boot: a task stopped at testing, whose tester the outbox has suspended
+// The real boot: a task stopped at testing, whose tester the outbox has suspended
 // (step_stop), and a parent held before its retro for the child beneath it. The daemon stops and a
 // second one boots on the same store: once its boot has applied its resume by rule, neither issue
 // has a start queued or a launch, the tester is still suspended by the daemon, and each hold stands.

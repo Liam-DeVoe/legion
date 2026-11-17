@@ -1,4 +1,4 @@
-// An issue that ran before the release of the owner's plan goes on with the steps it had (R20).
+// An issue that ran before the release of the owner's plan goes on with the steps it had.
 // The store is the one the release before leaves: every embedded migration below the first one of
 // the owner's plan (inFlightPlanMigration), applied by hand, and the record of seven issues written
 // in that schema's columns with plain SQL, one in each phase of today's line. The branch's own
@@ -66,7 +66,7 @@ type inFlightRig struct {
 var inFlightTitles = []string{"Planner drafts outline", "Implementer writes code", "Tester checks behaviour",
 	"Reviewer reads diff", "Owner accepts result", "Retrospective records lessons", "Merger lands branch", "Control seeds nothing"}
 
-// v-in-flight: an issue that ran before the release goes on. Seven issues of the release before,
+// An issue that ran before the release goes on. Seven issues of the release before,
 // one at each phase of today's line, each with its sessions and its phase rows and its claims at the
 // plugin contract below the owner's plan, are migrated and walked to done on the branch's daemon.
 // Each goes on from its phase: its first worker launch is a resume of the session the release
@@ -164,7 +164,7 @@ func (r *inFlightRig) goOn(issue *inFlightIssue) {
 	}
 }
 
-// wentOn is the check of v-in-flight on one issue: it went on from the phase the release before
+// wentOn is the check that one issue went on from the phase the release before
 // left it in. Its first launch of a worker is a resume of the session the release before recorded
 // for that phase's role (the architect's for accepting, whose first launch of a worker is the
 // implementer's retro), no planner was launched for an issue past planning, each claim the release

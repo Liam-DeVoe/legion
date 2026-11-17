@@ -1124,9 +1124,9 @@ func TestAPhaseWorkerIsToldWhatALateReportsRefusalMeans(t *testing.T) {
 // read rather than passing with nothing read. This shows the text is loaded, never that an owner
 // follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
-	const parentRuling = "A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from you: Legion holds it before its retro while issues beneath it are still in the workflow (`retro-held`) and starts the retro once they have left, so give a parent whose finished work you want to read the step `acceptance:owner`."
+	const parentHeld = "A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from you: Legion holds it before its retro while issues beneath it are still in the workflow (`retro-held`) and starts the retro once they have left, so give a parent whose finished work you want to read the step `acceptance:owner`."
 	shared := []string{
-		parentRuling,
+		parentHeld,
 		"`register_plan` (`issue`, `artifactId`, `version`)",
 		"`stop_task` (`issue`, `task`)",
 		"in the order of the steps of",

@@ -364,7 +364,7 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 	return starts[0]
 }
 
-// A later review round is told the commit the review before it read (v-review-range): the
+// A later review round is told the commit the review before it read: the
 // reviewer's own deciding review in round 1 recorded the commit it read on the reviewer's row
 // (record.PhaseRow.ReviewedHead), and the start of round 2 names it in its task
 // (reviewedPart), after the pull request and before any reason. The first round of a generation
@@ -703,10 +703,10 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	})
 }
 
-// The negative control of v-review-range: the commit round 2 names comes from the record of the
-// first review and from nothing else. With the stored commit taken off the reviewer's row after
-// round 1's review, round 2's task names none; with it left, the same lines name it, so the
-// control can fail.
+// The negative control of the commit a later round is told: the commit round 2 names comes from
+// the record of the first review and from nothing else. With the stored commit taken off the
+// reviewer's row after round 1's review, round 2's task names none; with it left, the same lines
+// name it, so the control can fail.
 func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
