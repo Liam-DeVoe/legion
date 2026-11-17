@@ -101,3 +101,51 @@ func TestAMissedFailingExampleWithNoSeqIsNeverHidden(t *testing.T) {
 		})
 	}
 }
+
+// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." Of the
+// refusals of a check that count at a subject, the state names one rule, and the order of
+// results.json, which says nothing, does not choose it: the rule is the least by its name. Each
+// order: carry, with a pass of its code check at c2 after c1's, and CI's refusal of the check at c1
+// (test-not-in-code) and at c2 (test-did-not-run), both commits whose results count at c2 and at m2;
+// results.json as carry writes it, and in the reverse order, each record with its own seq. Both
+// print the same bytes in text and in --json, where the state names test-did-not-run.
+func TestTheRuleOfARefusalIsTheSameInEachOrderOfTheResults(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	const check = "a-restart-loses-no-message"
+	outputs := map[string][2]string{}
+	for _, order := range []string{"as written", "reversed"} {
+		dir := copyScenario(t, "carry")
+		var results []map[string]any
+		readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+		pass := map[string]any{}
+		for k, v := range results[0] {
+			pass[k] = v
+		}
+		pass["commit"], pass["at"], pass["seq"] = "c2", "2026-11-13T09:00:00Z", 5
+		results = append(results, pass)
+		if order == "reversed" {
+			slices.Reverse(results)
+		}
+		writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+		writeJSONFile(t, filepath.Join(dir, "uncited.json"), map[string]any{
+			"c1": map[string]any{check: "test-not-in-code"}, "c2": map[string]any{check: "test-did-not-run"}})
+		text := runBinary(t, binary, "", "state", "--scenario", dir)
+		asJSON := runBinary(t, binary, "", "state", "--scenario", dir, "--json")
+		if text.code != 0 || asJSON.code != 0 || text.stderr+asJSON.stderr != "" {
+			t.Fatalf("%s: exit %d and %d, stderr %q: want exit 0 and nothing on stderr", order, text.code, asJSON.code, text.stderr+asJSON.stderr)
+		}
+		for _, subject := range []string{"c2, the head of listener-restart", "m2, the head of main"} {
+			if want := "  check " + check + ": unknown (uncited)"; !slices.Contains(subjectLines(text.stdout, subject), want) {
+				t.Errorf("%s, at subject %s: no line %q in:\n%s", order, subject, want, text.stdout)
+			}
+		}
+		if want := `"reason":"uncited","detail":"test-did-not-run"`; strings.Count(asJSON.stdout, want) != 2 {
+			t.Errorf("%s: --json names the rule %q %d times, want 2 (at c2 and at m2):\n%s", order, want, strings.Count(asJSON.stdout, want), asJSON.stdout)
+		}
+		outputs[order] = [2]string{text.stdout, asJSON.stdout}
+	}
+	if outputs["as written"] != outputs["reversed"] {
+		t.Errorf("the output depends on the order of results.json:\nas written:\n%s\nreversed:\n%s", outputs["as written"], outputs["reversed"])
+	}
+}

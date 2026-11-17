@@ -3458,6 +3458,68 @@
       "schema": true
     }
   ],
+  "scenarios/production-and-graph/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that production stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-production-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message in production, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "production",
+        "test": {
+          "job": "production-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestAProductionRestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each message record of the graph has a delivery record.",
+        "failing_example": [
+          "A copy of the graph with one message record that has no delivery record."
+        ],
+        "id": "the-graph-holds-a-delivery-of-each-message",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads each message record of the graph.",
+          "It returns each message record that has no delivery record."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "graph",
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
   "scenarios/refusal/files/c2/spec.yaml": [
     {
       "data": {

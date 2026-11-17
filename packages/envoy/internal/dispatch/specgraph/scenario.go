@@ -114,7 +114,8 @@ const (
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
-//     sets its files;
+//     sets its files, a tree of one path or more, each with a content label of one character or
+//     more;
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
 //     and so has each check at a commit that the file does not name. A result at one commit counts
@@ -134,7 +135,8 @@ const (
 //   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, leg ("" for no
 //     matrix), and ended, false for a run that has not ended;
 //   - uncited.json, {"<commit>":{"<check id>":"<R48 rule>"}}: the checks that CI refused at each
-//     commit, {} for none; a commit that it does not name is one at which CI refused no check;
+//     commit, {} for none, each with its rule of one character or more (uncitedFault); a commit that
+//     it does not name, or whose map is {}, is one at which CI refused no check;
 //   - units.json (optional), [{"id","serves","needs","waits_on"}]: each id once, each of serves,
 //     needs and waits_on set ([] for none), serves and waits_on naming current statements of the
 //     approved spec, needs naming units of the file; with none, no wait is read;
@@ -186,6 +188,9 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	}
 	if err := readJSON(fsys, "uncited.json", &s.Uncited, uncitedForm); err != nil {
 		return s, err
+	}
+	if fault := uncitedFault(s.Uncited); fault != "" {
+		return s, scenarioFault("uncited.json", "%s", fault)
 	}
 	if holds["units.json"] {
 		if s.Units, err = readUnits(fsys, s.Approved); err != nil {
