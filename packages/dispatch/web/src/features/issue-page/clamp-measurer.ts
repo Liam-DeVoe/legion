@@ -12,9 +12,9 @@ const CUT_SLACK = 12;
  *  screen each way. */
 const NEAR_BAND = "100% 0px";
 
-/** How long one frame's slice of a batch reads for at most: a batch of more rows goes on in
- *  the frames after it, each slice reading before it writes (decision 202 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md). */
+/** How long one frame's slice of a batch reads for at most. One batch that read every near row
+ *  of a large issue at once held the main thread for 414 ms; a batch of more rows goes on in the
+ *  frames after it, each slice reading before it writes. */
 const SLICE_MS = 50;
 
 /** What a row draws of words it cuts: how tall it draws them, how many words it holds back,
@@ -43,20 +43,19 @@ interface Watched {
 }
 
 /**
- * The one measurer of every cut the new issue page draws (decision 196 of
- * dispatch://INFRA-1196/artifact/part-decisions-md). Each row that may be cut hands it its words
- * (`useClamp`), and it measures them in batches, one slice of at most `SLICE_MS` a frame, every
- * read of a slice before any write. Before it, each row measured its own words from its own
+ * The one measurer of every cut the new issue page draws. Each row that may be cut hands it its
+ * words (`useClamp`), and it measures them in batches, one slice of at most `SLICE_MS` a frame,
+ * every read of a slice before any write. Each row once measured its own words from its own
  * layout effect, after the writes the rows before it had made in the same commit, so the browser
- * laid the whole outline out again for each row: on a copy of INFRA-1196, 7 to 28 s of every
- * draw of the outline after a view change (part Q's tester's profiles).
+ * laid the whole outline out again for each row: on a production-size issue that took 7 to 28 s
+ * of every draw of the outline after a view change.
  *
- * It measures only the words within one screen of the viewport, which one
- * `IntersectionObserver` tells it and the words' own box confirms as the slice reads it, and
- * measures them again when a block of them changes size, or their box changes width or grows
- * while they are whole (one `ResizeObserver`), or the page's typeface arrives (one `loadingdone`
- * listener). Words that come near are measured in the next batch; words that go away keep the
- * cut they last had. Where the browser has no `IntersectionObserver`, every row is near.
+ * Where the browser has an `IntersectionObserver`, it measures only the words within one screen
+ * of the viewport: the observer says which, and the words' own box confirms it as the slice
+ * reads it. Where it has none, every row's words are measured. It measures them again when a
+ * block of them changes size, or their box changes width or grows while they are whole (one
+ * `ResizeObserver`), or the page's typeface arrives (one `loadingdone` listener). Words that come
+ * near are measured in the next batch; words that go away keep the cut they last had.
  */
 class ClampMeasurer {
   readonly #rows = new Map<Element, Watched>();
@@ -181,7 +180,11 @@ class ClampMeasurer {
       if (taken > 0 && performance.now() >= until) break;
       taken += 1;
       this.#due.delete(element);
-      if (withinBand(element)) read.push([element, measureClamp(element)]);
+      // With no observer to say which rows come near as the page scrolls, nothing would queue
+      // a far row again, so every row is measured.
+      if (this.#near === undefined || withinBand(element)) {
+        read.push([element, measureClamp(element)]);
+      }
     }
     for (const [element, clamp] of read) {
       const watched = this.#rows.get(element);

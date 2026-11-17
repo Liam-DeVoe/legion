@@ -443,7 +443,7 @@ html:has([data-issue-page]) {
    the floor's `inline-flex` and `center` above, in no layer, would outrank, so it is given them
    back here. `[data-node-row]` and `[data-node-words]` are drawn only by the new page
    (`NodeRow.tsx`, `CutWords.tsx`), so the rules take no `html:has()` scope: under one, each row
-   the page added recalculated the style of every button and link of the page (decision 176). A
+   the page added recalculated the style of every button and link of the page. A
    link's `[href]` keeps it above the floor's `a:not(.prose a):not(.dispatch-inline-link)`,
    which a link outside a `.prose` text matches, as the scope did. */
 @media (max-width: 1279px) {

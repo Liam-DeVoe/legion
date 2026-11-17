@@ -45,12 +45,18 @@ export interface RowReference {
   readonly start: number;
 }
 
-/** How many texts' readings the page keeps (decision 206 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md). A row's words hold a few texts - each
- *  paragraph a link pass walks, the answer, the stored text - so 4096 hold every text of an issue
- *  of several hundred rows, the largest the page draws, with room for a second view's; and each
- *  entry is the text's own string, which the page holds anyway, and its few references. */
-const READINGS_KEPT = 4096;
+/** How many texts' readings the page keeps. A link pass reads one text per painted text node,
+ *  so a row reads several: its stored text, each paragraph, list item and inline run of its
+ *  drawn words, its answer. The largest issue the page draws, with 86 comments, 11 messages and
+ *  2,106 blocks over 56 documents, holds 11,907 distinct such texts, counted from its stored
+ *  texts through the API by paragraph, list item and inline span; that is every text of every
+ *  document, more than one outline and a second view draw. The cap is about twice that, so a
+ *  draw that goes over the rows in the same order each time finds every text kept. */
+const READINGS_KEPT = 24_576;
+
+/** How many lists of issue keys one text keeps a reading for: the tree's citations read against
+ *  none, and a row against the keys the batched read names, which change as names arrive. */
+const KEY_LISTS_KEPT = 4;
 
 /** One text's reading, and the references of it a row links, read once it is first asked. */
 interface Reading {
@@ -58,42 +64,69 @@ interface Reading {
   readonly reading: TextReading;
 }
 
-/** Each text's reading, the least recently asked first, by the issue keys it was read against
- *  and the text itself. Nothing else a reading depends on changes while the page is open: the
- *  origin is the page's, and the references read ambiguous are left out after the reading
- *  (`rowReferences`), so a new set of them draws no stale link. */
-const readings = new Map<string, Reading>();
+/** Each text's readings, the least recently asked text first, by the small id of the list of
+ *  issue keys it was read against (`keyListId`). The text itself is the key, so an entry holds
+ *  no copy of it or of the keys. Nothing else a reading depends on changes while the page is
+ *  open: the origin is the page's, and the references read ambiguous are left out after the
+ *  reading (`rowReferences`), so a new set of them draws no stale link. */
+const readings = new Map<string, Map<number, Reading>>();
 
-/** Each list of issue keys a caller passes, joined once, as the front of a reading's key. */
-const joinedKeys = new WeakMap<readonly string[], string>();
+/** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
+ *  for a new list of the same keys. `0` is no list. */
+const listIds = new WeakMap<readonly string[], number>();
+const keySetIds = new Map<string, number>();
+let lastKeySetId = 0;
+
+/** How many distinct sets of keys are kept an id before they are forgotten: a set the batched
+ *  read has moved on from is asked no more, and a new one takes a new id. */
+const KEY_SETS_KEPT = 64;
+
+/** The small id of the list of keys `issues` holds: the same id for the same keys. */
+function keyListId(issues: readonly string[] | undefined): number {
+  if (issues === undefined) return 0;
+  const known = listIds.get(issues);
+  if (known !== undefined) return known;
+  const joined = issues.join(" ");
+  let id = keySetIds.get(joined);
+  if (id === undefined) {
+    if (keySetIds.size >= KEY_SETS_KEPT) keySetIds.clear();
+    lastKeySetId += 1;
+    id = lastKeySetId;
+    keySetIds.set(joined, id);
+  }
+  listIds.set(issues, id);
+  return id;
+}
 
 /**
  * `text` read by `readTextReferences` against `issues`, the bare keys it may link, once per
- * distinct text and list of keys while the reading is kept: each row's words were read again on
- * every draw, the references' block ids encoded each time, which on a copy of INFRA-1196 was
- * about 650 ms of a draw of the outline after a view change (part Q's tester's profile).
+ * distinct text and set of keys while the reading is kept. The page read every row's words again
+ * on each draw, and encoded each reference's block id again with them, which was about 650 ms of
+ * a draw of the outline after a view change on a production-size issue.
  */
 function readingOf(text: string, issues: readonly string[] | undefined): Reading {
-  let front = "\u0000";
-  if (issues !== undefined) {
-    front = joinedKeys.get(issues) ?? `${issues.join(" ")}\u0001`;
-    joinedKeys.set(issues, front);
+  const id = keyListId(issues);
+  let byKeys = readings.get(text);
+  if (byKeys === undefined) {
+    byKeys = new Map();
+    if (readings.size >= READINGS_KEPT) {
+      const oldest = readings.keys().next();
+      if (oldest.done !== true) readings.delete(oldest.value);
+    }
+  } else {
+    readings.delete(text);
   }
-  const key = `${front}${text}`;
-  const held = readings.get(key);
-  if (held !== undefined) {
-    readings.delete(key);
-    readings.set(key, held);
-    return held;
-  }
+  readings.set(text, byKeys);
+  const held = byKeys.get(id);
+  if (held !== undefined) return held;
   const read: Reading = {
     reading: readTextReferences(text, issues === undefined ? {} : { issues }),
   };
-  readings.set(key, read);
-  if (readings.size > READINGS_KEPT) {
-    const oldest = readings.keys().next();
-    if (oldest.done !== true) readings.delete(oldest.value);
+  if (byKeys.size >= KEY_LISTS_KEPT) {
+    const oldest = byKeys.keys().next();
+    if (oldest.done !== true) byKeys.delete(oldest.value);
   }
+  byKeys.set(id, read);
   return read;
 }
 

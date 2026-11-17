@@ -359,7 +359,7 @@ test("an agent message and an answered question are cut at six lines, and the wo
     await expectSeedDrawn(page, seeded);
     const agent = nodeRow(page, seeded.longMessage).first();
     // The page measures a row's cut once the row stands within a screen of the viewport, in the
-    // frame after it comes there (decision 196), so each cut read here is of a row brought there.
+    // frame after it comes there, so each cut read here is of a row brought there.
     const cutOf = async (id: string) => {
       await nodeRow(page, id).first().scrollIntoViewIfNeeded();
       await expect

@@ -312,8 +312,8 @@ function wears(element: Element, ...classes: readonly string[]): boolean {
 }
 
 // Inside `NoTooltips`, the new page, the Change form's lines draw the page's own colour pairs,
-// as part L's composer does; on today's page they keep `main`'s: the quote's rule and words, the
-// field's name, a refusal, and Send and Cancel.
+// the ones `theme/classes.ts` names; on today's page they keep `main`'s: the quote's rule and
+// words, the field's name, a refusal, and Send and Cancel.
 test("the Change form draws the page's colours inside NoTooltips and main's outside it", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
     new ApiError(409, { code: "QUOTE_NOT_FOUND", error: "the quote is not in the document" })

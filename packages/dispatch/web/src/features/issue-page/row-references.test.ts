@@ -158,7 +158,7 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   expect(earlier.textContent).toBe(drawn);
 });
 
-// Decision 206: each row's words were read again on every draw. A text is read once for each list
+// Each row's words were read again on every draw. A text is read once for each list
 // of issue keys it is read against, however often a row draws it; another text, or another list
 // of keys, is read anew. A new set of ambiguous references is applied to the kept reading, so the
 // row drops the link it names with no second reading and draws no stale one.

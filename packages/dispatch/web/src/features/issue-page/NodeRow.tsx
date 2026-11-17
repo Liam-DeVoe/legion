@@ -465,8 +465,8 @@ export const NODE_ROW_LAYOUT = {
  *
  * Answers the row's own `onPointerDown`, which marks a press. Every row of the outline and of a
  * filter's body places itself by this one hook. `below` is how far below what stays a row that
- * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own
- * (decision 188).
+ * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own,
+ * as a view whose sticky heads stand taller than the outline's does.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
@@ -507,8 +507,8 @@ const BELOW_WHAT_STAYS = 8;
 
 /**
  * Scrolls `element`, which `bringOnScreen` has placed, down to `below` px below everything that
- * stays at the top of the screen above the rows where its top still lies under it (decision 113
- * of dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
+ * stays at the top of the screen above the rows where its top still lies under it: at 760 px and
+ * below, a focused row there lay under the view row that stays. That height is the page's
  * `scroll-padding-top`, which `styles.css` keeps equal to it, so this reads the padding itself
  * and no height of its own. `bringOnScreen` clears the header's band alone, which at 760 px and
  * below, under a header that publishes no band, leaves the view row that stays over the row.
