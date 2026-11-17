@@ -252,24 +252,26 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, []model.Comment{comment})
+	replies, err := s.scanReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+	// The comment and its replies are hydrated in one pass: one read each of their mentions, their
+	// deliveries and their reply blocks, and one of which sessions those name the reader sees.
+	thread, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, append([]model.Comment{comment}, replies...))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
+	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), thread[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	read := commentRead{Replies: shapedComments(replies, reader)}
-	read.Comment.Comment = comments[0]
+	read := commentRead{Replies: shapedComments(thread[1:], reader)}
+	read.Comment.Comment = thread[0]
 	read.Comment.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, read)
@@ -320,6 +322,16 @@ var inboxAskReplyChainsQuery = `
 // that replies to one of those via reply_to). seedColumn is caller-controlled
 // and never derived from request input.
 func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
+	replies, err := s.scanReplyChain(ctx, q, who, seedColumn, seedValue)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateCommentSideTables(ctx, q, who, replies)
+}
+
+// scanReplyChain is loadReplyChain's comments as their rows hold them, before their side tables
+// are read (hydrateCommentSideTables), for a read that hydrates them with others in one pass.
+func (s *server) scanReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
 	rows, err := q.Query(ctx, replyChainQuery(seedColumn), seedValue, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
@@ -333,10 +345,7 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor,
 		}
 		replies = append(replies, reply)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return s.hydrateCommentSideTables(ctx, q, who, replies)
+	return replies, rows.Err()
 }
 
 // loadComment reads comment id as who may read it (access.ItemOwnerClause): a comment of a project who

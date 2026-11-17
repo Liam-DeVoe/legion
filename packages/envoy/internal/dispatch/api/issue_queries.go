@@ -949,12 +949,12 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		links = scanned
 		return err
 	})
-	first.Queue(issueArtifactsStatement, key, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+	first.Queue(issueArtifactsStatement, key, viewer).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
 		artifacts = scanned
 		return err
 	})
-	first.Queue(listIssueAsksQueryOpen, key, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+	first.Queue(listIssueAsksQueryOpen, key, viewer).Query(func(rows pgx.Rows) error {
 		scannedAsks, scannedReplies, err := scanAskReads(rows)
 		asks, replies = scannedAsks, scannedReplies
 		return err
