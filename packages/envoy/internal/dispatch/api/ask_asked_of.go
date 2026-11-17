@@ -47,9 +47,22 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if input.AskedOf == "" {
-		writeError(w, r, apicode.InvalidAsk, "asked_of must be a person's email")
+	answer, ok := s.handAskOn(w, r, actor, askID, input.AskedOf)
+	if !ok {
 		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(answer, wantsDisplayTrees(r)))
+}
+
+// handAskOn hands the open ask askID to the person named, for actor, once the route has read its
+// body: it writes asks.asked_of and who handed it on and when, appends one ask.asked_of event,
+// and answers the ask read back under its own locks. PUT /api/v1/asks/{id}/asked-of
+// (putAskAskedOf) and PATCH /api/v2/asks/{id} with asked_of (editAskV2) each answer it in their
+// own shape. It writes a refusal itself and answers false.
+func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, named string) (model.Ask, bool) {
+	if named == "" {
+		writeError(w, r, apicode.InvalidAsk, "asked_of must be a person's email")
+		return model.Ask{}, false
 	}
 	// Who the ask is handed to, canonicalised and held to having signed in
 	// (400 ASSIGNEE_NOT_ALLOWED), resolved before the transaction opens: allowedLogin reads the
@@ -57,16 +70,16 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// (store.ErrNestedAcquire), so it cannot run under the transaction below - the reason
 	// editAsk resolves its acting person before it begins. A caller naming nobody who has
 	// signed in is therefore told so before the ask is read.
-	askedOf, err := s.allowedLogin(r.Context(), input.AskedOf)
+	askedOf, err := s.allowedLogin(r.Context(), named)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	defer tx.Rollback(r.Context())
 	// The locks, in the order the ask writes take them: the owner row, then the ask row. A
@@ -75,20 +88,20 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	ask, err := s.lockAskForTransition(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	if ask.State != "open" {
 		writeError(w, r, apicode.AskNotOpen, "only open asks may be handed to another person")
-		return
+		return model.Ask{}, false
 	}
 	// Whom the ask waited on before this write, read under the two locks through the expression
 	// every reader of that person shares - so its joins are that expression's own
@@ -105,7 +118,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		where a.id = $1
 	`, ask.ID).Scan(&waitedOn, &assignee); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	// Handing an ask to the assignee of its own issue empties the field instead of repeating
 	// them in it: the ask follows its issue again, so a later reassignment carries it along, and
@@ -127,7 +140,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		returning asked_of_at
 	`, ask.ID, stored, handedOnBy).Scan(&handedOnAt); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	ask.AskedOf = stored
 	ask.AskedOfBy = &handedOnBy
@@ -145,7 +158,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	// What the 200 answers: the ask as every other read of it answers, read back under this
 	// transaction's own locks through the columns those reads share (askReadColumns), so it
@@ -158,12 +171,12 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, newShapedAsk(answer, wantsDisplayTrees(r)))
+	return answer, true
 }

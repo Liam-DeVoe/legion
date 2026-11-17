@@ -153,7 +153,6 @@ var (
 	AskAnswered                        = both("ASK_ANSWERED", http.StatusConflict)
 	AskApprovalReview                  = both("ASK_APPROVAL_REVIEW", http.StatusConflict)
 	AskBlockText                       = both("ASK_BLOCK_TEXT", http.StatusBadRequest)
-	AskClosed                          = both("ASK_CLOSED", http.StatusConflict)
 	AskEdited                          = both("ASK_EDITED", http.StatusConflict)
 	AskIDInput                         = both("ASK_ID_INPUT", http.StatusBadRequest)
 	AskKindFixed                       = both("ASK_KIND_FIXED", http.StatusConflict)
@@ -446,6 +445,11 @@ var (
 	// BlockNotFound names. /api/v1 answered it as it answers a block an operation names
 	// (TargetNotFound); /api/v2 names it as the object its path names (decision 11).
 	BlockNotFound = renamed("TARGET_NOT_FOUND", http.StatusNotFound, "BLOCK_NOT_FOUND")
+
+	// AskClosed is a first answer to an ask somebody has already answered (transitionAskTx),
+	// which /api/v1 answered under a code of its own. /api/v2 answers it as it answers every other
+	// transition of an answered ask (AskAnswered), so one condition takes one code there (R7).
+	AskClosed = renamed("ASK_CLOSED", http.StatusConflict, "ASK_ANSWERED")
 )
 
 // The codes only /api/v2 answers.

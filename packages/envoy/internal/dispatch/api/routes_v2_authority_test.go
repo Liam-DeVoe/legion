@@ -47,9 +47,14 @@ func TestV2DeclaredAuthority(t *testing.T) {
 	t.Run("an ask's states", func(t *testing.T) {
 		route := tour.requireMounted(t, http.MethodPut, "/asks/{id}/state")
 		issue := tour.issue(t)
+		// A resolve takes its reason, and a bearer names its session in actor, as the route map's
+		// {state, reason} body and the resolve's own rule for a bearer write them.
 		resolved := tour.send(t, route, tourRequest{
 			Path: map[string]string{"id": tour.ask(t, issue)}, Query: asSession,
-			Body: map[string]any{"state": "resolved"}, As: scopeless,
+			Body: map[string]any{
+				"state": "resolved", "reason": "Settled on the issue.",
+				"actor": map[string]any{"kind": "session", "id": tourSession},
+			}, As: scopeless,
 		}, "")
 		if resolved.Code != http.StatusOK {
 			t.Errorf("the session token resolving an ask: %d %s, want 200", resolved.Code, resolved.Body.String())

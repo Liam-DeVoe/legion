@@ -199,32 +199,46 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	ask, ok := s.recordAnswer(w, r, actor, input)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// recordAnswer answers the ask the path names as input says, for actor, once the route has read
+// its body: the first answer, or a change of the current one by the person who gave it, through
+// the transition engine (closeAsk), with an approval's reviews. POST /api/v1/asks/{id}/answer
+// (answerAsk) and PUT /api/v2/asks/{id}/state with state answered (putAskStateV2) each answer it
+// in their own shape. It writes a refusal itself and answers false.
+func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor model.Actor, input answerAskInput) (model.Ask, bool) {
 	// The acting session the body names, where the caller's credential proved none: this route
 	// has always decoded an actor, and a personal token names its session nowhere else.
-	if actor, ok = actSessionFromBody(w, r, actor, input.Actor); !ok {
-		return
+	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
+	if !ok {
+		return model.Ask{}, false
 	}
 	// Before the transition opens its own transaction: an answer's text rides the ask.answered
 	// event beside the ask's wording, so it takes the same bound.
 	if input.Text != nil {
 		if length := itemblocks.Units16(*input.Text); length > contracts.DispatchEventBodyMax {
 			capExceeded(w, r, "text", length, contracts.DispatchEventBodyMax)
-			return
+			return model.Ask{}, false
 		}
 	}
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	if !provided {
 		writeError(w, r, apicode.AskRevisionRequired, "expected_edited_at is required")
-		return
+		return model.Ask{}, false
 	}
 	replacesAnswer, err := parseReplacesAnswer(input.ExpectedAnswerAt)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
 	transition := answerTransition(actor, input.Selected, input.Text, answerOptions{
 		Revision:       &answerRevision{EditedAt: expectedEditedAt},
@@ -264,13 +278,13 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// the row lock the answer is written beneath, so the kind checked is the kind answered; the
 	// refusal is the gate's own (missingScopeError), which writeHandlerError gives the challenge
 	// header.
-	recordAnswer := transition.Apply
+	applyAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 			return model.Ask{}, missingScopeError(model.ScopeApprove,
 				"this request's credential does not hold the approve scope, which answering an approval request requires")
 		}
-		return recordAnswer(ctx, tx, ask)
+		return applyAnswer(ctx, tx, ask)
 	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
@@ -297,9 +311,9 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
 }
 
 // resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.
@@ -325,22 +339,35 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	kind := strings.TrimSpace(input.Kind)
-	reason := strings.TrimSpace(input.Reason)
+	ask, ok := s.recordResolution(w, r, actor, input.Kind, input.Reason)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// recordResolution resolves or retracts the ask the path names without an answer, for actor, once
+// the route has read its body: kind is retracted or resolved, and reason is required, held to the
+// event's bound and to no opening of the settlement's own. POST /api/v1/asks/{id}/resolve
+// (resolveAsk) and PUT /api/v2/asks/{id}/state with state resolved or retracted (putAskStateV2)
+// each answer it in their own shape. It writes a refusal itself and answers false.
+func (s *server) recordResolution(w http.ResponseWriter, r *http.Request, actor model.Actor, kind, reason string) (model.Ask, bool) {
+	kind = strings.TrimSpace(kind)
+	reason = strings.TrimSpace(reason)
 	if kind != "retracted" && kind != "resolved" {
 		writeError(w, r, apicode.InvalidResolution,
 			`resolution kind must be "retracted" or "resolved", not `+strconv.Quote(kind))
-		return
+		return model.Ask{}, false
 	}
 	if reason == "" {
 		writeError(w, r, apicode.InvalidResolution, "resolution requires a kind and reason")
-		return
+		return model.Ask{}, false
 	}
 	// A resolution's reason rides the ask.resolved event, so it takes the event's bound; before
 	// the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(reason); length > contracts.DispatchEventBodyMax {
 		capExceeded(w, r, "reason", length, contracts.DispatchEventBodyMax)
-		return
+		return model.Ask{}, false
 	}
 	// Settlement's own retraction reason is how a resolution written before this rule is
 	// recognised as settlement's, and such a resolution is restored when its block comes back.
@@ -349,7 +376,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(reason, docs.SettlementRetractionReason) {
 		writeError(w, r, apicode.InvalidResolution,
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
-		return
+		return model.Ask{}, false
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
@@ -362,9 +389,9 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
 }
 
 // writeClosedBlockState writes a closed block ask's state into its document, as the resolve and
@@ -412,10 +439,24 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	ask, ok := s.recordDecline(w, r, actor, input)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// recordDecline declines the ask the path names for actor, a person, once the route has read its
+// body: the ask resolves with the kind declined, the note as its reason beside the words Dispatch
+// writes for the asking agent. POST /api/v1/asks/{id}/decline (declineAsk) and PUT
+// /api/v2/asks/{id}/state with state declined (putAskStateV2) each answer it in their own shape.
+// It writes a refusal itself and answers false.
+func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor model.Actor, input declineAskInput) (model.Ask, bool) {
 	// The acting session the body names, where the caller's credential proved none, as the
 	// answer route reads it: a personal token names its session nowhere else.
-	if actor, ok = actSessionFromBody(w, r, actor, input.Actor); !ok {
-		return
+	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
+	if !ok {
+		return model.Ask{}, false
 	}
 	note := ""
 	if input.Note != nil {
@@ -425,7 +466,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// event's bound; before the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(note); length > contracts.DispatchEventBodyMax {
 		capExceeded(w, r, "note", length, contracts.DispatchEventBodyMax)
-		return
+		return model.Ask{}, false
 	}
 	// The resolve route refuses a reason opening with docs.SettlementRetractionReason because
 	// such a reason marks a retraction settlement itself wrote, which returning the block undoes
@@ -452,9 +493,9 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return model.Ask{}, false
 	}
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
 }
 
 func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {

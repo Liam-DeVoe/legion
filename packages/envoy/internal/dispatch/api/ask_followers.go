@@ -116,54 +116,76 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 			s.writeHandlerError(w, r, err)
 			return
 		}
-		// The session this credential acts as, where it acts as one, is bearerSessionActor's
-		// own answer: the session a broker-issued token proved, else the one the body names, as
-		// that call records it. A credential that acts as the addressed session follows it as it
-		// always did, recorded as that session, since that is its own act and no person's;
-		// nothing of what a session reads back changes.
-		asTheSession, sessionErr := bearerSessionActor(r, actor, input.Actor)
-		switch {
-		case sessionErr == nil && asTheSession.ID == sessionID:
-			actor = asTheSession
-		case person:
-			// Putting another session on an ask is the person's act, so it is recorded as the
-			// person with the agent beside them. actingPerson cannot refuse the scope here,
-			// which the line above has just read; it still refuses a `?session=` naming a
-			// session other than the one a broker-issued token proved.
-			acting, ok := s.actingPerson(w, r)
-			if !ok {
-				return
-			}
-			if actor, ok = actSessionFromBody(w, r, acting, input.Actor); !ok {
-				return
-			}
-		default:
-			// The body still has to name a session, so a bearer that names none is told that
-			// first, as it always was (400 ACTOR_KIND).
-			if sessionErr != nil {
-				s.writeHandlerError(w, r, sessionErr)
-				return
-			}
-			writeError(w, r, apicode.FollowerForbidden,
-				"a session may follow or unfollow only itself; acting for another session needs the person scope")
+		var ok bool
+		if actor, ok = s.askFollowerActor(w, r, actor, person, sessionID, input.Actor); !ok {
 			return
 		}
 	}
+	if !s.writeAskFollower(w, r, actor, askID, sessionID, follow) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
+// askFollowerActor is whom a follower write by a credential that is no person at a browser is
+// recorded as, from the actor it resolved to and the session its body names: the addressed session
+// itself, or a person holding the person scope acting on another session, or nobody, which it
+// refuses itself and answers false. person is whether the credential holds the person scope.
+func (s *server) askFollowerActor(
+	w http.ResponseWriter, r *http.Request, actor model.Actor, person bool, sessionID string, named *model.Actor,
+) (model.Actor, bool) {
+	// The session this credential acts as, where it acts as one, is bearerSessionActor's own
+	// answer: the session a broker-issued token proved, else the one the body names, as that call
+	// records it. A credential that acts as the addressed session follows it as it always did,
+	// recorded as that session, since that is its own act and no person's; nothing of what a
+	// session reads back changes.
+	asTheSession, sessionErr := bearerSessionActor(r, actor, named)
+	switch {
+	case sessionErr == nil && asTheSession.ID == sessionID:
+		return asTheSession, true
+	case person:
+		// Putting another session on an ask is the person's act, so it is recorded as the person
+		// with the agent beside them. actingPerson cannot refuse the scope here, which the caller
+		// has just read; it still refuses a `?session=` naming a session other than the one a
+		// broker-issued token proved.
+		acting, ok := s.actingPerson(w, r)
+		if !ok {
+			return model.Actor{}, false
+		}
+		return actSessionFromBody(w, r, acting, named)
+	default:
+		// The body still has to name a session, so a bearer that names none is told that first,
+		// as it always was (400 ACTOR_KIND).
+		if sessionErr != nil {
+			s.writeHandlerError(w, r, sessionErr)
+			return model.Actor{}, false
+		}
+		writeError(w, r, apicode.FollowerForbidden,
+			"a session may follow or unfollow only itself; acting for another session needs the person scope")
+		return model.Actor{}, false
+	}
+}
+
+// writeAskFollower puts sessionID on the ask askID's followers, or with follow false takes it off,
+// recorded as actor: one ask.follower_added or ask.follower_removed event for a change, and none
+// for a follow of a session that already follows, which changes nothing. Unfollowing a session
+// that does not follow is 404 FOLLOWER_NOT_FOUND. Both versions of the follower routes write
+// through it and answer in their own shape; it writes a refusal itself and answers false.
+func (s *server) writeAskFollower(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, sessionID string, follow bool) bool {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return false
 	}
 	defer tx.Rollback(r.Context())
 	own, err := s.loadAskOwner(r.Context(), tx, askID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return false
 	}
 	if err := s.deps.Events.LockOwners(r.Context(), tx, own.event("", actor, nil)); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return false
 	}
 	eventType := "ask.follower_added"
 	var changed bool
@@ -175,27 +197,26 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return false
 	}
 	if !changed {
 		if !follow {
 			writeError(w, r, apicode.FollowerNotFound, "session does not follow this ask")
-			return
+			return false
 		}
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return true
 	}
 	event, err := s.appendEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
 		AskID: askID, SessionID: sessionID, By: actor,
 	}))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return false
 	}
 	s.publish(r.Context(), event)
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
