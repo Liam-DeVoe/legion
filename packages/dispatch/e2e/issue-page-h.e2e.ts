@@ -780,6 +780,60 @@ test("a repository of a long name is whole in Details at every width @phone", as
   });
 });
 
+/** The bottom of Details' head, the element that holds its Close, which stays at the top while
+ *  the panel under it scrolls. */
+function detailsHeadBottom(page: Page): Promise<number> {
+  return marginShell(page).evaluate((drawer) => {
+    const close = drawer.querySelector('[data-testid="details-close"]');
+    const head = [...drawer.children].find((child) => close !== null && child.contains(close));
+    return head?.getBoundingClientRect().bottom ?? Number.NaN;
+  });
+}
+
+// R5: Add opens the control of the property it lists. In a short window the Labels row has
+// scrolled up under Details' head by the time Add, at the end of Development, is in view; Add
+// brings the control into view before it presses it, since the control's popover is placed from
+// where the control is on the screen. Found by the implementer's c-use at cf4dd251 (the popover
+// opened over the head at 390 px), fixed in 29c83c9b; the tester pins it here.
+test("Add brings a control it reaches into view, so its popover opens under Details' head @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    await page.setViewportSize({ height: 400, width: 390 });
+    await gotoIssue(page, `/issues/${two}`);
+    await openDetails(page);
+    const labelsControl = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+      name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
+    });
+    await expect(labelsControl).toHaveCount(1);
+    await addControl(page).evaluate((control) => control.scrollIntoView({ block: "end" }));
+    await nextFrames(page);
+    const headBottom = await detailsHeadBottom(page);
+    const before = await labelsControl.boundingBox();
+    expect(
+      (before?.y ?? 0) + (before?.height ?? 0),
+      "the Labels control is in view below the head before Add reaches it, so the row proves nothing"
+    ).toBeLessThanOrEqual(headBottom);
+    await addControl(page).click();
+    await openMenu(page)
+      .getByRole("menuitem", { exact: true, name: PROPERTY_LABELS.labels })
+      .click();
+    const popover = page.getByRole("listbox", { name: "Labels options" }).locator("xpath=..");
+    await expect(popover).toBeVisible();
+    const [control, opened] = [await labelsControl.boundingBox(), await popover.boundingBox()];
+    expect(
+      control?.y ?? -1,
+      "Add pressed the Labels control under Details' head"
+    ).toBeGreaterThanOrEqual(headBottom - 1);
+    expect(opened?.y ?? -1, "the labels' popover opened over Details' head").toBeGreaterThanOrEqual(
+      headBottom - 1
+    );
+    await page.keyboard.press("Escape");
+  });
+});
+
 test("each control in Details saves and reads back", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
