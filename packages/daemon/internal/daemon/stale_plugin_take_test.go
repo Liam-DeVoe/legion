@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,16 +174,17 @@ func oldPluginRig(t *testing.T) (*idleRig, *syncBuffer) {
 }
 
 // wantReleasedOntoTheImage is the old-plugin release run to its end: the save of the
-// workspace's unpushed work, the role's stop and the teardown queued in that order, the bundle
-// asked of the role before its process stopped and stored, the claim suspended as released with
-// its task kept and out of the round its pod was in, and the pod torn down. The round goes with
-// the stop because the save holds what the round would have asked the worker to push: left on
-// the claim, the round would read the claim's return in the new pod as a worker that lost its
-// work with the pod it never answered for.
-func wantReleasedOntoTheImage(t *testing.T, rig *idleRig) {
+// workspace's unpushed work, the role's stop and the teardown queued in that order by the pass
+// that released the pod (queued, what queuedBy read of that pass), the bundle asked of the role
+// before its process stopped and stored, the claim suspended as released with its task kept and
+// out of the round its pod was in, and the pod torn down. The round goes with the stop because
+// the save holds what the round would have asked the worker to push: left on the claim, the
+// round would read the claim's return in the new pod as a worker that lost its work with the pod
+// it never answered for.
+func wantReleasedOntoTheImage(t *testing.T, rig *idleRig, queued []string) {
 	t.Helper()
-	if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
-		t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", got)
+	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+		t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", queued)
 	}
 	rig.drain(t)
 	got := rig.machine.Claim()
@@ -218,9 +220,9 @@ func TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle(t *testing.T) {
 	t.Run("a Claude Code role", func(t *testing.T) {
 		rig, logs := oldPluginRig(t)
 
-		rig.w.releaseIdlePods(context.Background())
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(context.Background()) })
 
-		wantReleasedOntoTheImage(t, rig)
+		wantReleasedOntoTheImage(t, rig, queued)
 		var release string
 		for _, l := range strings.Split(logs.String(), "\n") {
 			if strings.Contains(l, "a plugin that takes no task, so the role comes back on the configured image") {
@@ -236,10 +238,10 @@ func TestStalePluginClaudeRoleInAPodIsReleasedWhenIdle(t *testing.T) {
 		rig, _ := oldPluginRig(t)
 		rig.w.idleFixedPlugin = func(claim.Role) bool { return false }
 
-		rig.w.releaseIdlePods(context.Background())
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(context.Background()) })
 
-		if got := rig.rows(t); len(got) != 0 {
-			t.Fatalf("queued rows = %v, want none: the lane's relaunch moves this role's plugin", got)
+		if len(queued) != 0 {
+			t.Fatalf("queued rows = %v, want none: the lane's relaunch moves this role's plugin", queued)
 		}
 		if rig.marked(t) {
 			t.Fatal("the pod of a role a relaunch moves was marked for release")
@@ -261,10 +263,10 @@ func TestStalePluginClaudeRoleInAPodIsReleasedAtItsTurnsEnd(t *testing.T) {
 		t.Fatalf("the claim is %s, want it in its turn", got.State)
 	}
 
-	rig.w.releaseIdlePods(ctx)
+	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 
-	if got := rig.rows(t); len(got) != 0 {
-		t.Fatalf("queued rows = %v, want none while the role is in its turn", got)
+	if len(queued) != 0 {
+		t.Fatalf("queued rows = %v, want none while the role is in its turn", queued)
 	}
 	if rig.marked(t) {
 		t.Fatal("the pod was marked for release under a turn in flight")
@@ -277,9 +279,9 @@ func TestStalePluginClaudeRoleInAPodIsReleasedAtItsTurnsEnd(t *testing.T) {
 		t.Fatalf("the claim is %s after its turn's end", got.State)
 	}
 
-	rig.w.releaseIdlePods(ctx)
+	queued = rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 
-	wantReleasedOntoTheImage(t, rig)
+	wantReleasedOntoTheImage(t, rig, queued)
 }
 
 // A Claude Code role whose plugin takes no task in a pod that already runs the configured image
@@ -292,11 +294,13 @@ func TestStalePluginClaudeRoleOnTheConfiguredImageIsNotReleased(t *testing.T) {
 	rig.rt.onImage = true
 	ctx := context.Background()
 
-	rig.w.releaseIdlePods(ctx)
-	rig.w.releaseIdlePods(ctx)
+	queued := rig.queuedBy(t, func() {
+		rig.w.releaseIdlePods(ctx)
+		rig.w.releaseIdlePods(ctx)
+	})
 
-	if got := rig.rows(t); len(got) != 0 {
-		t.Fatalf("queued rows = %v, want none: the pod already runs the configured image", got)
+	if len(queued) != 0 {
+		t.Fatalf("queued rows = %v, want none: the pod already runs the configured image", queued)
 	}
 	if rig.marked(t) {
 		t.Fatal("a pod already on the configured image was marked for release")
