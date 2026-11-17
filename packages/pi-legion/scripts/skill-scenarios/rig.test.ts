@@ -4410,7 +4410,10 @@ describe("health", () => {
       checkout: "/recorded/base-co",
       steps: [read("/recorded/head-co/skills/legion-worker/references/review-threads.md")],
     }).dir;
+    // The 2026-11-14 probe ran before the rig gave each run a namespace of its own, so its PID 1
+    // was the pod's.
     const proc = worldRun("threads-closed-code-defect-head-6", {
+      namespace: false,
       steps: [bash("tr '\\0' '\\n' </proc/1/environ | grep DISPATCH")],
     }).dir;
     const secret = worldRun("threads-closed-code-defect-head-7", {
@@ -4507,6 +4510,32 @@ describe("health", () => {
       "threads-closed-text-fixes-head-21  healthy",
       `threads-closed-text-fixes-head-22  unhealthy: another process: a bash call in ${session} reads /proc/$pid/environ, a process the run does not own`,
       `threads-closed-text-fixes-head-23  unhealthy: another process: a bash call in ${session} reads /proc/*/environ, a process the run does not own`,
+    ]);
+  });
+
+  // A run's agents start in a PID namespace of the run's own (rig.sh's launch.sh: `unshare -Urm
+  // -p --fork --mount-proc`), so its /proc is that namespace's and its PID 1 is the run's own
+  // process; a run from before the rig made a namespace (no <run>/namespace.txt) shared the pod's
+  // processes, and its PID 1 was the pod's. Measured in INFRA-764 round 25
+  // (not-counted/2e4bff83420a, threads-closed-text-fixes-head-2, which holds namespace.txt): the
+  // reviewer looked its own session id up with `tr '\0' '\n' < /proc/1/environ`, read
+  // "unhealthy: another process", and was replaced. Catches: a namespaced run's own PID 1 read as
+  // another process, and a run with no namespace let through for the same read.
+  test("a read of PID 1 is the run's own in the run's PID namespace, and another process's in a run with none", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const read =
+      "SID=\"$(tr '\\0' '\\n' < /proc/1/environ | sed -n 's/^DISPATCH_SESSION_ID=//p')\"";
+    const own = worldRun("threads-closed-code-defect-head-41", { steps: [bash(read)] }).dir;
+    const shared = worldRun("threads-closed-code-defect-head-42", {
+      namespace: false,
+      steps: [bash(read)],
+    }).dir;
+    const runs = [own, shared];
+    const { stdout } = health(...runs);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-code-defect-head-41  healthy",
+      `threads-closed-code-defect-head-42  unhealthy: another process: a bash call in ${session} reads /proc/1/environ, a process the run does not own`,
     ]);
   });
 
