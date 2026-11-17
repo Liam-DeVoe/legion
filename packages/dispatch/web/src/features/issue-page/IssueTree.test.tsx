@@ -1357,6 +1357,131 @@ test("q reaches every open question while the tree is read one node at a time", 
   expect(rowReport(view.container)).toBeUndefined();
 });
 
+/** An issue of two comments, the first with a reply under it and the second with none. */
+function twoCommentsTree(): TreeNode {
+  return node({
+    children: [
+      node({
+        children: [node({ id: "comment-1a", text: "Under the first.", type: "comment" })],
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+}
+
+// At 390 by 664 on a real issue, a zoom into a row taller than the window left the crumb line it
+// draws under the band that stays at the top: the line was placed, then the row was placed by
+// the page's one rule, which puts a row taller than the room at its top just under the band, and
+// again by the row's own as it grew. The line is placed, and the row, its first line on screen
+// under it, is placed by nothing - not as it grows either. happy-dom lays nothing out, so the
+// boxes are given, moved by each scroll, under a band of 60 px; each size observer still
+// observing is called by hand once the row grows.
+test("a zoom into a row taller than the window places its crumb line, and the row keeps its top under it", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const band = 60;
+  let scrolledTo = 0;
+  let tall = 2 * window.innerHeight;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this.matches("p") && this.querySelector("[data-crumb]") !== null) {
+      return new DOMRect(0, 10 - scrolledTo, 390, 20);
+    }
+    const row = this.closest<HTMLElement>("[data-node-row]");
+    if (row?.dataset.nodeId !== "comment-1") return new DOMRect();
+    return this === row
+      ? new DOMRect(0, 40 - scrolledTo, 390, tall)
+      : this.matches("[data-node-bullet]")
+        ? new DOMRect(0, 42 - scrolledTo, 18, 24)
+        : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  const observing = new Set<{ readonly callback: ResizeObserverCallback; observer: unknown }>();
+  const RealResizeObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    readonly #held: { readonly callback: ResizeObserverCallback; observer: unknown };
+    constructor(callback: ResizeObserverCallback) {
+      this.#held = { callback, observer: this };
+    }
+    observe() {
+      observing.add(this.#held);
+    }
+    unobserve() {}
+    disconnect() {
+      observing.delete(this.#held);
+    }
+  } as unknown as typeof ResizeObserver;
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, `${band}px`);
+  // Where the line and the row stand now: the line's top below the band, and the row's top on
+  // screen, which is under the line, the row being drawn under it.
+  const placed = () => ({
+    line: 10 - scrolledTo >= band,
+    row: 40 - scrolledTo >= band && 40 - scrolledTo < window.innerHeight,
+  });
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    await waitFor(() => expect(scrolled).toHaveBeenCalled());
+    expect(placed(), "the zoom left the line under the band or the row off the screen").toEqual({
+      line: true,
+      row: true,
+    });
+    const after = scrolledTo;
+
+    tall = 3 * window.innerHeight;
+    await act(async () => {
+      for (const { callback, observer } of observing) {
+        callback([], observer as ResizeObserver);
+      }
+    });
+    expect(scrolledTo, "the zoomed row was put back at its top as it grew").toBe(after);
+  } finally {
+    globalThis.ResizeObserver = RealResizeObserver;
+    boxes.mockRestore();
+    scrolled.mockRestore();
+    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+  }
+});
+
+// At 390 by 664 Right on the row the tree is zoomed to - the view's own root, drawn open over
+// what it holds - zoomed into the row it was on, which moved nothing and said nothing. It steps
+// into the row as into any open row, and where nothing is under it says so at the row.
+test("Right on the row the tree is zoomed to moves to its first child, or says nothing is under it", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard(".");
+  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
+  expect(focusedRow(view.container)).toBe("comment-1");
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+  expect(rowReport(view.container)).toBeUndefined();
+
+  await user.keyboard(",");
+  await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+  await user.keyboard("{End}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  await user.keyboard(".");
+  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.nothing_under));
+  expect(focusedRow(view.container)).toBe("comment-2");
+});
+
 /** An issue whose outline holds a comment and then the group of its two children. */
 function childrenTree(): TreeNode {
   return node({

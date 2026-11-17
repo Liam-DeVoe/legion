@@ -19,7 +19,7 @@ import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
-import { bringOnScreen } from "./identity-block";
+import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
@@ -30,6 +30,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
 import { PRESS_ENDS, usePressFocus } from "./press-focus";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
+import { focusIsLoose } from "./tree-focus";
 import {
   DRAWN_LEVELS,
   NARROW_LEVELS,
@@ -168,9 +169,10 @@ export function IssueTree({
   const [cycle, setCycle] = useState(0);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
-  // Whether the reader has just zoomed in or out, which places the crumb line the zoom draws
-  // once its rows and the focus are on the page (`zoomTo`).
-  const [placeCrumbs, setPlaceCrumbs] = useState(false);
+  // How many zooms the reader has made, each of which places the crumb line it draws once its
+  // rows and the focus are on the page (`zoomTo`). A count rather than a flag, so a zoom made
+  // before the last one's placing has been drawn is placed too.
+  const [zooms, setZooms] = useState(0);
   // What a key reported when it had nowhere to go, and the row it was pressed on: the row draws
   // it, so the reader reads it where they are, and the next key, move or leaving the tree lets
   // it go. `row` is undefined where the key was pressed with no row focused.
@@ -287,15 +289,18 @@ export function IssueTree({
   // 161 px at 390 by 664 on a long answered question - where it is to stay at 0 px. The
   // opening names the row in `openingRow` while it focuses it, which tells that focus from every
   // other; the reader's first act, or the focus going to any other row or out of the tree, ends
-  // it.
+  // it. The row a zoom leaves the reader on is the other that does not place itself, until the
+  // reader's next act (`zoomTo`); `zoomLanding` tells the focus a zoom key gives a row, from the
+  // key until the zoom is placed, from every other.
   const [unplaced, setUnplaced] = useState<string | undefined>(undefined);
   const openingRow = useRef<string | undefined>(undefined);
+  const zoomLanding = useRef(false);
 
   const takeFocus = useCallback(
     (row: string, node: TreeNode) => {
       setFocused(row);
       setStop(row);
-      setUnplaced(row === openingRow.current ? row : undefined);
+      setUnplaced(row === openingRow.current || zoomLanding.current ? row : undefined);
       // A move to a row is the reader going on from what a key reported.
       setReport(undefined);
       setFocusedNode(focusedNodeOf(node));
@@ -363,11 +368,22 @@ export function IssueTree({
   }, []);
   // A zoom the reader makes - `.` and `,`, the arrows where the tree is read one node at a time,
   // a crumb - roots the tree at a node and draws the crumb line above its rows, which is placed
-  // once they are drawn (`placeCrumbs`).
-  const zoomTo = useCallback((id: string) => {
-    setZoom(id);
-    setPlaceCrumbs(true);
-  }, []);
+  // once they are drawn (`zooms`). The row it leaves the reader on - the one that keeps the
+  // focus through it, or the one the key takes the focus to (`zoomLanding`) - places nothing of
+  // its own from the render that draws the zoom until the reader's next act, so nothing of the
+  // row's undoes where the line and the row are placed. A zoom back out to the issue draws no
+  // line, and its row places itself as every move's does.
+  const rootId = root.id;
+  const zoomTo = useCallback(
+    (id: string) => {
+      setZoom(id);
+      setZooms((held) => held + 1);
+      const lined = id !== rootId;
+      zoomLanding.current = lined;
+      setUnplaced(lined ? focusedRowIn(body.current)?.dataset.rowKey : undefined);
+    },
+    [rootId]
+  );
 
   // Takes the reader to one node, wherever it is: the path down to it is unfolded, a zoom it
   // sits outside of is left, and the row takes the focus once this render has drawn it.
@@ -426,21 +442,42 @@ export function IssueTree({
 
   // A zoom draws the crumb line above the rows it roots the tree at, and the line is the way
   // back out, so it is brought below the band that stays at the top by the page's one rule
-  // (`bringOnScreen`), with the focused row still on screen after it. Nothing else places it:
-  // the row the zoom leaves the reader on keeps the focus it held, or takes it where the key put
-  // it, and is placed by its own rule alone, so a row the page had put just under the band kept
-  // its place and the line drawn above it stood under the band - at 390 by 664 px on a long
-  // issue, the crumb line at -5 to 39 px under a band 51 px tall. This runs after the effect
-  // above, which focuses the row a zoom key asked for, so the row it reads is that one.
+  // (`bringOnScreen`). Nothing else places it: the row the zoom leaves the reader on keeps the
+  // focus it held, or takes it where the key put it, so a row the page had put just under the
+  // band kept its place and the line drawn above it stood under the band - at 390 by 664 px on
+  // a long issue, the crumb line at -5 to 39 px under a band 51 px tall. The row is placed after
+  // the line only where its first line is not on screen: placed by the page's rule, a row taller
+  // than the room under the band went to its top just under the band and took the line back
+  // under it, as it did again each time it grew - rows of 1,634 and 1,464 px left the line at
+  // 15 to 59 and at -53 to 59 px under a band 51 px tall. Until the reader's next act the row
+  // places nothing of its own (`zoomTo`). This runs after the effect above, which focuses the row
+  // a zoom key asked for, so the row it reads is that one.
+  const zoomsPlaced = useRef(zooms);
+  const zoomHold = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => zoomHold.current?.abort(), []);
   useEffect(() => {
-    if (!placeCrumbs) return;
-    setPlaceCrumbs(false);
+    if (zoomsPlaced.current === zooms) return;
+    zoomsPlaced.current = zooms;
+    if (!zoomLanding.current) return;
+    zoomLanding.current = false;
+    zoomHold.current?.abort();
+    const acts = new AbortController();
+    zoomHold.current = acts;
+    for (const type of READER_ACTS) {
+      window.addEventListener(
+        type,
+        () => {
+          acts.abort();
+          setUnplaced(undefined);
+        },
+        { capture: true, signal: acts.signal }
+      );
+    }
     const line = crumbLine.current;
-    if (line === null) return;
-    bringOnScreen(line);
+    if (line !== null) bringOnScreen(line);
     const row = focusedRowIn(body.current);
-    if (row !== null) bringOnScreen(row);
-  }, [placeCrumbs]);
+    if (row !== null && !firstLineOnScreen(row)) bringOnScreen(row);
+  }, [zooms]);
 
   // The cycle key draws bodies, or whole branches, above the focused row and moves no focus, so
   // nothing placed the row as the rows above it grew and pushed it off the screen: at 1440 by
@@ -903,12 +940,17 @@ function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
   return row !== null && tree?.contains(row) === true ? row : null;
 }
 
-/** Whether nothing holds the focus that the tree is to keep from it: it is on nothing, on the
- *  page itself, or on an element that holds `tree` - the app's main element, which the app
- *  focuses at each page change but the first (`app.tsx`), so a page opened by a link starts with
- *  the focus there, and no reader put it there. */
-function focusIsLoose(tree: HTMLElement | null): boolean {
-  return focusOnDocument() || (tree !== null && document.activeElement?.contains(tree) === true);
+/** Whether the first line of `row` - the line its bullet stands on - is whole on screen: below
+ *  the band that stays at the top and above the box at the foot, by the heights the page
+ *  publishes for them, as `bringOnScreen` reads them. */
+function firstLineOnScreen(row: HTMLElement): boolean {
+  const line = (
+    row.querySelector<HTMLElement>("[data-node-bullet]") ?? row
+  ).getBoundingClientRect();
+  const published = getComputedStyle(document.documentElement);
+  const band = Number.parseFloat(published.getPropertyValue(IDENTITY_HEIGHT_PROPERTY)) || 0;
+  const foot = Number.parseFloat(published.getPropertyValue(FOOT_HEIGHT_PROPERTY)) || 0;
+  return line.top >= band && line.bottom <= window.innerHeight - foot;
 }
 
 /**

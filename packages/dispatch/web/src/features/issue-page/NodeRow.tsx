@@ -169,10 +169,11 @@ export function NodeRow({
   ownAnswer: boolean;
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
-   *  every row does but two of the outline's: its first row as the page opens on it with no
-   *  question waiting on the reader, which stays where it stands until the reader acts, and
-   *  the row the reader is editing, which the editor's own caret keeps in view while it grows
-   *  as the reader writes. Both are `IssueTree.tsx`'s to set. */
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */

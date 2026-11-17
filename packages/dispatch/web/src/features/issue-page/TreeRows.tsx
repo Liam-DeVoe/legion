@@ -71,8 +71,9 @@ export function TreeRows({
   /** Each thread's newest write by the node that draws it (`threadMarks`). */
   threads: ReadonlyMap<string, ThreadMark>;
   /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
-   *  `placesItself`): the outline's first row the page opens on, until the reader acts, and the
-   *  row the reader is editing in, which the editor's caret places as the reader writes. */
+   *  `placesItself`): the outline's first row the page opens on and the row a zoom leaves the
+   *  reader on, each until the reader acts, and the row the reader is editing in, which the
+   *  editor's caret places as the reader writes. */
   unplaced: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
