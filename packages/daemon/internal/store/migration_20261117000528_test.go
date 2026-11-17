@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -19,7 +22,9 @@ const stepRecordKindVersion = 20261117000528
 // merge-queue kinds' list (20261114031356), which this version stands above. After it the row is
 // queued, and so is every kind the constraint already named, since the migration rewrites the list
 // whole and a kind left out would stop its own effect. A kind that is none is still refused, with
-// the check's own SQLSTATE.
+// the check's own SQLSTATE. The rows the release before it left pending — the merge-queue kinds
+// its list added among them, each on an issue and with a payload of its own — come through the
+// migration whole: the same id, kind, issue, payload, attempts, due time and error.
 func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -36,8 +41,50 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	if err := queue("step_record"); !refusedByTheCheck(err) {
 		t.Fatalf("queueing a step_record row before the migration = %v, want the kind constraint to refuse it (23514): it is the row the migration exists for", err)
 	}
+	type pending struct {
+		id          int64
+		kind, issue string
+		payload     string
+		attempts    int
+		nextAt      time.Time
+		lastError   string
+	}
+	readPending := func() []pending {
+		t.Helper()
+		rows, err := store.Pool().Query(ctx, `select id, kind, issue, payload::text, attempts, next_at, last_error from outbox order by id`)
+		if err != nil {
+			t.Fatalf("read the outbox: %v", err)
+		}
+		defer rows.Close()
+		var all []pending
+		for rows.Next() {
+			var row pending
+			if err := rows.Scan(&row.id, &row.kind, &row.issue, &row.payload, &row.attempts, &row.nextAt, &row.lastError); err != nil {
+				t.Fatalf("scan the outbox: %v", err)
+			}
+			all = append(all, row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the outbox: %v", err)
+		}
+		return all
+	}
+	for i, kind := range []string{"merge_queue_removal", "merge_queue_read", "update_ask", "supervise", "dispatch_status"} {
+		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, $2, jsonb_build_object('pending', $1::text), $3, now() + make_interval(mins => $3), $4)`,
+			kind, fmt.Sprintf("LEGION-%d", 300+i), i, fmt.Sprintf("attempt %d failed", i)); err != nil {
+			t.Fatalf("queue a pending %s row under the release before: %v", kind, err)
+		}
+	}
+	before := readPending()
+	if len(before) != 5 {
+		t.Fatalf("the outbox holds %d rows before the migration, want the five pending rows of the release before", len(before))
+	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the step record's kind: %v", err)
+	}
+	if after := readPending(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("the pending rows after the migration = %+v, want the release before's rows whole: %+v", after, before)
 	}
 	for _, kind := range []string{
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
