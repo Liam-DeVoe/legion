@@ -153,6 +153,14 @@ Releasing a child too early starts work that cannot build;
 a `blocked_by` link on a started issue takes a slot from work already under way, which stops
 nothing.
 
+## An issue with children has no code of its own
+
+An issue with children carries no code of its own: every change of it goes into a child, and its
+pull request merges only after its children, carrying their merges
+(dispatch://INFRA-3320/ask/86ef35c1-9daf-44b8-a077-16d39f1807fe).
+Where an issue whose branch already carries code needs children, that code becomes a child's too:
+file a child for it, whose work starts from those commits.
+
 ## A root with no code of its own
 
 When every change of the tree lands through its children, the root's branch has no commit of its

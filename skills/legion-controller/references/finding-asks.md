@@ -146,7 +146,9 @@ every later phase start of the parent, and it stops a phase of the parent under 
 admission pass. A class root with no code of its own loses nothing by it. Where you report the
 link (your reply under the evidence, or your summary), and in your message to the architect of
 the issue you link, name all three parts of that cost for the root you link under, whatever phase
-it stands in now and whether or not it has code of its own.
+it stands in now. A root whose branch carries code of its own puts that code in a child
+(`skill://legion-architect/references/decomposition.md#an-issue-with-children-has-no-code-of-its-own`),
+so say that too.
 
 ### A member under a root on the backlog
 

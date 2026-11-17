@@ -401,22 +401,16 @@ A root with a Dispatch parent can open a gated step on an ancestor's approval, w
 its own. Its spec is then a view on the ancestor: it holds no requirement of its own, and each of
 its checks proves a requirement of the ancestor. The children of an approved issue together do all
 of what it states, and only that. So a requirement that the root needs and the ancestor does not
-state goes into the ancestor's spec, never into the root's. Work that cannot be built or tested
-until the ancestor's own pull request merges is not filed as a root under that ancestor: for
-example, work that reads a table, calls a route or runs code that pull request adds. The ancestor
-starts no phase while a child of it is open, so it would wait on that root. That work goes into
-the ancestor's spec, by the route of "A requirement the ancestor does not state" below where the
-spec does not state it yet, and the ancestor's own pull request builds it. The architect decides
-this and asks no person. This section is the whole rule, for the root's architect and for the
-ancestor's architect.
+state goes into the ancestor's spec, by the route of "A requirement the ancestor does not state"
+below, never into the root's. The ancestor carries no code of its own, and a child delivers each of
+its requirements (`skill://legion-architect/references/decomposition.md`). Where the root's work
+cannot be built or tested until another child's pull request merges, for example work that reads a
+table, calls a route or runs code that pull request adds, link the root `blocked_by` that child and
+name the child in the root's spec: the child's merge closes it. The architect decides this and
+asks no person. This section is the whole rule, for the root's architect and for the ancestor's
+architect.
 
 ### When the root is a view
-
-Before both lists below, read whether the root's work can be built and tested before the
-ancestor's own pull request merges. Where it cannot, the rule in the opening paragraph of "A root
-that is a view on an approved ancestor" decides, and neither list does: the root registers no
-basis and requests no approval of its own. Send its work to the ancestor's architect, by the
-route of "A requirement the ancestor does not state".
 
 The ancestor is the nearest issue on the root's Dispatch `child_of` chain whose document for the
 step has a review or an open approval request. Read the chain upward with
@@ -531,8 +525,7 @@ registration waits for that link too.
 ### When the root asks for its own approval
 
 Request a person's approval of the root's own document, as "The armed gate" says, and register that
-version with no basis, in each of these cases, unless the root's work cannot be built or tested
-until the ancestor's own pull request merges ("When the root is a view" says what decides then):
+version with no basis, in each of these cases:
 
 - The ancestor marks no requirement block.
 - The ancestor's approved text says that the root's kind asks for its own approval.
@@ -645,11 +638,11 @@ More rules for the ancestor's architect:
   and the ancestor's own Verification document holds no check of it. The root's checks serve it,
   and your acceptance reads them (`skill://legion-architect/references/acceptance.md`).
 - Where the root that a `Delivered by` requirement names leaves the workflow without delivering it,
-  rewrite the requirement without that name. Request the person's approval of that version, and
-  let the ancestor's own plan give the requirement a task. Where a requirement it delivered names
-  no root, keep its words: the ancestor's own plan gives it a task. That version is not a version
-  of the route: its summary names no root, and a sibling root that finds its request open asks
-  for its own approval.
+  file a child of the ancestor for the requirement, whose spec is a view that names it, rewrite the
+  requirement with that child's name in place of the root's, and request the person's approval of
+  that version. Where a requirement it delivered names no root, keep its words and file such a
+  child for it. That version is not a version of the route: its summary names no root, and a
+  sibling root that finds its request open asks for its own approval.
 - The daemon refuses the ancestor's `sign_off` and `close_root` while a root that rests on its
   approval is in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`). That root's own architect, or a
   person, moves it.
