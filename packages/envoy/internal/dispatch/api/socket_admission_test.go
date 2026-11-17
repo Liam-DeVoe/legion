@@ -257,8 +257,13 @@ func TestASocketWhoseCallerStopsResolvingDuringTheLoadIsAnsweredAsItsLoadAndNotA
 			if want := "status=" + strconv.Itoa(load.status); !strings.Contains(access, want) {
 				t.Errorf("the socket's access-log line %q does not carry %s, the answer its browser read", access, want)
 			}
-			if strings.Contains(logged.String(), errCallerNoLongerResolves.Error()) {
-				t.Errorf("a heartbeat that found the pool busy ended the socket:\n%s", logged.String())
+			// A socket the heartbeat ended is refused with the class of the heartbeat's cause on
+			// the document service's line (docs' refuseUnservedSocket), which carries no cause
+			// otherwise.
+			for line := range strings.Lines(logged.String()) {
+				if strings.Contains(line, "a document socket was refused") && strings.Contains(line, " cause=") {
+					t.Errorf("a heartbeat that found the pool busy ended the socket: %s", line)
+				}
 			}
 		})
 	}

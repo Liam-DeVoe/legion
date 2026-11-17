@@ -389,34 +389,100 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (accesslog.ClientGone). A context the server ended under the socket carries a cause of its own -
 // the heartbeat's re-resolution of the caller failed (api's whileCallerResolves), which under load
 // is a busy pool and not a browser that left - and that socket's browser is still waiting, so it
-// is refused like any other (refuseUnservedSocket), with message, and with that cause.
+// is refused like any other (refuseUnservedSocket), with message, and with that cause's class.
 func refuseAdmission(w http.ResponseWriter, r *http.Request, message, room, pool string, err error) {
 	cause := context.Cause(r.Context())
 	if cause == context.Canceled {
 		accesslog.ClientGone(r.Context())
 		return
 	}
-	attrs := []any{"room", room}
-	if pool != "" {
-		attrs = append(attrs, "pool", pool)
-	}
-	attrs = append(attrs, "error", err)
-	if cause != nil {
-		attrs = append(attrs, "cause", cause)
-	}
-	refuseUnservedSocket(w, message, attrs...)
+	refuseUnservedSocket(w, message, room, pool, err, cause)
 }
 
 // refuseUnservedSocket refuses a document socket the server could not serve now, before any
 // upgrade: 503 with Retry-After (admission.RetryAfter), as the API's 503s carry it, and why at
-// WARN with attrs. The 503 alone names neither the room nor what refused it, so a refusal that
-// reached a person could be placed only from a neighbouring line: attrs carry the room, the pool
-// the read that failed went through (loadPoolName for a document's), the error, and what ended
-// the request's context when something did.
-func refuseUnservedSocket(w http.ResponseWriter, message string, attrs ...any) {
+// WARN. The 503 alone names neither the room nor what refused it, so a refusal that reached a
+// person could be placed only from a neighbouring line: the line carries message, which says
+// what refused the socket, the room, the pool the read that failed went through (loadPoolName for
+// a document's; none for a wait that read no pool, or a room that failed), the class of err, and
+// the class of cause, what ended the request's context, when the server ended it.
+//
+// The line names no person: err and cause go on it as their class (refusalClass), never as their
+// text. The read of the caller's session fails with the store's own error, which quotes the login
+// it read for (store.PgSessionStore.CurrentSessionGeneration, PgPeopleStore.Membership), and the
+// heartbeat's cause wraps that same read's error (api's whileCallerResolves); one rule for every
+// line means no line has to be judged by where its error came from. The access-log line names
+// the caller (accesslog.Note), and the class and the room place the refusal. The errors
+// themselves are left whole: what chose this answer read them (errors.Is, store.Unserved) before
+// it was called.
+func refuseUnservedSocket(w http.ResponseWriter, message, room, pool string, err, cause error) {
+	attrs := []any{"room", room}
+	if pool != "" {
+		attrs = append(attrs, "pool", pool)
+	}
+	attrs = append(attrs, "error", refusalClass(err))
+	if cause != nil {
+		attrs = append(attrs, "cause", refusalClass(cause))
+	}
 	slog.Warn(message, attrs...)
 	w.Header().Set("Retry-After", admission.RetryAfter)
 	http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+}
+
+// refusalClass is what a refused document socket's WARN line says of err, an error that refused
+// the socket or the cause that ended its request: a word of a fixed set, which names no person
+// whatever err's text names (refuseUnservedSocket). An error that wraps more than one is the
+// first class below that it matches: a busy pool's acquire wraps context.DeadlineExceeded too, and
+// the sign-in issuer's failure can be a timeout of its own.
+func refusalClass(err error) string {
+	var outside *admission.OutsideRefusal
+	switch {
+	case errors.Is(err, errSchemaRevoked):
+		// A re-check of the live server processes revoked the socket's admission
+		// (RunSchemaAdmission).
+		return "schema_revoked"
+	case store.IsPoolBusy(err):
+		// A bound of this server's ended a call before the database answered it: no connection
+		// of the pool came free within its acquire bound, or the database stopped answering on a
+		// call that commits nothing.
+		return "pool_busy"
+	case errors.As(err, &outside):
+		// The request pool's places outside admission were all held (admission.Outside): the
+		// queue for one was full, or no place came free within the wait.
+		if outside.Reason == admission.QueueFull {
+			return string(admission.QueueFull)
+		}
+		return string(admission.WaitExceeded)
+	case errors.Is(err, identity.ErrNoIdentity):
+		// The heartbeat's re-resolution found the caller no longer signed in.
+		return "no_identity"
+	case errors.Is(err, identity.ErrSignInUnavailable):
+		// The heartbeat's re-resolution met a lapsed confirmation the sign-in issuer could not
+		// renew.
+		return "signin_unavailable"
+	case errors.Is(err, context.Canceled):
+		// The request's context ended: the line's cause, when it has one, says what ended it.
+		return "request_ended"
+	case errors.Is(err, context.DeadlineExceeded):
+		// A bound on the request's context, or on the heartbeat's check, passed.
+		return "deadline_passed"
+	case store.Unserved(context.Background(), err):
+		// The database stopped answering on a connection under a bound of this server's
+		// (store.Unserved's stall); a context's own end is one of the cases above.
+		return "database_stalled"
+	case errors.Is(err, ErrDocumentUnloadable):
+		// The document's stored history does not decode.
+		return "document_unloadable"
+	case errors.Is(err, ErrServiceUnavailable):
+		// The room was failed, reloading or behind its durable head, or the store's load of the
+		// document failed and failed the room (loadTree).
+		return "room_unavailable"
+	default:
+		// Any other failure: a statement the database refused, a connection that broke, a
+		// document that did not render. Its text is not logged either, since what an error of no
+		// known class carries is not known.
+		return "other"
+	}
 }
 
 // socketAnswerWriter is a document socket's response writer while ygo serves the socket: the
@@ -485,14 +551,16 @@ func (w *socketAnswerWriter) refuse(status int) bool {
 //   - the server ended the socket's request while its join waited on the room's load - the
 //     heartbeat's re-resolution of the caller failed (api's whileCallerResolves), which under
 //     load is a busy pool, or a re-check revoked the socket's admission (RunSchemaAdmission):
-//     refused, with what ended it, as the admission refuses a request the server ended under it.
-//     The load's own reads run detached from any one request's end (onLoadDocument);
+//     refused, with the class of what ended it, as the admission refuses a request the server
+//     ended under it. The load's own reads run detached from any one request's end
+//     (onLoadDocument);
 //   - a load of the room failed, since the admission took the room's record, on a pool that could
 //     not serve it (store.Unserved: no connection came free within the pool's acquire bound, or
-//     the database stopped answering under it): refused, with the load's error. ygo hands every
-//     join waiting on a load that load's error, so this is the socket's own load's failure or that
-//     of the load its join waited on - a settlement's warm-up, a committed write's publish, another
-//     socket's - and the load recorded it on the room's record (noteLoadFailed, loadFailedSince).
+//     the database stopped answering under it): refused, with the class of the load's error. ygo
+//     hands every join waiting on a load that load's error, so this is the socket's own load's
+//     failure or that of the load its join waited on - a settlement's warm-up, a committed write's
+//     publish, another socket's - and the load recorded it on the room's record (noteLoadFailed,
+//     loadFailedSince).
 //
 // Any other failure keeps ygo's 500, since no bound of a pool made it: a history that does not
 // decode, a room being rebuilt, a load that panicked, a room that failed for one of those.
@@ -501,16 +569,16 @@ func (w *socketAnswerWriter) refuseFailedLoad() bool {
 		accesslog.ClientGone(w.request.Context())
 		return true
 	}
-	attrs := []any{"room", w.room, "pool", store.RoomsPool}
+	const message = "dispatch: a document socket was refused: its room could not load"
 	if err := w.socket.Err(); err != nil {
-		attrs = append(attrs, "error", err, "cause", context.Cause(w.socket))
-	} else if failure := w.service.loadFailedSince(w.room, w.held, w.failedBefore); store.Unserved(w.socket, failure) {
-		attrs = append(attrs, "error", failure)
-	} else {
-		return false
+		refuseUnservedSocket(w.ResponseWriter, message, w.room, store.RoomsPool, err, context.Cause(w.socket))
+		return true
 	}
-	refuseUnservedSocket(w.ResponseWriter, "dispatch: a document socket was refused: its room could not load", attrs...)
-	return true
+	if failure := w.service.loadFailedSince(w.room, w.held, w.failedBefore); store.Unserved(w.socket, failure) {
+		refuseUnservedSocket(w.ResponseWriter, message, w.room, store.RoomsPool, failure, nil)
+		return true
+	}
+	return false
 }
 
 // refuseFailedRoom gives the socket's own answer in place of ygo's 401 to a socket authorize
@@ -524,7 +592,7 @@ func (w *socketAnswerWriter) refuseFailedRoom() bool {
 	if !store.Unserved(w.socket, failure) {
 		return false
 	}
-	refuseUnservedSocket(w.ResponseWriter, "dispatch: a document socket was refused: its room failed on a busy pool", "room", w.room, "error", failure)
+	refuseUnservedSocket(w.ResponseWriter, "dispatch: a document socket was refused: its room failed on a busy pool", w.room, "", failure, nil)
 	return true
 }
 

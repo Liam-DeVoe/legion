@@ -887,10 +887,11 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 }
 
 // A document socket the service refuses because its document could not be admitted logs why, at
-// WARN, with the room and the pool the admission's load read through. The 503 alone names neither,
-// so without this line a refusal that reached a person could be placed only from a neighbouring
-// one. The admission's first load fails here (failingOnceVersionedStore), as a connection reset
-// in the middle of that load would.
+// WARN, with the room, the pool the admission's load read through, and the class of the error
+// that refused it, never that error's text (refuseUnservedSocket). The 503 alone names none of
+// them, so without this line a refusal that reached a person could be placed only from a
+// neighbouring one. The admission's first load fails here (failingOnceVersionedStore), as a
+// connection reset in the middle of that load would, which fails the room (loadTree).
 func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	previous := slog.Default()
@@ -922,10 +923,13 @@ func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logged)
 	}
-	for _, want := range []string{"level=WARN", "room=" + artifactID, "pool=" + store.RoomsPool, "transient load failure"} {
+	for _, want := range []string{"level=WARN", "room=" + artifactID, "pool=" + store.RoomsPool, "error=room_unavailable"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("the refused socket's line %q does not carry %q", line, want)
 		}
+	}
+	if strings.Contains(line, "transient load failure") {
+		t.Fatalf("the refused socket's line %q carries its error's text, want only the error's class", line)
 	}
 }
 

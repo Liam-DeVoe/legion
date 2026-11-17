@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -41,7 +43,7 @@ import (
 
 // A cold socket whose room's load finds the rooms pool busy is refused as the socket's other
 // refusals are, 503 with Retry-After and a WARN line naming the room, the pool and the busy pool's
-// error, and within one of that pool's acquire bounds of the moment the pool filled: the load reads
+// class, and within one of that pool's acquire bounds of the moment the pool filled: the load reads
 // the store once, the head its preload is checked against and the document's pending settlement in
 // one statement (takePreload), and a failure of that read is the load's, where a busy pool once ran
 // its bound out twice - once for the head and once more for the whole history read again on the
@@ -93,7 +95,7 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"level=WARN", "room=" + artifactID, "pool=" + store.RoomsPool, store.ErrPoolBusy.Error()} {
+	for _, want := range []string{"level=WARN", "room=" + artifactID, "pool=" + store.RoomsPool, "error=pool_busy"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
@@ -182,9 +184,9 @@ func TestASocketWaitingOnALoadThatFindsThePoolBusyIsRefused503(t *testing.T) {
 
 // A socket whose request the server ends while its join waits on the room's load - the heartbeat's
 // re-resolution of the caller failed, which under load is a busy pool, or a re-check revoked the
-// socket's admission - is refused 503 with that cause logged, as its admission refuses a request the
-// server ended under it. ygo answers the join 500 with the context's error; the browser is still
-// waiting, and nothing of the room failed.
+// socket's admission - is refused 503 with that cause's class logged, and never its text, as its
+// admission refuses a request the server ended under it. ygo answers the join 500 with the
+// context's error; the browser is still waiting, and nothing of the room failed.
 func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testing.T) {
 	logs := captureWarnings(t)
 	database := storetest.Open(t)
@@ -238,10 +240,13 @@ func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testin
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"room=" + artifactID, "re-resolve the socket's caller"} {
+	for _, want := range []string{"room=" + artifactID, "error=request_ended", "cause=pool_busy"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
+	}
+	if strings.Contains(line, "re-resolve the socket's caller") {
+		t.Errorf("the refused socket's line %q carries its cause's text, want only the cause's class", line)
 	}
 }
 
@@ -354,7 +359,7 @@ func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"the live server processes could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, store.ErrPoolBusy.Error()} {
+	for _, want := range []string{"the live server processes could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, "error=pool_busy"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
@@ -595,7 +600,7 @@ func TestASocketWhoseIssueReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"its document's issue could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, store.ErrPoolBusy.Error()} {
+	for _, want := range []string{"its document's issue could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, "error=pool_busy"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
@@ -604,10 +609,10 @@ func TestASocketWhoseIssueReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 
 // A socket whose request the server ends while its admission waits for its failed room's recovery
 // - the heartbeat's re-resolution of the caller failed, which under load is a busy pool - is refused
-// as the admission's other refusals are, 503 with Retry-After and a WARN line with the cause, where
-// it was a bare 503 no line explained. The room fails before the socket opens and its eviction is
-// held off, so the admission's wait ends only with the request, which the server ends half a
-// second in.
+// as the admission's other refusals are, 503 with Retry-After and a WARN line with the cause's
+// class, and never its text, where it was a bare 503 no line explained. The room fails before the
+// socket opens and its eviction is held off, so the admission's wait ends only with the request,
+// which the server ends half a second in.
 func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(t *testing.T) {
 	logs := captureWarnings(t)
 	database := storetest.Open(t)
@@ -640,10 +645,13 @@ func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"its failed room did not recover while it waited", "room=" + artifactID, "re-resolve the socket's caller"} {
+	for _, want := range []string{"its failed room did not recover while it waited", "room=" + artifactID, "error=deadline_passed", "cause=pool_busy"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
+	}
+	if strings.Contains(line, "re-resolve the socket's caller") {
+		t.Errorf("the refused socket's line %q carries its cause's text, want only the cause's class", line)
 	}
 }
 
@@ -705,7 +713,7 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"places outside admission are all held", "room=" + artifactID, string(admission.WaitExceeded)} {
+	for _, want := range []string{"places outside admission are all held", "room=" + artifactID, "error=" + string(admission.WaitExceeded)} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
@@ -825,9 +833,79 @@ func TestASocketWhoseSessionReadFindsTheRequestPoolBusyIsRefused503(t *testing.T
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"its caller's session could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, store.ErrPoolBusy.Error()} {
+	for _, want := range []string{"its caller's session could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, "error=pool_busy"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+}
+
+// A refused socket's WARN line names no person. The socket's caller is a person's signed and
+// current sign-in cookie, whose session is read on the request pool as production reads it
+// (store.PgSessionStore, identity.CookieIdentity); every connection of that pool is held, so the
+// read fails with the store's own error, which quotes the login it read for. The line carries that
+// error's class with the room, the read and the pool, and neither the login nor the cookie's
+// session (refuseUnservedSocket): the access-log line is what names the caller.
+func TestARefusedSocketsWarnLineNamesNoPerson(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	sessions := store.NewPgSessionStore(database.Pool)
+	service := New(Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		Identity:  identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
+		ServerURL: "https://dispatch.example",
+		Settle:    time.Hour,
+	})
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	server := newTestServer(t, service)
+	artifactID := createDocuments(t, database, 1)[0]
+	const login = "ada.lovelace@example.com"
+	generation, err := sessions.EnsureSession(context.Background(), login)
+	if err != nil {
+		t.Fatalf("open %s's session: %v", login, err)
+	}
+	cookie, _, _ := strings.Cut(auth.IssueSessionCookie(login, generation, testSigningKey, false), ";")
+	_, session, _ := strings.Cut(cookie, "=")
+
+	var held []*pgxpool.Conn
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for range database.Pool.Stat().MaxConns() {
+		conn, err := database.Pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("hold a request-pool connection: %v", err)
+		}
+		held = append(held, conn)
+	}
+	dialer := gws.Dialer{HandshakeTimeout: time.Minute}
+	connection, response, err := dialer.Dial(socketURL(server.URL, artifactID), http.Header{"Cookie": []string{cookie}})
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if response == nil || response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a signed-in socket whose session read found the request pool busy was answered %v (%v), want 503", response, err)
+	}
+	line := logs.Lines("a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	t.Logf("the refused socket's line: %s", strings.TrimSpace(line))
+	for _, want := range []string{"its caller's session could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, "error=pool_busy"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+	for _, person := range []string{login, base64.RawURLEncoding.EncodeToString([]byte(login)), session} {
+		if strings.Contains(line, person) {
+			t.Errorf("the refused socket's line %q carries %q, which names the person whose socket it was", line, person)
 		}
 	}
 }
