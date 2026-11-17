@@ -640,6 +640,9 @@ export const ANSWER_LINES = freeze({
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
+  /** What the Decisions view and the Spec column say when the issue's asks could not be read,
+   *  so neither can draw an open question or a person's decision, which is an answered one. */
+  asks_unreadable: "Could not load the open questions.",
   /** What the Spec view says when the spec's blocks or their coverage could not be read. */
   statements_unreadable: "Could not load the statements.",
   /** What the Spec view says when the results could not be read, so it marks no statement. */

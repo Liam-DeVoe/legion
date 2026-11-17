@@ -180,8 +180,8 @@ export function SpecFilterBody({
   // after a read again that fails, which leaves the body an answer to draw. Until the view and
   // the asks read have both answered the column says nothing of a statement no decision shaped,
   // since it does not know yet: a person's decision is a question they answered, which only the
-  // asks read says. Where the asks read failed with no answer held, the column says its
-  // decisions could not be read, on a line of its own after the view read's, with a Retry that
+  // asks read says. Where the asks read failed with no answer held, the column says the open
+  // questions could not be read, on a line of its own after the view read's, with a Retry that
   // reads the asks alone again.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
   const asksRead = useQuery({
@@ -484,13 +484,14 @@ export function SpecFilterBody({
           onRetry={() => void specRead.refetch()}
         />
       ) : null}
-      {/* The asks read failed with no answer held: a person's decisions come from it, so the
-          column says its decisions could not be read, after the view read's line. It is a copy
-          of the shape of the page's shared failed-read line (`slots/failed-read-line.tsx`'s
-          `FailedReadLine`), which it takes once this branch holds it. */}
+      {/* The asks read failed with no answer held: a person's decisions are answered questions,
+          which only it says, so the column says the open questions could not be read, on a line
+          of its own after the view read's. It is a copy of the shape of the page's shared
+          failed-read line (`slots/failed-read-line.tsx`'s `FailedReadLine`), which it takes
+          once this branch holds it. */}
       {asksFailed ? (
         <QueryError
-          message={ANSWER_LINES.decisions_unreadable}
+          message={ANSWER_LINES.asks_unreadable}
           onRetry={() => void asksRead.refetch()}
         />
       ) : null}

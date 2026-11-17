@@ -591,10 +591,10 @@ test("while the asks read is out, no statement a person's decision shaped reads 
 
 // R2 and decision 98: a person's decision is a question they answered, which only the asks read
 // says, so where that read failed with nothing held the column cannot draw a person's decision
-// beside the statements it shaped. It says the decisions could not be read, as it says it of the
-// Spec view read, and draws no person's decision missing in silence, nor a line that no decision
-// shaped a statement.
-test("where the asks read failed, the column says the decisions could not be read", async () => {
+// beside the statements it shaped. It says the open questions could not be read, on a line of its
+// own beside the Spec view read's, and draws no person's decision missing in silence, nor a line
+// that no decision shaped a statement.
+test("where the asks read failed, the column says the open questions could not be read", async () => {
   const words = "Put the decisions beside the statements. Please.";
   const { client, read, view } = drawBody(
     issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
@@ -621,8 +621,8 @@ test("where the asks read failed, the column says the decisions could not be rea
       () =>
         expect(
           view.container.textContent,
-          "the column does not say its decisions could not be read where the asks read failed"
-        ).toContain(ANSWER_LINES.decisions_unreadable),
+          "the column does not say its open questions could not be read where the asks read failed"
+        ).toContain(ANSWER_LINES.asks_unreadable),
       { timeout: 3000 }
     );
     expect(textsOf(view, "[data-spec-nothing]")).toEqual([]);

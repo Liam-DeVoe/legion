@@ -578,13 +578,13 @@ export function DecisionsFilterBody({
         <QueryError message={ANSWER_LINES.decisions_unreadable} onRetry={parts.retry} />
       ) : null}
       {/* The asks read failed with no answer held (`useDecisionsEntries`' `asksFailed`): the
-          open questions and a person's decisions come from it, so the view says its decisions
-          could not be read, after the line above, with a Retry that reads the asks alone again.
-          Both lines are a copy of the shape of the page's shared failed-read line
-          (`slots/failed-read-line.tsx`'s `FailedReadLine`), which they take once this branch
-          holds it. */}
+          open questions and a person's decisions come from it, so the view says the open
+          questions could not be read, on a line of its own after the one above, with a Retry
+          that reads the asks alone again. Both lines are a copy of the shape of the page's
+          shared failed-read line (`slots/failed-read-line.tsx`'s `FailedReadLine`), which they
+          take once this branch holds it. */}
       {parts.asksFailed ? (
-        <QueryError message={ANSWER_LINES.decisions_unreadable} onRetry={parts.asksRetry} />
+        <QueryError message={ANSWER_LINES.asks_unreadable} onRetry={parts.asksRetry} />
       ) : null}
       {/* The foot's rows stand after its control, outside this element, and are this tree's
           all the same (`aria-owns`), so the page holds one tree. The element itself takes the

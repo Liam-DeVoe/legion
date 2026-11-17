@@ -38,10 +38,10 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * read, with a Retry that reads again each of the two that failed (`failed`, `retry`). The asks
  * read is the third read the decisions come from: a person's decision is a question they
  * answered, and the open questions are the issue's open asks, which only the asks read says.
- * Where it failed with no answer held, the view says so on a line of its own after that one, in
- * the same words, with a Retry that reads the asks alone again (`asksFailed`, `asksRetry`). A
- * read asked again keeps its answer while it is out and when it fails, and the view draws from
- * that answer, so only a read that failed with no answer held counts as failed.
+ * Where it failed with no answer held, the view says the open questions could not be read, on a
+ * line of its own after that one, with a Retry that reads the asks alone again (`asksFailed`,
+ * `asksRetry`). A read asked again keeps its answer while it is out and when it fails, and the
+ * view draws from that answer, so only a read that failed with no answer held counts as failed.
  *
  * The reads are the page's own, under the keys it reads them by (`useIssueTree.ts`,
  * `ViewReadProvider`): the tree read, the decisions view and the issue's asks, each watched and

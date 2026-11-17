@@ -732,11 +732,11 @@ test("Retry on the decisions' failed line reads them again and draws what they h
 
 // R2 and decision 98: the view's first part is the open questions, which come from the issue's
 // asks read, as a person's decisions do. Where that read failed with nothing held, the view can
-// draw the decisions the tree holds but not one question, so it says its decisions could not be
-// read, with a Retry that reads the asks again, and never draws the decisions alone as though no
-// question waited. Its seam names the asks read as one of its three reads
+// draw the decisions the tree holds but not one question, so it says its open questions could not
+// be read, with a Retry that reads the asks again, and never draws the decisions alone as though
+// no question waited. Its seam names the asks read as one of its three reads
 // (`decisions-entries.ts`), and `known` already waits for it.
-test("the view says its decisions could not be read where the asks read failed, and Retry reads the asks again", async () => {
+test("the view says its open questions could not be read where the asks read failed, and Retry reads the asks again", async () => {
   const user = userEvent.setup();
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -787,8 +787,8 @@ test("the view says its decisions could not be read where the asks read failed, 
     await waitFor(
       () =>
         expect(
-          drawn.queryByText(ANSWER_LINES.decisions_unreadable),
-          "the view does not say its decisions could not be read where the asks read failed"
+          drawn.queryByText(ANSWER_LINES.asks_unreadable),
+          "the view does not say its open questions could not be read where the asks read failed"
         ).not.toBeNull(),
       { timeout: 3000 }
     );
@@ -796,6 +796,108 @@ test("the view says its decisions could not be read where the asks read failed, 
     await waitFor(() =>
       expect(asksRead, "Retry did not read the asks again").toHaveBeenCalledTimes(1)
     );
+  } finally {
+    drawn.unmount();
+    asksRead.mockRestore();
+  }
+});
+
+// Where the decisions' reads and the asks read have all failed with nothing held, the view draws
+// two lines that name two different reads, and each line's Retry reads its own reads alone
+// again: the decisions' the tree read and the decisions view, the asks' the asks read.
+test("where the decisions' reads and the asks read both failed, each line names its own read and its Retry reads only that", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async () => {
+    throw new ApiError(503, { code: "UNAVAILABLE", error: "down" });
+  });
+  client.setQueryData(["comments", KEY], []);
+  // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+  await client.prefetchQuery({
+    queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
+    queryKey: ["asks", KEY],
+  });
+  const asksRead = spyOn(api, "listIssueAsks").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "down" })
+  );
+  const issue = issueDetails();
+  const root = issueTree([]);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  const drawn = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const retryOf = (words: string): HTMLButtonElement => {
+    const button = drawn
+      .getByText(words)
+      .closest('[role="alert"]')
+      ?.querySelector<HTMLButtonElement>("button");
+    if (button == null) throw new Error(`the line "${words}" draws no Retry`);
+    return button;
+  };
+  try {
+    await waitFor(
+      () => {
+        expect(
+          drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read"
+        ).not.toBeNull();
+        expect(
+          drawn.queryByText(ANSWER_LINES.asks_unreadable),
+          "the view does not say its open questions could not be read"
+        ).not.toBeNull();
+      },
+      { timeout: 3000 }
+    );
+    expect(drawn.queryByText(EMPTY_LINE), "the view says the issue has no decisions").toBeNull();
+
+    const treeBefore = treeReads.mock.calls.length;
+    await user.click(retryOf(ANSWER_LINES.asks_unreadable));
+    await waitFor(() =>
+      expect(
+        asksRead,
+        "the open questions' Retry did not read the asks again"
+      ).toHaveBeenCalledTimes(1)
+    );
+    expect(
+      treeReads.mock.calls.length,
+      "the open questions' Retry read the tree or the decisions view again"
+    ).toBe(treeBefore);
+
+    await user.click(retryOf(ANSWER_LINES.decisions_unreadable));
+    await waitFor(() =>
+      expect(
+        treeReads?.mock.calls.length,
+        "the decisions' Retry did not read the tree or the decisions view again"
+      ).toBeGreaterThan(treeBefore)
+    );
+    expect(asksRead, "the decisions' Retry read the asks again").toHaveBeenCalledTimes(1);
   } finally {
     drawn.unmount();
     asksRead.mockRestore();
