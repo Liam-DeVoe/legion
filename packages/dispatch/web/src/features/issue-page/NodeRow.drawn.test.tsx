@@ -1012,7 +1012,7 @@ function layOut(height: number): () => void {
 // Ruling 1, and the reviewer's reading of it: "more · N words" opens the rest of a cut text, so
 // it is drawn only while the words are cut. A row whose body is open draws its words whole, and
 // no control that would open what is already open. The count is written with its thousands
-// separator. The page measures the words of the rows near the viewport (decision 196), so each
+// separator. The page measures only the words of rows near the viewport, so each
 // row's words are brought near and measured before the row is read.
 test("more is drawn on a cut row and never beside words a body draws whole", async () => {
   const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
@@ -1484,7 +1484,7 @@ test("a focused row under the view row that stays is placed below it, and one be
   }
 });
 
-// Decision 188: a view that places its rows by a step of its own passes it, and a focused row
+// A view that places its rows by a step of its own passes it, and a focused row
 // under what stays is placed that far below it rather than 8 px.
 test("a focused row under the view row that stays is placed the step it is given below it", () => {
   document.documentElement.style.setProperty("scroll-padding-top", "44px");

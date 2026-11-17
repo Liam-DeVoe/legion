@@ -12,6 +12,11 @@ const CUT_SLACK = 12;
  *  screen each way. */
 const NEAR_BAND = "100% 0px";
 
+/** How long one frame's slice of a batch reads for at most. One batch that read every near row
+ *  of a large issue at once held the main thread for 414 ms; a batch of more rows goes on in the
+ *  frames after it, each slice reading before it writes. */
+const SLICE_MS = 50;
+
 /** What a row draws of words it cuts: how tall it draws them, how many words it holds back,
  *  and whether the cut was moved to the foot of a row of pictures the sixth line crossed. */
 export interface Clamp {
@@ -28,25 +33,29 @@ interface Watched {
   /** The words' box and the children it held when the row was handed over: the boxes whose
    *  size the measurer watches for this row. */
   readonly boxes: readonly Element[];
+  /** Whether the words were cut when last measured. */
+  cut: boolean;
   /** Whether the words stand within `NEAR_BAND` of the viewport. */
   near: boolean;
   readonly report: Report;
+  /** The words' box's width when the size observer last saw it. */
+  width: number | undefined;
 }
 
 /**
- * The one measurer of every cut the new issue page draws (decision 196 of
- * dispatch://INFRA-1196/artifact/part-decisions-md). Each row that may be cut hands it its words
- * (`useClamp`), and it measures them in one batch a frame, every read before any write. Before
- * it, each row measured its own words from its own layout effect, after the writes the rows
- * before it had made in the same commit, so the browser laid the whole outline out again for
- * each row: on a copy of INFRA-1196, 7 to 28 s of every draw of the outline after a view change
- * (part Q's tester's profiles).
+ * The one measurer of every cut the new issue page draws. Each row that may be cut hands it its
+ * words (`useClamp`), and it measures them in batches, one slice of at most `SLICE_MS` a frame,
+ * every read of a slice before any write. Each row once measured its own words from its own
+ * layout effect, after the writes the rows before it had made in the same commit, so the browser
+ * laid the whole outline out again for each row: on a production-size issue that took 7 to 28 s
+ * of every draw of the outline after a view change.
  *
- * It measures only the words within one screen of the viewport, which one
- * `IntersectionObserver` tells it, and measures them again when their box or a block of them
- * changes size (one `ResizeObserver`) or the page's typeface arrives (one `loadingdone`
- * listener). Words that come near are measured in the next batch; words that go away keep the
- * cut they last had. Where the browser has no `IntersectionObserver`, every row is near.
+ * Where the browser has an `IntersectionObserver`, it measures only the words within one screen
+ * of the viewport: the observer says which, and the words' own box confirms it as the slice
+ * reads it. Where it has none, every row's words are measured. It measures them again when a
+ * block of them changes size, or their box changes width or grows while they are whole (one
+ * `ResizeObserver`), or the page's typeface arrives (one `loadingdone` listener). Words that come
+ * near are measured in the next batch; words that go away keep the cut they last had.
  */
 class ClampMeasurer {
   readonly #rows = new Map<Element, Watched>();
@@ -80,7 +89,17 @@ class ClampMeasurer {
         : new ResizeObserver((entries) => {
             for (const entry of entries) {
               const element = this.#owners.get(entry.target);
-              if (element !== undefined) this.#queue(element);
+              const watched = element === undefined ? undefined : this.#rows.get(element);
+              if (element === undefined || watched === undefined) continue;
+              // The cut sets the box's height itself, so a cut box measured again only for a new
+              // width: its words' own growing is seen on their blocks.
+              if (entry.target === element) {
+                const { width } = entry.contentRect;
+                const widened = width !== watched.width;
+                watched.width = width;
+                if (!widened && watched.cut) continue;
+              }
+              this.#queue(element);
             }
           });
     // The page's typeface arrives after the first frame (`font-display: swap`), and the words
@@ -95,7 +114,13 @@ class ClampMeasurer {
     // The words' own box is held to the cut while it is drawn, so their growing - a reading that
     // paints after the row, a picture that loads - is seen on the blocks they are drawn in.
     const boxes = [element, ...element.children];
-    this.#rows.set(element, { boxes, near: this.#near === undefined, report });
+    this.#rows.set(element, {
+      boxes,
+      cut: false,
+      near: this.#near === undefined,
+      report,
+      width: undefined,
+    });
     this.#near?.observe(element);
     for (const box of boxes) {
       this.#owners.set(box, element);
@@ -144,12 +169,30 @@ class ClampMeasurer {
     }
   };
 
-  /** The batch: every read, then every write, so the page is laid out once for all of them. */
+  /** One slice of the batch: reads for at most `SLICE_MS`, then every write of what it read,
+   *  so the page is laid out once for all of them; the rest of the batch goes on next frame. */
   readonly #measure = (): void => {
     this.#frame = undefined;
-    const read = [...this.#due].map((element) => [element, measureClamp(element)] as const);
-    this.#due.clear();
-    for (const [element, clamp] of read) this.#rows.get(element)?.report(clamp);
+    const until = performance.now() + SLICE_MS;
+    const read: (readonly [HTMLElement, Clamp | undefined])[] = [];
+    let taken = 0;
+    for (const element of this.#due) {
+      if (taken > 0 && performance.now() >= until) break;
+      taken += 1;
+      this.#due.delete(element);
+      // With no observer to say which rows come near as the page scrolls, nothing would queue
+      // a far row again, so every row is measured.
+      if (this.#near === undefined || withinBand(element)) {
+        read.push([element, measureClamp(element)]);
+      }
+    }
+    for (const [element, clamp] of read) {
+      const watched = this.#rows.get(element);
+      if (watched === undefined) continue;
+      watched.cut = clamp !== undefined;
+      watched.report(clamp);
+    }
+    if (this.#due.size > 0) this.#frame = window.requestAnimationFrame(this.#measure);
   };
 }
 
@@ -168,6 +211,17 @@ export function watchClamp(element: HTMLElement, report: Report): () => void {
     held.stop();
     if (measurer === held) measurer = undefined;
   };
+}
+
+/** Whether the words' box is laid out within `NEAR_BAND` of the viewport as the slice reads it.
+ *  The intersection observer's word is from the frame it was computed in: words drawn before the
+ *  page laid them out where they stand, or not laid out at all, can be reported near there. A
+ *  box with no size is measured once it has one, which the size observer reports. */
+function withinBand(element: HTMLElement): boolean {
+  const box = element.getBoundingClientRect();
+  if (box.width === 0 && box.height === 0) return false;
+  const screen = window.innerHeight;
+  return box.bottom >= -screen && box.top <= 2 * screen;
 }
 
 /** The cut of the words `element` holds, as the prototype's `measureClamps` reads it: layout

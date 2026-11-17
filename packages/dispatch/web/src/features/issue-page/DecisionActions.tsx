@@ -48,8 +48,8 @@ const DECISION_BUTTON =
   "rounded-[7px] border-[1.5px] border-page-decision px-3 py-0.5 text-xs leading-5 font-semibold";
 
 /** The colours of the lines Keep and Change draw under them, by the surface they are drawn on
- *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`), as
- *  part L's composer takes them; on today's page, `main`'s. */
+ *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`); on
+ *  today's page, `main`'s. */
 const TONES = {
   main: {
     failed: dangerText,

@@ -135,7 +135,7 @@ test("a cut statement with a hidden link gives that link no tab stop while cut, 
     </CutWords>
   );
   try {
-    // The page measures the words of the rows near the viewport (decision 196).
+    // The page measures only the words of rows near the viewport.
     await measureNearWords(near);
     const more = await waitFor(() => {
       const found = view.container.querySelector<HTMLButtonElement>("[data-node-more]");

@@ -14,11 +14,7 @@ import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
-import {
-  buildReferencePath,
-  type DispatchReferenceRoute,
-  parseNodeReference,
-} from "../refs/routes";
+import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
@@ -230,7 +226,7 @@ function StoredText({
               className={ROW_LINK}
               data-row-chip={one.route.kind === "issue" ? undefined : ""}
               data-row-reference={one.reference}
-              href={buildReferencePath(one.route)}
+              href={one.path}
               tabIndex={tabStops ? undefined : -1}
             >
               {key === undefined ? (
