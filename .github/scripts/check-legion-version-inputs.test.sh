@@ -19,12 +19,14 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
 trap 'proxy_recorders_stop; rm -rf "$work"' EXIT
 
-# shellcheck source=.github/scripts/test-lib.sh
+# Each library sits beside this file; the directives name it by SCRIPTDIR, so shellcheck follows
+# each one from wherever it runs.
+# shellcheck source=SCRIPTDIR/test-lib.sh
 source "$script_dir/test-lib.sh"
-# shellcheck source=.github/scripts/go-offline-test-lib.sh
+# shellcheck source=SCRIPTDIR/go-offline-test-lib.sh
 source "$script_dir/go-offline-test-lib.sh"
 
-# shellcheck source=.github/scripts/check-legion-version-inputs-fixtures.sh
+# shellcheck source=SCRIPTDIR/check-legion-version-inputs-fixtures.sh
 source "$script_dir/check-legion-version-inputs-fixtures.sh"
 
 echo "case: write fills the block, and the check passes it"
