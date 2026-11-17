@@ -471,7 +471,10 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
 // so the reviewer reads the difference from it and hands the pair that same diff in each agent's
 // task text, since each agent reviews only the diff its task supplies. A defect seen outside the
 // difference stays a finding, and three cases read the whole change again. The daemon's prompts
-// carry the same rule; prompts_test.go pins the composed reviewer prompt.
+// carry the same rule; prompts_test.go pins the composed reviewer prompt. The pull request body's
+// guide records it: the `Thermo` line's pair half names the range the pair read, and a later round
+// whose difference touches no runtime code has a form of its own, since `not run (docs-only)`
+// would be false for a pull request that does touch runtime code.
 test("a later review round reads from the commit its task names, and the pair reads that diff", () => {
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   expect(mergeGate).toContain(
@@ -492,6 +495,22 @@ test("a later review round reads from the commit its task names, and the pair re
   );
   expect(mergeGate).toContain(
     "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;"
+  );
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).not.toContain(
+    "The reviewer's pair runs at the head each round reviews, when the diff touches runtime code."
+  );
+  expect(prBody).toContain(
+    "The reviewer's pair runs at the head each round reviews, over the diff that round reads (the whole change, or the difference from the commit the round's task names as `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line, the pair half with the range the pair read."
+  );
+  expect(prBody).toContain(
+    "thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>: <verdict>."
+  );
+  expect(prBody).toContain(
+    "(in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)"
+  );
+  expect(mergeGate).toContain(
+    "In a later round whose difference touches no runtime code, on a PR that does touch it, the pair half reads as `skill://legion-worker/references/pr-body.md` gives it for that round."
   );
 });
 
