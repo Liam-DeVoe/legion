@@ -253,3 +253,52 @@ func TestEachPhaseRowNamesItsStep(t *testing.T) {
 			claim.RoleTester: "/0", claim.RoleReviewer: "/0", claim.RoleImplementer: "/0", claim.RoleMerger: "/0"})
 	})
 }
+
+// The start and the end of one run of a step of an owner's plan are two writes, and a boot of the
+// daemon between them rebuilds the engine on the same store (A-8). They meet in one record only
+// because both compute one id, and the count of starts is what carries it: the one count of the
+// place, in step_starts, raised by the start and read unchanged by the end. So the reviewer's
+// start, before the boot, and its end, after it, both carry the id of the first start of task a's
+// step 2; with that count set to 0 between them the end computes another id.
+func TestTheStartAndTheEndOfARunHaveOneIDAcrossABoot(t *testing.T) {
+	const key = "LEGION-208"
+	run := func(t *testing.T, between func(pool *pgxpool.Pool)) (start, end record.StepRecord) {
+		pool := migratedPool(t)
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, key, root.Generation, "implementer", "reviewer")
+		move(t, pool, returnEngine(), key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, returnEngine(), key, TriggerImplementationReady, "", record.PhaseRow{})
+		between(pool)
+		// The boot: a new engine on a new store over the same database.
+		move(t, pool, returnEngine(), key, TriggerReviewApproved, "", record.PhaseRow{})
+		for _, w := range stepWrites(t, pool, key) {
+			if w.Task != "a" || w.Kind != record.PlaceStep || w.Step != 2 {
+				continue
+			}
+			if isStart(w) {
+				start = w
+			}
+			if isEnd(w) {
+				end = w
+			}
+		}
+		return start, end
+	}
+	want := StepID(key, 1, "a", record.PlaceStep, 2, 1)
+	start, end := run(t, func(*pgxpool.Pool) {})
+	if start.ID != want || end.ID != want || resultOf(end) != "passed" {
+		t.Fatalf("the reviewer's start has id %q and its end, after the boot, %q (%s); want both %s, the first start of a/step/2",
+			start.ID, end.ID, resultOf(end), want)
+	}
+	t.Run("control: the count of the place set to 0 between the start and the end", func(t *testing.T) {
+		start, end := run(t, func(pool *pgxpool.Pool) {
+			if _, err := pool.Exec(t.Context(), `update step_starts set starts = 0 where issue = $1 and task = 'a' and kind = 'step' and place = 2`, key); err != nil {
+				t.Fatalf("set the count of a/step/2 to 0: %v", err)
+			}
+		})
+		if start.ID != want || end.ID == "" || end.ID == start.ID {
+			t.Fatalf("with the count set to 0 between the start and the end, the start has id %q and the end %q; the count is what carries the id, so the end must have another",
+				start.ID, end.ID)
+		}
+	})
+}
