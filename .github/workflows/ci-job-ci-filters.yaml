@@ -48,8 +48,11 @@ jobs:
       # releases a new `legion`, and a package the binary links that it does not name changes the
       # binary and releases nothing. This job has the Go and the filter (every Go file, module
       # file and workflow) the check needs, so a change that moves what cmd/legion links fails
-      # here until the block is written again.
+      # here until the block is written again. `!cancelled()`: the check reads none of what the
+      # filter check above decides, so it runs when that one fails too, and a run that fails
+      # shows both verdicts rather than the first.
       - name: Check release.yaml's legion version inputs are what cmd/legion links
+        if: ${{ !cancelled() }}
         run: .github/scripts/check-legion-version-inputs.sh
 
       - name: Report ci-ok when this job decides a merge-group run
