@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
+import * as textReferences from "../refs/text-references";
 import {
   citedReferences,
   knownIssueKeys,
@@ -155,4 +156,42 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
+});
+
+// Each row's words were read again on every draw. A text is read once for each list
+// of issue keys it is read against, however often a row draws it; another text, or another list
+// of keys, is read anew. A new set of ambiguous references is applied to the kept reading, so the
+// row drops the link it names with no second reading and draws no stale one.
+test("a text is read once however often a row draws it, and again for another text or other keys", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Kept reading: see dispatch://CORE-206/spec#b-r1 and CORE-207.";
+    const issues = ["CORE-207"];
+    const first = rowReferences(text, issues);
+    expect(rowReferences(text, issues), "a second draw read other references").toEqual(first);
+    expect(
+      rowReferences(text, [...issues]),
+      "the same keys in another list read other references"
+    ).toEqual(first);
+    expect(reads, "the same text and keys were read more than once").toHaveBeenCalledTimes(1);
+    expect(first.map((one) => [one.reference, one.path])).toEqual([
+      ["dispatch://CORE-206/spec#b-r1", "/issues/CORE-206/spec#b-r1"],
+      ["dispatch://CORE-207", "/issues/CORE-207"],
+    ]);
+
+    const ambiguous = new Set(["dispatch://CORE-206/spec#b-r1"]);
+    expect(
+      rowReferences(text, issues, ambiguous).map((one) => one.reference),
+      "a reference read ambiguous since is still linked"
+    ).toEqual(["dispatch://CORE-207"]);
+    expect(reads, "a new ambiguous set read the text again").toHaveBeenCalledTimes(1);
+
+    expect(rowReferences(text, []).map((one) => one.reference)).toEqual([
+      "dispatch://CORE-206/spec#b-r1",
+    ]);
+    rowReferences(`${text} More.`, issues);
+    expect(reads, "other keys or another text were not read").toHaveBeenCalledTimes(3);
+  } finally {
+    reads.mockRestore();
+  }
 });

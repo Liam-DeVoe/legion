@@ -106,10 +106,10 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // The part that fills a slot changes these two: part P fills the header
-  // (`[data-issue-header]`), part D the view row (`[data-filter-row]`), part I's outline draws
+  // (`[data-issue-header]`), another the view row (`[data-filter-row]`), the outline draws
   // its one line for an issue that holds nothing at the issue's own address, and each other slot
   // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
-  // until part J fills it.
+  // until that view's own slot is filled.
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);

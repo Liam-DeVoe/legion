@@ -1470,7 +1470,7 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
   await gotoIssue(page, `/issues/${key}`);
   await expectHeaderDrawn(page);
   // The outline opens with the focus on the first question that waits on the reader and holds
-  // that row on screen until the reader acts or the focus leaves it (part I's R8), so the page's
+  // that row on screen until the reader acts or the focus leaves it, so the page's
   // growth below would scroll back to it: the focus lands, then leaves the tree.
   await expect(page.locator("[data-node-row]:focus"), "the load focused no row").toHaveCount(1);
   await focusThePage(page);
