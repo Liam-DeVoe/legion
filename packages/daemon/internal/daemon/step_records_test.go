@@ -1476,12 +1476,15 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 
 // A model whose name holds U+0000 is a name no store can hold: PostgreSQL's text and jsonb, the
 // daemon's outbox payload and Dispatch's record among them, refuse that character. The planner's
-// model answers with one and the planner completes: the completion moves the issue on, and the
-// record of planning reaches Dispatch ended, with the planner's session and no model, as for an
-// agent that named none.
+// model answers with a storable name and then with one holding U+0000, and the planner completes:
+// the completion moves the issue on, and the record of planning reaches Dispatch ended, with the
+// planner's session and no model, as for an agent that named none. The model that answered first
+// did not answer last, so the record does not name it.
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
 	r := newStepRecordsRig(t)
 	planner := r.worker(claim.RolePlanner)
+	planner.model = "stand-in/first"
+	planner.answer()
 	planner.model = "stand-in/mo\x00del"
 	r.plan()
 	r.waitSteps("the end of planning", func(got stepRecordsRead) error {

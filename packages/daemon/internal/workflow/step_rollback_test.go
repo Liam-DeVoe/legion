@@ -66,10 +66,10 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			// The run open at the rollback is the one the earlier release ended first: the
 			// implementer's, which the tester's fail had started, where the tester's run had
 			// ended, and the tester's own where it was still open. The roll forward ends it.
-			counted := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 1)
+			counted := StepID("LEGION-208", 1, placeOf("step", 3), 1)
 			abandoned, abandonedStep, abandonedRole := counted, 3, claim.RoleTester
 			if !tc.open {
-				abandoned, abandonedStep, abandonedRole = StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1), 2, claim.RoleImplementer
+				abandoned, abandonedStep, abandonedRole = StepID("LEGION-208", 1, placeOf("step", 2), 1), 2, claim.RoleImplementer
 			}
 			ended := stepWrites(t, pool, "LEGION-208")[before:]
 			if len(ended) != 1 {
@@ -96,7 +96,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			}
 			end := after[0]
 			assertEnd(t, end, "step", 3, 1, "passed", nil)
-			if want := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 2); end.ID != want || end.StartedAt == nil || !end.StartedAt.Equal(secondRun) ||
+			if want := StepID("LEGION-208", 1, placeOf("step", 3), 2); end.ID != want || end.StartedAt == nil || !end.StartedAt.Equal(secondRun) ||
 				end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleTester) {
 				t.Fatalf("the end = %+v, want the record %s of the second count, the tester's, started at %s", end, want, secondRun)
 			}
@@ -173,7 +173,7 @@ func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T
 		t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
 	}
 	after := stepWrites(t, pool, "LEGION-208")[before:]
-	counted := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 4}, 1)
+	counted := StepID("LEGION-208", 1, placeOf("step", 4), 1)
 	if len(after) != 1 || after[0].ID != counted || after[0].Report == nil || *after[0].Report != report {
 		t.Fatalf("the late completion wrote %+v, want one write of the counted review's record %s naming %s", after, counted, report)
 	}
