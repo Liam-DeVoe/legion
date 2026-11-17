@@ -1628,6 +1628,51 @@ test("a press out of the outline before the row's editor has drawn the document 
   expect(view.focusedNode(), "the panel still holds the statement's facts").toBeUndefined();
 });
 
+// The same where the editor never draws the document at all after the press: nothing more is
+// drawn to look again, and the editing ended all the same, a task after the reader's act.
+test("a press out of the outline ends the editing of a row whose editor never draws the node's block", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { view } = await enterBeforeDrawn(user);
+  const { control } = controlOutside();
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  if (statement === undefined) throw new Error("the statement's row is not drawn");
+  await user.click(control);
+  expect(document.activeElement, "the press did not focus the control").toBe(control);
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing went on with nothing drawn to end it").toBeUndefined()
+  );
+  expect(document.activeElement, "the focus left the control pressed").toBe(control);
+  await waitFor(() =>
+    expect(
+      statement.querySelector("[data-node-body]"),
+      "the statement's row still draws its body"
+    ).toBeNull()
+  );
+});
+
+// A control inside the row is somewhere the reader moved to as well: `Shift+C` focuses a
+// change's own box, and `f` steps to the row's links and controls. The caret placed once the
+// editor drew took the focus from it, and the words written there went into the shared
+// document. The case stands the row's own Keep open for such a control: a key of the reader's,
+// then the focus on it.
+test("a key that takes the focus to a control inside the row before its editor draws ends the editing there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  const inner = statement?.querySelector<HTMLElement>("button");
+  if (inner === null || inner === undefined)
+    throw new Error("the statement's row draws no control");
+  await user.keyboard("{Shift}");
+  await act(async () => inner.focus());
+  expect(document.activeElement, "the control inside the row did not take the focus").toBe(inner);
+  await nextFrame();
+  await drawStatementBlocks(editable);
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
+  expect(document.activeElement, "the caret took the focus from the row's control").toBe(inner);
+});
+
 // Only an act of the reader's ends the page's own placing of the caret. A focus a script gives a
 // control out of the row before the row's editor has drawn the document is no reader moving on:
 // the editing goes on, and the caret goes into the node's block once the editor has drawn it.
