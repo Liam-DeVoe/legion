@@ -294,13 +294,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reviewer's hook, which reads the title, the spec and a components reason with the writing
 	// check before anything is written or locked: either may call a model, and no transaction waits
-	// on it.
+	// on it. It comes after the near-copy gate, so a near copy the gate refuses is refused above,
+	// held or not, and nothing is held; a held create's answer tells the filer what the gate found
+	// (issueCreate.gate, heldAdvice).
 	create := issueCreate{
 		Project: input.Project, Title: input.Title, Parent: parentKey, Blockers: blockers, Advances: advances,
 		Labels: labels, Priority: priority, Assignee: assignee, Components: components,
 		ComponentsProvided: componentsProvided, Repo: repo, Spec: input.Spec, External: input.External,
 		ExternalRepo: externalRepo, ExternalNumber: externalNumber, CallerProject: callerProject,
-		Forced: outcome.Forced, NearCopy: nearCopy,
+		Forced: outcome.Forced, NearCopy: nearCopy, gate: outcome,
 	}
 	after, proceed := s.reviewWrite(w, r, actor, input, create.reviewed())
 	if !proceed {
@@ -334,9 +336,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	s.announceIssue(r.Context(), written)
 	issue, advice, key := written.issue, written.advice, written.issue.Key
 	s.reviewPosted(r.Context(), after, key)
-	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
-		advice.documentBlocks = documentBlocksFor(written.readBack, written.markdown)
-	}
 	// The related-item check runs after the write committed, whatever writeAdvice
 	// answered, and waits at most relatedAllowance; its result rides the advice, or advice of its
 	// own when the write-advice read failed. An answered ask it offers carries the display tree
@@ -352,9 +351,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		trees:   trees,
 	})
 	trees.resolve()
-	suggestions.TitleMatches = outcome.TitleMatches
-	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
-	suggestions.NearCopyCheck = outcome.NearCopyCheck
+	outcome.tell(suggestions)
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
 }
 
@@ -385,6 +382,10 @@ type issueCreate struct {
 	CallerProject      string              `json:"caller_project,omitempty"`
 	Forced             *model.ForcedCreate `json:"forced,omitempty"`
 	NearCopy           *issueNearCopy      `json:"near_copy,omitempty"`
+	// gate is the near-copy gate's whole answer to the request, which the request's own answer
+	// tells the filer, held or not (nearCopyOutcome.tell). It is not stored: a held issue's post
+	// answers nobody.
+	gate nearCopyOutcome
 }
 
 // issueNearCopy is the near_copy_checks row of the near-copy gate's answer to a create: the
@@ -477,7 +478,9 @@ type issueWritten struct {
 // writeIssue files create as actor's issue in tx, the issue's rows, its spec's first version and
 // its issue.created event, and commits tx. number is the issue's number: 0 takes the next of its
 // project's sequence, which createIssue does, and a held issue's post passes the number its hold
-// reserved (held, whose row it takes first and marks posted in the same transaction).
+// reserved (held, whose row it takes first and marks posted in the same transaction). A hold's dry
+// run answers errHeldDryRun with what the write would have answered: its advice and its spec as
+// the seed stored it.
 func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, actor model.Actor, number int, held *heldPost) (issueWritten, error) {
 	parentKey, assignee := create.Parent, create.Assignee
 	if err := held.lock(ctx, tx); err != nil {
@@ -666,10 +669,13 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 		return issueWritten{}, err
 	}
 	var advice *writeAdvice
-	if held == nil {
+	if held.answers() {
 		advice = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
 		)
+	}
+	if advice != nil && create.Spec != nil && strings.TrimSpace(*create.Spec) != "" {
+		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
 	}
 	// A near copy let in because its refusal's row could not be confirmed (issueNearCopy.inTx)
 	// writes its row in this transaction, under the id the refusal used: the issue and the row that
@@ -682,16 +688,17 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 		}
 		nearCopy = nil
 	}
+	written := issueWritten{
+		issue: issue, event: event, advice: advice, artifactID: artifactID, markdown: markdown, readBack: documentReadBack,
+		nearCopy: nearCopy,
+	}
 	if err := held.finish(ctx, tx); err != nil {
-		return issueWritten{}, err
+		return written, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return issueWritten{}, err
 	}
-	return issueWritten{
-		issue: issue, event: event, advice: advice, artifactID: artifactID, markdown: markdown, readBack: documentReadBack,
-		nearCopy: nearCopy,
-	}, nil
+	return written, nil
 }
 
 // announceIssue is what follows an issue's commit, a held issue's post as much as the write's
@@ -803,6 +810,14 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 	check := *outcome.Check
 	check.outcome, check.reason = nearCopyNotMade, nearCopyNotMadeUnrecorded
 	return nearCopyOutcome{NearCopyCheck: nearCopyCheckUnrecorded(outcome.Refuse[0]), Check: &check}
+}
+
+// tell puts what the gate tells the filer on suggestions, the create's related-item check result:
+// the issues a forced create went past, the likely duplicate, and why no check was made.
+func (outcome nearCopyOutcome) tell(suggestions *model.Suggestions) {
+	suggestions.TitleMatches = outcome.TitleMatches
+	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
+	suggestions.NearCopyCheck = outcome.NearCopyCheck
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds

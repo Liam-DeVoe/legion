@@ -284,7 +284,8 @@ type heldWriteOf struct {
 // and its review started; one it does not waits, decided, for its parent to post. A text that
 // waits on no held text first runs its whole write in a transaction that is rolled back (dryRunHeld),
 // so a write its own path refuses is refused now, as with the reviewer off, and never fails at
-// its post.
+// its post. The answer carries the advice the write's own answer carries (heldAdvice), worked out
+// before the id is reserved.
 func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, write reviewedWrite, of heldWriteOf) {
 	ctx := r.Context()
 	request, err := json.Marshal(write.request)
@@ -303,11 +304,14 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 		return
 	}
 	id := uuid.NewString()
+	var dry *heldDryRun
 	if of.parent == nil {
-		if refused, err := s.dryRunHeld(write, actor, id); err != nil {
+		ran, err := s.dryRunHeld(write, actor, id)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
-		} else if refused != nil {
+		}
+		if refused := ran.refused; refused != nil {
 			for key, values := range refused.header {
 				w.Header()[key] = values
 			}
@@ -315,7 +319,9 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 			_, _ = w.Write(refused.body.Bytes())
 			return
 		}
+		dry = &ran
 	}
+	advice := s.heldAdvice(r, write, actor, dry, of.parent)
 	tx, err := s.begin(ctx)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -365,7 +371,7 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 		s.detached.goDetached(s.postReady)
 	}
 	answer := heldState{State: state, WaitsOn: dependsOn}
-	WriteJSON(w, http.StatusCreated, heldAnswerOf(write, id, actor, writtenAt, answer, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusCreated, heldAnswerOf(write, id, actor, writtenAt, answer, wantsDisplayTrees(r), advice))
 }
 
 // reserveIssueNumber takes the next number of project's sequence, as an issue create takes it,
@@ -418,8 +424,10 @@ func (answer heldAnswer) MarshalJSON() ([]byte, error) {
 }
 
 // heldAnswerOf is the answer a held write gets: today's response shape for its kind, built from
-// what the hold stored under the reserved id, with the `held` object.
-func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Time, held heldState, trees bool) heldAnswer {
+// what the hold stored under the reserved id, with the `held` object. advice, where not nil, is the
+// advice the write's own answer carries (heldAdvice), merged in as that answer merges it.
+func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Time, held heldState, trees bool, advice any) heldAnswer {
+	var payload any = map[string]string{"id": id}
 	switch create := write.request.(type) {
 	case askCreate:
 		ask := model.Ask{
@@ -427,7 +435,7 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 			Kind: create.Kind, Question: create.Question, Options: create.Options, Multiple: create.Multiple,
 			Urgency: create.Urgency, State: "open", CreatedAt: at,
 		}
-		return heldAnswer{payload: newShapedAsk(ask, trees), held: held}
+		payload = newShapedAsk(ask, trees)
 	case commentCreate:
 		comment := model.Comment{
 			ID: id, IssueKey: create.Owner.IssueKey, ArtifactID: create.Owner.ArtifactID, Author: actor,
@@ -437,13 +445,13 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 		if create.Input.Suggestion != nil {
 			comment.Suggestion = &model.Suggestion{ReplaceWith: create.Input.Suggestion.ReplaceWith}
 		}
-		return heldAnswer{payload: commentWriteResponse{shapedComment: newShapedComment(comment, trees)}, held: held}
+		payload = commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
 	case messageCreate:
 		message := model.Message{
 			ID: id, IssueKey: create.IssueKey, Author: actor, Body: create.Input.Body, Target: create.Input.Target,
 			InReplyTo: create.Input.InReplyTo, CreatedAt: at, Deliveries: []model.MessageDelivery{},
 		}
-		return heldAnswer{payload: newShapedMessage(message, trees), held: held}
+		payload = newShapedMessage(message, trees)
 	case issueCreate:
 		number, _ := strconv.Atoi(strings.TrimPrefix(id, create.Project+"-"))
 		labels := create.Labels
@@ -461,63 +469,146 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 		if create.Parent != "" {
 			issue.Parent = &create.Parent
 		}
-		return heldAnswer{payload: issue, held: held}
+		payload = issue
 	case heldReplay:
-		return heldAnswer{payload: replayAnswerOf(write.kind, create, id, actor, at, trees), held: held}
+		payload = replayAnswerOf(write.kind, create, id, actor, at, trees)
 	}
-	return heldAnswer{payload: map[string]string{"id": id}, held: held}
+	if advice != nil {
+		payload = withRawAdvice(payload, advice)
+	}
+	return heldAnswer{payload: payload, held: held}
+}
+
+// heldAdvice is the advice a held write's answer carries, which is the advice the write's own
+// answer carries: a writer the reviewer holds is told what it would have been told without the
+// hold. dry is what the write's dry run found, nil where the write waits on a held text (parent)
+// and ran none; its write advice is then nil, as for a write with no issue state to report. An
+// issue and an ask also run their related-item check here, before the id is reserved, as the
+// write's own path runs it after its commit, and an issue's carries what the near-copy gate told
+// its create (issueCreate.gate), the note of a check not made included. The check is recorded
+// nowhere: its rows name the issue or the ask it was run for, which does not exist until the held
+// text posts. Nil for a write whose answer carries no advice.
+func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Actor, dry *heldDryRun, parent *heldParent) any {
+	var advice *writeAdvice
+	if dry != nil {
+		advice = dry.advice
+	}
+	ctx := r.Context()
+	switch create := write.request.(type) {
+	case issueCreate:
+		// The spec as the seed would store it, which the write's own check reads; the spec as sent
+		// where no dry run seeded it.
+		markdown := ""
+		switch {
+		case dry != nil:
+			markdown = dry.markdown
+		case create.Spec != nil && strings.TrimSpace(*create.Spec) != "":
+			markdown = *create.Spec
+		}
+		trees := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
+		suggestions := s.relatedCheck(ctx, relatedInput{
+			project: create.Project,
+			text:    create.Title + "\n" + markdown,
+			title:   create.Title,
+			source:  suggestionSource{kind: "issue", actor: actor},
+			trees:   trees,
+		})
+		trees.resolve()
+		create.gate.tell(suggestions)
+		return suggestedAdvice(advice, suggestions)
+	case askCreate:
+		input := relatedInput{
+			text: create.Question, title: create.Question, source: suggestionSource{kind: "ask", actor: actor},
+			question: true,
+		}
+		if create.Owner.IssueKey != nil {
+			input.source.issueKey = *create.Owner.IssueKey
+		} else if create.Owner.ArtifactID != nil {
+			input.source.artifactID = *create.Owner.ArtifactID
+		}
+		// An ask on a held issue searches that issue's project, which no issue row holds yet.
+		if parent != nil {
+			input.project = parent.project
+		}
+		input.trees = s.readDisplayTrees(ctx, wantsDisplayTrees(r))
+		suggestions := s.relatedCheck(ctx, input)
+		input.trees.resolve()
+		return suggestedAdvice(advice, suggestions)
+	case commentCreate, messageCreate:
+		if advice != nil {
+			return advice
+		}
+	}
+	return nil
+}
+
+// heldDryRun is what a held write's dry run found (dryRunHeld): refused, the answer the route of a
+// write kept whole refused it with; otherwise advice, the write advice the write's own answer
+// would carry (nil where its path gives none), and markdown, a new issue's spec as its seed would
+// store it.
+type heldDryRun struct {
+	refused  *replayAnswer
+	advice   *writeAdvice
+	markdown string
 }
 
 // dryRunHeld runs write as actor's under id in a transaction it rolls back before the commit
 // (heldPost's dry run), so every check the kind's own path makes refuses it now. A kind's create
-// path answers its refusal as an error; a reply kept whole answers it as its route answered it,
-// in refused. Both are nil for a write that passed.
-func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (*replayAnswer, error) {
+// path answers its refusal as an error, and a write that passed with the advice it would have
+// answered; a reply kept whole answers its refusal as its route answered it, in refused.
+func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (heldDryRun, error) {
 	ctx := s.postContext()
 	held := &heldPost{id: id, dryRun: true}
+	var dry heldDryRun
 	var err error
 	switch create := write.request.(type) {
 	case askCreate:
 		tx, beginErr := s.begin(ctx)
 		if beginErr != nil {
-			return nil, beginErr
+			return heldDryRun{}, beginErr
 		}
 		defer tx.Rollback(ctx)
-		_, err = s.writeAsk(ctx, tx, create, actor, id, held)
+		var written askWritten
+		written, err = s.writeAsk(ctx, tx, create, actor, id, held)
+		dry.advice = written.advice
 	case issueCreate:
 		tx, beginErr := s.begin(ctx)
 		if beginErr != nil {
-			return nil, beginErr
+			return heldDryRun{}, beginErr
 		}
 		defer tx.Rollback(ctx)
-		_, err = s.writeIssue(ctx, tx, create, actor, 0, held)
+		var written issueWritten
+		written, err = s.writeIssue(ctx, tx, create, actor, 0, held)
+		dry.advice, dry.markdown = written.advice, written.markdown
 	case commentCreate:
-		_, err = s.writeComment(ctx, create, actor, id, held)
+		var written commentWritten
+		written, err = s.writeComment(ctx, create, actor, id, held)
+		dry.advice = written.advice
 	case messageCreate:
-		_, _, err = s.writeMessage(ctx, create, actor, id, held)
+		_, dry.advice, err = s.writeMessage(ctx, create, actor, id, held)
 	case heldReplay:
 		answer, err := s.runReplay(ctx, create, held)
 		switch {
 		case err != nil:
-			return nil, err
+			return heldDryRun{}, err
 		case answer.isDryRunPass():
-			return nil, nil
+			return heldDryRun{}, nil
 		case answer.status >= 200 && answer.status < 300:
 			// The route answered with no new text: a reply to an attempt already answered, which
 			// its post answers the same way.
-			return nil, nil
+			return heldDryRun{}, nil
 		}
-		return answer, nil
+		return heldDryRun{refused: answer}, nil
 	default:
-		return nil, fmt.Errorf("a held write of %T has no path to run", write.request)
+		return heldDryRun{}, fmt.Errorf("a held write of %T has no path to run", write.request)
 	}
 	if errors.Is(err, errHeldDryRun) {
-		return nil, nil
+		return dry, nil
 	}
 	if err == nil {
-		return nil, errors.New("a held write's dry run committed")
+		return heldDryRun{}, errors.New("a held write's dry run committed")
 	}
-	return nil, err
+	return heldDryRun{}, err
 }
 
 // errHeldNotPosting is a post that found its held text no longer to be posted: another process
@@ -549,9 +640,16 @@ func (h *heldPost) lock(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+// answers reports whether this run of a kind's create path answers a writer, and so works out the
+// write's advice: the write's own run (nil) and a hold's dry run, whose advice the hold's answer
+// carries (heldAdvice). A held text's post answers nobody.
+func (h *heldPost) answers() bool {
+	return h == nil || h.dryRun
+}
+
 // finish marks the held row posted, in the create's transaction: its post time is the
 // transaction's, which the posted row carries as its creation time. A dry run ends here, before
-// the commit.
+// the commit, and its create path answers errHeldDryRun with the advice it worked out.
 func (h *heldPost) finish(ctx context.Context, tx pgx.Tx) error {
 	if h == nil {
 		return nil

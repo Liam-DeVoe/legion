@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -715,6 +716,189 @@ func TestAHeldIssueKeepsItsNearCopyAnswerWhole(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.NearCopy, want.NearCopy) {
 		t.Fatalf("near-copy answer read back = %+v (check %+v), want %+v (check %+v)", got.NearCopy, got.NearCopy.check, want.NearCopy, want.NearCopy.check)
+	}
+}
+
+// adviceJSON is the advice object of a write's answer as it went on the wire.
+func adviceJSON(t *testing.T, what string, response *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Advice json.RawMessage `json:"advice"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || len(body.Advice) == 0 {
+		t.Fatalf("%s carries no advice (%v): %s", what, err, response.Body.String())
+	}
+	return string(body.Advice)
+}
+
+// settleTermStats refreshes project's term statistics and waits for it, joining a refresh a check
+// started in the background (ensureSearchTermStats) where one runs: with the statistics in place no
+// later check starts another, so two checks made after it pick their words from the same ones.
+func (rig *reviewRig) settleTermStats(project string) {
+	rig.t.Helper()
+	if result := <-rig.served.ensureSearchTermStats(project); result.Err != nil {
+		rig.t.Fatalf("refresh the term statistics of %s: %v", project, result.Err)
+	}
+}
+
+// requireSameAdviceAsTyped fails t unless held, a held write's answer, carries the advice that
+// typed, the writer's own typed write of the same text, carries: that write posts at once, as with
+// the reviewer off, and the held text, waiting on its writer, is in no search and no count.
+func requireSameAdviceAsTyped(t *testing.T, what string, held, typed *httptest.ResponseRecorder) string {
+	t.Helper()
+	if typed.Code != http.StatusCreated || strings.Contains(typed.Body.String(), `"held"`) {
+		t.Fatalf("the writer's typed %s: %d %s, want it posted at once", what, typed.Code, typed.Body.String())
+	}
+	heldAdvice, typedAdvice := adviceJSON(t, "the held "+what, held), adviceJSON(t, "the typed "+what, typed)
+	if heldAdvice != typedAdvice {
+		t.Fatalf("the held %s's advice differs from the posted one's:\nheld   %s\nposted %s", what, heldAdvice, typedAdvice)
+	}
+	return heldAdvice
+}
+
+// A held issue's answer carries the advice the same create gets with the reviewer off: the
+// writer's write advice, the spec's blocks, the related items and what the near-copy gate found.
+func TestAHeldIssuesAnswerCarriesTheAdviceOfAnUnheldOne(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	near := requireCreatedIssue(t, createIssueRequest(t, rig.handler, map[string]any{
+		"project": "RVW", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	}))
+	rig.settleTermStats("RVW")
+	create := map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}
+	response := rig.asWriter(http.MethodPost, "/api/v1/issues", create)
+	held := rig.held(response, "the held issue")
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	advice := requireSameAdviceAsTyped(t, "issue", response, rig.asWriterTyped(http.MethodPost, "/api/v1/issues", create))
+	var read struct {
+		IssueStatus    string            `json:"issue_status"`
+		DecisionBlocks *int              `json:"decision_blocks"`
+		Suggestions    model.Suggestions `json:"suggestions"`
+	}
+	if err := json.Unmarshal([]byte(advice), &read); err != nil {
+		t.Fatalf("decode the held issue's advice: %v %s", err, advice)
+	}
+	if read.IssueStatus == "" || read.DecisionBlocks == nil {
+		t.Fatalf("the held issue's advice has no issue status or no spec blocks: %s", advice)
+	}
+	if read.Suggestions.Outcome != relatedFound || !slices.ContainsFunc(read.Suggestions.Related, func(item model.WriteSuggestion) bool {
+		return item.Owner.Key == near.Key
+	}) {
+		t.Fatalf("the held issue's check did not offer %s: %s", near.Key, advice)
+	}
+}
+
+// A held ask's answer carries the advice the same ask gets with the reviewer off: the ask of the
+// issue a person declined, the writer's open asks and the related items.
+func TestAHeldAsksAnswerCarriesItsAdvice(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	near := requireCreatedIssue(t, createIssueRequest(t, rig.handler, map[string]any{
+		"project": "RVW", "title": "Billing exporter transport",
+		"spec": "The billing exporter sends its batches over a transport we have not chosen.",
+	}))
+	first := rig.asWriterTyped(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Which transport should the billing exporter use?",
+	})
+	if first.Code != http.StatusCreated {
+		t.Fatalf("the writer's first ask: %d %s", first.Code, first.Body.String())
+	}
+	declineTheAsk(t, rig.handler, decodeBody[heldWriteAnswer](t, first).ID, "Pick what the team can run.")
+	rig.settleTermStats("RVW")
+	ask := map[string]any{
+		"question": "Which transport should the billing exporter use for its batches?\n" + vacuousPhrase,
+		"options":  writtenOptions,
+	}
+	response := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", ask)
+	held := rig.held(response, "the held ask")
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	advice := requireSameAdviceAsTyped(t, "ask", response, rig.asWriterTyped(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", ask))
+	var read struct {
+		DeclinedAsks []adviceDeclinedAsk `json:"declined_asks"`
+		Suggestions  model.Suggestions   `json:"suggestions"`
+	}
+	if err := json.Unmarshal([]byte(advice), &read); err != nil {
+		t.Fatalf("decode the held ask's advice: %v %s", err, advice)
+	}
+	if len(read.DeclinedAsks) != 1 || read.DeclinedAsks[0].Note != "Pick what the team can run." {
+		t.Fatalf("the held ask's advice names declined asks %+v, want the one declined: %s", read.DeclinedAsks, advice)
+	}
+	if read.Suggestions.Outcome != relatedFound || !slices.ContainsFunc(read.Suggestions.Related, func(item model.WriteSuggestion) bool {
+		return item.Owner.Key == near.Key
+	}) {
+		t.Fatalf("the held ask's check did not offer %s: %s", near.Key, advice)
+	}
+}
+
+// A held comment's answer carries the write advice the same comment gets with the reviewer off.
+func TestAHeldCommentsAnswerCarriesItsAdvice(t *testing.T) {
+	rig := newReviewRig(t, holdComments(), nil)
+	comment := map[string]any{"body": "Status\nThe exporter still drops its last batch. " + vacuousPhrase}
+	response := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", comment)
+	held := rig.held(response, "the held comment")
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	requireSameAdviceAsTyped(t, "comment", response, rig.asWriterTyped(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", comment))
+}
+
+// A near copy the gate refuses is refused at once under hold, as with the reviewer off: the write
+// answers 409 POSSIBLE_DUPLICATE, nothing is held, and no number is taken.
+func TestANearCopyIsRefusedAtOnceUnderHold(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	first := requireCreatedIssue(t, createIssueRequest(t, rig.handler, map[string]any{
+		"project": "RVW", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	}))
+	refusal := requireDuplicateRefusal(t, rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	}))
+	if len(refusal.Candidates) != 1 || refusal.Candidates[0].Key != first.Key {
+		t.Fatalf("the refusal names %+v, want %s", refusal.Candidates, first.Key)
+	}
+	if count := countRows(t, rig.database, `select count(*) from held_texts`); count != 0 {
+		t.Fatalf("%d held texts after a refused near copy, want none", count)
+	}
+	next := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Orchard pickers cannot log a crate", "spec": duplicateSpecHarvest,
+	}), "the next issue")
+	if want := fmt.Sprintf("RVW-%d", first.Number+1); next.ID != want {
+		t.Fatalf("the issue held after the refusal is %s, want %s: the refusal took a number", next.ID, want)
+	}
+}
+
+// A held issue whose near-copy read and related-item check do not answer is told so, as an unheld
+// one is: the gate's note that no near-copy check was made, and the check's that it searched
+// nothing.
+func TestAHeldIssuesAnswerSaysWhenItCouldNotSearch(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	rig.settleTermStats("RVW")
+	// Both reads start from the project's term statistics, so a lock on that table holds them
+	// past their bounds; the create is held all the same.
+	rig.served.duplicateBound = 200 * time.Millisecond
+	rig.served.suggestionTimeout = 200 * time.Millisecond
+	lockTx, err := rig.database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin the lock transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
+	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
+		t.Fatalf("lock search_term_stats: %v", err)
+	}
+	response := rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	})
+	rig.held(response, "the held issue")
+	var read struct {
+		Suggestions model.Suggestions `json:"suggestions"`
+	}
+	advice := adviceJSON(t, "the held issue", response)
+	if err := json.Unmarshal([]byte(advice), &read); err != nil {
+		t.Fatalf("decode the held issue's advice: %v %s", err, advice)
+	}
+	if read.Suggestions.NearCopyCheck == "" {
+		t.Fatalf("the held issue is not told that no near-copy check was made: %s", advice)
+	}
+	if read.Suggestions.Outcome != relatedNotMade || read.Suggestions.Missing == "" {
+		t.Fatalf("the held issue is not told that its related-item check was not made: %s", advice)
 	}
 }
 

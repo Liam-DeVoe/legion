@@ -252,7 +252,8 @@ type askWritten struct {
 
 // writeAsk writes create as actor's ask under id in tx, the ask's rows and its ask.opened event,
 // and commits tx. createAskFor runs it with a fresh id, and a held ask's post with the id its hold
-// reserved (held, whose row it takes first and marks posted in the same transaction).
+// reserved (held, whose row it takes first and marks posted in the same transaction). A hold's dry
+// run answers errHeldDryRun with the advice the write would have answered with.
 func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, actor model.Actor, id string, held *heldPost) (askWritten, error) {
 	owner := create.Owner
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
@@ -357,13 +358,13 @@ func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, acto
 	// This write opens a question, so it hears about the asks of this issue a person declined to
 	// answer, and the same question is not put to them again. A held ask's post answers nobody.
 	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil && held == nil {
+	if owner.IssueKey != nil && status != nil && held.answers() {
 		advice = s.writeAdvice(
 			ctx, tx, routeOpenAsk, *owner.IssueKey, actor, id, *status, true,
 		)
 	}
 	if err := held.finish(ctx, tx); err != nil {
-		return askWritten{}, err
+		return askWritten{advice: advice}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return askWritten{}, err

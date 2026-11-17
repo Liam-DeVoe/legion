@@ -667,7 +667,8 @@ type commentWritten struct {
 // writes the comment's rows and its comment.created event in one transaction, commits it,
 // publishes the events and puts each mention on its way. createCommentFor runs it with a fresh
 // id, and a held comment's post with the id its hold reserved (held, whose row it takes first in
-// the comment's transaction and marks posted in it).
+// the comment's transaction and marks posted in it). A hold's dry run answers errHeldDryRun with
+// the advice the write would have answered with.
 func (s *server) writeComment(ctx context.Context, create commentCreate, actor model.Actor, id string, held *heldPost) (commentWritten, error) {
 	owner, input, delivery, mentionTargets := create.Owner, create.Input, create.Delivery, create.MentionTargets
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
@@ -983,13 +984,13 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	}
 	events = append(events, event)
 	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil && held == nil {
+	if owner.IssueKey != nil && status != nil && held.answers() {
 		advice = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
 		)
 	}
 	if err := held.finish(ctx, tx); err != nil {
-		return commentWritten{}, err
+		return commentWritten{advice: advice}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return commentWritten{}, err

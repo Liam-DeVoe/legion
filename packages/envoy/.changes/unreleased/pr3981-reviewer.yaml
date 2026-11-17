@@ -8,9 +8,12 @@ body: |-
   `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS` and `DISPATCH_REVIEWER_MESSAGES`, each
   `off` (the default), `after` or `hold`.
   With `hold`, no person sees the text until the review ends. The write answers at once, in its
-  usual shape, under an id kept for the text, with an added `held` object. A review that finds
-  nothing posts the text. Otherwise the findings and the reviewer's rewrite go to the writer
-  session as a turn of their own, and the writer edits the text or posts it as written.
+  usual shape, under an id kept for the text, with an added `held` object. That answer carries the
+  advice the write gets with the reviewer off, the nearest existing issues and answered questions
+  and the near-copy check included, and a near copy the check refuses is refused at once, with
+  nothing held. A review that finds nothing posts the text. Otherwise the findings and the
+  reviewer's rewrite go to the writer session as a turn of their own, and the writer edits the text
+  or posts it as written.
   A held issue writes its `near_copy_checks` row when it posts, under its key, with the title and
   the spec the near-copy gate read.
   With `after`, the text posts at once, and the findings of the review after it go to the writer.

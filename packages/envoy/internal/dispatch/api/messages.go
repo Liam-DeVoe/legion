@@ -287,7 +287,8 @@ type messageCreate struct {
 // keyed request's recovery point (bindRequestKeyRecovery), so a repeat under the key is answered
 // with this message however this request ends, then sends a targeted message's first attempt. A
 // held message's post runs it with the id its hold reserved (held, whose row it takes first in
-// the message's transaction and marks posted in it).
+// the message's transaction and marks posted in it). A hold's dry run answers errHeldDryRun with
+// the advice the write would have answered with.
 func (s *server) writeMessage(ctx context.Context, create messageCreate, actor model.Actor, id string, held *heldPost) (model.Message, *writeAdvice, error) {
 	issueKey, input, delivery, connectedOnly := create.IssueKey, create.Input, create.Delivery, create.ConnectedOnly
 	tx, err := s.begin(ctx)
@@ -416,13 +417,13 @@ func (s *server) writeMessage(ctx context.Context, create messageCreate, actor m
 		}
 	}
 	var advice *writeAdvice
-	if issueKey != nil && held == nil {
+	if issueKey != nil && held.answers() {
 		advice = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status, false,
 		)
 	}
 	if err := held.finish(ctx, tx); err != nil {
-		return model.Message{}, nil, err
+		return model.Message{}, advice, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
