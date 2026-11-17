@@ -1005,10 +1005,14 @@ test.skipIf(skipBinaries)(
       for (const start of starts) {
         expect(start.stdout).toContain(refused);
         // Each start names the removal that fails on one line, and the dead mark both found at
-        // most once.
-        expect(linesWith(start.stderr, failing.data)).toHaveLength(1);
-        expect(linesWith(start.stderr, "is not removed")).toHaveLength(1);
-        expect(linesWith(start.stderr, gone.data).length).toBeLessThanOrEqual(1);
+        // most once, beside a line that says it waits for the other start's claim of a part.
+        const told = start.stderr
+          .split("\n")
+          .filter((line) => !line.includes(": waits for another start's claim of "))
+          .join("\n");
+        expect(linesWith(told, failing.data)).toHaveLength(1);
+        expect(linesWith(told, "is not removed")).toHaveLength(1);
+        expect(linesWith(told, gone.data).length).toBeLessThanOrEqual(1);
         expect([runs.data, runs.mark].filter((path) => start.stderr.includes(path))).toEqual([]);
       }
       // Together the two starts say "removed" once of each directory of the dead mark: one start

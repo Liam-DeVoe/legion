@@ -29,6 +29,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -37,7 +38,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as marks from "../harness-postgres-marks";
@@ -115,24 +116,76 @@ function standInPostmaster(bin: string, data: string): StandIn {
   return postmaster;
 }
 
+/** A stand-in postmaster of the cluster in `data` that writes one line to `signals` for each
+ *  SIGQUIT it gets, and ends once it got one and `go` exists, or after 600 s: a copy of `bash`
+ *  named `postgres` in `bin`, run with `data` for its working directory, which `data`'s
+ *  `postmaster.pid` names. */
+function signalCountingPostmaster(bin: string, data: string, signals: string, go: string): StandIn {
+  const bash = Bun.which("bash");
+  if (bash === null) throw new Error("no bash on PATH to stand in for a postmaster");
+  mkdirSync(bin, { recursive: true });
+  copyFileSync(bash, join(bin, "postgres"));
+  chmodSync(join(bin, "postgres"), 0o755);
+  mkdirSync(data, { recursive: true });
+  const script = `quit=; trap 'echo QUIT >>"$1"; quit=1' QUIT
+end=$((SECONDS + 600))
+while [ "$SECONDS" -lt "$end" ]; do
+  if [ -n "$quit" ] && [ -e "$2" ]; then exit 0; fi
+  sleep 0.05 & wait $!
+done`;
+  const postmaster = standIn(data, [join(bin, "postgres"), "-c", script, "postgres", signals, go]);
+  leaveData(data, postmaster.pid);
+  return postmaster;
+}
+
+const marksModule = fileURLToPath(new URL("../harness-postgres-marks.ts", import.meta.url));
+
 /** The start's sweep, as a child of this file runs it. */
 const sweepScript = `
-import { removeLeftoverPostgres } from ${JSON.stringify(fileURLToPath(new URL("../harness-postgres-marks.ts", import.meta.url)))};
+import { removeLeftoverPostgres } from ${JSON.stringify(marksModule)};
 await removeLeftoverPostgres();
 `;
 
-/** Runs the start's sweep in a child with `tmp` for its `TMPDIR` and no program on its `PATH`, so
- *  no row changes the environment of this process, and answers the lines it printed. */
-async function sweep(tmp: string): Promise<string[]> {
+/** A start's sweep running in a child with `tmp` for its `TMPDIR` and no program on its `PATH`, so
+ *  no row changes the environment of this process: what it printed so far, and the lines it
+ *  printed once it ended. */
+function startSweep(tmp: string): { stderr(): string; readonly lines: Promise<string[]> } {
   const empty = mkdtempSync(join(tmp, "no-programs-"));
   const child = Bun.spawn([process.execPath, "--eval", sweepScript], {
     env: { TMPDIR: tmp, PATH: empty },
     stdout: "ignore",
     stderr: "pipe",
   });
-  const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-  if (code !== 0) throw new Error(`the sweep exited ${code}: ${stderr}`);
-  return stderr.split("\n");
+  let stderr = "";
+  const read = (async () => {
+    const reader = child.stderr.getReader();
+    const decoder = new TextDecoder();
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      stderr += decoder.decode(chunk.value, { stream: true });
+    }
+  })();
+  const lines = (async () => {
+    const [code] = await Promise.all([child.exited, read]);
+    if (code !== 0) throw new Error(`the sweep exited ${code}: ${stderr}`);
+    return stderr.split("\n");
+  })();
+  return { stderr: () => stderr, lines };
+}
+
+/** Runs the start's sweep in a child (`startSweep`), and answers the lines it printed. */
+function sweep(tmp: string): Promise<string[]> {
+  return startSweep(tmp).lines;
+}
+
+/** Waits until `met` holds, and throws naming `what` where it has not after `ms`. What it waits for
+ *  is a write of another process (a stand-in's signal line, a child's line), which no event of
+ *  this process reports, so it reads again every 50 ms. */
+async function until(met: () => boolean, what: string, ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!met()) {
+    if (Date.now() >= deadline) throw new Error(`${what} did not come within ${ms / 1000} s`);
+    await Bun.sleep(50);
+  }
 }
 
 /** The lines of `lines` that hold `text`. */
@@ -458,6 +511,117 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   }
+);
+
+/** How long a row of the claim waits for one event of another process: a `bun` child's start of
+ *  its sweep under load, which took more than 180 s once on a shared Linux machine under a load of
+ *  1,217, on 2026-11-17, is the longest of them. */
+const claimEventMs = 240_000;
+
+// Two starts at once on one dead mark whose postmaster still serves. The first claims the data
+// directory (`claimForRemoval`) and signals the postmaster, which then runs on until the row says
+// go; the second starts only after that signal, so it finds the claim held, and says that it waits
+// for it. Only then does the postmaster end.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: of two starts on one dead mark whose postmaster serves, the one that claims it sends the one signal and says it removed it, and the other waits for that claim and says another start removed it",
+  async () => {
+    const { tmp, run } = scratch();
+    const bin = join(tmp, "bin");
+    const signals = join(tmp, "signals");
+    const go = join(tmp, "go");
+    const data = join(run, "worker-0", "pgdata");
+    const postmaster = signalCountingPostmaster(bin, data, signals, go);
+    const mark = writeMark(run, owners().gone, data, bin);
+    const signalled = () =>
+      existsSync(signals) ? readFileSync(signals, "utf8").split("\n").filter(Boolean) : [];
+    try {
+      const first = startSweep(tmp);
+      await until(() => signalled().length > 0, "the first start's signal", claimEventMs);
+      const second = startSweep(tmp);
+      await until(
+        () =>
+          second.stderr().includes(`waits for another start's claim of ${data}`) ||
+          signalled().length > 1,
+        "the second start's wait for the first start's claim, or its own signal",
+        claimEventMs
+      );
+      writeFileSync(go, "");
+      const [firstLines, secondLines] = await Promise.all([first.lines, second.lines]);
+
+      expect(signalled()).toEqual(["QUIT"]);
+      expect(postmaster.alive()).toBe(false);
+      expect(holding(firstLines, `removed the postmaster of ${data}`)).toHaveLength(1);
+      expect(holding(secondLines, `removed the postmaster of ${data}`)).toEqual([]);
+      expect(
+        holding(secondLines, data).filter((line) => line.includes("another start removed"))
+      ).toHaveLength(1);
+      expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
+      expect(readdirSync(dirname(data)).filter((name) => name.startsWith("pgdata"))).toEqual([]);
+    } finally {
+      postmaster.stop();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // The row waits for two starts' sweeps, each a `bun` child, and for the two events between them,
+  // each for at most `claimEventMs`; the two sweeps then end in well under a second.
+  600_000
+);
+
+/** A start's claim of `CLAIM_PATH` (`claimForRemoval`) in a child of this file: it prints the
+ *  claim, and then waits to be killed, for at most 600 s. */
+const claimScript = `
+import { claimForRemoval } from ${JSON.stringify(marksModule)};
+setTimeout(() => process.exit(1), 600_000);
+console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid())));
+`;
+
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: what a start killed between its claim and its removal left, the next start claims again: the postmaster that serves from the claimed directory ends, and the directory goes",
+  async () => {
+    const { tmp, run } = scratch();
+    const bin = join(tmp, "bin");
+    const data = join(run, "worker-0", "pgdata");
+    const postmaster = standInPostmaster(bin, data);
+    const mark = writeMark(run, owners().gone, data, bin);
+    const claimer = Bun.spawn([process.execPath, "--eval", claimScript], {
+      env: { ...process.env, CLAIM_PATH: data },
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    try {
+      // The claim's name holds its claimer's pid and start, as the judge reads an owner.
+      const claimed = `${data}.removing-${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
+      let printed = "";
+      const reader = claimer.stdout.getReader();
+      const decoder = new TextDecoder();
+      while (!printed.includes("\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        printed += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(JSON.parse(printed)).toEqual({ kind: "claimed", path: claimed });
+      claimer.kill("SIGKILL");
+      await claimer.exited;
+      expect([existsSync(data), existsSync(claimed), postmaster.alive()]).toEqual([
+        false,
+        true,
+        true,
+      ]);
+
+      const lines = await sweep(tmp);
+
+      expect(postmaster.alive()).toBe(false);
+      expect([existsSync(claimed), existsSync(mark)]).toEqual([false, false]);
+      expect(holding(lines, `removed the postmaster of ${data}`)).toHaveLength(1);
+    } finally {
+      if (claimer.exitCode === null && claimer.signalCode === null) claimer.kill("SIGKILL");
+      postmaster.stop();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // The row waits for a claimer, a `bun` child, to print its claim, and for one start's sweep,
+  // another `bun` child; a stuck child waits out its own 600 s at most.
+  600_000
 );
 
 /** A stubbed `lstat` over `entries`, path to what it says; any other path is gone. */

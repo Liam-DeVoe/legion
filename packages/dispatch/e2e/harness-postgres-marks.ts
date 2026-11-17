@@ -102,11 +102,15 @@
  *  A line that says `removed` names only what that start itself removed and is gone. A removal
  *  that fails, or a postmaster that fails a check, is one line, keeps its mark for the next
  *  start, and never fails the start. Two starts that find one dead mark at once both try, and the
- *  line of each says what it did: a directory is renamed to a name of the start's own before it
- *  is removed, so one start wins and the other says that another start removed it first; a
- *  container that another start removes is named so, with what Docker said (its `docker rm`
- *  prints no id, or Docker refuses it while the other removal is in progress, and then the start
- *  waits until Docker no longer lists that container).
+ *  line of each says what it did. A directory, and the postmaster that serves from a data
+ *  directory, are claimed before a start acts on them (`claimForRemoval`): renamed to a name that
+ *  holds the claimer's pid and start, so one start wins, signals the postmaster and removes the
+ *  directory, and the other says that another start removed it first; a claim whose claimer died
+ *  before its removal the next start claims again. A container is claimed by Docker's own removal:
+ *  one `docker rm` removes it, and a start whose `docker rm` prints no id, or that Docker refuses
+ *  while the other removal is in progress, says that another start removed it, with what Docker
+ *  said, once Docker no longer lists it; a container whose remover died is gone, or still listed
+ *  with its label for the next start.
  *
  *  THE WINDOWS NO MARK COVERS. A stack killed between the `mkdtemp` of a socket directory and the
  *  rename of its mark, calls with no await between them, leaves that empty directory and at most
@@ -117,11 +121,8 @@
  *  on with its data directory gone and no mark that names it. A container that comes up after
  *  that carries its label for the next start. A pid that a dead postmaster leaves can be taken by
  *  another process between the checks of that process and the signal, which only pid reuse
- *  within those milliseconds allows. A start killed while it removes a directory leaves what is
- *  left of it under the name it renamed it to (`<path>.removing-<pid>-<hex>`), which no mark
- *  names. */
+ *  within those milliseconds allows. */
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -445,10 +446,12 @@ function markOf(text: string): Mark | undefined {
   if (judged === undefined || !plainPath(run)) return undefined;
   if (!plainPath(identity) || basename(identity) !== basename(run)) return undefined;
   if ((postmaster === undefined) === (container === undefined)) return undefined;
+  let checkedSockets: string | undefined;
   if (sockets !== undefined || postmaster !== undefined) {
     if (!plainPath(sockets)) return undefined;
     if (dirname(sockets) !== run && dirname(sockets) !== shortTemporaryDirectory) return undefined;
     if (!socketDirectoryName.test(basename(sockets))) return undefined;
+    checkedSockets = sockets;
   }
   if (postmaster !== undefined) {
     if (typeof postmaster !== "object" || postmaster === null) return undefined;
@@ -456,12 +459,12 @@ function markOf(text: string): Mark | undefined {
     if (!plainPath(bin) || !plainPath(data) || !dataDirectory.test(relative(run, data))) {
       return undefined;
     }
-    return { owner: judged, run, identity, sockets: sockets as string, postmaster: { bin, data } };
+    return { owner: judged, run, identity, sockets: checkedSockets, postmaster: { bin, data } };
   }
   if (typeof container !== "string" || !containerName.test(container)) return undefined;
-  return sockets === undefined
+  return checkedSockets === undefined
     ? { owner: judged, run, identity, container }
-    : { owner: judged, run, identity, sockets: sockets as string, container };
+    : { owner: judged, run, identity, sockets: checkedSockets, container };
 }
 
 /** The directories `mark` names as both sweeps act on them: under its run directory's one
@@ -606,44 +609,160 @@ export function servingPostmasters(run: string): string[] {
   return serving;
 }
 
-/** What `removeDirectory` did: removed the directory; found it gone before it looked; or saw it
- *  and then lost it to another start, which removed it first. */
+/** What `removeDirectory` did: removed the directory; found it gone, with no claim of it, when it
+ *  looked; or found it claimed by another start, which removed it first. */
 type Removal = "removed" | "absent" | "lost";
 
-/** Removes the directory `path` where it is a directory of the user `uid`, and nothing where it
- *  is gone. It renames the directory to a name of its own in the same parent first, and removes it
- *  under that name: of two starts that both saw it, one rename wins, and the other finds it gone
- *  ("lost"), so only one says that it removed it. Throws, naming `path`, where it is anything
- *  else, since a file, a link or another user's directory is nothing a stack made, and where the
- *  removal fails, which puts the directory back under `path` for the next start. */
-function removeDirectory(path: string, uid: number): Removal {
+/** What a claimed name holds between the name of the part and the claimer's pid and start. */
+const claimInfix = ".removing-";
+/** How long a start waits for a claim another start holds and still runs: as long as that
+ *  start's stop of a postmaster may take (`postmasterQuitMs` and `postmasterKillMs`), and as long
+ *  again for its removal of the directory. */
+const claimWaitMs = 2 * (postmasterQuitMs + postmasterKillMs);
+/** How often a start reads a claim another start holds while it waits for it. */
+const claimPollMs = 100;
+
+/** What `claimForRemoval` found: this start holds the part, under the name its claim gave it; the
+ *  part is gone and no start claims it; another start claimed it and removed it while this start
+ *  waited; or another start still holds its claim, named, after `claimWaitMs`. */
+export type Claim =
+  | { readonly kind: "claimed"; readonly path: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "elsewhere" }
+  | { readonly kind: "held"; readonly claim: string };
+
+/** Renames `from`, a directory of the user `uid`, to `to`, and answers whether it did: false where
+ *  `from` is gone, or another start renamed it first. Throws, naming `from`, where it is anything
+ *  else than a directory of `uid`, since a file, a link or another user's directory is nothing a
+ *  stack made, and where the rename fails otherwise. */
+function renameDirectory(from: string, to: string, uid: number): boolean {
   let stat: Stats;
   try {
-    stat = lstatSync(path);
+    stat = lstatSync(from);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return "absent";
+    if (codeOf(error) === "ENOENT") return false;
     throw error;
   }
   if (!stat.isDirectory() || stat.uid !== uid) {
-    throw new Error(`${path} is not a directory of user ${uid}, so it is left`);
+    throw new Error(`${from} is not a directory of user ${uid}, so it is left`);
   }
-  const claimed = `${path}.removing-${process.pid}-${randomBytes(4).toString("hex")}`;
   try {
-    renameSync(path, claimed);
+    renameSync(from, to);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return "lost";
-    throw new Error(`${path} could not be removed: ${firstLine(error)}`);
+    if (codeOf(error) === "ENOENT") return false;
+    throw new Error(`${from} could not be claimed: ${firstLine(error)}`);
   }
+  return true;
+}
+
+/** Each claim of `path` in its directory: a name `<path>.removing-<pid>-<start>`, with the pid and
+ *  the start of the start that claimed it. */
+function claimsOf(
+  path: string
+): { readonly path: string; readonly pid: number; readonly start: string }[] {
+  const prefix = `${basename(path)}${claimInfix}`;
+  let names: string[];
+  try {
+    names = readdirSync(dirname(path));
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return [];
+    throw error;
+  }
+  return names.flatMap((name) => {
+    const claimer = name.startsWith(prefix)
+      ? /^(\d+)-(\d+)$/.exec(name.slice(prefix.length))
+      : null;
+    return claimer === null
+      ? []
+      : [{ path: join(dirname(path), name), pid: Number(claimer[1]), start: claimer[2] ?? "" }];
+  });
+}
+
+/**
+ * Claims `path`, a directory of the user `uid` that the mark of a dead stack names, for this
+ * start's removal of it, and of the postmaster that serves from it: renames it to
+ * `<path>.removing-<pid>-<start>`, the pid and the start of this process as `judge` reads an owner,
+ * so of two starts that both find it, one rename wins. A claim whose claimer is gone, a start
+ * killed between its claim and its removal, this start claims again by the same rename, so what
+ * that start left is removed by a later one. A claim whose claimer still runs it waits out, for
+ * at most `claimWaitMs`, and says on one line that it waits, and for whom. Every start that judges
+ * a mark's owner gone shares that owner's boot, PID namespace, time namespace and user, so a
+ * claimer is judged in this start's own. Throws, naming the path, where a rename fails for another
+ * reason than a part gone or a claim lost (`renameDirectory`), and where this machine has no
+ * `/proc`.
+ */
+export async function claimForRemoval(path: string, uid: number): Promise<Claim> {
+  const self = stackOwner();
+  if (self === null) throw new Error(`${path} cannot be claimed: this machine has no /proc`);
+  const mine = `${path}${claimInfix}${self.pid}-${self.start}`;
+  const deadline = Date.now() + claimWaitMs;
+  let sawClaim = false;
+  let saidWait = false;
+  for (;;) {
+    if (renameDirectory(path, mine, uid)) return { kind: "claimed", path: mine };
+    const claims = claimsOf(path);
+    if (claims.length === 0) {
+      // A claimer whose removal failed gave the name back (`removeClaimed`) after this look.
+      if (renameDirectory(path, mine, uid)) return { kind: "claimed", path: mine };
+      return sawClaim ? { kind: "elsewhere" } : { kind: "absent" };
+    }
+    sawClaim = true;
+    for (const claim of claims) {
+      if (claim.path === mine) return { kind: "claimed", path: mine };
+      const verdict = judge({ ...self, pid: claim.pid, start: claim.start }, self);
+      if (verdict.kind === "gone" && renameDirectory(claim.path, mine, uid)) {
+        return { kind: "claimed", path: mine };
+      }
+    }
+    if (Date.now() >= deadline) {
+      return { kind: "held", claim: listOf(claims.map((claim) => claim.path)) };
+    }
+    if (!saidWait) {
+      console.error(
+        `${named}: waits for another start's claim of ${path} (${listOf(claims.map((claim) => `start ${claim.pid}`))}), at most ${claimWaitMs / 1000} s`
+      );
+      saidWait = true;
+    }
+    await sleep(claimPollMs);
+  }
+}
+
+/** Removes `claimed`, the name `claimForRemoval` gave `path` for this start. Where the removal
+ *  fails it gives the name `path` back, so the mark names it again for the next start, and
+ *  throws, naming `path`; where that rename fails too, the claim stays, and a start after this
+ *  one claims it again once this process is gone. */
+function removeClaimed(path: string, claimed: string): void {
   try {
     rmSync(claimed, { recursive: true, force: true });
   } catch (error) {
     try {
       renameSync(claimed, path);
     } catch {
-      // What stays under the claimed name is a part of a dead stack that no mark names any more.
+      // The claim stays under this process's name, for a start after it (`claimForRemoval`).
     }
     throw new Error(`${path} could not be removed: ${firstLine(error)}`);
   }
+}
+
+/** What a claim another start holds past `claimWaitMs` throws, naming `path` and that claim. */
+function heldError(path: string, claim: string): Error {
+  return new Error(
+    `${path} is claimed by another start that still runs, as ${claim}, ${claimWaitMs / 1000} s after this start found it`
+  );
+}
+
+/** Removes the directory `path` where it is a directory of the user `uid`, and nothing where it
+ *  is gone, under this start's claim (`claimForRemoval`): of two starts that both find it, one
+ *  removes it, and the other says that another start removed it ("lost"). Throws, naming `path`,
+ *  where it is anything else, since a file, a link or another user's directory is nothing a stack
+ *  made, where another start's claim of it outlasts the wait, and where the removal fails, which
+ *  gives the directory back under `path` for the next start. */
+async function removeDirectory(path: string, uid: number): Promise<Removal> {
+  const claim = await claimForRemoval(path, uid);
+  if (claim.kind === "absent") return "absent";
+  if (claim.kind === "elsewhere") return "lost";
+  if (claim.kind === "held") throw heldError(path, claim.claim);
+  removeClaimed(path, claim.path);
   return "removed";
 }
 
@@ -669,19 +788,36 @@ async function stopPostmaster({ pid, start }: Postmaster, data: string): Promise
   }
 }
 
-/** Ends the postmaster of `data`, where one still serves it, and then removes `data`. Answers
- *  whether this call found a postmaster and stopped it, and what came of the directory. Throws,
- *  leaving `data`, where the postmaster fails a check of `postmasterOf` or still runs after its
- *  stop. A postmaster that another start ended first is no failure: what counts is whether it is
- *  gone. */
+/** Ends the postmaster of `data`, where one still serves it, and then removes `data`, under this
+ *  start's claim of `data` (`claimForRemoval`), so only the start that holds it signals the
+ *  postmaster. Answers whether this call stopped a postmaster, and what came of the directory: a
+ *  start that finds `data` claimed by another start stops nothing. Throws, giving `data` back
+ *  under its name, where the postmaster fails a check of `postmasterOf` or still runs after its
+ *  stop. */
 async function removePostmaster(
   bin: string,
   data: string,
   uid: number
 ): Promise<{ readonly stopped: boolean; readonly removal: Removal }> {
-  const postmaster = postmasterOf(data, bin, uid);
-  if (postmaster !== undefined) await stopPostmaster(postmaster, data);
-  return { stopped: postmaster !== undefined, removal: removeDirectory(data, uid) };
+  const claim = await claimForRemoval(data, uid);
+  if (claim.kind === "absent") return { stopped: false, removal: "absent" };
+  if (claim.kind === "elsewhere") return { stopped: false, removal: "lost" };
+  if (claim.kind === "held") throw heldError(data, claim.claim);
+  let postmaster: Postmaster | undefined;
+  try {
+    // The kernel names a working directory by its latest name, the claimed one.
+    postmaster = postmasterOf(claim.path, bin, uid);
+    if (postmaster !== undefined) await stopPostmaster(postmaster, data);
+  } catch (error) {
+    try {
+      renameSync(claim.path, data);
+    } catch {
+      // The claim stays under this process's name, for a start after it (`claimForRemoval`).
+    }
+    throw error;
+  }
+  removeClaimed(data, claim.path);
+  return { stopped: postmaster !== undefined, removal: "removed" };
 }
 
 /** `phrases` as one list for a line: "a", "a and b", "a, b and c". */
@@ -844,7 +980,7 @@ async function removeContainers(self: Owner | null, left: Left): Promise<Contain
     removed.add(name);
     try {
       const andSockets =
-        sockets !== undefined && removeDirectory(sockets, verdict.uid) === "removed"
+        sockets !== undefined && (await removeDirectory(sockets, verdict.uid)) === "removed"
           ? ` and ${sockets}`
           : "";
       console.error(
@@ -1017,35 +1153,39 @@ async function sweepRun(
           ? `the mark of container ${mark.container}`
           : `${sockets} of container ${mark.container}`;
     const by = `stack ${verdict.pid}`;
-    // Each part this start removed itself, which its line names, and each part another start
-    // removed between this start's look and its own removal (`removeDirectory`): a line says
-    // "removed" of nothing another start removed.
+    // Each part this start removed itself, under its claim, which its line names, and each part
+    // another start claimed and removed first (`claimForRemoval`): a line says "removed" of nothing
+    // another start removed, and only the start that holds the data directory's claim signals its
+    // postmaster.
     const done: string[] = [];
     const lost: string[] = [];
+    let failure: { readonly error: unknown } | undefined;
     try {
       if (mark.postmaster !== undefined && data !== undefined) {
         const { stopped, removal } = await removePostmaster(mark.postmaster.bin, data, verdict.uid);
         if (removal === "removed")
           done.push(...(stopped ? [`the postmaster of ${data}`, "that directory"] : [data]));
-        else if (removal === "lost")
-          lost.push(stopped ? `the postmaster of ${data} and that directory` : data);
-        else if (stopped) done.push(`the postmaster of ${data}`);
+        else if (removal === "lost") lost.push(data);
       }
       if (sockets !== undefined) {
-        const removal = removeDirectory(sockets, verdict.uid);
+        const removal = await removeDirectory(sockets, verdict.uid);
         if (removal === "removed") done.push(sockets);
         else if (removal === "lost") lost.push(sockets);
       }
       rmSync(file, { force: true });
     } catch (error) {
+      failure = { error };
+    }
+    const elsewhere = lost.length === 0 ? "" : `; another start removed ${listOf(lost)} first`;
+    if (failure !== undefined) {
+      const why = firstLine(failure.error);
       console.error(
         done.length === 0
-          ? `${named}: ${what}, which ${by} left, is not removed: ${firstLine(error)}`
-          : `${named}: removed ${listOf(done)}, which ${by} left, and the rest is not removed: ${firstLine(error)}`
+          ? `${named}: ${what}, which ${by} left, is not removed: ${why}${elsewhere}`
+          : `${named}: removed ${listOf(done)}, which ${by} left, and the rest is not removed: ${why}${elsewhere}`
       );
       continue;
     }
-    const elsewhere = lost.length === 0 ? "" : `; another start removed ${listOf(lost)} first`;
     const container =
       mark.container === undefined
         ? ""
