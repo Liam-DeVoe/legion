@@ -327,9 +327,9 @@ const SPEC_DOCUMENT: Artifact = {
 };
 
 // A Change is a comment anchored to the decision node's own document, whatever document the row
-// that draws it stands in, and to the words of the node's first paragraph, which the server
-// finds in that document by the quote alone: the anchor names no place among the quote's
-// matches, and the send reads no document's text before it goes.
+// that draws it stands in, to the node's own block and to the words of its first paragraph: the
+// anchor names no place among the quote's matches, and the send reads no document's text before
+// it goes.
 test("Change anchors to the node's document and quotes its first paragraph", async () => {
   const createComment = spyOn(api, "createComment").mockImplementation(
     () => new Promise<never>(() => {})
@@ -346,7 +346,10 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
     );
     expect(createComment.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
-      { anchor: { artifact: document_.id, quote: "One tree, five presets" }, body: "Say where." },
+      {
+        anchor: { artifact: document_.id, block_id: ONE.id, quote: "One tree, five presets" },
+        body: "Say where.",
+      },
     ]);
     expect(
       createComment.mock.calls[0]?.[1]?.anchor,

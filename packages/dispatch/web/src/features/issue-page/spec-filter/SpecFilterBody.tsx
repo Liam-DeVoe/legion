@@ -174,12 +174,13 @@ export function SpecFilterBody({
   // to draw them: each decision the view holds, and each question a person answered that carries
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read and the
   // asks read are watched by observers that are never enabled, under the keys the page reads
-  // them by (`ViewReadProvider`, `useIssueTree.ts`). A view read again after a change of the
-  // issue drops its answer before the next one lands (`subscribeTreeFreshness`), so the column
-  // draws the answer it last held until the next one lands, and after a read again that fails,
-  // which leaves the body an answer to draw. Until the view and the asks read have both answered
-  // the column says nothing of a statement no decision shaped, since it does not know yet: a
-  // person's decision is a question they answered, which only the asks read says.
+  // them by (`ViewReadProvider`, `useIssueTree.ts`). A change of the issue marks the view stale
+  // and reads it again with its answer kept (`subscribeTreeFreshness`), and only a new load drops
+  // it (`dropViews`), so the column draws the answer it last held until the next one lands, and
+  // after a read again that fails, which leaves the body an answer to draw. Until the view and
+  // the asks read have both answered the column says nothing of a statement no decision shaped,
+  // since it does not know yet: a person's decision is a question they answered, which only the
+  // asks read says.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
   const asks = useQuery({
     enabled: false,

@@ -1493,8 +1493,8 @@ test("a read that fails again over the answer the page holds keeps every mark an
 // shaped its statement still says so when the Spec view read fails again: only a read that failed
 // with nothing held says it failed (review 5928280634 on pull request 4234, the reviewer's
 // finding b, which named the empty line too). The Spec view is read again as the page reads it
-// after a change of the issue, which drops its answer first (`subscribeTreeFreshness`), so the
-// cell stands on the answer the body last held.
+// after a change of the issue, with its answer kept while the read is out
+// (`subscribeTreeFreshness`), so the cell stands on the answer the body last held.
 test("a read that fails again over the statements and decisions the page holds keeps the empty line and the cells, and says nothing failed", async () => {
   const empty = drawBody(issueTree([]));
   try {

@@ -3,7 +3,7 @@ import { createContext, type ReactNode, useContext, useId, useMemo, useState } f
 
 import { api } from "../../api/client";
 import { refreshQueries } from "../../api/query-refresh";
-import type { Artifact } from "../../api/types";
+import type { AnchorInput, Artifact } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -248,8 +248,15 @@ function DecisionControls({
   );
 }
 
-/** The change itself: a comment of the issue's, anchored to the decision's own words, which is
- *  the write the Decisions tab made. */
+/** A Change's anchor: the decision's document, its words, and the decision node's own block.
+ *  The API's anchor input (`AnchorInput`) does not declare `block_id` yet, and the server
+ *  ignores a member it does not declare, so until it declares it the quote is found in the
+ *  whole document; once it does, the server finds the quote inside that block alone, so words
+ *  the decision shares with another place in the document still name the decision. */
+type ChangeAnchor = AnchorInput & { block_id: string };
+
+/** The change itself: a comment of the issue's, anchored to the decision's own block and words,
+ *  which is the write the Decisions tab made. */
 function ChangeComposer({
   decision,
   documentId,
@@ -277,13 +284,11 @@ function ChangeComposer({
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    // The anchor names no block: the API's anchor input (`AnchorInput`) has no `block_id` yet.
-    write: (input: { body: string }, bounds) =>
-      api.createComment(
-        issueKey,
-        { anchor: { artifact: documentId, quote }, body: input.body },
-        bounds
-      ),
+    // The anchor names the decision node's own block beside its words (`ChangeAnchor`).
+    write: (input: { body: string }, bounds) => {
+      const anchor: ChangeAnchor = { artifact: documentId, block_id: decision.block_id, quote };
+      return api.createComment(issueKey, { anchor, body: input.body }, bounds);
+    },
     // The change is a comment of the issue's, and the comments read is what tells the page a
     // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
     // the review list and draws the change under it as soon as the comment lands.

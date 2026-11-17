@@ -635,6 +635,99 @@ test("the view says its decisions could not be read where both of their reads fa
   }
 });
 
+// Where the tree read and the decisions view read both failed, the line that says so carries a
+// Retry that reads both again. Once they answer, the line goes and the view draws the decision
+// they hold in its part, and no line says the issue has no decisions.
+test("Retry on the decisions' failed line reads them again and draws what they hold", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // The server fails every read of the tree until Retry is pressed, and then holds one decision
+  // a statement rests on, which waits for the reader's review.
+  let down = true;
+  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async () => {
+    if (down) throw new ApiError(503, { code: "UNAVAILABLE", error: "down" });
+    return treeAnswer(made);
+  });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], []);
+  const issue = issueDetails();
+  // The page's tree as `useIssueTree.ts` builds it from `children`: no node of the read before
+  // the tree read answers, and the read's nodes once it has.
+  const body = (children: TreeNode[]) => {
+    const root = issueTree(children);
+    const view = presetView(root, "decisions", "", new Set()).root;
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <IssueScope />
+              <NoTooltips>
+                <HeldReads root={root}>
+                  {(held) => (
+                    <DecisionsFilterBody
+                      artifacts={artifactsBySlug(issue)}
+                      emptyLine={EMPTY_LINE}
+                      holdsEscape={false}
+                      isClosed={false}
+                      issue={issue}
+                      reader={READER}
+                      root={held}
+                      view={view}
+                    />
+                  )}
+                </HeldReads>
+              </NoTooltips>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
+  const drawn = render(body([]));
+  try {
+    await waitFor(
+      () =>
+        expect(
+          drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    down = false;
+    await user.click(drawn.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(client.getQueryData(issueTreeKey(KEY)), "Retry did not read the tree again").toEqual(
+        treeAnswer(made)
+      );
+      expect(
+        client.getQueryData(viewKey(KEY, "decisions")),
+        "Retry did not read the decisions view again"
+      ).toEqual(treeAnswer(made));
+    });
+    drawn.rerender(body([statement("s1"), decisionNode("first")]));
+    await waitFor(() =>
+      expect(rowsOfPart(drawn, "review"), "the view does not draw the decision it read").toEqual([
+        D("first"),
+      ])
+    );
+    expect(
+      drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+      "the view still says its decisions could not be read once they were"
+    ).toBeNull();
+    expect(
+      drawn.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions where it drew one"
+    ).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
 // review", one a person kept "Kept by" with their name, and a replaced one "Replaced", each by
 // a word and a shape (R6).
@@ -1472,12 +1565,12 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
-    // The comment is anchored to the decision's own words in the spec, the document the decision
-    // is a block of, by the quote alone.
+    // The comment is anchored to the decision's own block and words in the spec, the document
+    // the decision is a block of.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: SPEC_DOCUMENT.id, quote: "The decision second." },
+        anchor: { artifact: SPEC_DOCUMENT.id, block_id: "second", quote: "The decision second." },
         body: "Name the read, please.",
       },
     ]);
