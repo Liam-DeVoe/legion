@@ -687,6 +687,18 @@ run_check "$root"
 check "exits 1 on release_publish's if: changed" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "the job's own if: of release_publish has the if: \`github.ref == 'refs/heads/main' && needs.build.result")"
 
+echo "case: continue-on-error: on a listed reader, and on pair"
+root=$(written reader-continue)
+replace "$root/.github/workflows/release.yaml" $'      - id: legion_pair\n' $'      - id: legion_pair\n        continue-on-error: true\n'
+run_check "$root"
+check "exits 1 on legion_pair" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the step with id legion_pair of publish sets continue-on-error:, which a listed reader does not")"
+root=$(written pair-continue)
+replace "$root/.github/workflows/release.yaml" $'      - id: pair\n' $'      - id: pair\n        continue-on-error: true\n'
+run_check "$root"
+check "exits 1 on pair" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the step with id pair of publish sets continue-on-error:")"
+
 echo "case: a new step that reads release"
 root=$(written reader-new)
 printf '      - name: Announce the release\n        if: steps.confirm.outputs.release == %s\n        run: echo released\n' "'true'" \

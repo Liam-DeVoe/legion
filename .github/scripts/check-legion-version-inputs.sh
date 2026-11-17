@@ -555,9 +555,10 @@ def decision_readers(path, doc):
     specs = [spec for spec in plan.VERSION_STEPS if spec.workflow == path]
     anywhere = [re.compile(rf"\bneeds\.{re.escape(s.job)}\.outputs\.(?:{'|'.join(map(re.escape, s.outputs))})\b")
                 for s in specs if s.outputs]
-    held = {}   # (job, selector) -> the if: it holds, for the job itself and each of its steps
-    index = {}  # (job, selector) -> the step's 1-based place in its job, 0 for the job itself
-    found = {}  # (job, selector) -> the if: of each reader the traversal finds
+    held = {}    # (job, selector) -> the if: it holds, for the job itself and each of its steps
+    index = {}   # (job, selector) -> the step's 1-based place in its job, 0 for the job itself
+    keys = {}    # (job, selector) -> the step's keys, for each step
+    found = {}   # (job, selector) -> the if: of each reader the traversal finds
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
@@ -575,6 +576,7 @@ def decision_readers(path, doc):
             cond = step.get("if")
             held[(job_name, step_selector(step, n))] = cond
             index[(job_name, step_selector(step, n))] = n
+            keys[(job_name, step_selector(step, n))] = set(step)
             if step.get("id") in checked:
                 continue  # a checked version step's if: is version_step's to hold
             text = cond if isinstance(cond, str) else ""
@@ -597,6 +599,10 @@ def decision_readers(path, doc):
         elif held[(job_name, selector)] != want:
             problem(f"{name} of {job_name} has the if: {rendered(held[(job_name, selector)])}, where {PLAN}'s "
                     f"DECISION_READERS names `{want}` for it: {why}", path)
+        if "continue-on-error" in keys.get((job_name, selector), ()):
+            problem(f"{name} of {job_name} sets continue-on-error:, which a listed reader does not: a reader that "
+                    f"fails then leaves its outcome failure with its job green, and every reader after it skips "
+                    f"with no failure anywhere", path)
     for (job_name, selector), have in sorted(found.items()):
         if (job_name, selector) not in listed:
             problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
