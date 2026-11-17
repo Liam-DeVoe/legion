@@ -128,6 +128,7 @@ daemon_log=${shq(daemonLog)}
 empty_log=${shq(emptyLog)}
 quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
 loud_log=${shq(join(data, "daemon-no-answers-loud.log.txt"))}
+review_log=${shq(join(data, "daemon-review-round.log.txt"))}
 boot_offset=${bootOffset}
 whole_run=0
 store=files
@@ -297,6 +298,18 @@ describe("the daemon's log, boot by boot", () => {
     expect(read('cache_read_tokens ""')).toEqual({ code: 0, text: "0" });
   });
 
+  test("answered_line reads one question's cost line, of this boot alone", () => {
+    expect(read("answered_line q-six | jq -r .cacheReadTokens").text).toBe("19");
+    expect(read('cache_read_tokens "$(answered_line q-four)"').text).toBe("2000");
+    // The first boot answered q-one; this one did not.
+    expect(read("answered_line q-one")).toEqual({ code: 0, text: "" });
+    expect(read("boot_offset=0; answered_line q-one | jq -r .session").text).toBe(
+      "session-planner"
+    );
+    expect(read("answered_line q-never-asked")).toEqual({ code: 0, text: "" });
+    expect(read("daemon_log=$empty_log; answered_line q-six")).toEqual({ code: 0, text: "" });
+  });
+
   test("gh_line_is reads the App, the owner and how the call ended", () => {
     const ok = `line=$(boot_offset=0 boot_log | jq -c 'select(.msg == "answers: gh" and .role == "planner")')`;
     expect(run(`${ok}; gh_line_is "$line" review sjawhar 0`).code).toBe(0);
@@ -348,6 +361,34 @@ describe("the daemon's log, boot by boot", () => {
     expect(run(`leak_refusal_is "" ALX-4 implementer sjawhar/legion-smoke '${reason}'`).code).toBe(
       1
     );
+  });
+
+  test("review_refused reads the reason the workflow set a review of an issue aside for", () => {
+    const session = `"the review App submitted it from a session that is not the reviewer's"`;
+    const review = "daemon_log=$review_log; boot_offset=0";
+    expect(run(`${review}; review_refused ALX-5 ${session}`).code).toBe(0);
+    // Another issue's refusal, and another reason, are not this one.
+    expect(run(`${review}; review_refused ALX-6 ${session}`).code).toBe(1);
+    expect(run(`${review}; review_refused ALX-5 "footer names no head"`).code).toBe(1);
+    expect(run(`${review}; review_refused ALX-6 "footer names no head"`).code).toBe(0);
+    // The reason is the whole of it: a prefix of it names no refusal.
+    expect(run(`${review}; review_refused ALX-5 "the review App submitted it"`).code).toBe(1);
+    expect(run(`daemon_log=$empty_log; review_refused ALX-5 ${session}`).code).toBe(1);
+  });
+
+  test("phase_changed reads the issue's move, from one phase to the other", () => {
+    const review = "daemon_log=$review_log; boot_offset=0";
+    expect(run(`${review}; phase_changed ALX-5 reviewing accepting`).code).toBe(0);
+    expect(run(`${review}; phase_changed ALX-5 accepting reviewing`).code).toBe(1);
+    expect(run(`${review}; phase_changed ALX-6 reviewing accepting`).code).toBe(1);
+    expect(run(`${review}; phase_changed ALX-6 testing reviewing`).code).toBe(0);
+    // The boot after the one that logged it moved nothing.
+    expect(
+      run(
+        `${review}; boot_offset=$(stat -c %s "$daemon_log"); phase_changed ALX-5 reviewing accepting`
+      ).code
+    ).toBe(1);
+    expect(run("daemon_log=$empty_log; phase_changed ALX-5 reviewing accepting").code).toBe(1);
   });
 });
 
@@ -706,6 +747,50 @@ describe("the recording proxy's records", () => {
       code: 0,
       text: "null",
     });
+  });
+
+  test("daemon_call_for reads the first call that holds a text, and daemon_request_for its body", () => {
+    // The second answer's request carries the first exchange too; the first call to hold its
+    // question is still the first answer's.
+    expect(read(`daemon_call_for "A10-1)" | jq .ordinal`).text).toBe("2");
+    expect(read(`daemon_request_for "A10-1)" | jq '.messages | length'`).text).toBe("1");
+    expect(read(`daemon_call_for "A10-2)" | jq .ordinal`).text).toBe("3");
+    // A question asked again under a marker of its own is not the second question.
+    expect(read(`daemon_call_for "A10-2r1)" | jq -c '[.ordinal, .mode]'`).text).toBe(
+      '[4,"stand-in"]'
+    );
+    expect(read(`daemon_call_for "A10-9)"`).text).toBe("null");
+    expect(read(`store=postgres; daemon_call_for "A10-1)"`).text).toBe("null");
+    expect(read(`evidence=$empty_evidence; daemon_call_for "A10-1)"`)).toEqual({
+      code: 0,
+      text: "null",
+    });
+    expect(read(`evidence=$bare_evidence; daemon_request_for "A10-1)"`)).toEqual({
+      code: 0,
+      text: "null",
+    });
+  });
+
+  test("call_organization reads the organization that served a forwarded call, and none of a stand-in", () => {
+    expect(read(`call_organization "$(daemon_call_for "A10-1)")"`).text).toBe(
+      "00000000-0000-4000-8000-00000000000a"
+    );
+    expect(read(`call_organization "$(daemon_call_for "A10-2)")"`).text).toBe(
+      "00000000-0000-4000-8000-00000000000b"
+    );
+    // A stand-in's answer names no organization, and neither does a record with no answer's
+    // headers at all (every earlier record of the fixture).
+    expect(read(`call_organization "$(daemon_call_for "A10-2r1)")"`)).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(read(`call_organization "$(daemon_call_for legion-answer:d4d4d4d4e5e5e5e5)"`)).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(read(`call_organization "$(daemon_call_for "A10-9)")"`)).toEqual({ code: 0, text: "" });
+    expect(read('call_organization ""')).toEqual({ code: 0, text: "" });
+    expect(read("call_organization 'not a record'")).toEqual({ code: 0, text: "" });
   });
 
   test("request_effort reads the effort a request carries, wherever it stands", () => {
@@ -1071,13 +1156,6 @@ describe("the daemon's own record and state", () => {
     ).toBe(0);
     expect(run(`pg_rows='${open}'; review_round_ended "$(review_record ALX-5)" 0`).code).toBe(1);
     expect(run(`review_round_ended '' 0`).code).toBe(1);
-  });
-
-  test("review_round_open reads a record with no round at all as still open", () => {
-    expect(run(`pg_rows='${open}'; review_round_open "$(review_record ALX-5)"`).code).toBe(0);
-    expect(run(`pg_rows='${ended}'; review_round_open "$(review_record ALX-5)"`).code).toBe(1);
-    expect(run(`pg_rows='[]'; review_round_open "$(review_record ALX-5)"`).code).toBe(0);
-    expect(run(`review_round_open ''`).code).toBe(0);
   });
 
   const live = `{"admission":{"trees":["ALX-1"]},"issues":{"ALX-1":{"phase":"implementing"}},"questionsForController":[{"id":"q-four","ref":"envoy://event-one","reason":"cannot_answer"}]}`;

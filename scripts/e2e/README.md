@@ -1381,6 +1381,10 @@ CI does not run it.
 - The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`, `DISPATCH_*`, `LEGION_*` and model keys reach none of them.
   The daemon's `PATH` starts with the run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
   gh` wrapper script, which the daemon refuses).
+  The listener, the branch's and the base commit's alike, also serves GitHub's webhook route, `/webhook/github` (`ENVOY_WEBHOOKS=github`), as a deployment's does, so A19 can deliver its reviews there:
+  its secret is the run's own random value, written `0600` as `$work/github-webhook-secret` and printed nowhere, and `ENVOY_REVIEWER_APP_ID` is the review App's id, without which the route refuses to start.
+  That id only tells the reviewer's verdict check runs from another App's, and the run delivers no check run, so a run that read no review App gives [`lib/github-apps.sh`](lib/github-apps.sh)'s default.
+  The mention trigger is the listener's default, and the CI store the route records checks in is the listener's own bucket on the run's NATS.
   Ports are picked below the kernel's ephemeral range from `/proc/net/tcp`, since `lib/free-port.sh` needs `ss` and a range above 21000, and a pod has neither.
 
 - Only for A3's conversation-page leg, the one surface of this proof that is a page:
@@ -1488,15 +1492,21 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   Its turn after the resume quotes both answers:
   every reply it gave after the task was delivered is read (`assistant_texts_after`), not its last, since a resumed architect may also answer a person's earlier reply in the same turn, and its last words then answer that.
 
-- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime:
-  the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >
-  0`, and the resumed reviewer's first model call holds both exchanges once
+- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime, and asked again while the last two answers came from two Anthropic organizations:
+  the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the cost line of the second answer of the first pair of consecutive answers one organization served reads `cacheReadTokens > 0`, and the resumed reviewer's first model call holds the first two questions' exchanges once each
   — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
   The byte-for-byte clause needs thinking to replay, and at Claude Code's default on the run's model, `medium`, the reviewer once restated its finding with no thinking at all:
   on that model thinking is adaptive and takes no budget, so effort decides how readily it thinks and the task whether there is anything to think about.
   The pre-change reviewer runs at effort `xhigh`, set as `CLAUDE_CODE_EFFORT_LEVEL` in its claim's `settings.json`, and its task has it weigh, in one sentence and with no tool, whether the missing SBOM alone blocks the release before it restates the blocker and its marker, the two facts A2's and A10's question reads.
   The run notes the thinking blocks and signatures the transcript holds once the base daemon stops, and a transcript with no signature fails the leg, which then says the clause went unexercised.
   The second question is asked once the first answer is posted and ten seconds after that, since a cache entry is not always readable the moment it is written (in the run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s earlier), and the cache-read clause judges the loop's cache policy, not the provider's propagation delay.
+  A prompt cache is kept per Anthropic organization, and the model gateway of proof run 44035756045 sent the two answers' calls to two organizations, so the second answer read 0 tokens.
+  So the run reads which organization served each answer's first model call: the `anthropic-organization-id` header of the answer the recording proxy forwarded for that call (`daemon_call_for`, `call_organization`).
+  While the last two answers came from two organizations, the second question is asked again under a marker of its own, `A10-2r1)`, then `A10-2r2)` and so on, which holds no `A10-2)`, so the resumed reviewer's counts still read the first two questions;
+  each is asked once the answer before it is posted and ten seconds after that, within five minutes of the first answer's request (the cache's lifetime), and at most four times.
+  The cache-read clause is judged on the first consecutive pair one organization served, read off that pair's second answer's own cost line (`answered_line`), and the notes list every pair's organizations.
+  With no such pair inside those bounds the leg fails and says the gateway served every pair from two organizations, since the clause still needs a cache read the run observed.
+  Answers whose calls name no organization at all, from a route that sends no such header, count as one pair, as every pair did before.
   Compaction leg: the resumed architect's session is compacted as Legion compacts one, by the daemon's own `legion claims compact`, which has Oh My Pi write the summary as text to the daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`), and its conversation must then hold a compaction whose summary is text (`text_compactions`).
   A person's bare `/compact` is no such compaction: under the pinned Oh My Pi a compaction that carries no instructions is the image-based snapcompact, which the loop's reader declines, so the question is passed on (docs/kubernetes.md, "The answer loop").
   A question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
@@ -1543,9 +1553,14 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   **Departure:** with the daemon stopped the run writes the open round into the daemon's record (issue phase `reviewing`, its tree's `tree_lifecycles` row open under the workflow as A6's is, the reviewer's `phases` row with its claim, handoff commit and completion, the `pull_requests` row at the head), as the workflow writes it when a reviewer completes undecided;
   driving a tree there with real agents is the stage proofs' work.
   Without the lifecycle row the next boot's admission pass would take the whole round out of the workflow before the control could read it.
-  Control: a review-App approval whose footer names another session, and the pull request's head, so that the session is the one thing that differs, leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s.
+  A running daemon reads a pull request's listed reviews only as its workflow starts and after a handoff is recorded (`readIssuePullRequest` in `packages/daemon/internal/daemon/issue_reads.go`), so each review reaches it as in a deployment, by its GitHub webhook.
+  The smoke repository sends its webhooks to no listener of the run's, so the rig delivers each review itself (`deliver_review`):
+  it reads the review and its pull request from GitHub as the implement App, and [`lib/github-review-webhook.ts`](lib/github-review-webhook.ts) builds the `pull_request_review` event GitHub sends (action `submitted`, the review, the pull request, its repository, and the review's author as sender), signs its exact body with HMAC-SHA256 under the route's secret (`X-Hub-Signature-256: sha256=<hex>`) and posts it to the listener's `/webhook/github` with `X-GitHub-Event: pull_request_review` and a fresh `X-GitHub-Delivery`.
+  The listener checks the signature and publishes the review on `notifications.github.sjawhar.legion-smoke.pr.<number>.review`, which the daemon's GitHub intake hears; the notes keep the listener's answer, and `a19/<store>/` the two GitHub answers and the body sent.
+  The helper's unit test checks the signature against GitHub's documented test vector and the listener's own check, and the body against every field the listener's normalizer and the daemon's decoder read.
+  Control: a review-App approval whose footer names another session, and the pull request's head, so that the session is the one thing that differs, is refused within 120 s of its delivery by the daemon's `workflow: a review decides nothing: the review App submitted it from a session that is not the reviewer's` line naming the issue, and leaves the round open (phase `reviewing`, no decision, `review_seen` 0).
   Then the stopped reviewer approves with its `gh` tool:
-  the review App's single approval of the head carries its session's footer and names the head its recorded round read (the `phases` row's handoff commit, which is the pull request's head), the phase leaves `reviewing`, and `review_seen` is that review's id.
+  the review App's single approval of the head carries its session's footer and names the head its recorded round read (the `phases` row's handoff commit, which is the pull request's head), and within 120 s of its delivery the daemon moves the issue from `reviewing` to `accepting` (its `workflow: phase changed` line), with `review_seen` that review's id.
   A review footed with no head, or with a head the pull request has moved past, decides nothing (main's `refusesRound`), which is why the `gh` tool reads the pull request's head before it submits and refuses on a mismatch;
   the daemon's unit tests hold that refusal and its control (`internal/ghtool`).
   The rig reads the approvals back as the implement App, as A17 reads the comments (**GitHub** below).
@@ -1621,7 +1636,7 @@ the bring-up and the stopped agents are made as always.
 A run that proves the criteria sets neither.
 
 **Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl`, `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it), `a3/<store>/` (the conversation-page leg's screenshots:
-the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), and `a13/{branch,base}/<store>/` (the bodies A13 compares).
+the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), `a13/{branch,base}/<store>/` (the bodies A13 compares), and `a19/<store>/` (each review A19 delivers by webhook: GitHub's answers for the review and its pull request, and the event body sent).
 
 **GitHub.**
 The run reads the smoke repository, and reads it as the implement App:

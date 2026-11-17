@@ -151,6 +151,13 @@ bad_cost_lines() {
 # cache_read_tokens LINE: the tokens an `answers: answered` LINE read from the provider's cache, 0
 # for a line that reports none and for no line at all.
 cache_read_tokens() { jq -r '.cacheReadTokens // 0' <<<"${1:-null}" 2>/dev/null || printf '0\n'; }
+# answered_line QUESTION prints this boot's `answers: answered` line for QUESTION, the id every
+# answer the loop posts carries in its marker (answer_question_id), and nothing for a question this
+# boot answered nothing of. A check asking one agent several questions reads each one's own line
+# this way, where the session's last line is whichever answer was logged last.
+answered_line() {
+  boot_log | jq -s -c --arg q "$1" '[.[] | select(.msg == "answers: answered" and .question == $q)] | (last // empty)'
+}
 # gh_line_is LINE APP OWNER EXIT: the `answers: gh` LINE is a call of APP on OWNER that ended as
 # EXIT says — `0`, `nonzero` for a refused call, or `any`. No line at all is no such call.
 gh_line_is() {
@@ -180,6 +187,20 @@ leak_refusal_is() {
   jq -e --arg i "$2" --arg r "$3" --arg repo "$4" --arg why "$5" \
     '.issue == $i and .role == $r and .repository == $repo and ((.why // "") | contains($why))' \
     <<<"${1:-null}" >/dev/null 2>&1
+}
+# review_refused ISSUE REASON: this boot set aside a review of ISSUE's pull request for REASON, the
+# workflow's `workflow: a review decides nothing: <reason>` line naming ISSUE (workflow's review,
+# RefusesRound). A review the review App submitted from a session that is not the reviewer's is
+# refused `the review App submitted it from a session that is not the reviewer's` (A19's control).
+review_refused() {
+  boot_log | jq -e -s --arg i "$1" --arg m "workflow: a review decides nothing: $2" 'any(.[]; .msg == $m and .issue == $i)' >/dev/null
+}
+# phase_changed ISSUE FROM TO: this boot moved ISSUE from phase FROM to phase TO, the workflow's
+# `workflow: phase changed` line (workflow's engine), as an approval that ends a review round moves
+# its issue from reviewing to accepting (A19).
+phase_changed() {
+  boot_log | jq -e -s --arg i "$1" --arg f "$2" --arg t "$3" \
+    'any(.[]; .msg == "workflow: phase changed" and .issue == $i and .from == $f and .to == $t)' >/dev/null
 }
 
 # ---- the stopped agents' conversations ---------------------------------------------------------------
@@ -385,13 +406,30 @@ first_request_after() {
     "$evidence/model-calls.jsonl" 2>/dev/null) || body=
   printf '%s\n' "${body:-null}"
 }
-# daemon_request_for TEXT prints the request body of the loop's first model call (this store's
-# daemon label) whose body holds TEXT.
+# daemon_call_for TEXT prints the proxy's record of the loop's first model call (this store's daemon
+# label) whose request body holds TEXT, `null` for none, and daemon_request_for TEXT that call's
+# request body. The first is the earliest by ordinal: a later answer's request carries the
+# exchanges the loop appended before it, and with them the text of their questions.
+daemon_call_for() {
+  local call
+  call=$(jq -s -c --arg l "daemon-$store" --arg t "$1" '[.[] | select(.label == $l and (.request_body | tostring | contains($t)))] | sort_by(.ordinal) | (.[0] // null)' \
+    "$evidence/model-calls.jsonl" 2>/dev/null) || call=
+  printf '%s\n' "${call:-null}"
+}
 daemon_request_for() {
   local body
-  body=$(jq -s -c --arg l "daemon-$store" --arg t "$1" '[.[] | select(.label == $l and (.request_body | tostring | contains($t)))] | sort_by(.ordinal) | (.[0].request_body // null)' \
-    "$evidence/model-calls.jsonl" 2>/dev/null) || body=
+  body=$(jq -c '.request_body? // null' <<<"$(daemon_call_for "$1")" 2>/dev/null) || body=
   printf '%s\n' "${body:-null}"
+}
+# call_organization CALL prints the Anthropic organization that served CALL, a record of the proxy
+# (daemon_call_for): the `anthropic-organization-id` header of the answer it forwarded. A prompt
+# cache is kept per organization, so a call a gateway sent to another organization than the call
+# before it reads nothing that call wrote (A10). A stand-in's answer carries no such header, and
+# neither does no call at all: each prints an empty line.
+call_organization() {
+  local organization
+  organization=$(jq -r '(.response_headers? // {})["anthropic-organization-id"]? // ""' <<<"${1:-null}" 2>/dev/null) || organization=
+  printf '%s\n' "$organization"
 }
 # request_effort REQUEST: the effort a model request carries, wherever in the body it stands;
 # empty for a request that carries none and for no request at all.
@@ -621,8 +659,6 @@ review_round_undecided() {
 review_round_ended() {
   jq -e --arg id "$2" 'type == "object" and .phase != "reviewing" and ((.review_seen // 0) | tostring) == $id' <<<"${1:-null}" >/dev/null 2>&1
 }
-# review_round_open RECORD: the round still stands at reviewing, which no record at all also says.
-review_round_open() { [ "$(jq -r '(.phase? // "reviewing")' <<<"${1:-null}" 2>/dev/null || printf 'reviewing\n')" = reviewing ]; }
 # tree_is_live ROOT PHASE: the daemon's own state says ROOT's tree is live and does not linger —
 # admission.trees is record.LiveRoots, the very set admission's release pass judges a root against
 # (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would have left

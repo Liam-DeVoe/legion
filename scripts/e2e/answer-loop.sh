@@ -706,6 +706,14 @@ start_inbox() {
 
 # start_listener BINARY_DIR and start_dispatch BINARY_DIR DATABASE are claude-backend-tmux.sh's, with
 # every variable named (env -i): a pod's own ENVOY_*, DISPATCH_* and LEGION_* never reach them.
+# The listener also serves GitHub's webhook route, `/webhook/github`, as a deployment's does, since
+# a running daemon hears a review only as its webhook (A19, deliver_review): ENVOY_WEBHOOKS=github,
+# the route's secret the run's own random value ($work/github-webhook-secret, 0600, printed
+# nowhere), and ENVOY_REVIEWER_APP_ID, without which the route refuses to start. That id only tells
+# the reviewer's verdict check runs from another App's, and this proof delivers no check run, so a
+# run that read no review App names lib/github-apps.sh's default. The mention trigger is the
+# listener's own default, and the CI store the route records checks in is the listener's own
+# bucket on the run's NATS. The base commit's listener (A13) is started the same way.
 start_listener() {
   local bin=$1 attempt offset result
   for attempt in 1 2 3 4 5; do
@@ -713,6 +721,8 @@ start_listener() {
     offset=$(log_size listener)
     start_process listener "${service_env[@]}" "HOME=$work/listener-home" "ENVOY_API_TOKEN=$(cat "$work/envoy-token")" \
       "PORT=$port_listener" ENVOY_LISTEN_HOST=127.0.0.1 "ENVOY_MACHINE_ID=legion-e2eal-$$" \
+      ENVOY_WEBHOOKS=github "ENVOY_GITHUB_WEBHOOK_SECRET=$(cat "$work/github-webhook-secret")" \
+      "ENVOY_REVIEWER_APP_ID=${review_app_id:-$default_review_app_id}" \
       "NATS_URLS=nats://127.0.0.1:$port_nats" "$bin/envoy-listener"
     result=0
     await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
@@ -1373,7 +1383,8 @@ begin rig
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&
   printf 'X-Dispatch-User: %s\n' "$proof_human_user" >"$work/dispatch-human-header" &&
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token")
+  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
+  head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/github-webhook-secret")
 start_postgres
 for db in dispatch dispatch_base "legion_files_$run_tag" "legion_postgres_$run_tag" "legion_base_$run_tag" "omp_sessions_$run_tag"; do
   pg_sql postgres "create database $db" >/dev/null
@@ -2067,17 +2078,20 @@ check_a9() {
 
 # check_a10: A10's Claude Code leg (the pre-change reviewer, answered twice within the cache
 # lifetime: the first request carries the effort the transcript last ran at and every thinking
-# signature it holds, byte for byte; the second reads the conversation from cache; resumed after,
-# its first request holds both exchanges) and its compaction leg (the architect's session compacted
-# by the daemon's own compaction, is answered from the compacted conversation, and resumes after
-# holding the exchange). The GPT-6.1 leg waits on the OpenAI API. The byte-for-byte clause needs
-# thinking to replay, which is why the pre-change reviewer runs at a raised effort
-# (produce_pre_change); a transcript with no thinking signature fails the leg and says why, since
-# any request carries every signature of a transcript that holds none.
+# signature it holds, byte for byte; an answer of a pair one Anthropic organization served reads
+# the conversation from cache; resumed after, its first request holds both exchanges) and its
+# compaction leg (the architect's session compacted by the daemon's own compaction, is answered
+# from the compacted conversation, and resumes after holding the exchange). The GPT-6.1 leg waits
+# on the OpenAI API. The byte-for-byte clause needs thinking to replay, which is why the pre-change
+# reviewer runs at a raised effort (produce_pre_change); a transcript with no thinking signature
+# fails the leg and says why, since any request carries every signature of a transcript that holds
+# none.
 check_a10() {
   criterion A10 "a GPT-6.1 conversation's reasoning replayed byte-equal and its cache read" openai || true
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
   local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs thinking unexercised='' missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
+  local asked_at k marker again before after pair='' pairs='' cache_why=''
+  local -a markers events
   transcript=$(conversation_text pre_change)
   want_effort=$(transcript_effort "$transcript")
   sigs=$(transcript_signatures "$transcript")
@@ -2093,6 +2107,7 @@ check_a10() {
   fi
   t1="$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, A10-1)"
   t2="$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, A10-2)"
+  asked_at=$SECONDS
   s1=$(envoy_ask_text session "$session" "$t1")
   e1=${s1#* }
   soft_wait 240 "the first answer" inbox_reply "$e1" || true
@@ -2106,7 +2121,47 @@ check_a10() {
   s2=$(envoy_ask_text session "$session" "$t2")
   e2=${s2#* }
   soft_wait 240 "the second answer" inbox_reply "$e2" || true
-  line=$(boot_log | jq -c --arg s "$session" 'select(.msg == "answers: answered" and .session == $s)' | tail -1)
+  # Nor must it turn on which Anthropic organization served each call. A prompt cache is kept per
+  # organization, and the model gateway of proof run 44035756045 sent the two answers' calls to two
+  # of them (the `anthropic-organization-id` of each proxied answer, call_organization), so the
+  # second read 0 tokens. The clause is judged on the first pair of consecutive answers one
+  # organization served: while the last pair was served by two, the second question is asked again
+  # under a marker of its own, `A10-2r<N>)`, which holds no `A10-2)`, so the resume's counts still
+  # read the first two questions. Each is asked once the answer before it is posted and ten seconds
+  # more, while the first answer's cache entry can still be alive (five minutes from its request,
+  # counted here from before its question was sent), at most four times. Answers whose calls name
+  # no organization at all (a route that sends no such header) are judged as one pair, as before.
+  markers=("A10-1)" "A10-2)")
+  events=("$e1" "$e2")
+  while :; do
+    k=$((${#markers[@]} - 1))
+    before=$(call_organization "$(daemon_call_for "${markers[k - 1]}")")
+    after=$(call_organization "$(daemon_call_for "${markers[k]}")")
+    pairs+="${pairs:+; }${markers[k - 1]} ${before:-none} and ${markers[k]} ${after:-none}"
+    note "the answers to ${markers[k - 1]} and ${markers[k]} were served by the organizations ${before:-(none recorded)} and ${after:-(none recorded)}"
+    if [ "$before" = "$after" ]; then
+      pair="${markers[k - 1]} and ${markers[k]}"
+      break
+    fi
+    if ! inbox_reply "${events[k]}" >/dev/null; then
+      cache_why="the answer to ${markers[k]} was not posted, so the second question was not asked again (the pairs' organizations: $pairs)"
+      break
+    fi
+    if [ "$k" -gt 4 ] || ((SECONDS + 10 - asked_at >= 300)); then
+      cache_why="the model gateway served every pair of consecutive answers from two organizations ($pairs), within the cache lifetime and four asks again, and a prompt cache is kept per organization, so no cache read was observed"
+      break
+    fi
+    sleep 10
+    marker="A10-2r$k)"
+    again=$(envoy_ask_text session "$session" "$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, $marker")
+    markers+=("$marker")
+    events+=("${again#* }")
+    soft_wait 240 "the answer to the second question asked again ($marker" inbox_reply "${events[k + 1]}" || true
+  done
+  line=
+  if [ -n "$pair" ]; then
+    line=$(answered_line "$(answer_question_id "$(inbox_reply "${events[k]}" || true)")") || line=
+  fi
   request=$(daemon_request_for "A10-1)")
   effort=$(request_effort "$request")
   missing=0
@@ -2115,10 +2170,14 @@ check_a10() {
   done <<<"$sigs"
   note "the transcript's last effort \"$want_effort\", the first answer's request effort \"$effort\"; the transcript's thinking blocks $thinking, its thinking signatures $(grep -c . <<<"$sigs" || true), missing from the request $missing"
   note "answers: $(head -c 200 <<<"$(inbox_reply "$e1")" | tr '\n' ' ') | $(head -c 200 <<<"$(inbox_reply "$e2")" | tr '\n' ' ')"
-  note "the second answer's cost line: $line"
+  if [ -n "$pair" ]; then
+    note "the cache-read clause reads the cost line of the answer to ${markers[k]}, the second of the first pair one organization served ($pair): ${line:-none}"
+  else
+    note "the cache-read clause has no pair to read: $cache_why"
+  fi
   m=$(proxy_count "claude-$store")
   resume_agent pre_change || true
-  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked twice what blocked the release. How many times were you asked, and what did you answer?" >/dev/null
+  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked what blocked the release. How many times were you asked, and what did you answer?" >/dev/null
   soft_wait 300 "the resumed Claude Code reviewer's first model call" more_than "$m" proxy_count "claude-$store" || true
   soft_wait 600 "the resumed reviewer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after "claude-$store" "$m")
@@ -2159,9 +2218,9 @@ check_a10() {
     [ "$(occurrences "$request" "A10 after compaction)")" = 1 ] && ok_compact=1
   suspend_agent architect || true
   if [ "$ok_claude$ok_compact" = 11 ]; then
-    record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the second answer read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
+    record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the answer to ${markers[k]}, the second of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
   else
-    record_result A10 FAIL "Claude Code leg $ok_claude, compaction leg $ok_compact (1 = shown)${unexercised:+; $unexercised}"
+    record_result A10 FAIL "Claude Code leg $ok_claude, compaction leg $ok_compact (1 = shown)${unexercised:+; $unexercised}${cache_why:+; $cache_why}"
   fi
 }
 
@@ -2467,6 +2526,30 @@ check_a18() {
   fi
 }
 
+# deliver_review NUMBER REVIEW LABEL delivers review REVIEW of the smoke pull request NUMBER to the
+# listener's GitHub webhook route as GitHub delivers it, and prints the route's answer,
+# {delivery, status, answer}. A running daemon reads a pull request's listed reviews only as its
+# workflow starts and after a handoff is recorded (packages/daemon/internal/daemon/issue_reads.go,
+# readIssuePullRequest); in a deployment a review decides by its `pull_request_review` webhook,
+# which the listener verifies and publishes on notifications.github.<owner>.<repo>.> for the
+# daemon's GitHub intake. The smoke repository sends its webhooks to no listener of this run's, so
+# the rig makes GitHub's delivery itself: it reads the review and its pull request from GitHub as
+# the implement App (smoke_gh, read-only), and lib/github-review-webhook.ts builds the event from
+# those two answers, signs its exact body with the route's secret ($work/github-webhook-secret) and
+# posts it. The two answers and the body sent are kept as $evidence/a19/<store>/LABEL.*.json. It
+# fails when either read fails or the route answers anything but 2xx.
+deliver_review() {
+  local number=$1 review=$2 label=$3 dir=$evidence/a19/$store
+  mkdir -p "$dir"
+  if ! smoke_gh api "repos/$repo/pulls/$number/reviews/$review" >"$dir/$label.review.json" ||
+    ! smoke_gh api "repos/$repo/pulls/$number" >"$dir/$label.pull.json"; then
+    printf '{"error":"GitHub answered no review %s of #%s"}\n' "$review" "$number"
+    return 1
+  fi
+  bun "$root/scripts/e2e/lib/github-review-webhook.ts" "$work/github-webhook-secret" "$dir/$label.review.json" \
+    "$dir/$label.pull.json" "$(listener_url /webhook/github)" "$dir/$label.event.json"
+}
+
 # check_a19: a review round the daemon's record holds open on a pull request of the smoke
 # repository, with its reviewer's completion recorded and the reviewer stopped. The record is
 # written with the daemon stopped, as the workflow writes it when a reviewer completes undecided
@@ -2477,14 +2560,18 @@ check_a18() {
 # it the next boot's admission pass finds a root at a running status whose tree nothing keeps live
 # and takes the whole round out of the workflow (admit's releaseUnslotted; open_tree_lifecycle).
 # The reviewer is a real Claude Code reviewer the daemon ran on that issue, its conversation
-# holding its review. The control comes first: an approval of the head by the review App whose
-# footer names another session decides nothing over two of the daemon's review reads. Then the
-# stopped reviewer is asked to approve: its gh tool posts the approval with its recorded session's
-# footer, and the daemon's next read of the pull request's reviews ends the round as the
-# reviewer's running approval would.
+# holding its review. Each review reaches the running daemon as a deployment's does, by its GitHub
+# webhook (deliver_review). The control comes first: an approval of the head by the review App
+# whose footer names another session is refused within 120 s of its delivery, the workflow's
+# `a review decides nothing: the review App submitted it from a session that is not the
+# reviewer's` line naming the issue (workflow's RefusesRound), and the round stays open with no
+# decision. Then the stopped reviewer is asked to approve: its gh tool posts the approval with its
+# recorded session's footer, and once that is delivered the daemon moves the issue from reviewing
+# to accepting within 120 s, the round ended on that review, as the reviewer's running approval
+# would.
 check_a19() {
   criterion A19 "the stopped reviewer's approval with its recorded session ends the round; another session's footer ends nothing" || return 0
-  local issue branch pr number head token session control control_after sent event reply after review ok_control=0 ok_reviewer=0
+  local issue branch pr number head token session control control_after control_delivery='' sent event reply after review approval_delivery='' ok_control=0 ok_reviewer=0
   issue=$(new_rig_issue "Answer loop proof: the review round ($store)")
   branch=legion-e2eal/${issue,,}
   if ! pr=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" open "$work/github-apps.yaml" "$repo" "$branch" "Answer loop proof $issue (closed by the run)"); then
@@ -2521,10 +2608,15 @@ check_a19() {
   control=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" approve "$work/github-apps.yaml" "$repo" "$number" "$head" \
     "Approved (control: another session's footer). <!-- legion: {\"session\":\"legion-e2eal-another-session-$run_tag\",\"phase\":\"reviewing\",\"head\":\"$head\"} -->") || control=
   note "control: the review App's approval at $head with another session's footer: $control"
-  sleep 270
+  control_refused() { review_refused "$issue" "the review App submitted it from a session that is not the reviewer's"; }
+  if [ -n "$control" ]; then
+    control_delivery=$(deliver_review "$number" "$(jq -r .id <<<"$control")" control) || true
+    note "the control delivered to the listener's /webhook/github as GitHub delivers it: $control_delivery"
+    soft_wait 120 "the daemon to refuse the control" control_refused || true
+  fi
   control_after=$(review_record "$issue")
-  note "after two of the daemon's review reads: $control_after; the reviewer's claim: $(claim_json "$token" | jq -c '{state, session}')"
-  [ -n "$control" ] && review_round_undecided "$control_after" && ok_control=1
+  note "after the control's delivery: $control_after; refused as another session's: $(control_refused && echo yes || echo no); the reviewer's claim: $(claim_json "$token" | jq -c '{state, session}')"
+  [ -n "$control" ] && control_refused && review_round_undecided "$control_after" && ok_control=1
   sent=$(envoy_ask_text session "$session" "Please approve your pull request #$number on $repo at its head $head now, with your gh tool: gh pr review $number -R $repo --approve --body 'Approved: nothing to change.' Then tell me what you did.")
   event=${sent#* }
   note "to the stopped reviewer: listener $sent"
@@ -2533,18 +2625,24 @@ check_a19() {
     note "the reviewer's reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     note "its gh line: $(boot_log | jq -c --arg i "$issue" 'select(.msg == "answers: gh" and .issue == $i)' | tail -1)"
   fi
-  ended() { ! review_round_open "$(review_record "$issue")"; }
-  soft_wait 300 "the daemon to end the round" ended || true
-  after=$(review_record "$issue")
+  approved() { approval_by "$(reviewer_approvals "$number" "$session")" "$review_app_login" "$head"; }
+  soft_wait 60 "the reviewer's approval of $head on GitHub" approved || true
   review=$(reviewer_approvals "$number" "$session")
   note "the reviewer's approvals on GitHub: $review"
+  accepted() { phase_changed "$issue" reviewing accepting; }
+  if approval_by "$review" "$review_app_login" "$head"; then
+    approval_delivery=$(deliver_review "$number" "$(approval_id "$review")" approval) || true
+    note "the reviewer's approval delivered to the listener's /webhook/github as GitHub delivers it: $approval_delivery"
+    soft_wait 120 "the daemon to move $issue from reviewing to accepting" accepted || true
+  fi
+  after=$(review_record "$issue")
   note "the round after its approval: $after; the daemon's lines for $issue: $(boot_log | jq -s -c --arg i "$issue" '[.[] | select((.issue // "") == $i and ((.msg | startswith("answers:")) | not)) | .msg] | .[-6:]')"
-  approval_by "$review" "$review_app_login" "$head" &&
+  approval_by "$review" "$review_app_login" "$head" && accepted &&
     review_round_ended "$after" "$(approval_id "$review")" && ok_reviewer=1
   if [ "$ok_control$ok_reviewer" = 11 ]; then
-    record_result A19 PASS "the review App's approval with another session's footer decided nothing; the stopped reviewer's approval, footed with its recorded session $session, ended the round ($(jq -r .phase <<<"$after"))"
+    record_result A19 PASS "the review App's approval with another session's footer, delivered by webhook, was refused as another session's and left the round open; the stopped reviewer's approval, footed with its recorded session $session and delivered the same way, moved $issue from reviewing to $(jq -r .phase <<<"$after") on that review"
   else
-    record_result A19 FAIL "control decided nothing $ok_control, the reviewer's approval ended the round $ok_reviewer (1 = shown)"
+    record_result A19 FAIL "control refused as another session's with the round left open $ok_control, the reviewer's approval moved the issue from reviewing to accepting on that review $ok_reviewer (1 = shown); the listener answered the control ${control_delivery:-(not delivered)} and the approval ${approval_delivery:-(not delivered)}"
   fi
 }
 
