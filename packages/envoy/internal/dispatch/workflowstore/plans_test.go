@@ -31,6 +31,14 @@ func defaultPlan(id, issue string, generation int64) PlanWrite {
 	}
 }
 
+// defaultPlanRead is the plan defaultPlan writes, as the store answers it: the source default, no
+// document, one task default holding the default steps. It is written out, not read from the store,
+// so a test compares the store's answer with a plan the store did not make.
+func defaultPlanRead(id, issue string, generation int64) Plan {
+	return Plan{ID: id, Issue: issue, Source: PlanSourceDefault, Generation: generation,
+		Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
+}
+
 // putPlan writes one plan in a transaction of its own and commits it, as the route does.
 func putPlan(t *testing.T, pool *store.Pool, write PlanWrite, at time.Time) Plan {
 	t.Helper()
@@ -75,8 +83,7 @@ func TestAPlanIsANodePartOfItsIssue(t *testing.T) {
 	id := uuid.NewString()
 
 	written := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(0))
-	want := Plan{ID: id, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1,
-		Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
+	want := defaultPlanRead(id, "LEG-1", 1)
 	if planText(written) != planText(want) {
 		t.Fatalf("the write answers\n%s\nwant\n%s", planText(written), planText(want))
 	}
@@ -144,8 +151,7 @@ func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
 	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed})
 	id := uuid.NewString()
 	first := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(0))
-	want := Plan{ID: id, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1,
-		Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
+	want := defaultPlanRead(id, "LEG-1", 1)
 	if planText(first) != planText(want) {
 		t.Fatalf("the default plan answers\n%s\nwant\n%s", planText(first), planText(want))
 	}
@@ -381,11 +387,11 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	}
 	want := []IssuePlan{
 		{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closedThird,
-			Plan:      &Plan{ID: planTwo, Issue: "LEG-2", Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
+			Plan:      new(defaultPlanRead(planTwo, "LEG-2", 1)),
 			Ratings:   []Rating{{Rating: 5, Reason: "The plan fit the work.", StepID: retroTwo, EndedAt: new(minute(72))}},
 			StartedAt: new(minute(60)), EndedAt: new(minute(75)), FailedSteps: 0},
 		{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closedSecond,
-			Plan:      &Plan{ID: planOne, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
+			Plan:      new(defaultPlanRead(planOne, "LEG-1", 1)),
 			Ratings:   []Rating{{Rating: 4, Reason: "The tester found the bug.", StepID: retroOne, EndedAt: new(minute(22))}},
 			StartedAt: new(minute(0)), EndedAt: new(minute(30)), FailedSteps: 2},
 		{Issue: "LEG-4", Title: "Title of LEG-4", ClosedAt: closedFirst},
@@ -455,7 +461,7 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	slices.Sort(got)
 	want := []string{
 		issuePlanText(IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed,
-			Plan:      &Plan{ID: planOne, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
+			Plan:      new(defaultPlanRead(planOne, "LEG-1", 1)),
 			Ratings:   []Rating{{Rating: 3, Reason: "The review came late.", StepID: retroOne, EndedAt: new(minute(12))}},
 			StartedAt: new(minute(0)), EndedAt: new(minute(15)), FailedSteps: 1}),
 		issuePlanText(IssuePlan{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closed, Plan: &ownersPlan,
