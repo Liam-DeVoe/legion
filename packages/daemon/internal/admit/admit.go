@@ -2636,7 +2636,6 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 		}
-		promoted := false
 		for _, held := range standing.roles {
 			run := runs[held.token]
 			if held.role != standing.owner {
@@ -2658,17 +2657,16 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
 				return err
 			}
-			promoted = true
 		}
-		// The member's step starts again with the tree even where the promotion starts no phase
-		// worker of it: accepting's, whose role is the tree's architect, a held member's, whose
-		// hold starts none, and a role workflow.StartFor finds already started. A run still open
-		// goes on and gets no second start (workflow's StartStepRecord): the merge step of a member
-		// held from merging, which the linger left open and the hold's retry goes on with.
-		if !promoted {
-			if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
-				return err
-			}
+		// The member's step starts again with the tree, whatever the promotion starts of it: a
+		// phase worker's start above began its run already, and accepting's (whose role is the
+		// tree's architect), a held member's (whose hold starts none) and a role workflow.StartFor
+		// finds already started begin it here. The store's run mark decides (workflow's
+		// StartStepRecord): a run still open goes on and gets no second start — the one a start
+		// above began, and the merge step of a member held from merging, which the linger left
+		// open and the hold's retry goes on with.
+		if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
+			return err
 		}
 	}
 	return nil
