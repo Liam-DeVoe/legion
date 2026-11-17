@@ -361,8 +361,8 @@ func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.
 
 // Oh My Pi's message_end names the model that answered under message.provider and
 // message.model, also after a fallback moved the turn to another model: that frame becomes one
-// Answered event. A user's message and a message no model wrote (`<synthetic>`) name no model
-// that answered, and push nothing.
+// Answered event, at the generation the connection's hello was registered for. A user's message
+// and a message no model wrote (`<synthetic>`) name no model that answered, and push nothing.
 func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
@@ -371,7 +371,7 @@ func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"anthropic","model":""}}`)})
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
 	p.conn.Close()
-	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model"}
+	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}
 	if got := h.next(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %#v, want %#v: the user's and the synthetic message name no model that answered", got, want)
 	}

@@ -82,7 +82,10 @@ const protocolVersion = 2
 // the caller's context and by the RPC timeout, whichever ends first.
 type Conn struct {
 	// seq is the order the listener registered the connection in (Sequence).
-	seq        uint64
+	seq uint64
+	// generation is the launch the connection's hello was registered for (Hello.Generation),
+	// which each Answered it reads carries.
+	generation uint64
 	claim      claim.Token
 	nc         net.Conn
 	writer     *shimwire.Writer
@@ -548,7 +551,7 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				"extension", event.ExtensionPath, "event", event.Event, "error", event.Error)
 		case "message_end":
 			if answered, ok := answeredBy(frame.JSON); ok {
-				answered.Claim = c.claim
+				answered.Claim, answered.Generation = c.claim, c.generation
 				c.events.push(answered)
 			}
 		}

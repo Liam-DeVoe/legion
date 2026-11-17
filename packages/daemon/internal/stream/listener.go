@@ -522,7 +522,7 @@ func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, i
 	}
 	conn := newConn(nc, token, l.timeout, l.log, l.events)
 	l.registrations++
-	conn.seq = l.registrations
+	conn.seq, conn.generation = l.registrations, generation
 	// The ack is written before the connection is registered, so it reaches the shim ahead of any
 	// frame a caller sends the moment Conn or Await returns it — a shim drops every line that
 	// precedes its hello_ack (worker-shim.ts:492-497). The lock is held across the write because

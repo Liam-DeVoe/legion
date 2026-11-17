@@ -449,7 +449,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		if ev.Provider != "" {
 			model = ev.Provider + "/" + ev.Model
 		}
-		return supervise.StreamAnswered{Claim: ev.Claim, Model: model}, nil
+		return supervise.StreamAnswered{Claim: ev.Claim, Model: model, Generation: ev.Generation}, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}

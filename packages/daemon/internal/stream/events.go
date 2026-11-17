@@ -127,9 +127,15 @@ type LateRefusal struct {
 // fallback moved it off the one the session started with. A message no model wrote names none (an
 // empty model, or Claude Code's `<synthetic>` through the bridge) and is no Answered. It carries
 // nothing of the message's text.
+//
+// Generation is the launch the connection that read the frame was registered for, as its Hello
+// names it: one launch registers one session, so it is what tells an answer of the claim's session
+// from one of a process the claim has replaced, which can wait in the queues behind the
+// registration of the next session.
 type Answered struct {
 	Claim           claim.Token
 	Provider, Model string
+	Generation      uint64
 }
 
 // Closed is a registered connection gone, whichever side ended it. It is emitted exactly once
