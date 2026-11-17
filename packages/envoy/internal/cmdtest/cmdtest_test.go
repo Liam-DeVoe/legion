@@ -177,7 +177,10 @@ func TestAStalledBuildShowsGoStandardErrorWhenTheTestTimesOut(t *testing.T) {
 	killing, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(killing, os.Args[0], "-test.run=^TestTheStalledGoBuild$", "-test.timeout=3s")
-	cmd.Env = append(os.Environ(), stalledGoEnv+"="+dir)
+	// The child's -test.timeout panic skips its cleanups, so the t.TempDir runBuild makes in it
+	// stays. GOTMPDIR and TMPDIR, which t.TempDir reads in that order, put it under this test's dir,
+	// which goes when this test ends.
+	cmd.Env = append(os.Environ(), stalledGoEnv+"="+dir, "GOTMPDIR="+dir, "TMPDIR="+dir)
 	// The stand-in holds none of this command's pipes: testgo.Output's writers are no *os.File, so
 	// exec gives go pipes of the child's own, and the child's exit ends CombinedOutput. WaitDelay
 	// bounds that wait only if something the child starts ever inherits these pipes.
