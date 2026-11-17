@@ -265,8 +265,10 @@ type Hooks struct {
 	events  []Event
 	holds   []*Hold
 	changed chan struct{}
-	// stopping maps the store directory of each server between ServerShutdown and ServerDown to
-	// the ID of that server's run, and down holds the IDs of the runs whose ServerDown was reported.
+	// stopping maps the ID of each server run between ServerShutdown and ServerDown to that
+	// server's store directory, and down holds the IDs of the runs whose ServerDown was reported.
+	// Keyed by run, two servers that report one store, such as two with none, each keep their
+	// own mark.
 	stopping map[string]string
 	down     map[string]bool
 }
@@ -313,7 +315,7 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	h.events = append(h.events, e)
 	switch {
 	case e.Point == ServerShutdown && !h.down[e.ServerID]:
-		h.stopping[e.Store] = e.ServerID
+		h.stopping[e.ServerID] = e.Store
 		for _, hold := range h.holds {
 			if hold.fired && underStore(e.Store, hold.event.Store) {
 				released = append(released, hold)
@@ -321,9 +323,7 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 		}
 	case e.Point == ServerDown:
 		h.down[e.ServerID] = true
-		if h.stopping[e.Store] == e.ServerID {
-			delete(h.stopping, e.Store)
-		}
+		delete(h.stopping, e.ServerID)
 	}
 	var parked *Hold
 	if !h.stoppingLocked(e.Store) {
@@ -349,7 +349,7 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 // stoppingLocked reports whether the event store belongs to a server whose shutdown is under way.
 // h.mu is held.
 func (h *Hooks) stoppingLocked(store string) bool {
-	for root := range h.stopping {
+	for _, root := range h.stopping {
 		if underStore(root, store) {
 			return true
 		}

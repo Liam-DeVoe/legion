@@ -438,6 +438,52 @@ func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
 	answered(t, done, "the request on the restarted server")
 }
 
+// Two runs that report the same store, as two servers with no store directory do, stop at
+// overlapping times: A's shutdown begins, B's begins, B's ends. A is still inside its Shutdown,
+// which waits for its goroutines, so a hold must not park one of them. The test sends the hook
+// those reports itself, since two real servers cannot be made to interleave there on demand,
+// then a publish on that store: it must pass the armed hold while A is stopping, and park once
+// A is down. With the stopping mark kept by store, B's down cleared A's mark and the publish
+// parked.
+func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
+	hooks := testnats.Hook(t)
+	report := *natsserver.MeasureHook.Load()
+	const store, subject = "", "shared.store"
+	hold := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+	publish := func() <-chan struct{} {
+		returned := make(chan struct{})
+		go func() {
+			report(&natsserver.MeasureEvent{Point: string(testnats.ClientPublish), Server: "A", Store: store, Subject: subject})
+			close(returned)
+		}()
+		return returned
+	}
+
+	report(&natsserver.MeasureEvent{Point: string(testnats.ServerShutdown), Server: "A", ServerID: "run-a", Store: store})
+	report(&natsserver.MeasureEvent{Point: string(testnats.ServerShutdown), Server: "B", ServerID: "run-b", Store: store})
+	report(&natsserver.MeasureEvent{Point: string(testnats.ServerDown), Server: "B", ServerID: "run-b", Store: store})
+	select {
+	case <-publish():
+	case <-time.After(held):
+		t.Fatal("a publish on a store whose run A is still stopping was parked: B's down cleared A's mark")
+	}
+
+	report(&natsserver.MeasureEvent{Point: string(testnats.ServerDown), Server: "A", ServerID: "run-a", Store: store})
+	returned := publish()
+	t.Logf("held once A is down %s", hold.Reached(t))
+	select {
+	case <-returned:
+		t.Fatal("the held publish returned before its release")
+	case <-time.After(held):
+	}
+	hold.Release()
+	select {
+	case <-returned:
+	case <-time.After(reachWithin):
+		t.Fatal("the released publish did not return")
+	}
+}
+
 func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	hooks := testnats.Hook(t)
