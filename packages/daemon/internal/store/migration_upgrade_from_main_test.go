@@ -68,6 +68,9 @@ import (
 // as one of main's own. It creates experiment_assignments and fills it from the issues' memory
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
+// The kind list with the role-holders publication (20261116165926) stands above all of these and
+// is applied last: it is now the last word of outbox_kind_check, and it names every kind the
+// merge-queue list names and its own.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -75,7 +78,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116144907,
+	20261114061900, 20261116144907, 20261116165926,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -85,9 +88,10 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, the merge queue removal's 20261114031356, the architect stall marks'
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and t-e-54's
-// 20261116144907, which is why the loop below holds the list rather than counting it, so that a
-// version added above any of them is named here rather than read as main's.
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, t-e-54's 20261116144907 and
+// the role-holders publication's 20261116165926, which is why the loop below holds the list rather
+// than counting it, so that a version added above any of them is named here rather than read as
+// main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -203,5 +207,74 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 	if merged != 0 {
 		t.Fatalf("merge-lane rows after the upgrade = %d, want 20261029120800 to have deleted every one", merged)
+	}
+}
+
+// todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
+// (89589c2954): #4228's role-holders publication, which is numbered after this branch's
+// claim_sessions (20261116144907). A deployment of main applies it first, so this branch's daemon
+// finds a database whose newest recorded version stands above its own new migration.
+const todaysMainsNewestMigration = 20261116165926
+
+// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
+const thisBranchsClaimSessions = 20261116144907
+
+// A database today's main migrated has recorded every embedded migration but claim_sessions,
+// main's newer 20261116165926 among them. Store.Migrate applies every migration that database has
+// not recorded, whatever version stands highest (apply asks each migration whether its own version
+// is recorded), so the upgrade applies 20261116144907 below that newest: claim_sessions is created,
+// its backfill holds the session a claim of main's daemon recorded for that claim, and the store
+// still reports main's newest version. So this branch's migration keeps its number.
+//
+// The control (the pull request records the run): a loader that skips a migration numbered below
+// the newest version recorded applies nothing, and the test fails naming the missing table.
+func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	ours := false
+	for _, migration := range all {
+		if migration.Version == thisBranchsClaimSessions {
+			ours = true
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s as today's main's run did: %v", migration.Name, err)
+		}
+	}
+	if !ours {
+		t.Fatalf("the embedded set has no migration %d, so this test upgrades nothing", thisBranchsClaimSessions)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != todaysMainsNewestMigration {
+		t.Fatalf("the database today's main migrated reports version %d (%v), want main's newest, %d", version, err, todaysMainsNewestMigration)
+	}
+	const token, session = "legion-legion-legion-901-implementer", "ses_main"
+	if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'legion', 'LEGION-901', 'LEGION-901', 'implementer', 1, $2, '/state/sessions/2026-11-17T00-00-00-000Z_ses_main.jsonl',
+			'idle', 0, 0, 0, 0)`, token, session); err != nil {
+		t.Fatalf("seed a claim main's daemon recorded: %v", err)
+	}
+
+	applied, err := store.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("upgrade the database today's main migrated: %v", err)
+	}
+	if applied != 1 {
+		t.Errorf("the upgrade applied %d migrations, want 1, claim_sessions", applied)
+	}
+	var holder string
+	if err := store.pool.QueryRow(ctx, `select claim from claim_sessions where project = 'legion' and kind = 'session' and name = $1`,
+		session).Scan(&holder); err != nil {
+		t.Fatalf("read the hold of %s after the upgrade: %v", session, err)
+	}
+	if holder != token {
+		t.Errorf("%s is held for %q after the upgrade, want %s, the claim that recorded it", session, holder, token)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != todaysMainsNewestMigration {
+		t.Errorf("after the upgrade the store reports version %d (%v), want main's newest, %d, still", version, err, todaysMainsNewestMigration)
 	}
 }

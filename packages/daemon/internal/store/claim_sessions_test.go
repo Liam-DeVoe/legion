@@ -646,8 +646,9 @@ func (s *statementTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx
 	}
 }
 
-// tracedStore is a second Store on store's database whose pool sends every statement through tracer.
-func tracedStore(t *testing.T, store *Store, tracer pgx.QueryTracer) *Store {
+// statementTracedStore is a second Store on store's database whose pool sends every statement
+// through tracer.
+func statementTracedStore(t *testing.T, store *Store, tracer pgx.QueryTracer) *Store {
 	t.Helper()
 	return secondStore(t, store, func(config *pgxpool.Config) { config.ConnConfig.Tracer = tracer })
 }
@@ -782,7 +783,7 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 		t.Fatalf("record %d claims: %v", productionClaims, err)
 	}
 	tracer := &statementTracer{delay: time.Millisecond}
-	traced := tracedStore(t, store, tracer)
+	traced := statementTracedStore(t, store, tracer)
 
 	// The first boot after a rollback holds every name.
 	started := time.Now()
