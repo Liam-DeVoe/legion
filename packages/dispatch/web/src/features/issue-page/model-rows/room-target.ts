@@ -12,10 +12,11 @@ import type { TreeNode } from "../issue-tree";
  *
  * An issue the conversion has reached is one room, and a node is edited through the fragment
  * that holds its text: its document's, or for a node written into the issue, such as a
- * criterion, the fragment of the tree artifact the tree read's `tree` names. A node of another
- * issue, such as a borrowed check, is read-only here and edited in its own issue's room
- * (dispatch://INFRA-1253 R5). On an issue the conversion has not reached, a node is edited in its
- * document's room, as `useNodeEditing.ts` does without this.
+ * criterion, the fragment of the tree artifact the tree read's `tree` names. A result's text is
+ * no fragment's, this issue's result or a borrowed one (decision 165), so it takes no caret. A
+ * node of another issue, such as a borrowed check, is read-only here and edited in its own
+ * issue's room (dispatch://INFRA-1253 R5). On an issue the conversion has not reached, a node is
+ * edited in its document's room, as `useNodeEditing.ts` does without this.
  *
  * `roomTarget` is pure. It answers the key of `KEY_REPORTS` a key reports, never its sentence.
  */
@@ -45,12 +46,17 @@ const NO_TEXT: RoomTarget = { report: "no_text" };
  * slug, as `issue-artifacts.ts` holds them). With no `room`, or one the conversion has not
  * reached, a node is edited in the document `documentOfNode` finds, as part I does.
  *
- * A node whose address names another issue answers `issue_above` before its id is read, since a
- * borrowed node's id can carry the slug of one of this issue's own documents. On a converted
- * issue an ask, a comment or a message takes no caret, an ask written as a block of a document
- * too: its text is the conversation's, which no fragment holds. A node of a document is edited
- * in that document's fragment; any other node whose address names a block of this issue was
- * written into the issue, and is edited in the tree artifact's own fragment.
+ * A result answers `no_text` wherever a room is given, before its address is read: no room holds
+ * a result's text, and a borrowed result says `no_text`'s sentence rather than `issue_above`'s
+ * (R5, decision 165). Any other node whose address names another issue answers `issue_above`
+ * before its id is read, since a borrowed node's id can carry the slug of one of this issue's own
+ * documents. On a converted issue an ask, a comment or a message takes no caret, an ask written
+ * as a block of a document too: its text is the conversation's, which no fragment holds. A node
+ * of a document is edited in that document's fragment. A criterion no document holds and with no
+ * address was written into the issue: part T drafts it with its read id, which is its block id,
+ * and writes no address for it (`treeIdOf`, `referenceOf`), so it is edited in the tree
+ * artifact's own fragment at its own id. Any other node whose address names a block of this
+ * issue was written into the issue too, and is edited there at that block.
  */
 export function roomTarget(
   node: Pick<TreeNode, "id" | "reference" | "type">,
@@ -61,16 +67,19 @@ export function roomTarget(
   const inDocument =
     place === undefined ? NO_TEXT : { artifactId: place.artifact.id, blockId: place.blockId };
   if (room === undefined) return inDocument;
+  if (node.type === "result") return NO_TEXT;
   const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
   const ofIssue = route !== undefined && "key" in route ? route : undefined;
   if (ofIssue !== undefined && ofIssue.key !== room.issueKey) return ISSUE_ABOVE;
   if (!room.converted) return inDocument;
   if (isBlockItemKind(node.type) || isBlockItemKind(route?.kind)) return NO_TEXT;
   if (place !== undefined) return inDocument;
+  if (room.tree === null) return NO_TEXT;
+  if (node.type === "criterion" && node.reference === undefined) {
+    return { artifactId: room.tree, blockId: node.id };
+  }
   const block = ofIssue !== undefined && "block" in ofIssue ? ofIssue.block : undefined;
-  return block === undefined || room.tree === null
-    ? NO_TEXT
-    : { artifactId: room.tree, blockId: block.id };
+  return block === undefined ? NO_TEXT : { artifactId: room.tree, blockId: block.id };
 }
 
 /**

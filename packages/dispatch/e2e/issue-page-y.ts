@@ -91,13 +91,19 @@ export const MODEL_WORDS = {
 // The tree read and the artifact read.
 // ---------------------------------------------------------------------------------------------
 
-/** One node of the tree read, by the members these rows read. */
+/** One node of the tree read, by the members these rows read. A result node's `verdict` and
+ *  `check_sha256`, the sum of its check's words it was recorded against, and a check node's
+ *  `text_sha256`, the sum of its current words, are INFRA-1253's t16a (decision 161): absent
+ *  until its tree read answers them. */
 export interface TreeReadNode {
+  readonly check_sha256?: string | null;
   readonly id: string;
   /** The id of the node it stands under, or null for a node at the top. */
   readonly parent: string | null;
   readonly supertag: string;
   readonly text: string;
+  readonly text_sha256?: string | null;
+  readonly verdict?: string | null;
 }
 
 /** One issue's tree read, its pages merged. */

@@ -55,8 +55,9 @@ import { type ApiRequest, expectLoadSettled, type RouteCount, watchApiRequests }
 /**
  * Part Y of dispatch://INFRA-1196 (dispatch://INFRA-4066): criteria, readings, a child issue's
  * checks under the statements they serve, and editing a converted issue in its one room, on the
- * new issue page. Each row is one check of dispatch://INFRA-4066/artifact/verification-md, named
- * by its `-g` string: row 1 is c-write, row 2 c-readings and row 3 c-editing.
+ * new issue page. Each row is of one check of dispatch://INFRA-4066/artifact/verification-md,
+ * which selects it by its `-g` string: row 1 is c-write's, rows 2 and 3 c-readings' (row 3 owed
+ * and tagged `@owed`, which c-readings' run leaves out) and row 4 c-editing's.
  *
  * The rows are on the real stack, each through D's `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`) on `seedModelRows` of `e2e/issue-page-y.ts`, an
@@ -515,11 +516,12 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 // child's key as a link, and none under the child's own row; that statement draws no "No check" on
 // the outline or under Verification. Under Decisions the decision's reading is a row under it and
 // the question's is not drawn; and no element but a kind tag reads a model's word whole, nor any
-// text a uuid. At 1440 px.
+// text a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's,
+// owed on INFRA-1253's t16a.
 //
-// The steps are asserted in the order (1), (3), (2), (4): a merge-base holding part X holds part T,
-// which draws a reading under what it reads, so (1) passes there and the row's first failure is
-// (3)'s, the borrowed rows, whether or not part Q is under that base.
+// The steps are asserted in the order (1), (3), (2), (4), so that (3), the borrowed rows, is read
+// wherever part Q, which (2) needs, is not under the head. At a merge-base holding part X, and so
+// part T, no step drafts a reading, so the row fails there on (1)'s first assertion.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, then loaded and unfolded, and three views turned on.
 test("a reading stands under what it reads and a child's check under the statement it serves", async ({
@@ -534,7 +536,7 @@ test("a reading stands under what it reads and a child's check under the stateme
     // (1) The agent decision's reading under it, as the agent's; the question's under it.
     await expect
       .poll(() => parentOfRow(page, decisionReading.row), {
-        message: "the agent decision's reading is not a row under it",
+        message: "the agent decision's reading stands under it",
       })
       .toBe(decision.row);
     await expect(
@@ -597,10 +599,6 @@ test("a reading stands under what it reads and a child's check under the stateme
         `/issues/${child.key}`
       );
     }
-    await expect(
-      nodeRow(page, child.check.row).first(),
-      "the child's check does not stand as its passing result says"
-    ).toHaveAttribute("data-node-state", "passed" satisfies CheckState);
     const unfolded = await drawnRows(page);
     expect(rowOf(unfolded, child.key), "the child issue draws no row of its own").toBeDefined();
     expect(
@@ -643,6 +641,39 @@ test("a reading stands under what it reads and a child's check under the stateme
       await plainWordsOffences(page),
       "on the outline an element but a kind tag reads a model's word, or the text holds a uuid"
     ).toEqual([]);
+  });
+});
+
+// A reading c-readings owes, in a row of its own beside row 2 (decision 127): the child's check
+// under statement 7 stands as its passing result gives it, "passed" (decision 161). The page reads
+// that standing from the tree read: a result node's `verdict`, `retracted` and `check_sha256`, and
+// the check node's `text_sha256`, which part T's tree read asks of INFRA-1253's t16a; until that
+// read answers them the check draws no standing word, and the row is skipped. Its `@owed` tag is
+// what c-readings' run leaves out (`--grep-invert @owed`, decision 135), since a pass counts no
+// skipped case; the round that brings t16a takes the tag off, and c-readings' `-g` then selects
+// the row.
+// SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
+// over it and waited on in the tree read, then loaded and unfolded.
+test("a reading stands under what it reads, and a child's check draws the standing its results give @owed", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedModelRows, async (page, seeded) => {
+    const answer = await treeAnswerOf(seeded.key);
+    expect(answer.converted, NOT_CONVERTED).toBe(true);
+    const { child } = seeded;
+    const result = answer.nodes.find((node) => node.id === child.result);
+    const check = answer.nodes.find((node) => node.id === child.check.id);
+    test.skip(
+      result?.verdict == null || result.check_sha256 == null || check?.text_sha256 == null,
+      "owed: the child's check's standing needs INFRA-1253's t16a, a result node's verdict, retracted and check_sha256 and a check node's text_sha256 in the tree read (decision 161, skipped by decision 127, left out of c-readings' run by decision 135)"
+    );
+
+    await openOutline(page, seeded.key);
+    await expect(
+      nodeRow(page, child.check.row).first(),
+      "the child's check does not stand as its passing result says"
+    ).toHaveAttribute("data-node-state", "passed" satisfies CheckState);
   });
 });
 

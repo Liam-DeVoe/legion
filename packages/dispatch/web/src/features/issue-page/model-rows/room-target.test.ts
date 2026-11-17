@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Artifact } from "../../../api/types";
+import { parseNodeReference } from "../../refs/routes";
 import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
@@ -10,9 +11,9 @@ import { type RoomFacts, type RoomTarget, roomTarget } from "./room-target";
 /**
  * Where Enter puts the caret on a node (dispatch://INFRA-4066 R5): on a converted issue, in the
  * one room, through the fragment that holds the node's text - its document's, or the tree
- * artifact's own for a node written into the issue - and nowhere for a node of another issue or
- * for the conversation; on an issue the conversion has not reached, in its document's room, as
- * part I does.
+ * artifact's own for a node written into the issue - and nowhere for a node of another issue, for
+ * the conversation or for a result; on an issue the conversion has not reached, in its document's
+ * room, as part I does.
  */
 
 const KEY = "CORE-1";
@@ -87,11 +88,10 @@ function room(converted: boolean, tree: string | null = TREE): RoomFacts {
 const STATEMENT = block(SPEC, "r1", "requirement");
 const CHECK = block(VERIFICATION, "c1", "check");
 
-/** A criterion, written into the issue: a block of the tree artifact, which is no document of
- *  the issue's. */
-const CRITERION = node("tree#b-k1", "criterion", [], {
-  reference: `dispatch://${KEY}/artifact/tree#b-k1`,
-});
+/** A criterion written into the issue, as part T drafts it: its bare read id, which is its block
+ *  id in the tree artifact, and no address, since T's `referenceOf` writes none for a node no
+ *  document holds. */
+const CRITERION = node("k1", "criterion");
 
 /** An ask written as a block of the spec, which the ask read placed: its address is the ask's. */
 const ASK_BLOCK = node(blockNodeId(SPEC, "q1"), "ask", [], {
@@ -107,6 +107,14 @@ const COMMENT = node("comment-1", "comment", [], {
 });
 const MESSAGE = node("message-1", "message", [], {
   reference: `dispatch://${KEY}/message/message-1`,
+});
+
+/** A result of this issue's check c1, which T drafts with no address. */
+const RESULT = node("result-1", "result");
+
+/** A result of a check of another issue, addressed in that issue. */
+const BORROWED_RESULT = node("result-9", "result", [], {
+  reference: `dispatch://CORE-2/artifact/${VERIFICATION}#b-result-9`,
 });
 
 /** Today's rule (`useNodeEditing.ts` without a room): the document `documentOfNode` finds and
@@ -174,5 +182,16 @@ test("an unconverted node edits in its document's room", () => {
 test("an ask, a comment and a message take no caret on a converted issue", () => {
   for (const one of [ASK, ASK_BLOCK, UNREAD_ASK_BLOCK, COMMENT, MESSAGE]) {
     expect(roomTarget(one, ARTIFACTS, room(true))).toEqual({ report: "no_text" });
+  }
+});
+
+test("a result takes no caret", () => {
+  // No room holds a result's text, and a borrowed one says so too rather than naming its issue,
+  // whether or not the conversion reached this issue (decision 165).
+  expect(parseNodeReference(BORROWED_RESULT.reference ?? "")).toMatchObject({ key: "CORE-2" });
+  for (const one of [RESULT, BORROWED_RESULT]) {
+    for (const facts of [room(true), room(false)]) {
+      expect(roomTarget(one, ARTIFACTS, facts)).toEqual({ report: "no_text" });
+    }
   }
 });
