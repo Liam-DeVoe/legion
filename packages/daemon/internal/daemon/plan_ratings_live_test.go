@@ -28,7 +28,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -291,9 +290,10 @@ func failedStepsPrinted(issue string, got, want int) string {
 }
 
 // plansPrintedHold says whether out, the output of `dispatch plans --project project`, lists exactly
-// the issues of want, newest close first, each with the default plan, its rating with its reason
-// (or none), its time, the hours and minutes from the earliest start to the latest end of its
-// records, and its count of failed steps. The error names the first issue that is missing or wrong.
+// the issues of want, in want's order, which is newest close first, each with the default plan,
+// its rating with its reason (or none), its time, the hours and minutes from the earliest start to
+// the latest end of its records, and its count of failed steps. The error names the first issue
+// that is missing or wrong.
 func plansPrintedHold(project, out string, want []ratedWant) error {
 	lines, err := parsePlans(project, out)
 	if err != nil {
@@ -314,12 +314,11 @@ func plansPrintedHold(project, out string, want []ratedWant) error {
 		before = closed
 	}
 	plan := fmt.Sprintf("default (1 tasks: %s)", strings.Join(workflow.DefaultSteps(), " "))
-	for _, w := range want {
-		at := slices.IndexFunc(lines, func(line planLine) bool { return line.issue == w.issue })
-		if at < 0 {
-			return fmt.Errorf("`dispatch plans` prints no line of %s", w.issue)
+	for place, w := range want {
+		got := lines[place]
+		if got.issue != w.issue {
+			return fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.issue)
 		}
-		got := lines[at]
 		started, ended := w.steps.span()
 		minutes := int64(ended.Sub(started)/time.Second) / 60
 		spent := fmt.Sprintf("%dh%dm", minutes/60, minutes%60)
