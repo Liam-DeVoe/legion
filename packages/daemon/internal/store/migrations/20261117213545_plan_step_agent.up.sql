@@ -1,0 +1,35 @@
+-- 20261117213545_plan_step_agent.up.sql — the name of the agent of each step of a plan (record's
+-- agents.go and plan.go).
+--
+-- plan_steps.agent is record.PlanStep.Agent: the name of the step's agent, the last part of its
+-- claim token (claim.AgentToken), so the steps of one key share one name and one claim in every
+-- task, version and generation of the issue. record.NameAgents gives it before a version's steps
+-- are written, from the issue's earlier rows, and nothing else writes it. A step of the key owner
+-- holds none: its agent is the tree's architect.
+--
+-- Every row the table already holds takes the default, the empty string, and reads as its role
+-- (record.PlanStep.AgentName): the release before this one ran each role at most once in a task and
+-- refused every key but the owner's, so the role of each of its steps named that step's agent, and
+-- every agent keeps the claim it had.
+--
+-- There is no down file. This directory keeps none, so the way back is the transaction below, run
+-- with the daemon stopped, before the earlier image is pinned:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table plan_steps drop column if exists agent;
+--   delete from schema_version where version = 20261117213545;
+--   commit;
+--   SQL
+--
+-- The release before this one boots over the column: its plan_steps reads and writes name each
+-- column they touch (record's PutPlan, Plan and CarryPlan), so the column would stand there unread,
+-- and every row that release inserts would take the default. Both statements are owed to the roll
+-- forward: with the column dropped and the row deleted, store.apply finds no row of this version and
+-- runs this file again, which adds the column again at its default. What the drop costs is each
+-- name a key was given, so after the roll forward each key of a plan given before is named again
+-- from the plan in force, and a key whose name came from an earlier version can take another name.
+-- A rollback past 20261117034837_issue_plans, which drops plan_steps whole, runs this way back
+-- first: its row would otherwise stand after that table is gone, and the roll forward would create
+-- plan_steps again with no agent column, which every plan read names.
+alter table plan_steps add column agent text not null default '';

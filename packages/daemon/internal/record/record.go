@@ -1795,6 +1795,10 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its
+	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
+	// agents from.
+	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
