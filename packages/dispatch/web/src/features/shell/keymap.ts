@@ -23,7 +23,8 @@ import {
  *
  * Every page's binding names an action of the catalogue (`keymap-catalogue.ts`), which gives it
  * its id, its label and its keys, the person's where they changed them (`keymap-keys.ts`); only
- * a dialog's own Escape, the command bar's own `$mod+k` and tests write a binding out whole.
+ * a dialog's own Escape, the command bar's own `$mod+k`, the `y` that copies a focused link's
+ * address (`link-copy.ts`) and tests write a binding out whole.
  */
 
 /** A scope of the stack: each scope of the catalogue, and `dialog`, which every open dialog
@@ -707,7 +708,7 @@ export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): K
  * change to them registers the bindings again. The registration scope is `scope` whatever the
  * action's own: the Inbox's drawer registers the Inbox's actions, with the Inbox's keys, under
  * `dialog`. A binding written out whole (`KeyBinding`) is a dialog's own Escape, the command
- * bar's own `$mod+k`, or a test's.
+ * bar's own `$mod+k`, the `y` that copies a focused link's address (`link-copy.ts`), or a test's.
  */
 export function useKeymap(
   scope: KeymapScope,

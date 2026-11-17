@@ -43,6 +43,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { useLinkOpener } from "../refs/link-open";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -60,7 +61,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
-import { DocumentReferences, useReferenceClick } from "./document-references";
+import { DocumentReferences } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
@@ -308,7 +309,12 @@ export function ProofDocument({
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
   const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
-  const followReference = useReferenceClick();
+  // The page's link opener, which the editor calls for a click on one of its links and for
+  // Alt+Enter (`features/refs/link-open.ts`). The editor reads its options once, so it reaches the
+  // opener through this ref, which follows the router's latest `navigate`.
+  const openLink = useLinkOpener();
+  const openLinkRef = useRef(openLink);
+  openLinkRef.current = openLink;
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
@@ -586,6 +592,11 @@ export function ProofDocument({
   // document is its own scope, since the issue page and a project's document page both render
   // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
   // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  // Alt+Enter, Google Docs' key for the link at the caret, opens the link or the reference title
+  // the caret is in or beside, as a click does, and changes no text: a link in a document the
+  // reader edits opens on a click, so this is how a writer opens one from the keyboard. A view
+  // the reader cannot edit puts its links in the tab order instead, and Enter opens the focused
+  // one.
   useKeymapScope(page ? "document" : null);
   useKeymap(
     "document",
@@ -597,6 +608,18 @@ export function ProofDocument({
             when: () => {
               const view = editorRef.current?.view;
               return view?.editable === true && view.hasFocus() && !view.state.selection.empty;
+            },
+          },
+          {
+            action: "document.open-link",
+            run: () => editorRef.current?.openLinkAtCaret(),
+            when: () => {
+              const editor = editorRef.current;
+              return (
+                editor?.view.editable === true &&
+                editor.view.hasFocus() &&
+                editor.linkAtCaret() !== null
+              );
             },
           },
         ]
@@ -947,6 +970,7 @@ export function ProofDocument({
                 },
                 onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
                 onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
+                openLink: (target, how) => openLinkRef.current(target, how),
                 // A pane takes no edits and no comments: a reader who clicks into the text from a
                 // list never changes the document they are reading.
                 access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
@@ -1177,14 +1201,11 @@ export function ProofDocument({
           This document could not load: {shownLoadError}
         </p>
       )}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
-      editor already handles keyboard activation of its own links. */}
       <article
         aria-label="Document"
         className="dispatch-doc relative"
         data-read-only={isClosed || schemaReadOnly}
         hidden={version !== undefined || admissionHidesEditor}
-        onClick={followReference}
       >
         <div ref={root} />
         {anchoredThread === undefined || anchoredHost === undefined

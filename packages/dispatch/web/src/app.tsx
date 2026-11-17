@@ -25,6 +25,7 @@ import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
+import { LinkClickHost } from "./features/refs/link-open";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import {
@@ -912,6 +913,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost />
+        <LinkClickHost />
       </div>
     </MarginProvider>
   );

@@ -11,16 +11,24 @@
  *  work out in `e2e/keyboard-complete.ts`. */
 import { setLiveSessions } from "./agents";
 import {
+  baseUrl,
   createArtifactAsk,
   createAsk,
+  createComment,
   createIssue,
   createProject,
   createProjectDocument,
+  editArtifact,
+  getIssueArtifactText,
   patchIssue,
   putRepoProject,
+  requestApproval,
+  withOpenedAsk,
 } from "./api";
+import { recordClipboard } from "./clipboard";
+import { documentEditor, openSpec, placeCaret } from "./editor";
 import { drawer } from "./inbox-drawer";
-import { inboxPane } from "./inbox-pane";
+import { inboxPane, paneScroller } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
   asker,
@@ -29,6 +37,10 @@ import {
   handOnWrites,
   holdWrites,
   issueWrites,
+  markDocument,
+  newPageAt,
+  OTHER_SITE,
+  reloaded,
   returnMornings,
   snoozedUntil,
   snoozeWrites,
@@ -36,7 +48,7 @@ import {
 } from "./keyboard-complete";
 import { openIssue } from "./keyboard-issue";
 import type { KeyedWrite } from "./keyed-writes";
-import { expect, type Locator, type Page, test } from "./test";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 
 // ---------------------------------------------------------------------------
 // Where the Inbox draws a question and its controls.
@@ -1176,4 +1188,541 @@ test("held-press: a button, a form's submit and a checkbox keep the keyboard's f
     JSON.parse(scopeWrites[0] ?? "{}"),
     "held-press: the write names Act as you alone"
   ).toEqual({ scopes: ["person"] });
+});
+
+// ---------------------------------------------------------------------------
+// k-link-click, k-link-keys and k-link-copy (R1, R2, R23): a link of a document, a comment, a
+// question or a past version opens on a click and from the keyboard, and `y` copies the address
+// of the link the focus is on.
+// ---------------------------------------------------------------------------
+
+/** The other site every web link below points to, which `newPageAt` serves. */
+const AWAY = `${OTHER_SITE}/a`;
+/** The other site the link inside the spec's commented text points to. */
+const COMMENTED_AWAY = `${OTHER_SITE}/b`;
+
+/** The issue the links name, and the issue whose spec holds them. */
+interface LinkSeed {
+  readonly other: { readonly key: string; readonly title: string };
+  readonly issueKey: string;
+  /** The comment on the issue that holds the first three links, on its Conversation tab. */
+  readonly commentId: string;
+  /** The approval request of the spec, which the Inbox's reading pane draws as the spec. */
+  readonly approvalAskId: string;
+}
+
+/** The seeds of k-link-click and k-link-keys: an open issue whose spec holds a link to another
+ *  site, a `dispatch://` link to another issue, that issue's bare key, its address as a link
+ *  whose text is the address (whose title the editor draws beside a link it hides), and a web
+ *  link inside text a comment is anchored to; a comment on the issue holding the first three
+ *  links; a later version of the spec, so its version 1 is a past version; and an approval
+ *  request of the spec. */
+async function seedLinkSpec(): Promise<LinkSeed> {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger handover";
+  const other = await createIssue({ project: "CORE", title });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: [
+      "# Mirror replay",
+      "",
+      `Read [a page elsewhere](${AWAY}) first.`,
+      "",
+      `See [the other issue](dispatch://${other.key}) for the handover.`,
+      "",
+      `The bare key ${other.key} names it too.`,
+      "",
+      `Its address <dispatch://${other.key}> reads as its title.`,
+      "",
+      `A reviewer asked about [the commented page](${COMMENTED_AWAY}) here.`,
+      "",
+    ].join("\n"),
+    title: "Mirror replay",
+  });
+  await createComment(issue.key, {
+    anchor: { artifact: "spec", quote: "the commented page" },
+    body: "Is this the right page?",
+  });
+  const comment = await createComment(issue.key, {
+    body: `Read [a page elsewhere](${AWAY}), see [the other issue](dispatch://${other.key}) and ${other.key}.`,
+  });
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ after: "end", markdown: "A later line.", op: "insert" }] },
+    asker
+  );
+  const approval = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: "The replay draft." }, asker)
+  );
+  return {
+    approvalAskId: approval.ask.id,
+    commentId: comment.id,
+    issueKey: issue.key,
+    other: { key: other.key, title },
+  };
+}
+
+/** The four places a reader reads the spec's links in: the issue's Spec tab, which the reader
+ *  edits, version 1 of it, the Inbox's reading pane on the approval request of it, and the
+ *  comment on the issue's Conversation tab. */
+type LinkView = "the editable spec" | "the past version" | "the reading pane" | "the comment";
+
+/** The three links of a view: the web link, the `dispatch://` link, and the title drawn for the
+ *  bare key (in the comment, the reference link the body draws for it). */
+interface ViewLinks {
+  readonly scope: Locator;
+  readonly away: Locator;
+  readonly issue: Locator;
+  readonly key: Locator;
+}
+
+/** Opens `view` at 1440x900 and answers its links, once the key's title is drawn. */
+async function openLinkView(page: Page, seed: LinkSeed, view: LinkView): Promise<ViewLinks> {
+  await page.setViewportSize(WIDE);
+  let scope: Locator;
+  if (view === "the editable spec") {
+    await openSpec(page, seed.issueKey, "here.");
+    scope = documentEditor(page);
+  } else if (view === "the past version") {
+    await page.goto(`/issues/${seed.issueKey}/artifacts/spec?v=1`);
+    scope = page
+      .getByRole("region", { name: "Document version 1" })
+      .getByRole("textbox", { name: "Document editor" });
+  } else if (view === "the reading pane") {
+    await page.goto("/?assignee=everyone");
+    const row = page.locator(`[data-inbox-row="${seed.approvalAskId}"]`);
+    await row.locator("time").first().click();
+    await expect(row).toHaveAttribute("data-inbox-selected", "true");
+    scope = inboxPane(page).getByRole("textbox", { name: "Document editor" });
+  } else {
+    await page.goto(`/issues/${seed.issueKey}/conversation`);
+    scope = page.locator(`[data-turn="comment:${seed.commentId}"]`);
+  }
+  const reference = `dispatch://${seed.other.key}`;
+  const links: ViewLinks =
+    view === "the comment"
+      ? {
+          away: scope.getByRole("link", { exact: true, name: "a page elsewhere" }),
+          issue: scope.locator(`a[data-dispatch-ref="${reference}"]`).nth(0),
+          key: scope.locator(`a[data-dispatch-ref="${reference}"]`).nth(1),
+          scope,
+        }
+      : {
+          away: scope.getByRole("link", { exact: true, name: "a page elsewhere" }),
+          issue: scope.getByRole("link", { exact: true, name: "the other issue" }),
+          key: scope.locator(`a.dispatch-reference[data-dispatch-href="${reference}"]`).first(),
+          scope,
+        };
+  await expect(links.away, `${view} draws the web link`).toBeVisible();
+  await expect(links.key, `${view} draws the key's title`).toContainText(seed.other.title);
+  return links;
+}
+
+/** What `act` opens in a new page of `context`, whose address it answers once loaded; the page is
+ *  closed. */
+async function openedAddress(
+  context: BrowserContext,
+  act: () => Promise<unknown>
+): Promise<string> {
+  const opened = await newPageAt(context, act);
+  const address = opened.url();
+  await opened.close();
+  return address;
+}
+
+/** Whether `page` shows the other issue's page, reached with no new load of the application. */
+async function expectInApp(page: Page, seed: LinkSeed, what: string): Promise<void> {
+  await expect(page, `${what} moves the page to ${seed.other.key}`).toHaveURL(
+    new RegExp(`/issues/${seed.other.key}(/|$)`)
+  );
+  expect(await reloaded(page), `${what} loads no new document`).toBe(false);
+}
+
+/** The spec's stored Markdown, as the server holds it. */
+async function storedSpec(seed: LinkSeed): Promise<string> {
+  return (await getIssueArtifactText(seed.issueKey, "spec")).markdown;
+}
+
+/** A plain primary click on each of `view`'s three links: the web link opens a new page at the
+ *  other site and the Dispatch page stays where it was; the `dispatch://` link and the key move
+ *  the same page to the other issue, with no new load of the application. */
+async function clickEachLink(
+  context: BrowserContext,
+  page: Page,
+  seed: LinkSeed,
+  view: LinkView
+): Promise<void> {
+  let links = await openLinkView(page, seed, view);
+  const at = page.url();
+  expect(
+    await openedAddress(context, () => links.away.click()),
+    `k-link-click: in ${view}, a click on the web link opens a new page at ${AWAY}`
+  ).toBe(AWAY);
+  expect(page.url(), `k-link-click: in ${view}, the Dispatch page stays at its address`).toBe(at);
+
+  await markDocument(page);
+  await links.issue.click();
+  await expectInApp(page, seed, `k-link-click: in ${view}, a click on the dispatch:// link`);
+
+  links = await openLinkView(page, seed, view);
+  await markDocument(page);
+  await links.key.click();
+  await expectInApp(page, seed, `k-link-click: in ${view}, a click on the key's title`);
+}
+
+// SLOW(>=2s): the spec opened four times, two new pages loaded, and four new tabs of Dispatch.
+test("k-link-click: in the spec the reader edits, a plain click opens each link, a pointer over one shows no Open link card, and Ctrl and a middle click open a new tab", async ({
+  context,
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  await clickEachLink(context, page, seed, "the editable spec");
+
+  // The web link inside the text a comment is anchored to opens too, rather than the comment.
+  await openLinkView(page, seed, "the editable spec");
+  const commented = documentEditor(page).getByRole("link", {
+    exact: true,
+    name: "the commented page",
+  });
+  expect(
+    await openedAddress(context, () => commented.click()),
+    `k-link-click: in the editable spec, a click on the link inside commented text opens ${COMMENTED_AWAY}`
+  ).toBe(COMMENTED_AWAY);
+
+  const links = await openLinkView(page, seed, "the editable spec");
+  await links.away.hover();
+  // The Open link card showed as the pointer rested on a link, so the pointer rests the
+  // half second the check names before the row looks for the card.
+  await page.waitForTimeout(500);
+  const cards = await page
+    .getByText("Open link", { exact: true })
+    .evaluateAll((nodes) => nodes.filter((node) => (node as HTMLElement).checkVisibility()).length);
+  expect(cards, "k-link-click: a pointer over the web link shows no Open link card").toBe(0);
+
+  // Headless Chromium has no primary selection, so a middle click pastes nothing here whether or
+  // not the editor prevents its press and release: that part of the check is held by the
+  // editor's own unit test, "a middle button's press and release on a link are prevented, so the
+  // browser pastes nothing" (packages/proof-editor/tests/dispatch-link-open.test.ts). The row
+  // reads that the Markdown is the same after the middle clicks all the same.
+  const before = await storedSpec(seed);
+  const otherPage = new URL(`/issues/${seed.other.key}`, page.url()).href;
+  for (const [link, what] of [
+    [links.issue, "the dispatch:// link"],
+    [links.key, "the key's title"],
+  ] as const) {
+    expect(
+      await openedAddress(context, () => link.click({ modifiers: ["ControlOrMeta"] })),
+      `k-link-click: a Ctrl+click on ${what} opens a new page at the other issue`
+    ).toMatch(new RegExp(`^${otherPage}(/|$)`));
+    expect(
+      await openedAddress(context, () => link.click({ button: "middle" })),
+      `k-link-click: a middle click on ${what} opens a new page at the other issue`
+    ).toMatch(new RegExp(`^${otherPage}(/|$)`));
+  }
+  expect(
+    page.url(),
+    "k-link-click: the spec stays open through the Ctrl and middle clicks"
+  ).toContain(`/issues/${seed.issueKey}/spec`);
+  expect(
+    await storedSpec(seed),
+    "k-link-click: the middle clicks leave the spec's Markdown as it was"
+  ).toBe(before);
+});
+
+for (const view of ["the past version", "the reading pane", "the comment"] as const) {
+  // SLOW(>=2s): the view opened twice, a new page loaded and two moves to the other issue.
+  test(`k-link-click: in ${view}, a plain click opens each link`, async ({ context, page }) => {
+    const seed = await seedLinkSpec();
+    await clickEachLink(context, page, seed, view);
+  });
+}
+
+// SLOW(>=2s): the spec opened three times and a new page loaded.
+test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a link or beside a key's title opens it and changes no text", async ({
+  context,
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  await openLinkView(page, seed, "the editable spec");
+  const before = await storedSpec(seed);
+
+  // The caret into the web link's words, "Read a p|age elsewhere", by the arrow keys.
+  await placeCaret(page, "before", "Read");
+  for (let step = 0; step < 8; step += 1) await page.keyboard.press("ArrowRight");
+  expect(
+    await openedAddress(context, () => page.keyboard.press("Alt+Enter")),
+    `k-link-keys: Alt+Enter in the web link opens a new page at ${AWAY}`
+  ).toBe(AWAY);
+  expect(await storedSpec(seed), "k-link-keys: Alt+Enter in the web link changes no text").toBe(
+    before
+  );
+
+  // "See th|e other issue".
+  await placeCaret(page, "before", "See");
+  for (let step = 0; step < 6; step += 1) await page.keyboard.press("ArrowRight");
+  await markDocument(page);
+  await page.keyboard.press("Alt+Enter");
+  await expectInApp(page, seed, "k-link-keys: Alt+Enter in the dispatch:// link");
+  expect(
+    await storedSpec(seed),
+    "k-link-keys: Alt+Enter in the dispatch:// link changes no text"
+  ).toBe(before);
+
+  // The caret beside the key's title: one step on from the space before the key.
+  await openLinkView(page, seed, "the editable spec");
+  await placeCaret(page, "after", "The bare key");
+  await page.keyboard.press("ArrowRight");
+  await markDocument(page);
+  await page.keyboard.press("Alt+Enter");
+  await expectInApp(page, seed, "k-link-keys: Alt+Enter beside the key's title");
+  expect(
+    await storedSpec(seed),
+    "k-link-keys: Alt+Enter beside the key's title changes no text"
+  ).toBe(before);
+});
+
+/** One stop of the focus inside a view: the text a reader sees on it, and whether it draws
+ *  anything at all (a box of some size holding visible text). */
+interface TabStop {
+  readonly text: string;
+  readonly drawn: boolean;
+}
+
+/** Presses Tab until the focus has entered `scope` and left it again, at most `limit` times, and
+ *  answers each stop inside it, in order. */
+async function tabThrough(page: Page, scope: Locator, limit = 60): Promise<TabStop[]> {
+  const stops: TabStop[] = [];
+  for (let press = 0; press < limit; press += 1) {
+    await page.keyboard.press("Tab");
+    const stop = await scope.evaluate((root): TabStop | null => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
+      const box = active.getBoundingClientRect();
+      const text = active.innerText.trim();
+      return { drawn: box.width > 0 && box.height > 0 && text !== "", text };
+    });
+    if (stop !== null) {
+      stops.push(stop);
+    } else if (stops.length > 0) {
+      break;
+    }
+  }
+  return stops;
+}
+
+// SLOW(>=2s): two views walked by Tab, and each of their three links opened by Enter.
+test("k-link-keys: in the past version and the reading pane, Tab reaches each link, the key's title included, and Enter opens it", async ({
+  context,
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  const titleText = `${seed.other.key} ${seed.other.title}`;
+  for (const view of ["the past version", "the reading pane"] as const) {
+    let links = await openLinkView(page, seed, view);
+    if (view === "the past version") {
+      await page.getByRole("button", { exact: true, name: "Version" }).focus();
+    } else {
+      await page.keyboard.press("l");
+      await expect(paneScroller(page), "k-link-keys: l puts the focus in the pane").toBeFocused();
+    }
+    const stops = await tabThrough(page, links.scope);
+    const texts = stops.map((stop) => stop.text);
+    const order = ["a page elsewhere", "the other issue", titleText].map((text) =>
+      texts.indexOf(text)
+    );
+    expect(
+      order.every((index, at) => index !== -1 && (at === 0 || index > (order[at - 1] ?? -1))),
+      `k-link-keys: in ${view}, Tab reaches the web link, the dispatch:// link and the key's title in turn: ${JSON.stringify(texts)}`
+    ).toBe(true);
+    expect(
+      stops.filter((stop) => !stop.drawn),
+      `k-link-keys: in ${view}, Tab stops on nothing that draws nothing`
+    ).toEqual([]);
+
+    await links.away.focus();
+    expect(
+      await openedAddress(context, () => page.keyboard.press("Enter")),
+      `k-link-keys: in ${view}, Enter on the web link opens a new page at ${AWAY}`
+    ).toBe(AWAY);
+    await links.issue.focus();
+    await markDocument(page);
+    await page.keyboard.press("Enter");
+    await expectInApp(page, seed, `k-link-keys: in ${view}, Enter on the dispatch:// link`);
+    links = await openLinkView(page, seed, view);
+    await links.key.focus();
+    await markDocument(page);
+    await page.keyboard.press("Enter");
+    await expectInApp(page, seed, `k-link-keys: in ${view}, Enter on the key's title`);
+  }
+});
+
+/** The issue the copied links name, and the question, comment and spec that hold them. */
+interface CopySeed {
+  readonly otherKey: string;
+  readonly hostKey: string;
+  readonly askId: string;
+  readonly commentId: string;
+}
+
+/** The seeds of k-link-copy: a question whose text holds a link to another site, a `dispatch://`
+ *  link to another issue, that issue's bare key and a web link to that issue's Dispatch page; a
+ *  comment anchored in the spec of the question's issue that holds the same four; and that spec
+ *  at version 2, whose version 1 holds the same four. */
+async function seedLinkCopy(): Promise<CopySeed> {
+  await createProject({ key: "CORE", name: "Core" });
+  const other = await createIssue({ project: "CORE", title: "Ledger handover" });
+  const fourLinks = (page: string) =>
+    `Read [a page elsewhere](${AWAY}), see [the other issue](dispatch://${other.key}), the bare key ${other.key} and [the other issue's page](${page}).`;
+  const host = await createIssue({
+    project: "CORE",
+    spec: `# Mirror replay\n\n${fourLinks(`${baseUrl}/issues/${other.key}`)}\n\nThe anchor of a review comment.\n`,
+    title: "Mirror replay",
+  });
+  const comment = await createComment(host.key, {
+    anchor: { artifact: "spec", quote: "The anchor of a review comment." },
+    body: fourLinks(`${baseUrl}/issues/${other.key}`),
+  });
+  await editArtifact(
+    host.primary_artifact_id,
+    { ops: [{ after: "end", markdown: "A later line.", op: "insert" }] },
+    asker
+  );
+  const ask = await createAsk(
+    host.key,
+    { question: `Which page? ${fourLinks(`${baseUrl}/issues/${other.key}`)}` },
+    asker
+  );
+  return { askId: ask.id, commentId: comment.id, hostKey: host.key, otherKey: other.key };
+}
+
+/** Presses `y` with the focus on `link` and answers what the page put on the clipboard for it
+ *  (`recordClipboard`), or undefined where it put nothing. */
+async function copiedFrom(
+  page: Page,
+  link: Locator,
+  copied: () => Promise<string[]>
+): Promise<string | undefined> {
+  await link.focus();
+  await expect(link).toBeFocused();
+  const count = (await copied()).length;
+  await page.keyboard.press("y");
+  await expect
+    .poll(async () => (await copied()).length, { message: "k-link-copy: y copies something" })
+    .toBeGreaterThan(count);
+  return (await copied()).at(-1);
+}
+
+/** The four links of a rendered body: the web link, then the three a body draws as reference
+ *  links to the other issue - the `dispatch://` link, the bare key and the link to its page. */
+function bodyLinks(scope: Locator, seed: CopySeed): Array<[Locator, string, string]> {
+  const reference = `dispatch://${seed.otherKey}`;
+  const references = scope.locator(`a[data-dispatch-ref="${reference}"]`);
+  return [
+    [scope.getByRole("link", { exact: true, name: "a page elsewhere" }), "the web link", AWAY],
+    [references.nth(0), "the dispatch:// link", reference],
+    [references.nth(1), "the bare key's link", reference],
+    [references.nth(2), "the link to the other issue's page", reference],
+  ];
+}
+
+// SLOW(>=2s): the Inbox's reading pane walked by Tab, then the drawer opened over a project page.
+test("k-link-copy: y on a focused link copies its address in the Inbox's reading pane and in the drawer, before the Inbox's own y", async ({
+  page,
+}) => {
+  const copied = await recordClipboard(page);
+  const seed = await seedLinkCopy();
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  const row = page.locator(`[data-inbox-row="${seed.askId}"]`);
+  await row.locator("time").first().click();
+  await expect(row).toHaveAttribute("data-inbox-selected", "true");
+  await page.keyboard.press("l");
+  await expect(paneScroller(page), "k-link-copy: l puts the focus in the pane").toBeFocused();
+  for (const [link, what, address] of bodyLinks(paneScroller(page), seed)) {
+    await tabTo(page, link, `k-link-copy: in the reading pane, Tab reaches ${what}`);
+    expect(
+      await copiedFrom(page, link, copied),
+      `k-link-copy: in the reading pane, y on ${what} copies ${address}`
+    ).toBe(address);
+  }
+
+  await page.goto("/projects/CORE");
+  await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  await expect(drawer(page), "k-link-copy: i opens the drawer").toBeVisible();
+  expect(
+    await copiedFrom(
+      page,
+      drawer(page).getByRole("link", { exact: true, name: "a page elsewhere" }),
+      copied
+    ),
+    "k-link-copy: in the drawer, y on the question's web link copies its URL"
+  ).toBe(AWAY);
+});
+
+// SLOW(>=2s): the Conversation tab, version 1 of the spec and the margin's sheet, each opened.
+test("k-link-copy: y on a focused link copies its address on the Conversation tab, in a past version and in the margin's sheet", async ({
+  page,
+}) => {
+  const copied = await recordClipboard(page);
+  const seed = await seedLinkCopy();
+  const reference = `dispatch://${seed.otherKey}`;
+  await page.setViewportSize(WIDE);
+
+  await page.goto(`/issues/${seed.hostKey}/conversation`);
+  const turn = page.locator(`[data-turn="comment:${seed.commentId}"]`);
+  expect(
+    await copiedFrom(
+      page,
+      turn.getByRole("link", { exact: true, name: "a page elsewhere" }),
+      copied
+    ),
+    "k-link-copy: on the Conversation tab, y on the comment's web link copies its URL, not the comment's reference"
+  ).toBe(AWAY);
+
+  await page.goto(`/issues/${seed.hostKey}/artifacts/spec?v=1`);
+  const version = page
+    .getByRole("region", { name: "Document version 1" })
+    .getByRole("textbox", { name: "Document editor" });
+  const title = version.locator(`a.dispatch-reference[data-dispatch-href="${reference}"]`);
+  await expect(title, "k-link-copy: version 1 draws the bare key's title").toBeVisible();
+  for (const [link, what, address] of [
+    [version.getByRole("link", { exact: true, name: "a page elsewhere" }), "the web link", AWAY],
+    [
+      version.getByRole("link", { exact: true, name: "the other issue" }),
+      "the dispatch:// link",
+      reference,
+    ],
+    [title, "the bare key's title", reference],
+    [
+      version.getByRole("link", { exact: true, name: "the other issue's page" }),
+      "the link to the other issue's page",
+      reference,
+    ],
+  ] as const) {
+    expect(
+      await copiedFrom(page, link, copied),
+      `k-link-copy: in version 1, y on ${what} copies ${address}`
+    ).toBe(address);
+  }
+
+  // The margin is a sheet below 1280 px, opened with its own control.
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.goto(`/issues/${seed.hostKey}/spec`);
+  await page.getByRole("button", { name: /Open review panel/ }).click();
+  const sheet = page.getByTestId("margin-sheet");
+  await expect(sheet, "k-link-copy: the margin's sheet opens").toHaveAttribute(
+    "data-expanded",
+    "true"
+  );
+  const card = sheet.locator(`[data-margin-item="${seed.commentId}"]`);
+  expect(
+    await copiedFrom(
+      page,
+      card.getByRole("link", { exact: true, name: "a page elsewhere" }),
+      copied
+    ),
+    "k-link-copy: in the margin's sheet, y on the comment's web link copies its URL"
+  ).toBe(AWAY);
 });

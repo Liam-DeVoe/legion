@@ -9,9 +9,10 @@ import { asUser } from "./users";
 // with the mail scheme: `[a@b.test](mailto:a@b.test)`. This family has no past-version reading
 // row of its own: its one browser row reads the stored document in a browser, and what it reads
 // is a link's href, which no paragraph reading holds. The editor and a past version's read-only
-// view render that link with the same href, and the editor's link opener (proof-sdk's
-// markdown-link-click.ts) hands it to `window.open`: on a modifier click in the editable editor,
-// on a plain click in the read-only view. The document is the one fixture table's
+// view render that link with the same href, and the editor's link opener
+// (`@legion/proof-editor`'s `src/dispatch-link-open.ts`, through the page's
+// `features/refs/link-open.ts`) hands it to `window.open`, on a plain click in either view
+// (dispatch://INFRA-2160, R1). The document is the one fixture table's
 // `email-autolinks-in-a-spec`, whose `pm_json` pins the two `mailto:` link marks without a
 // browser and whose paragraphs `web/src/features/refs/fixture-table-readings.test.ts` reads in a
 // DOM.
@@ -85,8 +86,8 @@ test("an email address written into a spec is a mailto link in the editor and in
     );
     const second = editor.getByRole("link", { name: "second@b.test" });
     await expect(second).toHaveAttribute("href", "mailto:second@b.test");
-    // The editable editor opens a link on a modifier click; a plain click there places the caret.
-    await second.click({ modifiers: ["ControlOrMeta"] });
+    // The editable editor opens a link on a plain click, as the read-only view does.
+    await second.click();
     await expect.poll(opened).toEqual(["mailto:second@b.test"]);
 
     // The past version renders the same links through the read-only view, which opens one on a

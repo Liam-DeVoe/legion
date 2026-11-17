@@ -1,0 +1,170 @@
+import type { OpenLink } from "@legion/proof-editor";
+import { useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+
+import { openInNewTab } from "../shell/new-tab";
+import { MARKDOWN_BODY_SELECTOR } from "./markdown-engine";
+import { fetchReferencePath, needsSpecSlug } from "./reference-target";
+import { buildReferencePath, type DispatchReferenceRoute, parseNodeReference } from "./routes";
+
+/**
+ * How a link of a document or a rendered body opens (dispatch://INFRA-2160, R1), the one rule for
+ * every surface: a `dispatch://` reference and a link to a page of this application open that
+ * page in the same tab, with no new load of the application; another site, a mail address and a
+ * phone number open in a new tab; a Ctrl, Cmd or middle click opens a Dispatch page in a new tab
+ * too; any other scheme opens nothing. The document editor calls it through its `openLink` option
+ * (`@legion/proof-editor`'s `src/dispatch-link-open.ts`, from `ProofDocument` and `VersionView`),
+ * and `LinkClickHost` for every rendered body.
+ */
+
+/** Same-origin paths the server answers itself rather than this application: its API (the bytes
+ *  routes a picture or a download reads included), sign-in and the sockets
+ *  (`packages/envoy/internal/dispatch/routes/router.go`). */
+const SERVER_PATH = /^\/(?:api|auth|ws)(?:\/|$)/;
+
+/** Where a link's target goes: a Dispatch node by its reference, a page of this application, a
+ *  same-origin address the server answers itself, or away from Dispatch. */
+export type LinkDestination =
+  | { readonly kind: "reference"; readonly route: DispatchReferenceRoute }
+  | { readonly kind: "page"; readonly path: string }
+  | { readonly kind: "server"; readonly href: string }
+  | { readonly kind: "away"; readonly href: string };
+
+/** Where `target`, a link's own target read against `page` (the address the reader is on), goes;
+ *  undefined for a scheme no link of Dispatch opens (`javascript:`, `data:`) or a `dispatch://`
+ *  reference that names nothing. */
+export function linkDestination(
+  target: string,
+  page: string = window.location.href
+): LinkDestination | undefined {
+  if (target.startsWith("dispatch://")) {
+    // The target is a node its author named, and opening it is a read, so it is read as a node's
+    // reference, whatever the length of its name.
+    const route = parseNodeReference(target);
+    return route === undefined ? undefined : { kind: "reference", route };
+  }
+  let url: URL;
+  try {
+    url = new URL(target, page);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol === "mailto:" || url.protocol === "tel:") {
+    return { href: url.href, kind: "away" };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return undefined;
+  }
+  if (url.origin !== new URL(page).origin) {
+    return { href: url.href, kind: "away" };
+  }
+  if (SERVER_PATH.test(url.pathname)) {
+    return { href: url.href, kind: "server" };
+  }
+  return { kind: "page", path: `${url.pathname}${url.search}${url.hash}` };
+}
+
+/** The page's link opener: `target` is a link's own target - a `dispatch://` reference, a web
+ *  address, a `mailto:` address - and `newTab` whether the reader asked for a new tab. */
+export function useLinkOpener(): OpenLink {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  return useCallback(
+    (target, { newTab }) => {
+      const destination = linkDestination(target);
+      const go = (path: string) => {
+        if (newTab) {
+          openInNewTab(path);
+        } else {
+          navigate(path);
+        }
+      };
+      switch (destination?.kind) {
+        case "away":
+          window.open(destination.href, "_blank", "noopener,noreferrer");
+          return;
+        case "server":
+          // The editor has already taken the click, so the load the browser would have made is
+          // made here.
+          if (newTab) {
+            openInNewTab(destination.href);
+          } else {
+            window.location.assign(destination.href);
+          }
+          return;
+        case "page":
+          go(destination.path);
+          return;
+        case "reference":
+          // A block of a spec pinned to a version opens that version under the spec's slug,
+          // which only the issue names; every other reference's path is known at once.
+          if (needsSpecSlug(destination.route)) {
+            void fetchReferencePath(queryClient, destination.route).then(go);
+          } else {
+            go(buildReferencePath(destination.route));
+          }
+          return;
+        case undefined:
+          return;
+      }
+    },
+    [navigate, queryClient]
+  );
+}
+
+/**
+ * The one click handler of every rendered body (`MarkdownBody` in comments, messages, asks and
+ * agent conversations, and a live `MarkdownPreview`), mounted once in the shell beside
+ * `RefPreviewHost`: a primary click with no modifier on a link inside a body opens it by the rule
+ * above. A click a handler already took (a picture opening its lightbox, a router link, the
+ * document editor's own link) is left alone, and so are a modifier click and a middle click,
+ * which the browser opens in a new tab from the link's `href` - a reference link's is its page
+ * (`collectReferenceAnchors`) - and a link to an address the server answers itself.
+ */
+export function LinkClickHost(): ReactNode {
+  const openLink = useLinkOpener();
+  const openLinkRef = useRef(openLink);
+  openLinkRef.current = openLink;
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      // The link and the body from the path the click was dispatched along, not from the
+      // target's ancestors now: a handler nearer the target (React's, at the root) may have
+      // drawn the link's words again already, leaving the target out of the page while the
+      // browser still follows the link it was in.
+      const path = event.composedPath();
+      const anchor = path.find(
+        (node): node is HTMLAnchorElement =>
+          node instanceof HTMLAnchorElement && node.hasAttribute("href")
+      );
+      if (
+        anchor === undefined ||
+        !path.some((node) => node instanceof Element && node.matches(MARKDOWN_BODY_SELECTOR))
+      ) {
+        return;
+      }
+      const target =
+        anchor.getAttribute("data-dispatch-ref") ??
+        anchor.getAttribute("data-dispatch-href") ??
+        anchor.href;
+      if (linkDestination(target)?.kind === "server") {
+        return;
+      }
+      event.preventDefault();
+      openLinkRef.current(target, { newTab: false });
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
+  return null;
+}
