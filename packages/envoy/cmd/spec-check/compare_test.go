@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,6 +115,21 @@ func testCompare(t *testing.T, binary string) {
 			"spec-check: component shipping: the files hold it, and the approved spec removed it\n" +
 			"spec-check: term order: the files hold it, and the approved spec removed it\n"})
 	})
+	// The files hold a removed statement in two files, which tree refuses as a doubled id: the line
+	// that names it comes once.
+	t.Run("compare names a removed node that the files hold two times once", func(t *testing.T) {
+		t.Parallel()
+		dir := copyOf(t, fixture(t, "compare", "removed-kept", "spec"))
+		approved := fixture(t, "compare", "removed-kept", "approved.json")
+		removed := approvedOf(t, "removed-kept").Nodes["an-order-is-paid-once"]
+		if !removed.Removed {
+			t.Fatal("the fixture did not remove an-order-is-paid-once")
+		}
+		writeFile(t, filepath.Join(dir, "again.md"), []byte(removed.Versions[len(removed.Versions)-1].Block))
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3") +
+			"spec-check: statement an-order-is-paid-once: the files hold it, and the approved spec removed it\n" +
+			"spec-check: check a-second-payment-is-refused: the files hold it, and the approved spec removed it\n"})
+	})
 	// R2: "The change that lands the code of a statement writes that statement and its checks into
 	// the files". A change that leaves out a check, a component, an interface or a term gets a line
 	// for each, as a statement does, and the first line still counts statements.
@@ -226,6 +241,30 @@ func testCompare(t *testing.T, binary string) {
 				"spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
 		})
 	})
+	// A heading that names code breaks a rule of form, which tree judges, and leaves every node in
+	// the tree, so compare compares the files and gives its own answer (specgraph.LosesNode). Beside
+	// a line that no block holds, the heading is no reason of the refusal, and only that line is
+	// named.
+	t.Run("compare compares files whose heading names code", func(t *testing.T) {
+		t.Parallel()
+		dir := copyOf(t, fixture(t, "compare", "approved-text", "spec"))
+		orders := filepath.Join(dir, "orders.md")
+		content, err := os.ReadFile(orders)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, orders, append([]byte("# Orders and I/O\n\n"), content...))
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3")})
+
+		lost := t.TempDir()
+		writeFile(t, filepath.Join(lost, "a.md"), []byte("# Orders and I/O\n\nA line outside a block.\n"))
+		expect(t, runBinary(t, binary, "", "compare", "--dir", lost, "--approved", approved), result{
+			code: 2,
+			stderr: "spec-check: " + filepath.Join(lost, "a.md") + ":3: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n" +
+				"spec-check: " + lost + ": the files do not parse, so no comparison was made\n",
+		})
+	})
 	t.Run("compare refuses a directory that holds no spec file, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		empty, missing := t.TempDir(), filepath.Join(t.TempDir(), "missing")
@@ -298,6 +337,22 @@ func testCompare(t *testing.T, binary string) {
 			expect(t, runBinaryIn(t, binary, "", env, "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3")})
 		}
 	})
+	// The refusal is the first thing compare does, so a CI job gets it, and nothing more, whatever
+	// the arguments: none, -h, a flag it does not take, files that do not exist, or an argument
+	// besides the flags.
+	t.Run("compare refuses in a CI job before it reads an argument", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "missing")
+		for _, args := range [][]string{
+			{"compare"},
+			{"compare", "-h"},
+			{"compare", "--bogus"},
+			{"compare", "--dir", missing, "--approved", missing},
+			{"compare", "--dir", fixture(t, "compare", "approved-text", "spec"), "--approved", missing, "extra"},
+		} {
+			expect(t, runBinaryIn(t, binary, "", []string{"GITHUB_ACTIONS=true"}, args...), result{code: 2, stderr: ciRefusal})
+		}
+	})
 	// The refusal reads the command's own environment, so a step that starts the command behind a
 	// boundary that drops the runner's environment compares. sudo -n with its default env_reset and
 	// a container that docker run starts without -e GITHUB_ACTIONS both give the command no
@@ -345,29 +400,32 @@ func passLine(dir, held string) string {
 	return "spec-check: " + dir + ": the approved spec held every text that the files hold; " + held + " approved statements are in the files at their current text\n"
 }
 
+// approvedOf is the approved spec of the compare fixture name, as compare's readApproved reads it.
+func approvedOf(t *testing.T, name string) specgraph.Approved {
+	t.Helper()
+	var stderr strings.Builder
+	_, a, ok := readApproved(&stderr, fixture(t, "compare", name, "approved.json"))
+	if !ok {
+		t.Fatal(stderr.String())
+	}
+	return a
+}
+
 // approvedCopy is the path of a copy of the approved.json of the compare fixture name, with edit
-// applied to each node before the copy is written.
+// applied to each node before specgraph.WriteApproved writes the copy.
 func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode)) string {
 	t.Helper()
-	content, err := os.ReadFile(fixture(t, "compare", name, "approved.json"))
-	if err != nil {
-		t.Fatal(err)
+	a := approvedOf(t, name)
+	for id, n := range a.Nodes {
+		edit(&n)
+		a.Nodes[id] = n
 	}
-	var file struct {
-		Nodes []specgraph.ApprovedNode `json:"nodes"`
-	}
-	if err := json.Unmarshal(content, &file); err != nil {
-		t.Fatal(err)
-	}
-	for i := range file.Nodes {
-		edit(&file.Nodes[i])
-	}
-	changed, err := json.Marshal(file)
-	if err != nil {
+	var changed bytes.Buffer
+	if err := specgraph.WriteApproved(&changed, a); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "approved.json")
-	writeFile(t, path, changed)
+	writeFile(t, path, changed.Bytes())
 	return path
 }
 
