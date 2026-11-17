@@ -60,24 +60,27 @@ import (
 // role, but the process claims a free role again at its next heartbeat. So a message another
 // session sends to that role reaches the session's subscriber until the session ends. Once no
 // process registers the session id, the listener frees the role at the role reaper's first pass
-// after the session's record is gone: it leaves the session bucket at the bucket's maximum age
-// (`ENVOY_SESSION_MAX_AGE`, five minutes on a bucket created with it unset) or reads gone at the
-// gone horizon (an hour) where that age is longer, and the reaper runs every
-// `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by default. That holds only while no other live
-// process registers the same session id: where the name is held for
-// another claim whose live process runs under the same id, as after a rollback, the listener keeps
-// the role with that session while it lives, and the role's messages reach that process. That is
-// so for every claim this step names whose session another claim's live process runs under,
-// suspended here or not. The daemon withholds its own messages from such a claim's role only
+// after the session's record is gone and the role claim's last renewal is a live window old: the
+// record leaves the session bucket at the bucket's maximum age (`ENVOY_SESSION_MAX_AGE`, five
+// minutes on a bucket created with it unset) or reads gone at the gone horizon (an hour) where
+// that age is longer, and the reaper runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by
+// default, so the role is free at most `max(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_LIVE_WINDOW) +
+// ENVOY_ROLE_CLAIM_REAP_INTERVAL` after the last registration (ten minutes with the defaults), and
+// later across a listener restart or a reaper read that fails. That holds only while no other
+// live process registers the same session id: where the name is held for another claim whose live
+// process runs under the same id, as after a rollback, the listener keeps the role with that
+// session while it lives, and the role's messages reach that process. That is so for every claim
+// this step names whose session another claim's live process runs under, suspended here or not.
+// The daemon withholds its own messages from such a claim's role only
 // while the claim records that session, so the one decision that would open the role topic, the
 // clear of that session, first asks the listener who holds the claim's role and is refused while
 // the listener names that session in any state (supervise's mayForget); the operator suspends the
 // claim holding the session, which stops its process, forgets once the listener names no holder
-// or another session, at most `ENVOY_SESSION_MAX_AGE` + `ENVOY_ROLE_CLAIM_REAP_INTERVAL` (ten
-// minutes with the defaults) after that process's last registration, and only then resumes the
-// claim it suspended. The contained claim takes no forget while it is live, so the operator stops
-// it (`legion claims suspend`, once its runtime answers, or a stop of its pod or pane by hand)
-// before the steps above, which need a daemon that serves (review rounds 11 to 17 of #4220). A
+// or another session, within that bound of that process's last registration, and only then
+// resumes the claim it suspended. The contained claim takes no forget while it is live, so the
+// operator stops it (`legion claims suspend`, once its runtime answers, or a stop of its pod or
+// pane by hand) before the steps above, which need a daemon that serves (review rounds 11 to 18
+// of #4220). A
 // statement that makes such a claim the holder of its session writes no claim, and the
 // publication of an issue's role holders follows claim writes, so Dispatch is shown that claim as
 // its role's holder at the next boot, or

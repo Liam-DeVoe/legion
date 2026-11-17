@@ -66,6 +66,10 @@ type controllerKeeper struct {
 	// and backoff the wait that set it.
 	retryAt time.Time
 	backoff time.Duration
+	// forgetWaitLogged is whether the keeper has logged, since the claim last took a request,
+	// that its retry waits for the Envoy listener to free the role (keep), so the wait is
+	// logged once rather than at every retry.
+	forgetWaitLogged bool
 }
 
 func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst time.Duration, log *slog.Logger) *controllerKeeper {
@@ -146,8 +150,20 @@ func (k *controllerKeeper) keep() error {
 		return nil
 	}
 	if err := m.Handle(ctx, request); err != nil {
+		// A retry in a new session the hold refuses because the Envoy listener still names the
+		// recorded session as the controller's role holder is a wait the keeper's own backoff
+		// retries, not a fault: it is logged once at Info with the reason until the claim is
+		// started again (supervise.ErrForgetWaitsForRole).
+		if errors.Is(err, supervise.ErrForgetWaitsForRole) {
+			if !k.forgetWaitLogged {
+				k.forgetWaitLogged = true
+				k.log.Info("controller: the retry of the daemon's controller waits for the Envoy listener to free its role", "claim", token, "reason", err)
+			}
+			return nil
+		}
 		return fmt.Errorf("%T for the controller's claim: %w", request, err)
 	}
+	k.forgetWaitLogged = false
 	return nil
 }
 

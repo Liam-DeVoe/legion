@@ -725,6 +725,21 @@ func routineWait(err error) bool {
 	return errors.As(err, &routine) && routine.Routine()
 }
 
+// freshRetryErr is a start row's answer to a retry the machine refused (what names the retry).
+// A retry in a new session the hold refuses because the Envoy listener still names the recorded
+// session as the claim's role holder (supervise.ErrForgetWaitsForRole) is a wait, not a failure:
+// the role is freed once no process registers that session, and the row runs again on its
+// backoff. settle logs it as a wait, with the refusal's reason: INFO at the first attempt, DEBUG
+// after, and WARN from waitWarnAttempts on, since what frees the role may be an operator's
+// suspend of the claim under that session, which the refusal names. Every other refusal is the
+// failure it was, logged at ERROR.
+func freshRetryErr(what string, err error) error {
+	if errors.Is(err, supervise.ErrForgetWaitsForRole) {
+		return wait.Errorf("%s in a new session waits for the Envoy listener to free its role: %w", what, err)
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
@@ -2053,7 +2068,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// that one decision: the operator's `legion claims retry --fresh-session`, which is
 			// refused by whatever refuses this row rather than having discarded the session first.
 			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
-				return fmt.Errorf("retry claim %s: %w", token, err)
+				return freshRetryErr(fmt.Sprintf("retry claim %s", token), err)
 			}
 		case supervise.StateRetired:
 			// A retired claim's tree closed, and its linger removed the workspace; the tree was
@@ -2062,7 +2077,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
-				return fmt.Errorf("relaunch retired claim %s: %w", token, err)
+				return freshRetryErr(fmt.Sprintf("relaunch retired claim %s", token), err)
 			}
 		}
 		// A claim that, once brought back above, still holds a task of this row's phase and run that

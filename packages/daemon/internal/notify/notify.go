@@ -294,17 +294,20 @@ type SessionRegistration struct {
 	LastSeen         int64
 }
 
-// registrationReadBodyLimit bounds the body ReadSessionRegistration decodes an entry from. It is
-// deliberately not refusalBodyLimit, which bounds an error body: a listener that predates the
-// view selector ignores it and answers the whole session row here — its topics, its roles, its
-// capabilities — and nothing bounds a long-lived session's topic count, so a row cut off at
-// 4 KiB would fail to decode and the stop of exactly the busiest sessions would be reported as a
-// read that failed and send no delete at all. It is bounded at all because the read drains the
-// body, so the connection is reused for the delete that follows rather than dropped mid-answer,
-// and an unbounded read of a body this daemon did not write is memory it cannot refuse. 1 MiB is
-// far past the largest row the listener writes and far short of a body that could cost the
-// daemon anything.
-const registrationReadBodyLimit = 1 << 20
+// answerBodyLimit bounds the body of a listener's answer this client decodes (a 200):
+// ReadSessionRegistration's entry, and RoleHolder's live holder. It is deliberately not
+// refusalBodyLimit, which bounds an error body. A listener that predates the registration view
+// selector ignores it and answers the whole session row — its topics, its roles, its
+// capabilities — and a role lookup's 200 carries the holder's title, dir and capabilities; nothing
+// bounds a long-lived session's topic count or capability list, so an answer cut off at 4 KiB would
+// fail to decode, and the stop of exactly the busiest sessions would be reported as a read that
+// failed and send no delete at all, and a forget the role lookup admits would be refused as a
+// lookup the listener never answered. It is bounded at all because the read drains the body, so
+// the connection is reused for the call that follows rather than dropped mid-answer, and an
+// unbounded read of a body this daemon did not write is memory it cannot refuse. 1 MiB is far past
+// the largest answer the listener writes and far short of a body that could cost the daemon
+// anything.
+const answerBodyLimit = 1 << 20
 
 // ReadSessionRegistration reads what the listener's registry holds for session, the read the
 // daemon's clean stop makes before it deletes anything: the delete it then sends names the
@@ -341,10 +344,10 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusOK:
-		// Read whole within registrationReadBodyLimit and then unmarshalled, rather than
-		// decoded off the stream: the read drains the body, so this connection is reused
-		// for the delete that follows.
-		body, err := io.ReadAll(io.LimitReader(response.Body, registrationReadBodyLimit))
+		// Read whole within answerBodyLimit and then unmarshalled, rather than decoded off the
+		// stream: the read drains the body, so this connection is reused for the delete that
+		// follows.
+		body, err := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
 		if err != nil {
 			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 		}
@@ -368,11 +371,13 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // /v1/roles/<role>, roleGetHandler and writeRoleHolderError in packages/envoy/cmd/listener): on the
 // 200 the live holder, its state `live`; on the 404 of a lapsed holder, that holder and its
 // `holder_state`, `unresponsive` or `gone`, since the claim stands until the role claim reaper
-// takes it, or `lapsed` where an older listener names no state; on the 404 of a role no claim names
-// (roleholder.Unclaimed), no holder at all. Every other status, a body it cannot read, and a
-// listener it cannot reach are errors, which the caller reads as an answer it does not have: the
-// daemon's forget of a session its claim does not hold refuses on one, and on every holder it
-// names that is that session (supervise.Deps.RoleHolder).
+// takes it, or `lapsed` where an older listener names no state; on the 404 of a role no claim
+// names, reason roleholder.Unclaimed, no holder at all. A 200 is read within answerBodyLimit, an
+// error body within refusalBodyLimit. Every other answer — another status, a body it cannot
+// read, a 404 that names no holder under any other reason, and a listener it cannot reach — is an
+// error, which the caller reads as an answer it does not have: the daemon's forget of a session
+// its claim does not hold refuses on one, and on every holder it names that is that session
+// (supervise.Deps.RoleHolder).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -387,28 +392,38 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
 	}
 	defer response.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	switch response.StatusCode {
-	case http.StatusOK:
+	if response.StatusCode == http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
 		var answer struct {
 			Holder      string `json:"holder"`
 			HolderState string `json:"holder_state"`
 		}
 		if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			return "", "", fmt.Errorf("look up the holder of role %s: the listener's answer names no holder: %s", role, strings.TrimSpace(string(body)))
+			return "", "", fmt.Errorf("look up the holder of role %s: the listener's answer names no holder: %s", role, excerpt(body))
 		}
 		return answer.Holder, cmp.Or(answer.HolderState, "live"), nil
-	case http.StatusNotFound:
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	if response.StatusCode == http.StatusNotFound {
 		var refusal RoleRefusal
 		if readErr != nil || json.Unmarshal(body, &refusal) != nil {
-			return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 is unreadable: %s", role, strings.TrimSpace(string(body)))
+			return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 is unreadable: %s", role, excerpt(body))
 		}
-		if refusal.Holder != "" {
+		switch {
+		case refusal.Holder != "":
 			return refusal.Holder, cmp.Or(refusal.HolderState, "lapsed"), nil
+		case refusal.Reason == roleholder.Unclaimed:
+			return "", "", nil
 		}
-		return "", "", nil
+		return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 names no holder and gives reason %q, not %q: %s",
+			role, refusal.Reason, roleholder.Unclaimed, excerpt(body))
 	}
-	return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, strings.TrimSpace(string(body)))
+	return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body))
+}
+
+// excerpt is body as an error names it: trimmed, and no longer than refusalBodyLimit.
+func excerpt(body []byte) string {
+	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
 }
 
 // DeleteConditions is what one clean stop of a dead role's session holds under, and where this

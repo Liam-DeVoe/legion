@@ -61,7 +61,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			fileNameOnly = append(fileNameOnly, name)
 		}
 	}
-	const suspendHolder, theBound = "legion claims suspend --claim " + string(holder), "ENVOY_SESSION_MAX_AGE + ENVOY_ROLE_CLAIM_REAP_INTERVAL, ten minutes with the defaults"
+	const suspendHolder, theBound = "legion claims suspend --claim " + string(holder), "max(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL"
 	clears := []struct {
 		name  string
 		event func(h *harness) Event
@@ -104,6 +104,9 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 				var refused *RefusedError
 				if !errors.As(err, &refused) {
 					t.Fatalf("the clear = %v, want it refused", err)
+				}
+				if !errors.Is(err, ErrForgetWaitsForRole) {
+					t.Errorf("the refusal = %v, want it read as ErrForgetWaitsForRole, the wait a retrying caller logs as one", err)
 				}
 				for _, want := range tc.refused {
 					if !strings.Contains(err.Error(), want) {

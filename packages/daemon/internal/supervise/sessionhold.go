@@ -419,9 +419,9 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 	holder, state, lookupErr := m.deps.RoleHolder(asking, string(m.claim.Token))
 	cancel()
 	if lookupErr != nil {
-		return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
+		return &RefusedError{State: m.claim.State, Request: request, Err: forgetWait{fmt.Errorf(
 			"%s records session %s, which it does not hold (%v), and the Envoy listener did not say which session holds its role, so clearing the session could let the role's messages reach another claim's process; try again once the listener answers: %w",
-			m.claim.Token, session, err, lookupErr)}
+			m.claim.Token, session, err, lookupErr)}}
 	}
 	if holder != session {
 		return nil
@@ -434,10 +434,24 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 	if errors.As(err, &held) && held.holder != "" && held.hold == (Hold{Kind: HoldSessionID, Name: session}) {
 		whose = fmt.Sprintf("the claim that holds it, %s (`legion claims suspend --claim %s`)", held.holder, held.holder)
 	}
-	return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
-		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach the process under %s: first stop %s, through the daemon (a pod or pane stopped by hand is relaunched under the same id), then ask again once GET /v1/roles/%s answers 404 with no holder or names another session; after that process's last registration it takes at most the session bucket's maximum age plus one role claim reaper interval (ENVOY_SESSION_MAX_AGE + ENVOY_ROLE_CLAIM_REAP_INTERVAL, ten minutes with the defaults)",
-		m.claim.Token, session, err, session, state, session, whose, m.claim.Token)}
+	return &RefusedError{State: m.claim.State, Request: request, Err: forgetWait{fmt.Errorf(
+		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach the process under %s: first stop %s, through the daemon (a pod or pane stopped by hand is relaunched under the same id), then ask again once GET /v1/roles/%s answers 404 with no holder (reason unclaimed) or names another session; with the defaults that is at most ten minutes after that process's last registration (max(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL), longer across a listener restart or a reaper read that fails",
+		m.claim.Token, session, err, session, state, session, whose, m.claim.Token)}}
 }
+
+// ErrForgetWaitsForRole is mayForget's refusal of a clear of a session the claim does not hold:
+// the Envoy listener names that session as the claim's role holder, or did not answer who does.
+// It is a wait, not a fault: the role is freed once no process registers the session, so a
+// caller that retries on a backoff of its own (the workflow's start row, the controller keeper)
+// reads it as a wait rather than an error (errors.Is through RefusedError).
+var ErrForgetWaitsForRole = errors.New("the clear of the session waits for the Envoy listener to free the claim's role")
+
+// forgetWait is a mayForget refusal's sentence, which errors.Is reads as ErrForgetWaitsForRole
+// while the refusal's text stays the sentence alone.
+type forgetWait struct{ error }
+
+func (forgetWait) Is(target error) bool { return target == ErrForgetWaitsForRole }
+func (w forgetWait) Unwrap() error      { return w.error }
 
 // admittedSession is a session and file every name of which the store last answered as this
 // claim's (holdRecorded, HoldsItsSession), kept for HoldsItsSession to read without the lock.
