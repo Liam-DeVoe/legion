@@ -114,15 +114,16 @@ type timeline struct {
 	firstObserved int
 }
 
-// reading is one run over one population: the trees it placed the issues in, and the timelines
-// and work times it has measured so far. A root reads its children's, so each is measured once
-// and kept.
+// reading is one run over one population: the trees it placed the issues in, and the timelines,
+// work times and slot stretches it has measured so far. A root reads its children's, so each is
+// measured once and kept.
 type reading struct {
 	population *population
 	roots      map[string]string
 	children   map[string][]string
 	timelines  map[string]timeline
 	worked     map[string][]span
+	slots      map[string][]span
 }
 
 // newReading places every issue of the population in its tree and gives each issue the ask turns
@@ -134,6 +135,7 @@ func newReading(held *population) *reading {
 		children:   map[string][]string{},
 		timelines:  map[string]timeline{},
 		worked:     map[string][]span{},
+		slots:      map[string][]span{},
 	}
 	for _, key := range held.keys {
 		if root := r.rootOf(key); root != key {
@@ -305,17 +307,13 @@ func (r *reading) outOfWorkflow(key string) []span {
 	for closing > 0 && statuses[closing-1].value == statusDone {
 		closing--
 	}
-	var logged []span
-	for index, recorded := range statuses[:closing] {
-		if recorded.value != statusTriage && recorded.value != statusDone {
-			continue
-		}
-		stretch := span{from: recorded.at, to: end}
-		if index+1 < len(statuses) {
-			stretch.to = statuses[index+1].at
-		}
-		logged = append(logged, stretch)
+	until := end
+	if closing < len(statuses) {
+		until = statuses[closing].at
 	}
+	logged := markStretches(statuses[:closing], until, func(value string) bool {
+		return value == statusTriage || value == statusDone
+	})
 	return normalize(append(out, intersect(logged, []span{{to: sampledFrom}})...))
 }
 
@@ -441,7 +439,13 @@ func phaseMarks(marks []mark) []mark {
 // it, to the first read that carries the issue again, its next row that names a phase, which
 // releases the slot unless the same read names one (dispatch://INFRA-1077's e2a409a4f5, "an issue
 // the daemon drops keeps the slot it held").
+//
+// It is measured once per issue and kept, as the timeline and the work time are: two rules read
+// it.
 func (r *reading) slotStretches(key string) []span {
+	if kept, measured := r.slots[key]; measured {
+		return kept
+	}
 	held := r.population.issues[key]
 	// The slot row and the phase row one read wrote, by the moment the read wrote them at.
 	type read struct{ slot, phase *mark }
@@ -494,7 +498,8 @@ func (r *reading) slotStretches(key string) []span {
 	if holding {
 		stretches = append(stretches, span{from: from, to: held.end(r.population.window)})
 	}
-	return normalize(stretches)
+	r.slots[key] = normalize(stretches)
+	return r.slots[key]
 }
 
 // The three things the event log says about an issue's phase, and the order two of them that

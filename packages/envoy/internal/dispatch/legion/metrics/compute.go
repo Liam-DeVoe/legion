@@ -146,9 +146,9 @@ func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
 // workTimeRow is one memoised answer of workedOf: when the work time started (the first worker
 // event), its hours and the parked and queued hours taken out of the issue's life, the spans its
 // hours are the measure of, and whether the issue has a work time at all. The hours out of the
-// workflow it takes out too are no fact of the issue's (computeWorkTime): no Legion eval reads
-// them, as none reads the parked or the queued hours, and the work time and the bars already
-// leave them out.
+// workflow it takes out too are no fact of the issue's (computeWorkTime): issue_facts has no
+// column for them, so no stored row or items list carries them, and the work time and the bars
+// already leave them out.
 type workTimeRow struct {
 	started               time.Time
 	hours, parked, queued float64
@@ -263,10 +263,12 @@ func (c *computation) workedSpansOf(issue *Issue) []Span {
 	return c.workedOf(issue).worked
 }
 
-// barSpansOf is the hours of an issue its seven bars share out, computed once: the work time
-// metric 1 counts, less the time it sat in the queue, which is on no bar. Metric 2's bars and
-// metric 3's hours after the first review are both the measure of these spans, so neither of an
-// issue's values counts an hour its own bars leave out.
+// barSpansOf is the hours of an issue its seven bars share out, computed once: the spans of the
+// work time metric 1 counts (workedSpansOf), which hold no hour of the queue or out of the
+// workflow, with the queue's own spans taken out once more, which moves no span and keeps the
+// queue, which is on no bar, off them by the bars' own rule. Metric 2's bars and metric 3's hours
+// after the first review are both the measure of these spans, so neither of an issue's values
+// counts an hour its own bars leave out.
 //
 // The answer is shared with every caller, and every caller reads it and nothing more: normalize,
 // subtract and intersect each build a new slice and write to no argument, so no caller can move

@@ -68,10 +68,10 @@ func seedClosingHistory(t *testing.T) closingHistory {
 		`, issue, kind, actor, payload, at)
 	}
 
-	// The first tree's root, reopened: its own inputs end with its close four hours before the
-	// history's end, and its open child starts implementing an hour before the end. The daemon
-	// reports the reopened root in `accepting` a minute after that close, where it holds its
-	// slot for its children: with its newest phase the `done` of its close it would be out of
+	// The first tree's root, reopened: its own inputs end a minute after its close, four hours
+	// before the history's end, and its open child starts implementing an hour before the end. The
+	// daemon reports the reopened root in `accepting`, the phase a root waits on its children in,
+	// a minute after that close: with its newest phase the `done` of its close it would be out of
 	// the workflow before its close, which is outside the work time and on no bar
 	// (dispatch://INFRA-1077's 9f994275a7), and so it would wait on no child.
 	root, child := fixture.Roots[0], fixture.Open[0]

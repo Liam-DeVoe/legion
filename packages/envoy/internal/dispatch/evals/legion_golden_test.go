@@ -30,7 +30,7 @@ import (
 // issue Dispatch observed stays a Legion issue; 22bd759ecb: a null phase mark ends no phase;
 // e2a409a4f5: an issue the daemon drops keeps the slot it held; 9f994275a7: an hour out of the
 // workflow before the close is outside the work time and on no bar) moved no value of this
-// history, which holds no null mark, no reopen, no `triage` write inside a work time and no
+// history, which holds no null phase mark, no reopen, no `triage` write inside a work time and no
 // `done` observed before a close. So 8f6e8562 answers what 52bd50f0 did, value for value, and
 // adds each work-time row's out_of_workflow_hours, 0 for every issue, which no Legion eval reads.
 var goldenComputeFiles = filepath.Join("..", "legion", "metrics", "testdata", "golden_compute", "*.json")

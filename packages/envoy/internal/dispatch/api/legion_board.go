@@ -464,9 +464,8 @@ func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx) erro
 func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 	switch field {
 	case legion.FieldAdmission:
-		var admission legion.Admission
-		if err := json.Unmarshal(value, &admission); err == nil {
-			p.admission = &admission
+		if admission, read := legion.ParseAdmission(value); read {
+			p.admission = admission
 		}
 	case legion.FieldSettings:
 		_ = json.Unmarshal(value, &p.settings)
@@ -476,7 +475,8 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 // observe takes one newest observation into the issue. A value that is not the shape the field is
 // read as leaves the field as it stands: the daemon owns the wire shape, and a reader of one names
 // what it expects rather than trusting it. The slot and the wait are decoded by the rules'
-// package (legion.ParseSlot, legion.ParseWait), which the stored per-issue facts decode by too.
+// package (legion.ParseSlot, legion.ParseWait), which the stored per-issue facts decode by too, as
+// they decode the admission block (legion.ParseAdmission, observeProject).
 func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time) {
 	switch {
 	case field == legion.FieldPhase:

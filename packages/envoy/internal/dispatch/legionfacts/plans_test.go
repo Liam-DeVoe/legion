@@ -179,7 +179,7 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 12000) as n,
 		     (select jsonb_object_agg(role, jsonb_build_object('hours', 0, 'holds_hours', false, 'segments',
 		             jsonb_build_object('idle', 0, 'ci_wait', 0, 'in_a_turn', 0, 'waiting_on_person', 0, 'waiting_on_children', 0)))
-		      from unnest(array['architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger', 'controller', 'no_role']) as role) as shape (bars)
+		      from unnest(array['architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger', 'no_role']) as role) as shape (bars)
 		where n <= case when project = 'FC' then 12000 else 500 end
 		order by n, project;
 		analyze issue_facts;
@@ -265,19 +265,12 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		if lines, err = pgx.CollectRows(text, pgx.RowTo[string]); err != nil {
 			return fmt.Errorf("explain the board's read as text: %w", err)
 		}
-		// The generic plan, as explaintest.GenericPlan takes it, but in this transaction: the mode is
-		// forced, since a test never executes the statement often enough to reach it.
-		for _, step := range []string{"set local plan_cache_mode = force_generic_plan", "prepare board_facts (text, text[], text[]) as " + statement} {
-			if _, err := tx.Exec(ctx, step); err != nil {
-				return fmt.Errorf("%s: %w", step, err)
-			}
-		}
-		if err := tx.QueryRow(ctx, "explain (format json) execute board_facts('FC', array['FC-1'], array['FC-1'])").Scan(&raw); err != nil {
-			return fmt.Errorf("explain the board's read's generic plan: %w", err)
-		}
-		generic = explaintest.OnePlan(t, raw)
-		_, err = tx.Exec(ctx, "deallocate board_facts")
-		return err
+		// The generic plan, in this transaction, so under readByIndex's settings and no setting of
+		// the test's own: GenericPlan forces the mode, since a test never executes the statement
+		// often enough to reach it.
+		generic = explaintest.GenericPlan(t, ctx, tx, "board_facts", statement,
+			[]string{"text", "text[]", "text[]"}, []string{"'FC'", "array['FC-1']", "array['FC-1']"})
+		return nil
 	}); err != nil {
 		t.Fatalf("take the board's plans as Read runs it: %v", err)
 	}

@@ -759,9 +759,8 @@ func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string
 		}
 		// A value of another shape leaves the block unread: the daemon owns the wire shape,
 		// and a reader of one names what it expects, as the board does (observeProject).
-		var admission legion.Admission
-		if err := json.Unmarshal(one.Value, &admission); err == nil {
-			p.Admission = &admission
+		if admission, read := legion.ParseAdmission(one.Value); read {
+			p.Admission = admission
 		}
 	}
 	return nil
