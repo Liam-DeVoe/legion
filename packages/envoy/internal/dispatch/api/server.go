@@ -1197,7 +1197,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
-		// brokerTokenActor set, since the credential, not the body, named this session.
+		// brokerTokenActor set, with or without an owner, since the credential, not the body,
+		// named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1207,19 +1208,21 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// and never from a body). That pair is what R14 calls "a session the server itself
 		// proved theirs", and the store ties the two with an alias_of tuple on the next write
 		// (graphstore.aliases). The act names the session the credential proved, exactly as
-		// actingPerson names the agent that acted for a person; the actor's kind and id are
-		// left as they were, so every stored author, every event and every reader keeps the
-		// shape it has.
+		// actingPerson names the agent that acted for a person, and is SessionProven for the same
+		// reason actingPerson's is: the credential, not the request, named that session. The
+		// actor's kind and id are left as they were, so every stored author, every event and
+		// every reader keeps the shape it has.
 		//
 		// A session named in a request body earns none of this: the branch below, which every
 		// credential that proves no session of its own takes, records the session the caller
-		// asked for and no act, because an actor that merely claims a session proves nothing
-		// about whose it is (R14).
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
 		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
 			authenticated.Credential.Session == authenticated.ID {
 			actor.Act = &model.ActorAct{
-				Session: authenticated.ID,
-				Scopes:  authenticated.Credential.Scopes,
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
 			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
@@ -1238,7 +1241,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
-		// Not Proven: the body named this session and the credential proved none.
+		// Not Proven, whatever the body says: the body named this session and the credential
+		// proved none.
 	}, nil
 }
 
