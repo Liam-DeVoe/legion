@@ -494,12 +494,16 @@ func TestCIFilesThatCompareNamesAFoldedValueThatABackslashSplits(t *testing.T) {
 // The forms outside the claim, each a stated limit of the rule. The rule reads the file's bytes and
 // runs no shell expansion, so it does not find a command that an expansion, an escape or an alias
 // builds, one with another word between the two, such as a redirection, a here-document or an
-// image, or a run: | block whose two line continuations need the indentation after one kept and
-// after the other removed. Before the name, only \n, \t and \r of the escapes stand for white
-// space; each other escape or expansion of one language that builds the boundary is outside the
-// claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1), and so are \0 before
-// the name, whose NUL byte Bash skips, and \t between the two words. Each runs the comparison in
-// Bash, with x set to spec-check and sub to compare, and the glob where a file named compare is.
+// image (docker run --entrypoint spec-check <image> compare), or a run: | block whose two line
+// continuations need the indentation after one kept and after the other removed. Before the name,
+// only \n, \t and \r of the escapes stand for white space; each other escape or expansion of one
+// language that builds the boundary is outside the claim (\x20, \x0a, \012, \u000a, PowerShell's
+// `n, a batch file's %~dp0, $1), and so are \0 right before the name or right after compare, a NUL
+// byte that Bash skips or stops at, \t between the two words, and a letter, a digit or _ right
+// after the quote that ends compare, which Bash reads as more of the word and another language can
+// read as its next token, such as Python's f or r prefix ("compare"f" --dir"). Each runs the
+// comparison in Bash, or in Python where its row says so, with x set to spec-check and sub to
+// compare, and the glob where a file named compare is.
 // The refusal of compare stops each in a step that keeps GITHUB_ACTIONS; a container that docker
 // run starts without -e GITHUB_ACTIONS, as the --entrypoint form and a block list of a command do,
 // passes both. A command substitution that writes spec-check right before ) is named, since the
@@ -515,6 +519,7 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 		named     bool
 	}{
 		{"$x compare --dir a", "a variable holds the command's name", false},
+		{"${SPEC:-spec-check} compare --dir a", "an expansion with a default builds the command's name, and the - before it makes it part of another word", false},
 		{"spec-check $sub --dir a", "a variable holds the subcommand", false},
 		{"spec-check $'com\\x70are' --dir a", "an escape builds the subcommand", false},
 		{"$'spec\\055check' compare --dir a", "an escape builds the command's name", false},
@@ -542,9 +547,9 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 		})
 	}
 	// An escape or an expansion of one language that builds the boundary of a word or the
-	// subcommand, or that stands for a byte Bash skips: the same bytes are another program's name
-	// in another language, so each is outside the claim, as the earlier heads that named some of
-	// them read it.
+	// subcommand, a byte Bash skips or stops at, or a byte that one language reads as its next
+	// token: the same bytes are another program's name in another language, so each is outside the
+	// claim, as the earlier heads that named some of them read it.
 	for _, row := range []struct{ name, path, text string }{
 		{"\\x20 after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\x20--dir a"`},
 		{"\\x20 before the name", ".github/workflows/a.yaml", `      - run: "set -e;\x20spec-check compare --dir a"`},
@@ -559,13 +564,18 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 		{"$1 before the name", "scripts/a.sh", `$1spec-check compare --dir a`},
 		{"\\0 before the name, whose NUL byte Bash skips", ".github/workflows/a.yaml", `      - run: "set -e\n\0spec-check compare --dir a"`},
 		{"\\0 before the name in the text that printf writes for Bash", "scripts/a.sh", `printf 'set -e\n\0spec-check compare --dir a\n' | bash`},
+		{"\\0 right after compare in the text that printf writes for Bash, whose NUL byte Bash skips", "scripts/a.sh", `printf 'spec-check compare\0 --dir a\n' | bash`},
+		{"\\0 right after compare in an ANSI-C quote, where the text that bash -c runs stops", "scripts/a.sh", `bash -c $'spec-check compare\0 --dir a'`},
 		{"\\t between the two words", ".github/workflows/a.yaml", `      - run: "spec-check\tcompare --dir a"`},
 		{"\\t between the two words in execSync", "scripts/a.ts", `execSync("spec-check\tcompare --dir a");`},
 		{"\\t between the two words in an ANSI-C quote", "scripts/a.sh", `bash -c $'spec-check\tcompare --dir a'`},
+		{"Python's f prefix right after the quote that ends compare, which Python runs as spec-check compare --dir a", ".github/scripts/a.py", `subprocess.run("spec-check compare"f" --dir {d}", shell=True)`},
+		{"Python's r prefix right after the quote that ends compare, which Python runs as spec-check compare --dir a", ".github/scripts/a.py", `subprocess.run('spec-check compare'r' --dir a', shell=True)`},
+		{"Python's r prefix right after the quote that ends compare, in a list that split() makes, behind env -u", ".github/scripts/a.py", `subprocess.run("env -u GITHUB_ACTIONS spec-check compare"r" --dir a --approved b".split(), check=True)`},
 		{"a YAML \\x63 that builds the subcommand", ".github/workflows/a.yaml", `      - run: "spec-check \x63ompare --dir .dispatch/spec --approved a.json"`},
 		{"a YAML \\u0065 that builds the subcommand", ".github/workflows/a.yaml", `      - run: "spec-check compar\u0065 --dir .dispatch/spec --approved a.json"`},
 	} {
-		t.Run("an escape or an expansion of one language: "+row.name, func(t *testing.T) {
+		t.Run("a form of one language: "+row.name, func(t *testing.T) {
 			t.Parallel()
 			content := row.text + "\n"
 			if strings.HasPrefix(row.path, ".github/workflows/") {
@@ -602,6 +612,90 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 		t.Parallel()
 		expectScriptAndBlock(t, "go build -o /tmp/sc ./cmd/spec-check && /tmp/sc compare --dir a", nil)
 	})
+}
+
+// limitPlaces is each text that states the limits of the guard's rule: the doc of
+// ciFilesThatCompare, the package doc, the doc of TestCIFilesThatCompareLeavesAFormOutsideTheClaim,
+// the guide and the changelog fragment of #4183. The release that folds the fragment into the
+// changelog takes it off this list.
+var limitPlaces = []string{
+	"cifiles.go",
+	"main.go",
+	"cifiles_test.go",
+	filepath.Join("..", "..", "AGENTS.md"),
+	filepath.Join("..", "..", ".changes", "unreleased", "pr4183-Added-20261116-091606.yaml"),
+}
+
+// limitSentences is the start of each sentence that states the limits of the rule.
+var limitSentences = []string{
+	"The rule reads the file's bytes and runs no shell expansion,",
+	"Before the name, only ",
+}
+
+// The sentences that state the limits of the rule are one text in each place that states them
+// (limitPlaces): each place holds each sentence once, in the same words, read without the comment
+// markers of Go, the code spans of Markdown and the doubled quote of YAML (limitText).
+func TestTheLimitsOfTheRuleAreOneTextInEachPlace(t *testing.T) {
+	t.Parallel()
+	texts := make([]string, len(limitPlaces))
+	for i, place := range limitPlaces {
+		content, err := os.ReadFile(place)
+		if err != nil {
+			t.Fatal(err)
+		}
+		texts[i] = limitText(place, string(content))
+	}
+	for _, start := range limitSentences {
+		var first, firstPlace string
+		for i, place := range limitPlaces {
+			found := sentencesFrom(texts[i], start)
+			switch {
+			case len(found) != 1:
+				t.Errorf("%s holds %d sentences that start %q, want 1: %q", place, len(found), start, found)
+			case firstPlace == "":
+				first, firstPlace = found[0], place
+			case found[0] != first:
+				t.Errorf("the sentence that starts %q differs:\n%s: %s\n%s: %s", start, firstPlace, first, place, found[0])
+			}
+		}
+	}
+}
+
+// limitText is the prose of a place as one line: in a Go file its comment lines alone, each without
+// its //, and in another file each line, with the blanks that start it gone; then without the code
+// spans of Markdown and, in a YAML file, with a doubled quote read as one.
+func limitText(place, content string) string {
+	var lines []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(place, ".go") {
+			comment, ok := strings.CutPrefix(line, "//")
+			if !ok {
+				continue
+			}
+			line = strings.TrimPrefix(comment, " ")
+		}
+		lines = append(lines, line)
+	}
+	text := strings.Join(lines, " ")
+	if strings.HasSuffix(place, ".yaml") {
+		text = strings.ReplaceAll(text, "''", "'")
+	}
+	return strings.NewReplacer("`` ", "", " ``", "", "`", "").Replace(text)
+}
+
+// sentencesFrom is each sentence of text that starts with start, up to its full stop.
+func sentencesFrom(text, start string) []string {
+	var found []string
+	for rest := text + " "; ; {
+		i := strings.Index(rest, start)
+		if i < 0 {
+			return found
+		}
+		rest = rest[i:]
+		end := strings.Index(rest, ". ") + 1
+		found, rest = append(found, rest[:end]), rest[end:]
+	}
 }
 
 // namedCalls is each calling line that a head of pull request #4183 named and that runs the
