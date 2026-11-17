@@ -152,6 +152,10 @@ export function MarkdownPreview({
   surface,
   tree,
 }: {
+  /** Styles the element: its place in a layout, a margin, a colour. Not its size: a `text-*` or
+   *  `leading-*` utility here is overridden by `.dispatch-markdown`'s `font-size: inherit;
+   *  line-height: inherit` (styles.css), a rule in no layer, so a caller that sizes the text
+   *  sets the size on a wrapper around the preview. */
   className?: string;
   /** Whether a pointer reader sees the whole text on hover, for a surface whose text is long
    *  enough to be cut: its plain words, as `TruncatedText`'s `title` offers, never its source. */

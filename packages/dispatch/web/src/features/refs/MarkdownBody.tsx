@@ -333,6 +333,11 @@ interface MarkdownBodyProps {
  * whether those cards are drawn at all, is the host's property (`ReferenceHostIs`): inside a
  * link or a button nothing is a link of its own, and an element that can hold no markup - or a
  * diff, whose point is the characters it swaps - holds this text as the characters it is.
+ *
+ * The body takes no class. Its size and its line come from the element around it
+ * (`.dispatch-markdown`'s `font-size: inherit; line-height: inherit`, styles.css, a rule in no
+ * layer that overrides any utility on the renderer's own element), so a caller sizes a wrapper,
+ * as it does for `MarkdownPreview`.
  */
 export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
   const host = useReferenceHost();
