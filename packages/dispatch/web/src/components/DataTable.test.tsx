@@ -6,12 +6,13 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
-import { act, render, screen, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a column's drag and drop, which user-event has no form for.
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
-import { selectedCardBg } from "../theme/classes";
+import { selectedCardBg, textMutedOnSurface } from "../theme/classes";
 import {
   type ColumnFilterRenderer,
   DataTable,
@@ -717,6 +718,111 @@ test("the column the caller names stacks its controls in a box under 640 px", as
     within(table).getByRole("columnheader", { name }).querySelector("span")?.className ?? "";
   expect(controls(/Service/)).toContain("flex-col");
   expect(controls(/Minutes/)).not.toContain("flex-col");
+});
+
+const SORT_HINT = "Sort (shift-click to add a second sort)";
+
+// INFRA-3221's R9: the sort hint moved from each sort button's native title into the shared
+// tooltip, which a keyboard reaches too, so two tooltips never show at once. A pinned column
+// cannot be dragged, so its hint says nothing of a drag.
+test("a sort button carries no native title and opens its hint in the tooltip, on hover and on focus", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys layoutColumns={PINNED_LAYOUT} layoutKey="pinned" />, 1400);
+
+  const table = await screen.findByRole("table", { name: "Deploys pinned" });
+  const sort = (name: string) => within(table).getByRole("button", { name });
+  for (const name of ["Deploy", "Service", "State", "Minutes", "Region"])
+    expect(sort(name)).not.toHaveAttribute("title");
+  await user.hover(sort("Minutes"));
+  expect(screen.getByRole("tooltip")).toHaveTextContent(`${SORT_HINT}; drag to move the column`, {
+    normalizeWhitespace: true,
+  });
+  expect(sort("Minutes")).toHaveAccessibleDescription(`${SORT_HINT}; drag to move the column`);
+  await user.hover(sort("Deploy"));
+  expect(screen.getAllByRole("tooltip")).toHaveLength(1);
+  expect(screen.getByRole("tooltip").textContent).toBe(SORT_HINT);
+  await user.unhover(sort("Deploy"));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  act(() => sort("State").focus());
+  expect(screen.getByRole("tooltip").textContent).toBe(`${SORT_HINT}; drag to move the column`);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(sort("State")).toHaveFocus();
+  // The filter trigger keeps the native title that names it.
+  expect(screen.getByRole("button", { name: "Filter Service" })).toHaveAttribute(
+    "title",
+    "Filter Service"
+  );
+});
+
+test("a column that says how its value is taken says it first in its sort tooltip, the hint muted under it", async () => {
+  const user = userEvent.setup();
+  const method = "The minutes from the first push to the rollout's end.";
+  const columns = COLUMNS.map((column) =>
+    column.id === "minutes" ? { ...column, meta: { describe: method } } : column
+  );
+  draw(<Deploys columns={columns} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  await user.hover(within(table).getByRole("button", { name: "Minutes" }));
+  const lines = [...screen.getByRole("tooltip").querySelectorAll("p")];
+  expect(lines.map((line) => line.textContent)).toEqual([
+    method,
+    `${SORT_HINT}; drag to move the column`,
+  ]);
+  expect(lines[0]?.className).toBe("");
+  for (const token of textMutedOnSurface.split(" ")) expect(lines[1]).toHaveClass(token);
+  // A column with no method has the hint alone, in the tooltip's own colour.
+  await user.hover(within(table).getByRole("button", { name: "Region" }));
+  const hint = [...screen.getByRole("tooltip").querySelectorAll("p")];
+  expect(hint.map((line) => line.textContent)).toEqual([`${SORT_HINT}; drag to move the column`]);
+  expect(hint[0]?.className).toBe("");
+});
+
+test("a column drag shuts the sort tooltip, and no hover opens one until the drop", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const sort = (name: string) => within(table).getByRole("button", { name });
+  await user.hover(sort("Minutes"));
+  expect(screen.getByRole("tooltip")).toBeDefined();
+  fireEvent.dragStart(sort("Minutes"));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.hover(sort("Region"));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  fireEvent.drop(within(table).getByRole("columnheader", { name: /Region/ }));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.unhover(sort("Region"));
+  await user.hover(sort("Region"));
+  expect(screen.getByRole("tooltip").textContent).toBe(`${SORT_HINT}; drag to move the column`);
+});
+
+test("a column's own control stands in its header beside the filter, outside the sort button", async () => {
+  const columns = COLUMNS.map((column) =>
+    column.id === "service"
+      ? {
+          ...column,
+          meta: {
+            text: true,
+            headerControl: (
+              <button aria-pressed={false} type="button">
+                Bars
+              </button>
+            ),
+          },
+        }
+      : column
+  );
+  draw(<Deploys columns={columns} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const control = within(table).getByRole("button", { name: "Bars" });
+  expect(control.closest("th")).toBe(within(table).getByRole("columnheader", { name: /Service/ }));
+  expect(within(table).getByRole("button", { name: "Service" })).not.toContainElement(control);
+  expect(control.parentElement).toContainElement(
+    within(table).getByRole("button", { name: "Filter Service" })
+  );
 });
 
 // The caller that asked for it: the project List's Start next, which sits in a last cell with no

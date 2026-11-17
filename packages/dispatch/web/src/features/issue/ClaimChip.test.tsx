@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,10 +10,22 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
-import { claimIsTakeable } from "./ClaimChip";
+import { ClaimChip, claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
+
+/** The chip's help, as its tooltip says it while the pointer rests on the chip: its first line
+ *  and the rest. The chip itself carries no native title. */
+async function help(user: UserEvent): Promise<{ first: string; rest: string }> {
+  const chip = screen.getByTestId("issue-claim");
+  expect(chip).not.toHaveAttribute("title");
+  await user.hover(chip);
+  const [first, rest] = [...screen.getByRole("tooltip").querySelectorAll("p")].map(
+    (line) => line.textContent ?? ""
+  );
+  return { first: first ?? "", rest: rest ?? "" };
+}
 
 const claim: IssueClaim = {
   actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
@@ -145,9 +157,14 @@ test("a claimed issue names its holder and releases the claim from the header", 
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
   const view = header({ ...base, claim });
   try {
-    expect(await screen.findByTitle(/Claimed by Implementer/)).toBeDefined();
-    // The chip is the only place a reader is told what a claim is.
-    expect(await screen.findByTitle(/two agents never take the same work/)).toBeDefined();
+    // The chip is the only place a reader is told what a claim is, and its tooltip's first
+    // line names the holder whole.
+    await screen.findByTestId("issue-claim");
+    const said = await help(view.user);
+    expect(said.first).toBe(
+      `Claimed by Implementer · since ${new Date(claim.at).toLocaleString()}.`
+    );
+    expect(said.rest).toContain("two agents never take the same work");
     // The holder is drawn by `AgentName`: its name links to its live conversation, and the
     // registry lists it, so it reads as running and the chip adds nothing.
     const chip = screen.getByTestId("issue-claim");
@@ -181,7 +198,7 @@ test("a holder the registry no longer lists reads as not running", async () => {
   const view = header({ ...base, claim });
   try {
     expect(await screen.findByText("not running")).toBeDefined();
-    expect(screen.getByTitle(/no longer running, so anyone may claim it/)).toBeDefined();
+    expect((await help(view.user)).rest).toContain("no longer running, so anyone may claim it");
     const chip = screen.getByTestId("issue-claim");
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
@@ -253,7 +270,7 @@ test("an unclaimed issue shows no holder and nothing to release", async () => {
   const view = header(base);
   try {
     expect(await screen.findByRole("heading", { level: 1 })).toBeDefined();
-    expect(screen.queryByTitle(/Claimed by/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-claim")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Release the claim/ })).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -287,14 +304,13 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
         ?.getAttribute("datetime")
     ).toBe(new Date(lastSeen).toISOString());
     const chip = screen.getByTestId("issue-claim");
-    expect(chip.getAttribute("title")).toContain("missed its heartbeats without ending");
-    expect(chip.getAttribute("title")).toContain(
-      `last seen ${new Date(lastSeen).toLocaleString()}`
-    );
+    const { rest } = await help(view.user);
+    expect(rest).toContain("missed its heartbeats without ending");
+    expect(rest).toContain(`last seen ${new Date(lastSeen).toLocaleString()}`);
     // The wait the chip names is the sum the server refuses by, not a guess of its own, and the
     // issue is not free until then.
     const takeableAt = lastSeen + ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS;
-    expect(chip.getAttribute("title")).toContain(
+    expect(rest).toContain(
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it`
     );
     expect(
@@ -331,8 +347,9 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     const chip = screen.getByTestId("issue-claim");
-    expect(chip.getAttribute("title")).toContain("another agent may take it now");
-    expect(chip.getAttribute("title")).toContain("It has not ended, and may yet answer.");
+    const { rest } = await help(view.user);
+    expect(rest).toContain("another agent may take it now");
+    expect(rest).toContain("It has not ended, and may yet answer.");
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
     ).toBe("unresponsive");
@@ -373,7 +390,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
         .querySelector("time")
         ?.getAttribute("datetime")
     ).toBe(takeableAt);
-    expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
+    expect((await help(view.user)).rest).toContain(
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}`
     );
   } finally {
@@ -433,4 +450,96 @@ test("claimIsTakeable follows the server's refusal: held inside the grace, takea
       now
     )
   ).toBe(false);
+});
+
+// INFRA-3221's R9: the chip's help moved from its native title into the shared tooltip, which a
+// keyboard reaches. Its first line gives the holder's whole name, so a chip whose name is cut
+// needs no native title either.
+test("the chip is a Tab stop whose tooltip names the holder whole, and it carries no native title even with its name cut", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const holder = "Implementer whose session title runs on and on".padEnd(120, "!");
+  const agents = spyOn(api, "listAgents").mockResolvedValue([running("session-one", holder)]);
+  const long: IssueClaim = {
+    actor: { kind: "session", id: "session-one", origin: { session_title: holder } },
+    at: claim.at,
+  };
+  // The name ellipsizes: it holds more than its box shows.
+  const scrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth");
+  Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains("truncate") ? 900 : 0;
+    },
+  });
+  const view = header({ ...base, claim: long });
+  try {
+    const chip = await screen.findByTestId("issue-claim");
+    await screen.findByText(holder);
+    expect(chip).toHaveAttribute("tabindex", "0");
+    act(() => chip.focus());
+    expect(screen.getByRole("tooltip")).toBeDefined();
+    expect(screen.getByRole("tooltip").querySelector("p")?.textContent).toBe(
+      `Claimed by ${holder} · since ${new Date(claim.at).toLocaleString()}.`
+    );
+    expect(chip).toHaveAccessibleDescription(new RegExp(`^Claimed by ${holder} · since`));
+    await view.user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(chip).toHaveFocus();
+    expect((await help(view.user)).first).toContain(holder);
+    // The relative time and the state mark inside keep their own titles; none is the chip's.
+    for (const titled of chip.querySelectorAll("[title]"))
+      expect(titled.getAttribute("title")).not.toContain("Claimed by");
+    expect(chip).not.toHaveAttribute("title");
+  } finally {
+    view.unmount();
+    if (scrollWidth === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+    else Object.defineProperty(HTMLElement.prototype, "scrollWidth", scrollWidth);
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// The Board's cards are too narrow for the chip's one line: the stacked chip writes the whole
+// name, with the login its session acts for, over the claim's age and the holder's state.
+test("a stacked chip writes Claimed by and the whole holder, then the age and state on a line under them", async () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const user = userEvent.setup();
+  const owned: IssueClaim = {
+    actor: {
+      kind: "session",
+      id: "session-one",
+      origin: { session_title: "Implementer" },
+      owner: "alice",
+    },
+    at: claim.at,
+  };
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ClaimChip claim={owned} stacked />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    expect(await screen.findByText("not running")).toBeDefined();
+    const chip = screen.getByTestId("issue-claim");
+    expect(chip).toHaveAttribute("data-claim-stacked");
+    const [name, state] = [...chip.children];
+    expect(name?.textContent).toMatch(/^Claimed by Implementer.*alice/);
+    // The name wraps rather than ellipsizes.
+    expect(name?.querySelector(".truncate")).toBeNull();
+    expect(state?.querySelector("time")?.getAttribute("datetime")).toBe(claim.at);
+    expect(state).toHaveTextContent("not running");
+    expect(chip).toHaveAttribute("tabindex", "0");
+    expect(chip).not.toHaveAttribute("title");
+    await user.hover(chip);
+    expect(screen.getByRole("tooltip").querySelector("p")?.textContent).toMatch(
+      /^Claimed by Implementer.*alice.* · since /
+    );
+  } finally {
+    view.unmount();
+    client.clear();
+    agents.mockRestore();
+  }
 });

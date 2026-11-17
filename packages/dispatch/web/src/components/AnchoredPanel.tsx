@@ -66,15 +66,22 @@ const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
  * checkbox here stands where a select used to, and `j` on it must not walk the table behind.
  *
+ * A tooltip hangs off its control by the same rules (`flip`, which `Tooltip` sets): under its
+ * anchor, held 8 px inside each edge of the window, and flipped above the anchor where the room
+ * under it is too small, never over the anchor it describes. It takes no part in the focus: the
+ * focus stays on the control the reader is on, so the panel draws no Tab stop of its own, takes
+ * no focus as it opens and none from a press on it.
+ *
  * The host owns whether it is open: it renders the panel or it does not. Every popover in
- * Dispatch is built on this, so a dismissal fix is made once (`MultiSelect`, and the issues
- * table's column filters and Columns menu).
+ * Dispatch is built on this, so a dismissal fix is made once (`MultiSelect`, the issues table's
+ * column filters and Columns menu, and `Tooltip`).
  */
 export function AnchoredPanel({
   align = "left",
   anchorRef,
   children,
   className,
+  flip = false,
   focusOnOpen = true,
   label,
   onDismiss,
@@ -84,6 +91,10 @@ export function AnchoredPanel({
   anchorRef: RefObject<HTMLElement | null>;
   children: ReactNode;
   className: string;
+  /** The panel is a tooltip's: placed as every panel is, under its anchor or flipped above it,
+   *  and outside the focus, with no Tab stop of its own and no focus taken as it opens or from
+   *  a press on it. Read once, as the panel opens. */
+  flip?: boolean;
   /** Whether opening moves the focus into the panel. Read once, as the panel opens. */
   focusOnOpen?: boolean;
   /** The panel's accessible name, for a panel that names itself. */
@@ -98,7 +109,8 @@ export function AnchoredPanel({
   });
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
-  const takesFocus = useRef(focusOnOpen);
+  const [tooltip] = useState(flip);
+  const takesFocus = useRef(focusOnOpen && !tooltip);
   // Whether the focus was last on the panel or one of its own controls: what tells an edge the
   // reader reached by Tab out of the panel from one they reached by Tab into it.
   const inside = useRef(false);
@@ -242,10 +254,12 @@ export function AnchoredPanel({
       if (!(target instanceof Node)) return;
       if (panelRef.current?.contains(target)) {
         // A press on the panel's own prose focuses nothing, which would leave focus on the
-        // body and Escape with no owner. The panel takes it, so the reader stays in the panel.
+        // body and Escape with no owner. The panel takes it, so the reader stays in the panel;
+        // a tooltip's leaves the focus where it is.
         if (
-          !(document.activeElement instanceof HTMLElement) ||
-          !panelRef.current.contains(document.activeElement)
+          !tooltip &&
+          (!(document.activeElement instanceof HTMLElement) ||
+            !panelRef.current.contains(document.activeElement))
         )
           panelRef.current.focus();
         return;
@@ -269,7 +283,8 @@ export function AnchoredPanel({
       if (!mine) return;
       event.preventDefault();
       event.stopPropagation();
-      anchorRef.current?.focus();
+      // A tooltip's focus never left the anchor, or a link inside it, so it stays there.
+      if (!tooltip) anchorRef.current?.focus();
       dismiss.current();
     };
     document.addEventListener("focusin", followFocus, true);
@@ -280,25 +295,29 @@ export function AnchoredPanel({
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", dismissOnEscape, true);
     };
-  }, [anchorRef, inner]);
+  }, [anchorRef, inner, tooltip]);
 
   const named = role === undefined ? {} : { role, "aria-label": label };
   return createPortal(
     <>
-      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: the panel's own Tab stop before it, which no reader rests on: its focus is answered at once (`followFocus`). */}
-      <span ref={startEdge} style={EDGE} tabIndex={0} />
+      {tooltip ? null : (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the panel's own Tab stop before it, which no reader rests on: its focus is answered at once (`followFocus`).
+        <span ref={startEdge} style={EDGE} tabIndex={0} />
+      )}
       <div
         className={className}
         ref={panelRef}
         style={{ position: "fixed", ...position }}
-        tabIndex={-1}
+        tabIndex={tooltip ? undefined : -1}
         {...named}
         {...PANEL_MARK}
       >
         <EnclosingPanel.Provider value={hold}>{children}</EnclosingPanel.Provider>
       </div>
-      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: the panel's own Tab stop after it, which no reader rests on: its focus is answered at once (`followFocus`). */}
-      <span ref={endEdge} style={EDGE} tabIndex={0} />
+      {tooltip ? null : (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the panel's own Tab stop after it, which no reader rests on: its focus is answered at once (`followFocus`).
+        <span ref={endEdge} style={EDGE} tabIndex={0} />
+      )}
     </>,
     document.body
   );

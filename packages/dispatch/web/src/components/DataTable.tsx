@@ -34,6 +34,7 @@ import {
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -42,6 +43,7 @@ import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
+import { Tooltip, useTooltip } from "./Tooltip";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
 
@@ -398,8 +400,12 @@ export interface DataTableProps<Row> {
   readonly trailingWidth?: number;
 }
 
+/** What every sortable header's tooltip says of its sort button, `main`'s native title of it. */
+const SORT_HINT = "Sort (shift-click to add a second sort)";
+
 /** One header cell: its sort control, which doubles as the handle that drags the column
- *  elsewhere, its filter, and the edge that resizes it. */
+ *  elsewhere, a control of the column's own (`meta.headerControl`), its filter, and the edge
+ *  that resizes it. */
 function TableHeaderCell<TData>({
   dragColumn,
   header,
@@ -427,6 +433,23 @@ function TableHeaderCell<TData>({
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
+  // Every sortable header says how it sorts in the shared tooltip, on hover and on keyboard
+  // focus, and a column that says how its value is taken (`meta.describe`, a measure's method)
+  // says that first, with the sort hint as a second, muted line. The button carries no native
+  // title, so two tooltips never show at once. A drag of any column closes it, and no hover
+  // opens it until the drop.
+  const describe = column.columnDef.meta?.describe;
+  const sortHint = pinned ? SORT_HINT : `${SORT_HINT}; drag to move the column`;
+  const sortRef = useRef<HTMLButtonElement>(null);
+  const tooltip = useTooltip({ paused: dragColumn !== undefined });
+  const control = column.columnDef.meta?.headerControl;
+  const filter = column.getCanFilter()
+    ? renderFilter({
+        column,
+        onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
+        open: openFilter === column.id,
+      })
+    : null;
   return (
     <th
       aria-sort={
@@ -454,34 +477,40 @@ function TableHeaderCell<TData>({
         className={`flex justify-between ${stacked ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.getCanSort() ? (
-          <button
-            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
-            draggable={!pinned}
-            onClick={column.getToggleSortingHandler()}
-            onDragEnd={() => setDragColumn(undefined)}
-            onDragStart={() => setDragColumn(column.id)}
-            title={
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }
-            type="button"
-          >
-            {flexRender(column.columnDef.header, header.getContext())}
-            <span className={textMutedOnCanvas}>
-              {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
-            </span>
-          </button>
+          <>
+            <button
+              {...tooltip.props}
+              className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+              draggable={!pinned}
+              onClick={column.getToggleSortingHandler()}
+              onDragEnd={() => setDragColumn(undefined)}
+              onDragStart={() => setDragColumn(column.id)}
+              ref={sortRef}
+              type="button"
+            >
+              {flexRender(column.columnDef.header, header.getContext())}
+              <span className={textMutedOnCanvas}>
+                {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
+              </span>
+            </button>
+            <Tooltip anchorRef={sortRef} trigger={tooltip}>
+              {describe === undefined ? null : <p>{describe}</p>}
+              <p className={describe === undefined ? undefined : `mt-1 ${textMutedOnSurface}`}>
+                {sortHint}
+              </p>
+            </Tooltip>
+          </>
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {column.getCanFilter()
-          ? renderFilter({
-              column,
-              onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
-              open: openFilter === column.id,
-            })
-          : null}
+        {control === undefined ? (
+          filter
+        ) : (
+          <span className="flex shrink-0 items-center gap-1">
+            {control}
+            {filter}
+          </span>
+        )}
       </span>
       {column.getCanResize() ? (
         <span

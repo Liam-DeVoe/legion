@@ -5,11 +5,13 @@ import {
   claimTakeableAt,
   claimTakeableNow,
 } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
-import { pillClassName } from "../../components/Pill";
+import { pillClassName, pillToneClassName } from "../../components/Pill";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
+import { focusVisibleRing } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
@@ -101,10 +103,12 @@ export function claimIsTakeable(
  * List row, a Board card. The holder is drawn by `AgentName`, as every agent is: its current
  * registry title, else the title stamped on the claim, else `session:<8>…`, with its running
  * state and a link to its live conversation. The age keeps itself current through the shared
- * `Timestamp` tick, and the whole label with the absolute time is in the `title`, which also
- * says what a claim is: the chip sits among status, priority and assignee, and nothing else on
- * the page defines it. An unclaimed issue renders nothing at all, so a board of unclaimed work
- * stays quiet.
+ * `Timestamp` tick. The help is in the shared tooltip, on hover and on keyboard focus of the
+ * chip or of the link inside it, so the chip is a Tab stop: who holds the claim, named whole,
+ * and since when, then what a claim is, since the chip sits among status, priority and assignee
+ * and nothing else on the page defines it, and whether its session still runs. The chip carries
+ * no native title, cut or not: the tooltip's first line gives the whole name. An unclaimed issue
+ * renders nothing at all, so a board of unclaimed work stays quiet.
  *
  * A holder the registry no longer lists reads "· not running" in the muted tone, beside its
  * name's own not-running mark, because that claim is free for the taking and a chip that looked
@@ -129,16 +133,26 @@ export function claimIsTakeable(
  * Only the holder's name ellipsizes:
  * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
  * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
+ *
+ * `stacked` is for a host as narrow as a Board card, where one line leaves the name a few
+ * pixels: the chip takes the host's whole width and writes "Claimed by" and the holder's name,
+ * with the login it acts for, on as many lines as they need, and the age and the state on a line
+ * under them, so no part of the name is cut at the card's edge.
  */
 export function ClaimChip({
   claim,
   liveness,
+  stacked = false,
 }: {
   claim: IssueClaim | null;
   liveness?: ClaimHolderLiveness;
+  /** Write the holder's name over its age and state, for a host too narrow for one line. */
+  stacked?: boolean;
 }): ReactNode {
   const registry = useAgentRegistry(claim?.actor.kind === "session");
   const text = useAgentText();
+  const chipRef = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
   if (claim === null) {
     return null;
   }
@@ -179,24 +193,19 @@ export function ClaimChip({
           registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
         }`
       : "";
-  return (
-    <span
-      className={`${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`}
-      data-testid="issue-claim"
-      style={{ flexShrink: 1 }}
-      title={`${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`}
-    >
-      <span className="shrink-0">Claimed by</span>
-      <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
-      <span aria-hidden="true" className="shrink-0">
-        ·
-      </span>
+  const dot = (
+    <span aria-hidden="true" className="shrink-0">
+      ·
+    </span>
+  );
+  // The claim's age and the holder's state, which follow the name on one line, and stand on a
+  // line under it stacked.
+  const state = (
+    <>
       <Timestamp at={claim.at} className="shrink-0" />
       {lapsed ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
-            ·
-          </span>
+          {dot}
           <span className="shrink-0" data-testid="issue-claim-lapsed">
             not running
           </span>
@@ -204,9 +213,7 @@ export function ClaimChip({
       ) : null}
       {unresponsive ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
-            ·
-          </span>
+          {dot}
           <span className="shrink-0" data-testid="issue-claim-unresponsive">
             unresponsive
             {heardAt === null ? null : (
@@ -229,6 +236,53 @@ export function ClaimChip({
           </span>
         </>
       ) : null}
+    </>
+  );
+  const tone = takeable ? "label" : "selected-label";
+  const help = (
+    <Tooltip anchorRef={chipRef} trigger={tooltip}>
+      <p>{since}</p>
+      <p className="mt-1">
+        {explains}
+        {lapsedNote}
+        {unresponsiveNote}
+        {uncheckedNote}
+      </p>
+    </Tooltip>
+  );
+  if (stacked)
+    return (
+      <span
+        {...tooltip.props}
+        className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-xs font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${pillToneClassName(tone)}`}
+        data-claim-stacked
+        data-testid="issue-claim"
+        ref={chipRef}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the Tab stop opens the tooltip that says who holds the claim and what a claim is.
+        tabIndex={0}
+      >
+        <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+          Claimed by <AgentName actor={claim.actor} inline />
+        </span>
+        <span className="flex w-full min-w-0 flex-wrap items-center gap-1">{state}</span>
+        {help}
+      </span>
+    );
+  return (
+    <span
+      {...tooltip.props}
+      className={`${pillClassName(tone)} min-w-0 max-w-full gap-1 outline-none focus-visible:ring-2 ${focusVisibleRing}`}
+      data-testid="issue-claim"
+      ref={chipRef}
+      style={{ flexShrink: 1 }}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: the Tab stop opens the tooltip that says who holds the claim and what a claim is.
+      tabIndex={0}
+    >
+      <span className="shrink-0">Claimed by</span>
+      <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
+      {dot}
+      {state}
+      {help}
     </span>
   );
 }

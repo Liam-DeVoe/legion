@@ -26,11 +26,17 @@ const pillTones: Record<PillTone, string> = {
 export const pillShapeClassName =
   "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap";
 
+/** A pill's colours alone, for a host that keeps the tone but not the one-line shape: a claim
+ *  chip stacked on a Board card. */
+export function pillToneClassName(tone: PillTone): string {
+  return pillTones[tone];
+}
+
 /** The pill's full class string, for a host that must stay one interactive element (a parent
  *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
  *  outline a bigger shape than the fill. */
 export function pillClassName(tone: PillTone): string {
-  return `${pillShapeClassName} ${pillTones[tone]}`;
+  return `${pillShapeClassName} ${pillToneClassName(tone)}`;
 }
 
 export function Pill({

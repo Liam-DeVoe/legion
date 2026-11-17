@@ -1,10 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SortingState, Table } from "@tanstack/react-table";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type {
   IssueSummary,
   LegionBoardCard,
@@ -219,18 +221,21 @@ const NO_COUNTS: ReadonlyMap<string, number> = new Map();
 const noMark = () => {};
 const ignore = () => {};
 
-/** The Issues tab's table over `items`, showing `layout`'s columns, sorted by `sorting`; `tab`
- *  unset draws it as a table another page draws. `onTable` is handed the table on each draw. */
+/** The Issues tab's table over `items`, showing `layout`'s columns, sorted by `sorting`, `pageSize`
+ *  rows to a page; `tab` unset draws it as a table another page draws. `onTable` is handed the
+ *  table on each draw. */
 function Columns({
   items,
   layout: layoutColumns,
   onTable,
+  pageSize = 50,
   sorting = [],
   tab = { hasLegion: true },
 }: {
   items: Item[];
   layout: LayoutColumns;
   onTable?: (table: Table<Item>) => void;
+  pageSize?: number;
   sorting?: SortingState;
   tab?: { hasLegion: boolean } | null;
 }): ReactNode {
@@ -255,7 +260,7 @@ function Columns({
       grouping: [],
       columnFilters: [],
       globalFilter: "",
-      pagination: { pageIndex: 0, pageSize: 50 },
+      pagination: { pageIndex: 0, pageSize },
     },
     onSortingChange: ignore,
     onGroupingChange: ignore,
@@ -296,6 +301,9 @@ function undraw() {
 }
 afterEach(undraw);
 
+/** Who the reader is: the browser keeps their choices under their login. */
+const VIEWER = { event_head: "0", kind: "user", login: "alice" } as const;
+
 /** Draws the table, with the box the height a window gives it: the unit DOM lays nothing out. */
 function draw(props: Parameters<typeof Columns>[0]) {
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -305,7 +313,9 @@ function draw(props: Parameters<typeof Columns>[0]) {
       return this.dataset.testid === "columns-scroll" ? 600 : (descriptor?.get?.call(this) ?? 0);
     },
   });
+  const viewer = spyOn(api, "whoAmI").mockResolvedValue(VIEWER);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, VIEWER);
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -316,6 +326,7 @@ function draw(props: Parameters<typeof Columns>[0]) {
   restores.push(() => {
     view.unmount();
     client.clear();
+    viewer.mockRestore();
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
@@ -454,7 +465,11 @@ test("a facts cell whose read is out shows a loading mark, and one whose read fa
   // The closed rows the board's map does not hold wait on the items read; the open ones do not.
   for (const key of ["CORE-6", "CORE-7"])
     expect(cellsOf(key)).toEqual(["Loading", "Loading", "Loading", "Loading", ""]);
-  expect(cellsOf("CORE-5")).toEqual(["10 h 0 m", "2", "Root", "10 h 0 m", ""]);
+  // Time per phase opens on Share, which draws CORE-5's bar and writes no total.
+  expect(cellsOf("CORE-5")).toEqual(["10 h 0 m", "2", "Root", "", ""]);
+  expect(
+    document.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="CORE-5"] [data-phase-hours]`)
+  ).not.toBeNull();
   expect(cellsOf("CORE-4")).toEqual(["", "", "", "", ""]);
   const row = document.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="CORE-7"]`);
   expect(row?.querySelectorAll('[data-facts-read="pending"]')).toHaveLength(4);
@@ -602,4 +617,134 @@ test("Closed filters by a date range, and a table another page draws offers it h
     "",
     "",
   ]);
+});
+
+const SORT_HINT = "Sort (shift-click to add a second sort); drag to move the column";
+
+// INFRA-3221's R9: the Queue number's help moved from its native title into the shared tooltip,
+// which a keyboard reaches, on the Issues tab and in the priority pages' tables.
+test("a Queue number says what it is in the tooltip, on hover and on focus, and carries no native title", async () => {
+  const user = userEvent.setup();
+  draw({ items: rows(), layout: showing("queue") });
+  await screen.findByRole("table", { name: "Issues" });
+  const number = screen.getByText("#1");
+  expect(number).toHaveAttribute("tabindex", "0");
+  await user.hover(number);
+  expect(screen.getByRole("tooltip").textContent).toBe("Legion starts issues in this order");
+  expect(number).toHaveAccessibleDescription("Legion starts issues in this order");
+  await user.unhover(number);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  act(() => number.focus());
+  expect(screen.getByRole("tooltip").textContent).toBe("Legion starts issues in this order");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  // A Queue card with no number has nothing to explain.
+  expect(screen.getByText("In Legion queue")).not.toHaveAttribute("tabindex");
+  expect(document.querySelectorAll("tbody [title]")).toHaveLength(0);
+  undraw();
+  draw({ items: rows({}), layout: ISSUE_TABLE_COLUMNS, tab: null });
+  await screen.findByRole("table", { name: "Issues" });
+  const today = document.querySelector<HTMLElement>(
+    `[${ISSUE_ROW_ATTRIBUTE}="CORE-4"] [data-queue-place]`
+  );
+  expect(today?.textContent).toBe("#1");
+  expect(today).toHaveAttribute("tabindex", "0");
+  expect(today).not.toHaveAttribute("title");
+  await user.hover(today as HTMLElement);
+  expect(screen.getByRole("tooltip").textContent).toBe("Legion starts issues in this order");
+});
+
+test("each measure header's sort tooltip gives its method, then the sort hint on a muted second line", async () => {
+  const user = userEvent.setup();
+  draw({
+    items: rows(),
+    layout: showing(
+      "status",
+      "work_hours",
+      "phase_hours",
+      "review_rounds",
+      "waited",
+      "time_in_phase"
+    ),
+  });
+  const table = await screen.findByRole("table", { name: "Issues" });
+  const lines = () =>
+    [...screen.getByRole("tooltip").querySelectorAll("p")].map((line) => line.textContent);
+  for (const [header, id] of [
+    ["Work time", "work_hours"],
+    ["Time per phase", "phase_hours"],
+    ["Review rounds", "review_rounds"],
+    ["Time waiting", "waited"],
+    ["Time in Legion phase", "time_in_phase"],
+  ] as const) {
+    const sort = within(table).getByRole("button", { name: header });
+    expect(sort).not.toHaveAttribute("title");
+    await user.hover(sort);
+    expect(lines()).toEqual([MEASURE_METHODS[id], SORT_HINT]);
+    await user.unhover(sort);
+    act(() => sort.focus());
+    expect(lines()).toEqual([MEASURE_METHODS[id], SORT_HINT]);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  }
+  // Any other header has the sort hint alone.
+  await user.hover(within(table).getByRole("button", { name: "Status" }));
+  expect(lines()).toEqual([SORT_HINT]);
+});
+
+/** CORE-1 with 5 hours by phase beside CORE-5's 10. */
+const PHASE_READS: LegionReads = {
+  ...READS,
+  board: {
+    ...BOARD,
+    issues: {
+      ...BOARD.issues,
+      "CORE-1": facts({
+        work_hours: 5,
+        root_key: "CORE-1",
+        hours_by_phase: { design: 2, implementing: 3 },
+      }),
+    },
+  },
+};
+
+test("Time per phase opens on Share, its header's control switches to Hours against the page's longest total, and a remount keeps Hours", async () => {
+  const user = userEvent.setup();
+  const bar = (key: string) =>
+    document.querySelector<HTMLElement>(`[${ISSUE_ROW_ATTRIBUTE}="${key}"] [data-phase-hours-bar]`);
+  draw({ items: rows({ legion: PHASE_READS }), layout: showing("phase_hours") });
+  const table = await screen.findByRole("table", { name: "Issues" });
+  const control = within(table).getByRole("group", { name: "Time per phase as" });
+  // In the column's header, outside its sort button.
+  expect(control.closest("th")).toBe(
+    within(table).getByRole("columnheader", { name: /Time per phase/ })
+  );
+  expect(within(table).getByRole("button", { name: "Time per phase" })).not.toContainElement(
+    control
+  );
+  expect(within(control).getByRole("button", { name: "Share" })).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  expect([bar("CORE-1")?.style.width, bar("CORE-5")?.style.width]).toEqual(["100%", "100%"]);
+  expect([cellsOf("CORE-1"), cellsOf("CORE-5")]).toEqual([[""], [""]]);
+
+  await user.click(within(control).getByRole("button", { name: "Hours" }));
+  expect([bar("CORE-1")?.style.width, bar("CORE-5")?.style.width]).toEqual(["50%", "100%"]);
+  expect([cellsOf("CORE-1"), cellsOf("CORE-5")]).toEqual([["5.0 h"], ["10 h"]]);
+  expect(localStorage.getItem("dispatch.project.phase-hours:alice")).toBe("hours");
+
+  // A remount, as a reload makes one, keeps Hours: the browser kept it for the reader.
+  for (const restore of restores.splice(0)) restore();
+  draw({ items: rows({ legion: PHASE_READS }), layout: showing("phase_hours"), pageSize: 2 });
+  await screen.findByRole("table", { name: "Issues" });
+  expect(
+    within(screen.getByRole("group", { name: "Time per phase as" })).getByRole("button", {
+      name: "Hours",
+    })
+  ).toHaveAttribute("aria-pressed", "true");
+  // A page of two rows: CORE-1 holds the longest total of its page, whatever the next holds.
+  expect(listed()).toEqual(["CORE-1", "CORE-2"]);
+  expect(bar("CORE-1")?.style.width).toBe("100%");
+  expect(cellsOf("CORE-1")).toEqual(["5.0 h"]);
 });

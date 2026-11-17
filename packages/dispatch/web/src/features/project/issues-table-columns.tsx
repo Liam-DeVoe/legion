@@ -1,16 +1,25 @@
-import type { ColumnDef, FilterFn, RowData, SortingFn } from "@tanstack/react-table";
-import { type ReactNode, useMemo } from "react";
+import type {
+  ColumnDef,
+  FilterFn,
+  RowData,
+  RowModel,
+  SortingFn,
+  Table,
+} from "@tanstack/react-table";
+import { type ReactNode, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { rangeWords } from "../../components/RangeFilter";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
 import type { LayoutColumns } from "../../components/table-layout";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   checkboxAccent,
   dangerText,
+  focusVisibleRing,
   linkHoverText,
   linkText,
   skeletonBg,
@@ -31,6 +40,12 @@ import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import { formatPhaseTime, formatWorkTime, type LegionFacts } from "./issues-legion";
+import {
+  PhaseHoursCell,
+  type PhaseHoursMode,
+  PhaseHoursModeControl,
+  usePhaseHoursMode,
+} from "./issues-phase-hours";
 import type { IssueListing } from "./issues-table-data";
 import {
   COLUMNS,
@@ -73,8 +88,12 @@ declare module "@tanstack/react-table" {
     /** Filter by a window of time (`RangeFilter`): for a column of moments. */
     range?: boolean;
     /** How the column's measure is taken, in one or two sentences (`MEASURE_METHODS`), which
-     *  the Columns menu shows under its name. */
+     *  its header's tooltip says before the sort hint and the Columns menu shows under its
+     *  name. */
     describe?: string;
+    /** A control of the column's own that its header draws beside the filter: Time per
+     *  phase's Share and Hours. */
+    headerControl?: ReactNode;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
@@ -134,16 +153,44 @@ function CardTime({ since }: { since: string | null | undefined }): ReactNode {
 /**
  * The Queue cell: the issue's number in the Legion queue, or "In Legion queue" for a card of the
  * board's Queue column that the daemon's line gives no number. With no daemon the number is
- * today's: the Todo issues labelled `legion`, in rank order.
+ * today's: the Todo issues labelled `legion`, in rank order. The number says what it is in the
+ * shared tooltip, on hover and on keyboard focus, so it is a Tab stop; it carries no native
+ * title.
  */
 function QueuePlace({ place, queued }: { place: number | undefined; queued: boolean }): ReactNode {
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
   if (place !== undefined)
     return (
-      <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
+      <span
+        {...tooltip.props}
+        className={`rounded-sm font-semibold tabular-nums outline-none focus-visible:ring-2 ${focusVisibleRing}`}
+        data-queue-place={place}
+        ref={anchorRef}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the Tab stop opens the tooltip that says what the number is.
+        tabIndex={0}
+      >
         #{place}
+        <Tooltip anchorRef={anchorRef} trigger={tooltip}>
+          Legion starts issues in this order
+        </Tooltip>
       </span>
     );
   return queued ? <span className={`text-xs ${textMutedOnCanvas}`}>In Legion queue</span> : null;
+}
+
+/** The longest Time per phase total among the rows of a page, which Hours draws each bar
+ *  against. Counted once per page: TanStack hands back the same page model until it changes. */
+const PAGE_LONGEST = new WeakMap<RowModel<Item>, number>();
+function pageLongest(table: Table<Item>): number {
+  const page = table.getRowModel();
+  const known = PAGE_LONGEST.get(page);
+  if (known !== undefined) return known;
+  let longest = 0;
+  for (const row of page.rows)
+    if (!row.getIsGrouped()) longest = Math.max(longest, phaseHoursTotal(row.original.facts));
+  PAGE_LONGEST.set(page, longest);
+  return longest;
 }
 
 /** Who created the issue, at most `clamp` two lines. A server of the release before the one that
@@ -168,10 +215,14 @@ function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): Reac
  *  Everything else about a column — whether it filters, what a row files under, what it groups
  *  by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the
  *  two never disagree. A row's own checkbox tells `onMark` the row it marks. A column whose rows
- *  can have no value sorts those rows last whichever way it is sorted (`sortUndefined`). */
+ *  can have no value sorts those rows last whichever way it is sorted (`sortUndefined`).
+ *  Time per phase draws in the reader's mode (`usePhaseHoursMode`), which its header's control
+ *  switches. */
 const renderings = (
   userState: UserState | undefined,
-  onMark: (key: string) => void
+  onMark: (key: string) => void,
+  phaseMode: PhaseHoursMode,
+  setPhaseMode: (mode: PhaseHoursMode) => void
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -537,15 +588,17 @@ const renderings = (
     accessorFn: (item) => phaseHoursTotal(item.facts),
     sortingFn: "basic",
     sortDescFirst: true,
-    cell: ({ row }) =>
-      factsCell(row.original, (facts) => {
-        const total = phaseHoursTotal(facts);
-        return total === 0 ? null : (
-          <span className={`text-xs tabular-nums ${textSecondaryOnCanvas}`}>
-            {formatWorkTime(total)}
-          </span>
-        );
-      }),
+    cell: ({ row, table }) =>
+      factsCell(row.original, (facts) => (
+        <PhaseHoursCell
+          facts={facts}
+          mode={phaseMode}
+          pageMax={phaseMode === "hours" ? pageLongest(table) : 0}
+        />
+      )),
+    meta: {
+      headerControl: <PhaseHoursModeControl mode={phaseMode} onChange={setPhaseMode} />,
+    },
   },
 });
 
@@ -755,7 +808,8 @@ const REGISTRY: ReadonlyMap<string, ColumnSpec> = new Map(
  * told the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
  * stable one, as it does `layout` and `priorityTitles`. A column starts at the layout's width and
  * goes no narrower than its minimum there (`compact`: a phone's). `tab` marks the Issues tab's
- * own table; a table without it draws today's cells.
+ * own table; a table without it draws today's cells. Time per phase's mode is the reader's
+ * (`usePhaseHoursMode`), and a switch of it draws the columns anew.
  */
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -769,8 +823,9 @@ export function useIssueTableColumns(
   tab?: IssueTabColumns
 ): ColumnDef<Item>[] {
   const hasLegion = tab?.hasLegion;
+  const [phaseMode, setPhaseMode] = usePhaseHoursMode();
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState, onMark);
+    const rendering = renderings(userState, onMark, phaseMode, setPhaseMode);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
     const embedded = hasLegion === undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
@@ -793,9 +848,10 @@ export function useIssueTableColumns(
           ? embeddedPhoneMin(column.id)
           : phoneMin(column.id)
         : (layout.minimums?.[column.id] ?? column.min);
+      const drawn = (embedded ? EMBEDDED_RENDERINGS[column.id] : undefined) ?? rendering[column.id];
       return [
         {
-          ...((embedded ? EMBEDDED_RENDERINGS[column.id] : undefined) ?? rendering[column.id]),
+          ...drawn,
           id: column.id,
           size: layout.sizes?.[column.id] ?? column.size,
           minSize,
@@ -809,6 +865,7 @@ export function useIssueTableColumns(
             ? {}
             : { filterFn: filter.kind === "text" ? "includesString" : inPicks }),
           meta: {
+            ...drawn.meta,
             ...(filter?.kind === "text" ? { text: true } : {}),
             ...(filter?.kind === "range" ? { range: true } : {}),
             ...(picks?.order === undefined ? {} : { order: picks.order }),
@@ -835,5 +892,5 @@ export function useIssueTableColumns(
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...listing, ...registered.slice(after)];
-  }, [userState, compact, onMark, layout, priorityTitles, hasLegion]);
+  }, [userState, compact, onMark, layout, priorityTitles, hasLegion, phaseMode, setPhaseMode]);
 }
