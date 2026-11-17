@@ -226,6 +226,31 @@ check "names the spelling that is not canonical, and the one to write" \
   "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`./go.work.sum\`, a path that is not canonical: .*; write it \`go.work.sum\`")"
 check "names the glob" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`packages/envoy/\*\`, a path with a wildcard")"
 
+# git holds a symlink as a file and no path inside it, though the file system shows the target's
+# files there: `git log` through a symlinked directory finds no commit (the round-11 review's S2).
+# The symlink itself is a file to git, so written as one it stays accepted (S4).
+link_rule="a symlink: git holds the symlink as a file and no path inside it, so this path matches no change"
+echo "case: a plain path through a symlinked directory (S2), and the symlink itself (S3, S4)"
+root=$(written plain-through-link)
+mkdir -p "$root/docs" && ln -s ../packages/envoy "$root/docs/envoy"
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    go.work go.work.sum' $'    go.work docs/envoy/beta/beta.go docs/envoy/gamma/ go.work.sum'
+run_check "$root"
+check "exits 1 on a file and a directory reached through the symlink" "$(is "$status" 1)"
+check "names the file (S2)" \
+  "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`docs/envoy/beta/beta.go\`, a path inside docs/envoy, $link_rule")"
+check "names the directory" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`docs/envoy/gamma/\`, a path inside docs/envoy, $link_rule")"
+root=$(written plain-link-slash)
+mkdir -p "$root/docs" && ln -s ../packages/envoy "$root/docs/envoy"
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    go.work go.work.sum' $'    go.work docs/envoy/ go.work.sum'
+run_check "$root"
+check "exits 1 on the symlink written as a directory (S3)" "$(is "$status" 1)"
+check "names it as a file with a trailing /" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`docs/envoy/\`, the file docs/envoy with a trailing /")"
+root=$(written plain-link-file)
+mkdir -p "$root/docs" && ln -s ../packages/envoy "$root/docs/envoy"
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    go.work go.work.sum' $'    go.work docs/envoy go.work.sum'
+run_check "$root"
+check "passes the symlink written as a file, as git reads it (S4)" "$(is "$status" 0)"
+
 # A directory argument without its / was read as a file: a push pattern naming the directory alone
 # counted as covering it (R7), and a `!` pattern inside it went unseen (R8). Both are refused as a
 # plain path in the wrong spelling.

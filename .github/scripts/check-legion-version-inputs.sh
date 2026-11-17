@@ -96,7 +96,8 @@
 #      check does not; a plain path that is not a file of the tree written without a trailing /
 #      or a directory of the tree written with one, canonical and with no wildcard, naming the
 #      spelling to write, since git reads `F/` as a directory alone and matches no change to a
-#      file F; a value holding a `${{ }}` expression, which GitHub renders into the paths
+#      file F; a plain path inside a symlinked directory, which git holds as a file with no path
+#      inside it; a value holding a `${{ }}` expression, which GitHub renders into the paths
 #      first; or a path written with any other pathspec magic, which this check cannot read;
 #   6. a go command that fails, a package of this repository that go list cannot load, or a
 #      listing that does not name the program it lists, since what that program links is then
@@ -257,12 +258,17 @@ def plain_refusal(key, word):
     the tree written without a trailing / or a directory of the tree written with one, spelled
     canonically. git reads `F/` as a directory alone, so for a file F it matches no change; and this
     check reads a path without a / as a file, so for a directory it would read a push pattern that
-    names the path alone as covering what lies inside it. A symlink is a file to git."""
+    names the path alone as covering what lies inside it. A symlink is a file to git, and git holds
+    no path inside a symlinked directory, though the file system shows one there."""
     if WILDCARD.search(word):
         return (f"{key} names `{word}`, a path with a wildcard, which git matches by its own glob rules and this "
                 f"check does not: it cannot say which paths it covers; name the paths it means instead")
     fixed = spelling(word)
     node = Path(fixed) if fixed else None
+    if node is not None and any(parent.is_symlink() for parent in node.parents):
+        link = next(parent for parent in reversed(node.parents) if parent.is_symlink())
+        return (f"{key} names `{word}`, a path inside {link}, a symlink: git holds the symlink as a file and no "
+                f"path inside it, so this path matches no change; name the path the symlink points to")
     kind = None if node is None else "file" if node.is_symlink() or node.is_file() else (
         "directory" if node.is_dir() else None)
     if kind is None:
