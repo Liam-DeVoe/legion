@@ -615,10 +615,9 @@ When a root's architect sends you a requirement:
    armed gate" says.
 7. Tell the root's architect that the request is open.
 
-The summary of each request of the route names each root and the requirement, and it states the
-cost. Its last sentence gives the two reviews' result, as for every approval request. The roots,
-the requirement and the cost are part of what the person approves. So they go in the summary,
-although `dispatch request-approval --help` asks for one sentence that names what changed. State
+The summary of each request of the route names each root, the requirement and the cost, which are
+part of what the person approves, although `dispatch request-approval --help` asks for one
+sentence. Its last sentence gives the two reviews' result, as for every approval request. State
 the cost so:
 
 - Where the ancestor is its tree's root, the new version closes its gate. Say that its tree merges
@@ -647,9 +646,10 @@ More rules for the ancestor's architect:
   and your acceptance reads them (`skill://legion-architect/references/acceptance.md`).
 - Where the root that a `Delivered by` requirement names leaves the workflow without delivering it,
   rewrite the requirement without that name. Request the person's approval of that version, and
-  let the ancestor's own plan give the requirement a task. That version is not a version of the
-  route: its summary names no root, and a sibling root that finds its request open asks for its own
-  approval.
+  let the ancestor's own plan give the requirement a task. Where a requirement it delivered names
+  no root, keep its words: the ancestor's own plan gives it a task. That version is not a version
+  of the route: its summary names no root, and a sibling root that finds its request open asks
+  for its own approval.
 - The daemon refuses the ancestor's `sign_off` and `close_root` while a root that rests on its
   approval is in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`). That root's own architect, or a
   person, moves it.

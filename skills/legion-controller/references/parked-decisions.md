@@ -285,11 +285,12 @@ At every start (step 4 of the start procedure) and on each `tick`:
    cause stays, or you cannot tell, move nothing. Name the root and what it waits on in your
    summary.
 6. Take each root of step 1's list in `backlog` that you moved there while it waited on its
-   children, or on a slot for one of them, and that step 5 left where it is. The line of its
-   move to the backlog is by `session legion-daemon:<PROJECT>` (**Deciding**, step 2). A comment
-   that a controller session posted on the root after that line, and at most 10 minutes after it,
-   says that the root waits on its children or on a slot for one of them, whatever words that
-   comment opens with. Read the root's children from step 2. When one of them is open, as
+   children, or on a slot for one of them, and that step 5 left where it is. Its line in the
+   root's events, read as step 2 of **Deciding** reads it, is by
+   `session legion-daemon:<PROJECT>`. A comment that a controller session posted on the root after
+   that line, and at most 10 minutes after it, says that the root waits on its children or on a
+   slot for one of them, whatever words that comment opens with. Read the root's children from
+   step 2. When one of them is open, as
    [Open children](skill://legion-controller/references/admission.md#open-children) says, set the
    root to `todo` (`set_status`). Post one comment on the root
    (`dispatch comment --issue <root> --body-file -`): `<root> goes back to todo: it went to the

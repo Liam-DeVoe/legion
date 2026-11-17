@@ -42,8 +42,9 @@ them before you decide:
    again for each issue that lists.
 3. Read the checks and results of each of them with `dispatch results --issue <key>`.
 4. A check of an issue under it counts only once that issue is `done`, with its result at that
-   issue's final head. A check that runs `after_merge` counts with its result after that merge. An
-   issue under it that is not `done` is a wait, not a pass: hold the acceptance until it is done.
+   issue's final head, or, for a check in another repository, where step 5 says. A check that runs
+   `after_merge` counts with its result after that merge. An issue under it that is not `done` is
+   a wait, not a pass: hold the acceptance until it is done.
 5. Read a check in another repository as "A parent's head" says.
 6. Where views deliver parts of one requirement, as their `Delivers:` lines name them, the
    requirement counts only when those parts together make the whole of it.
@@ -120,7 +121,8 @@ requirement proves it with a check on its own Verification document whose `serve
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
 that waits for it waits forever, so work another child builds on is a child of its own. A
 requirement a child of the tree carries part of stays the root's, and the root's own head must
-meet it.
+meet it. A view, the root of a tree of its own, is no child of the tree here: the parts its
+`Delivers:` line names are proven by its own checks, as "Accepting" says.
 
 The daemon starts the round that gives a parent that head. No phase of a parent starts while an
 open child stands under it, and the first admission pass that sees such a child stops the phase

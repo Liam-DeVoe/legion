@@ -217,10 +217,11 @@ it there until that answer comes clean.
   tester's handoff, `dispatch results --issue <issue>` at the approved head and the reviewer's
   approval of the head by SHA; the daemon refuses the sign-off while an issue beneath it is still
   in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on
-  a head that carries their merges, `skill://legion-architect`, section 4) and accepts with the
-  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`
-  or `testing` with `request_backward_move` and a reason, which reaches the started worker's task
-  as its `Reason:` line and counts a review round. The acceptance comment names each check with
+  a head that carries the merges of every child its checks need, `skill://legion-architect`,
+  section 4) and accepts with the `legion` tool's `sign_off`, which moves the issue to retro, or
+  sends it back to `implementing` or `testing` with `request_backward_move` and a reason, which
+  reaches the started worker's task as its `Reason:` line and counts a review round. The
+  acceptance comment names each check with
   its result. An issue with no Verification document, or none holding a `before_merge` check,
   is a gap the tester and the reviewer named and neither refused, so that comment is its only
   gate: it names the gap and decides how each delivered item is proven at this head, never

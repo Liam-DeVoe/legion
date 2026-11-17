@@ -144,9 +144,9 @@ view applies to it:
 A link has a cost. An open child under a parent holds the parent's first phase. It also holds
 every later phase start of the parent, and it stops a phase of the parent under way at the next
 admission pass. A class root with no code of its own loses nothing by it. Where you report the
-link (your reply under the evidence, or your summary), and in your message to the root's
-architect, name all three parts of that cost for the root you link under, whatever phase it stands
-in now and whether or not it has code of its own.
+link (your reply under the evidence, or your summary), and in your message to the architect of
+the issue you link, name all three parts of that cost for the root you link under, whatever phase
+it stands in now and whether or not it has code of its own.
 
 ### A member under a root on the backlog
 
