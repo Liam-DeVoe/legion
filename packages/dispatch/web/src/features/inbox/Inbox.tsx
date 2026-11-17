@@ -387,14 +387,19 @@ function AskShortRow({
       section={section}
       selected={selected}
       title={
-        <MarkdownPreview
-          className="min-w-0 grow text-sm"
-          lines={1}
-          markdown={ask.question}
-          source={textSourceOf("ask", ask.id, ask.issue_key)}
-          surface="inbox-ask-row"
-          tree={ask.question_tree}
-        />
+        // The row's type is set on the element around the preview: `.dispatch-markdown` takes
+        // its size and its line from the element around it (styles.css), and that rule is not
+        // in a layer, so a `text-sm` on the preview's own element loses to it and the line
+        // reads at the page's 16 px.
+        <div className="min-w-0 grow text-sm">
+          <MarkdownPreview
+            lines={1}
+            markdown={ask.question}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+            surface="inbox-ask-row"
+            tree={ask.question_tree}
+          />
+        </div>
       }
     />
   );
