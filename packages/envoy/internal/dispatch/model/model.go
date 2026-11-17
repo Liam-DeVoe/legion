@@ -77,9 +77,10 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
-	// ResultsOnly is a broker-issued token that writes only the results of its project's spec
-	// checks (brokertoken.ScopeResults): one the secrets broker minted from a result entry for one
-	// CI run, naming a person, one project and the run. The person stays inside the server: a
+	// ResultsOnly is a broker-issued token that writes only the results of its CI run, of its
+	// project's spec checks and of each check CI proves whose ci_check names its check run
+	// (brokertoken.ScopeResults): one the secrets broker minted from a result entry for one CI
+	// run, naming a person, one project and the run. The person stays inside the server: a
 	// result, an answer and the access log name the run (ResultRecorder). Dispatch serves it on
 	// the routes its results list names (resultsScopeRoutes) alone and answers it 403
 	// RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route

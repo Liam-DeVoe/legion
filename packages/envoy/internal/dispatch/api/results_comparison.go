@@ -298,16 +298,17 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 	var subjects []model.CheckBasis
 	newestMerged := -1
 	for index, head := range heads {
-		bases = append(bases, headBasis(head))
+		basis := headBasis(head)
+		bases = append(bases, basis)
 		switch {
 		case open && head.Open:
-			subjects = append(subjects, headBasis(head))
+			subjects = append(subjects, basis)
 		case !open && (newestMerged < 0 || head.Number > heads[newestMerged].Number):
 			newestMerged = index
 		}
 	}
 	if newestMerged >= 0 {
-		subjects = append(subjects, headBasis(heads[newestMerged]))
+		subjects = append(subjects, bases[newestMerged])
 	}
 	pullRequestHeads := len(bases)
 	unread := ""

@@ -38,7 +38,7 @@ const CI_JOB_RESULT_RULE =
   "--issue, --check, --verdict, --commit and --observed alone.";
 
 /** Every rule a CI job's result call breaks, each naming its flags, or none. */
-export function ciJobResultProblems(args: Readonly<Record<string, unknown>>): string[] {
+function ciJobResultProblems(args: Readonly<Record<string, unknown>>): string[] {
   const problems: string[] = [];
   const carried = Object.keys(args)
     .filter((field) => args[field] !== undefined && CI_JOB_RESULT_FIELDS[field] !== true)

@@ -183,8 +183,10 @@ and decides there, the only gate on such an issue.
 - **The tester judges the implementer's results and records its own.** It runs and records no
   check with `ci_check`, whose results come from CI: the one `dispatch results` derives, and each
   one its CI job recorded. It runs no check whose `run` is a whole test suite in the pod: that
-  check's words are wrong, and the architect rewrites it with `ci_check`. A derived fail, or a run that
-  concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub
+  check's words are wrong, and the architect rewrites it with `ci_check`. A `ci_check` check with no
+  pass standing at the head (its `A pass stands:` line), because a result from CI there is a fail, a
+  pass and a fail from CI are there, or its run concluded `skipped`, `neutral` or `cancelled`, is a
+  test failure. A run still going, or GitHub
   unread, goes in `implementerProof.how` and fails no round. A name no run answers once the head's
   checks have settled goes to the architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in
