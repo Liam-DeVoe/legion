@@ -73,25 +73,25 @@ const AUTHOR = `font-semibold ${pageInkText}`;
 const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageKindTag.issue}`;
 
 /**
- * The issue's history, a list in the panel (dispatch://INFRA-1196 R15, `history-model.ts`):
+ * The issue's history, a list in the panel (`history-model.ts`):
  * newest first, each day before today folded to one line with its count, which opens it. An
  * event is one line with its pin; one author's uploads within a minute are one entry that opens
  * each file, each with its own upload's pin; a thread agents wrote among themselves is drawn
  * whole, each turn's words with its Reply, which sets the line at the foot of the outline to
  * reply to it - and once a person has replied in a thread, the outline draws it and this list no
- * longer does (R1).
+ * longer does.
  *
- * `/activity`, `t v` and the address of a comment or message of such a thread open Details here
- * (R20): at `/activity` the heading is brought into Details' view once for each arrival, except a
- * reader's coming back to the history they left drawn, who finds it where they left it (R3);
+ * `/activity`, `t v` and the address of a comment or message of such a thread open Details here:
+ * at `/activity` the heading is brought into Details' view once for each arrival, except a
+ * reader's coming back to the history they left drawn, who finds it where they left it;
  * `item` is the entry such an address names, which is marked and brought into view, its day
  * opened. It writes no read mark. The line that says what is new is drawn at `visitMark`,
  * where the reader's mark stood as the history first drew in this visit, which
  * `DetailsHistory` holds while Details is shut and this list is not drawn: so a later move of
  * the mark, from another page or tab, leaves the line where the reader found it.
  *
- * On a phone Details is a sheet over the page, and a link followed in it closes it (part D's
- * `Margin.tsx`), so a link of the history that leaves it - a file, a document, a row of the
+ * On a phone Details is a sheet over the page, and a link followed in it closes it
+ * (`Margin.tsx`), so a link of the history that leaves it - a file, a document, a row of the
  * outline - closes it. A turn's own time is that turn's address, which opens Details here, so
  * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself.
  */
@@ -207,7 +207,7 @@ export function IssueHistory({
   // The address of a turn of a thread that began before the oldest event read so far names an
   // entry the history does not draw yet (`HistoryInput.loadedFrom`), so the log is read on, one
   // page at a time, until that thread is in or the log has ended, and the landing below then
-  // marks the turn, opens its day and brings it on screen (R4). It waits for the comments and
+  // marks the turn, opens its day and brings it on screen. It waits for the comments and
   // messages the threads are drawn from, before which no thread is drawn at all, and for every
   // read in flight, so each page is one request; a read that failed stops it, and its line says
   // so with its Retry.
@@ -243,13 +243,13 @@ export function IssueHistory({
     const tall = box !== null && entry.getBoundingClientRect().height > box.clientHeight;
     entry.scrollIntoView({ block: tall ? "start" : "center" });
   });
-  // `/activity` opens Details at the history (R4): its heading is brought into Details' view
+  // `/activity` opens Details at the history: its heading is brought into Details' view
   // once for each arrival at that address, on the first render it has a box and the log under
   // it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
   // gives it no box, and before the log is drawn Details has nothing to scroll the heading up
   // by - and leaving the address lets the next arrival bring it again. A reader who comes back
   // with the browser's Back or Forward to the history this list drew there before - Details left
-  // open beside a view, or at a turn's address - finds Details where they left it (R3), so that
+  // open beside a view, or at a turn's address - finds Details where they left it, so that
   // arrival brings nothing. Only the box Details scrolls in moves, never the page under it; the
   // reader's own scroll after that is theirs.
   const navigation = useNavigationType();
@@ -313,7 +313,7 @@ export function IssueHistory({
   // failed read of the log, gone once the read lands, hands it to the heading. Each is held
   // from its press, made with the focus on it, until the reads settle, and only a focus left on
   // the page moves: a reader who has put it elsewhere by then keeps it there. No such move
-  // scrolls Details, whose reader keeps their place (R3), so a control the page pushed out of
+  // scrolls Details, whose reader keeps their place, so a control the page pushed out of
   // view - under files it added to a run above - takes the focus only when none is in view.
   const pressed = useRef<
     { readonly kind: "older"; readonly before: ReadonlySet<Element> } | { readonly kind: "retry" }
@@ -357,7 +357,7 @@ export function IssueHistory({
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
   });
-  // The history draws the log it holds whatever the last read's outcome (decision 98): a read
+  // The history draws the log it holds whatever the last read's outcome: a read
   // that fails once it holds the log - a refetch after an event, a later open of Details, the
   // next page - says so with its Retry beside the entries, never in their place, and the line
   // stands alone only while no page is held. A failed next page is said where Load older is,
@@ -551,7 +551,7 @@ function Entry({
         <span className="min-w-40 flex-1 break-words">
           {head}
           {/* `main`'s line links a document's name in the application's link blue, which
-              Details draws in no line (decision 56): those two lines are the history's own. */}
+              Details draws in no line: those two lines are the history's own. */}
           {entry.event.type === "artifact.created" || entry.event.type === "artifact.renamed" ? (
             <DocumentLine artifact={entry.event.payload.artifact} description={entry.description} />
           ) : (
@@ -571,10 +571,10 @@ function Entry({
     );
   }
   // Each file of a run is one event's upload, so each has that event's Pin and Unpin, as every
-  // line of the history has its event's (R2): the run's line says who uploaded, and each file
+  // line of the history has its event's: the run's line says who uploaded, and each file
   // stands under it on a line of its own, beside its pin, as an event's words stand beside theirs.
   // Each file is an entry the reader's place is held by (`ViewportAnchor`), so an older page
-  // that adds files under the one they read leaves it where it was (R3).
+  // that adds files under the one they read leaves it where it was.
   if (entry.kind === "uploads") {
     return (
       <li
@@ -710,7 +710,7 @@ function Turn({
           <AgentName actor={turn.author} inline />
         </span>
       </p>
-      {/* Cut as the outline cuts an agent's words (ruling 1), and whole where the address
+      {/* Cut as the outline cuts an agent's words, and whole where the address
           names this turn. Details is reached by Tab, so its controls keep their tab stops. */}
       <CutWords className={WORDS} tabStops whole={marked}>
         <MarkdownBody

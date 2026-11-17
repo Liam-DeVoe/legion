@@ -493,7 +493,7 @@ export const EMPTY_STATE_LINES = freeze({
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
   /** What the list of who worked the issue, in Details' People section, says where nobody has
-   *  (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): the Collaborators tab's words. */
+   *  (`IssueCollaboratorList.tsx`): the Collaborators tab's words. */
   no_collaborators: "No one has worked this issue yet.",
   /** What a view says where the filter by words (`?q=`) leaves nothing of what it draws: the
    *  issue holds such nodes, and none of them holds those words. */
@@ -607,12 +607,12 @@ export const STATE_LINES = freeze({
    *  address, drawn before it, already says where the link points. */
   github_unreadable: "Details are unavailable for this repository.",
   /** What the list of who worked the issue says where Legion's record of its agents could not
-   *  be read, above the agents it lists without it (`IssueCollaboratorList.tsx`,
-   *  dispatch://INFRA-3948 R5): the Collaborators tab's words. */
+   *  be read, above the agents it lists without it (`IssueCollaboratorList.tsx`): the
+   *  Collaborators tab's words. */
   legion_record_unreadable: "Legion's record of this issue's agents could not be read.",
   /** What Details' People section says where the issue's subscribed agents could not be read,
-   *  which it reads on every load for their count (`details-more.tsx`, dispatch://INFRA-3948
-   *  R5): today's issue header's words, with Retry beside them. */
+   *  which it reads on every load for their count (`details-more.tsx`): today's issue
+   *  header's words, with Retry beside them. */
   subscribers_unreadable: "Subscribed agents unavailable — Envoy listener unreachable.",
   /** How a subscribed agent stands whose subscription is wider than this issue, which Details
    *  draws where today's pages draw "via" and its topic with the reason as a tooltip
@@ -648,7 +648,7 @@ export const ANSWER_LINES = freeze({
   handoff_unreadable: "Could not load the handoff.",
   /** What the history in Details says while the issue's log is read, which Details opening
    *  asks for, and when it could not be; and what its Load older says while the next page is
-   *  out (`IssueHistory.tsx`, dispatch://INFRA-3948 R2): the Activity tab's words. */
+   *  out (`IssueHistory.tsx`): the Activity tab's words. */
   loading_history: "Loading activity…",
   history_unreadable: "Could not load the activity.",
   loading_older: "Loading…",
@@ -660,13 +660,11 @@ export const ANSWER_LINES = freeze({
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
   /** What the list of who worked the issue says while its read, which the reader opened, is
-   *  out, and when it failed (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): the
-   *  Collaborators tab's words. */
+   *  out, and when it failed (`IssueCollaboratorList.tsx`): the Collaborators tab's words. */
   loading_collaborators: "Loading collaborators…",
   collaborators_unreadable: "Couldn't load who worked this issue.",
   /** What Details' People section says when Dispatch refused the reader's Unsubscribe
-   *  (`details-more.tsx`, dispatch://INFRA-3948 R5): today's issue header's words, with Retry
-   *  beside them. */
+   *  (`details-more.tsx`): today's issue header's words, with Retry beside them. */
   unsubscribe_failed: "Could not unsubscribe this agent.",
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
@@ -870,7 +868,7 @@ export const CONTROL_LABELS = freeze({
   /** Closes the issue, from the identity block's one actions control (R11). */
   close_issue: "Close issue",
   /** The words of the list of who worked the issue, in Details' People section
-   *  (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): its three lists, of Legion's
+   *  (`IssueCollaboratorList.tsx`): its three lists, of Legion's
    *  agents, of every other agent and of people, as the Collaborators tab drew them; how a
    *  person or an agent worked the issue, a reader's words for each of the server's `reasons`
    *  tokens, which that tab drew as they came; each Legion role's list, by the role's token; and
@@ -939,12 +937,12 @@ export const CONTROL_LABELS = freeze({
   /** The history's list as a reader hears it named, the Activity tab's name for the same list;
    *  the line it draws where the reader's read mark stood as it first drew in this visit; and
    *  what one author's uploads within a minute say before the files they open
-   *  (`IssueHistory.tsx`, dispatch://INFRA-3948 R2). */
+   *  (`IssueHistory.tsx`). */
   history_list: "Issue activity",
   history_unread: "New since you last read",
   history_uploaded: "uploaded",
-  /** What the history heads today's entries and yesterday's with (`history-model.ts`,
-   *  dispatch://INFRA-3948 R2), the Activity tab's words: an older day is headed by its date,
+  /** What the history heads today's entries and yesterday's with (`history-model.ts`), the
+   *  Activity tab's words: an older day is headed by its date,
    *  written out in the reader's locale (`dayLabel`). */
   history_today: "Today",
   history_yesterday: "Yesterday",
@@ -1003,7 +1001,7 @@ export const CONTROL_LABELS = freeze({
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
   /** Adds the next page of the issue's log under the history, until none is left
-   *  (`IssueHistory.tsx`, dispatch://INFRA-3948 R2). */
+   *  (`IssueHistory.tsx`). */
   load_older: "Load older",
   /** Says what the reader may do with their pins, which the panel lists (R14). */
   pin: "Pin",
@@ -1038,7 +1036,7 @@ export const CONTROL_LABELS = freeze({
   /** What the claim says of a holder the agent registry no longer lists (R11, row four). */
   not_running: "not running",
   /** What the list of keys says of `t v` and `t o`, which open Details at the history and at
-   *  the collaborators (`details-more.tsx`, dispatch://INFRA-3948 R4): each a whole phrase, so
+   *  the collaborators (`details-more.tsx`): each a whole phrase, so
    *  the list reads it as written. */
   open_history: "Open the issue's history in Details",
   open_collaborators: "Open the issue's collaborators in Details",
@@ -1186,7 +1184,7 @@ export const CONTROL_LABELS = freeze({
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
   /** Who a delivery of a mention or a message went to, where the delivery names no session: a
-   *  role no session held, or no target at all. An address is no name (R22), so the history's
+   *  role no session held, or no target at all. An address is no name, so the history's
    *  line and the focused row's delivery say what it is rather than where it was sent. */
   unnamed_recipient: "an agent",
   /** What the shell's indicator calls an Unsubscribe of Details' People section while its write

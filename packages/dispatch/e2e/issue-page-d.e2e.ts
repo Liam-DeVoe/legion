@@ -541,8 +541,7 @@ test("the five controls are toggles with an address each, one line at every widt
     }
     // Conversation turns every view off from an address of the issue that is no view's.
     await gotoIssue(page, `/issues/${key}/collaborators`);
-    // `/collaborators` opens Details (part M's R4, decision 147), which then stands over the
-    // page until the reader closes it.
+    // `/collaborators` opens Details, which then stands over the page until the reader closes it.
     await expect(marginShell(page)).toBeVisible();
     await closeDetails(page);
     await presetToggle(page, "conversation").click();

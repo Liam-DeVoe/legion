@@ -7,10 +7,10 @@ import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
 import { CONTROL_LABELS } from "./page-words";
 
 /** The sessions subscribed to an issue, and the write that takes one off. The panel's People
- *  section draws both (dispatch://INFRA-1196 R12). */
+ *  section draws both. */
 export interface IssueSubscribers {
   /** Whether `rows.length` is a count of who is subscribed: once a read has answered, what the
-   *  last answer said, kept through a later read that failed (decision 98); before any has, it
+   *  last answer said, kept through a later read that failed; before any has, it
    *  counts nobody, since the number would be a claim the page cannot make. */
   readonly counted: boolean;
   /** Whether the last read failed; `rows` still holds what an earlier read answered. */

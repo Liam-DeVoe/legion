@@ -100,16 +100,16 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * Part M of dispatch://INFRA-1196 (dispatch://INFRA-3948): Details' history, its people rows,
- * the facts of the focused row and what references it, on the new issue page.
+ * Details' history, its people rows, the facts of the focused row and what references it, on the
+ * new issue page.
  *
- * The rows of c-history and of c-people-facts (dispatch://INFRA-3948/artifact/verification-md).
+ * The rows of c-history and of c-people-facts.
  * Most are copies of rows the source rewrote for the new page while it was the only page: the
  * checkpoint's `issue-layout.e2e.ts` row, and the rows of `activity.e2e.ts`, `handoffs.e2e.ts`,
  * `collaborators.e2e.ts`, `asked-of.e2e.ts`, `asked-of-cli.e2e.ts` and `attention.e2e.ts` at
  * `750e2716`, whose files stay as `main` has them for today's page. Each copy signs its reader
  * in with the new page turned on (`reader`, `withIssuePage`) and opens it with `gotoIssue`; an
- * item's own address puts the focus on its node only once part N lands, so a copy that read a
+ * item's own address does not put the focus on its node yet, so a copy that read a
  * node's facts from its address focuses the node's row through the outline (`rowFacts`). The
  * rows after them are new.
  */
@@ -140,14 +140,14 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
   }
 }
 
-// c-conversation-state. The conversation is the outline and nothing else (dispatch://INFRA-1196
-// R1, R14): each seeded comment and message a person took part in is one node, nothing offers a
-// choice between words, questions, pinned and everything, and Details draws none of them. The
-// history in the panel (R15) draws what no node does - the status change, the claim, both
+// c-conversation-state. The conversation is the outline and nothing else: each seeded comment
+// and message a person took part in is one node, nothing offers a choice between words,
+// questions, pinned and everything, and Details draws none of them. The history in the panel
+// draws what no node does - the status change, the claim, both
 // handoffs, the daemon's message, an agent's status note and the two comments agents wrote to
 // each other, each once - and no event of a node, no version of a document, no result against a
 // check and no child's move. The person's reply that moves the agents' thread into the outline
-// is sent by the API: the box at the foot of the outline is part L's.
+// is sent by the API: the page draws no box at the foot of the outline yet.
 test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
   // The whole issue's seed and two loads of its page, the history opened day by day between.
   test.setTimeout(240_000);
@@ -324,7 +324,7 @@ const activityAgent = {
   as: "agent" as const,
 };
 
-// The issue's history is the list in Details that `/activity` opens (dispatch://INFRA-1196 R15):
+// The issue's history is the list in Details that `/activity` opens:
 // every event no row of the outline draws, and the threads agents wrote among themselves, whole.
 // What the outline draws - an ask, answered or retracted - is not in it, and nothing the
 // history draws is a row of the outline.
@@ -396,7 +396,7 @@ test("the history lists the events and the agents' threads the outline does not 
 // before one cold load of the history. A day before today is one line with its count, which
 // opens it; the reader's watermark is drawn where it stood when the history first drew, at the
 // end of today's list when the reader stopped on an earlier day, and a later move of the mark -
-// the outline's own write once part L lands, made here by the API and read back on a refocus -
+// a write the outline does not make yet, made here by the API and read back on a refocus -
 // leaves the line where it was, across a close and an open of Details too.
 test("the history folds each day before today and marks where the reader stopped", async ({
   browser,
@@ -536,8 +536,8 @@ test("a history line pins its event, the pin outlives a reload, and the line unp
 // The fake listener holds no record of `ghost`, so the mention is refused as `no live session
 // ghost` and its receipt settles `failed`. A person's comment is a row of the outline, and its
 // deliveries are the focused row's facts in Details: the one there must not read as delivered.
-// The history draws no event of a row the outline draws (R15), so this delivery is no line of
-// it. The comment's own address focuses its row only once part N lands, so the row is focused
+// The history draws no event of a row the outline draws, so this delivery is no line of it.
+// The comment's own address does not focus its row yet, so the row is focused
 // through the outline.
 test("a mention that could not be delivered reads as not delivered in the focused row's facts", async ({
   browser,
@@ -669,7 +669,7 @@ function handoffLine(page: Page, version: number): Locator {
   });
 }
 
-// The conversation's handoff cards are the history's lines (dispatch://INFRA-1196, the
+// The conversation's handoff cards are the history's lines (the
 // Design's "Where each thing goes": "The conversation's handoff cards, and the Activity tab -
 // The history in the panel"), and each line keeps what the card opened: its fields and every
 // proof entry, read when the reader opens them.
@@ -805,7 +805,7 @@ const attentionSession = {
 };
 
 /**
- * The issue's history, in Details (dispatch://INFRA-1196 R15): where the comments and messages
+ * The issue's history, in Details: where the comments and messages
  * an agent wrote outside every thread a person wrote in are read, newest first, each thread one
  * entry carrying its own id in `data-history-entry`. The history holds the reader's place in the
  * box Details scrolls in (`IssueHistory.tsx`'s `ViewportAnchor`), and these rows read that.
@@ -984,7 +984,7 @@ test("a new entry arriving while the reader is on a filter leaves Details where 
 // Paging is the history's: the outline reads each of its three lists whole and offers no
 // `Load older` at all. Older events land beneath the entries already on screen, so the entry
 // the reader is on does not move; and the reader who presses on reaches the log's start, where
-// the control goes (R2).
+// the control goes.
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
   // One more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
   const issue = await seedMessages("Older events", 205, "Older message");
@@ -1055,14 +1055,14 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   }
 });
 
-// R3 of dispatch://INFRA-3948: "Load older" adds entries under the reader, and the line they
-// read keeps its place on the screen; R2 and the focus rule of `IssueHistory.tsx`: a press of
-// Load older made by keyboard hands the focus to a control the page it read added, never one out
-// of the reader's view. One author's uploads in one minute are one entry (`history-model.ts`),
-// so a run whose uploads straddle the log's 200-event page is extended by the older page: its
-// files are listed oldest first, and the entry is keyed by its oldest upload read so far. Found
-// by the tester on a running build of e3bf280f with INFRA-1196's copy: a reader on a file of such
-// a run saw it move 572 px down when Load older landed (the entry's key went from uploads:4736 to
+// "Load older" adds entries under the reader, and the line they read keeps its place on the
+// screen; and by the focus rule of `IssueHistory.tsx`, a press of Load older made by keyboard
+// hands the focus to a control the page it read added, never one out of the reader's view. One
+// author's uploads in one minute are one entry (`history-model.ts`), so a run whose uploads
+// straddle the log's 200-event page is extended by the older page: its files are listed oldest
+// first, and the entry is keyed by its oldest upload read so far. Found by the tester on a
+// running build of e3bf280f with a copy of a large real issue: a reader on a file of such a run
+// saw it move 572 px down when Load older landed (the entry's key went from uploads:4736 to
 // uploads:4709), where an event line in the same place stayed put; and Load older pressed by
 // keyboard put the focus on that run's author link 752 px above Details' view (6,624 px on the
 // next press).
@@ -1164,15 +1164,15 @@ test("loading older keeps the reader's place on an upload run the older page ext
   }
 });
 
-// The focus rule of `IssueHistory.tsx` (R3): Load older pressed by keyboard hands the focus to a
+// The focus rule of `IssueHistory.tsx`: Load older pressed by keyboard hands the focus to a
 // control the page it read added, never one out of the reader's view, where a press of Enter
 // would follow a link the reader cannot see. Here an agent's message stands between the run and
 // Load older, so the older page's files of the run land above that message and push every
 // control below it down by their height: the first new control below the message is the
 // issue's creation line, out of view under Details' foot. Found by the tester on a running build
-// of 864163bf with INFRA-1196's copy: after Load older pressed by keyboard the focus was on a
-// turn's time link at 1,425 px, the view ending at 900, with 13 files of a run (572 px) added
-// above the entry between that run and Load older; the next page's Retry did the same.
+// of 864163bf with a copy of a large real issue: after Load older pressed by keyboard the focus
+// was on a turn's time link at 1,425 px, the view ending at 900, with 13 files of a run (572 px)
+// added above the entry between that run and Load older; the next page's Retry did the same.
 test("Load older by keyboard keeps the focus in view when the older page extends a run above the entries under it", async ({
   browser,
 }) => {
@@ -1391,7 +1391,7 @@ test("a read mark moving in a narrow history keeps the lower entry fixed", async
 // c-people-facts (1) and (2): `collaborators.e2e.ts` at `750e2716`.
 // ---------------------------------------------------------------------------------------------
 
-// An issue's agents stay reachable from its page once they stop (dispatch://INFRA-470): Details
+// An issue's agents stay reachable from its page once they stop: Details
 // lists everyone who worked the issue, running or not, each agent one click from its live
 // conversation.
 //
@@ -1468,7 +1468,7 @@ test("the panel lists an issue's people and its Legion agents, running or not", 
   try {
     const page = await alice.newPage();
     await gotoIssue(page, `/issues/${issueKey}/collaborators`);
-    // `/collaborators` opens the list inside Details (dispatch://INFRA-1196 R12, R19), and its
+    // `/collaborators` opens the list inside Details, and its
     // control says it is open.
     const collaborators = marginShell(page).getByRole("region", {
       exact: true,
@@ -1642,7 +1642,7 @@ async function handsOff(page: Page): Promise<void> {
 // reload. The two issue pages are the new page, each in a context of its own with the new page
 // turned on, so the Inbox, the Agents page and the document stay today's; each reads the ask's
 // facts in Details, its row focused through the outline (`askFacts`), because the ask's own
-// address is part N's.
+// address does not focus its row yet.
 test("a person hands an ask to another person and it moves between the two Inboxes", async ({
   browser,
 }, testInfo) => {
@@ -1851,7 +1851,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // 9. Bob answers it, and the control is gone from the focused ask's facts the moment the
     // question is no longer open; the answer, and who gave it, is drawn on the ask's own row of
     // the outline. The replies of step 6 made that row a branch, which the outline folds to its
-    // one line (part G's R1), so the row is read with its branch opened.
+    // one line, so the row is read with its branch opened.
     await handTo(issueControl, "bob");
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await selectRow(bobPage, moved.id);
@@ -1984,7 +1984,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
 
     // 3. Bob, who holds neither the issue nor the document, takes the first question himself
     // with the control the new page offers on it: in Details, beside the focused question's
-    // facts (dispatch://INFRA-1196 R14, R19).
+    // facts.
     const page = await bob.newPage();
     await page.setViewportSize(DESKTOP);
     const card = await askFacts(page, issue.key, issueAsk);
@@ -2016,7 +2016,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
 /** The session the People row counts and unsubscribes. */
 const SUBSCRIBER = "e2e-details-subscriber";
 
-// R5 of dispatch://INFRA-3948: "Subscribers" counts the sessions subscribed to the issue, opens
+// "Subscribers" counts the sessions subscribed to the issue, opens
 // the list of them, and an agent's Unsubscribe asks for Confirm before it removes the agent; only
 // the dialog's Confirm tells the session.
 test("the People section counts the subscribed agents and unsubscribes one after Confirm", async ({
@@ -2074,7 +2074,7 @@ test("the People section counts the subscribed agents and unsubscribes one after
   );
 });
 
-// R6 and R9 of dispatch://INFRA-3948: with Details shut the page reads neither the history's log,
+// With Details shut the page reads neither the history's log,
 // nor the collaborators, nor a row's references; opened, Details draws the facts and the history
 // once each, inside it; the facts follow the focus; and Details closed and opened again keeps the
 // facts of the row the reader was on.
@@ -2134,7 +2134,7 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
         seeded.first
       );
       await expect(facts).toContainText("The first row's words.");
-      // R9: the collaborators are read only once their list opens, and Details opens with it
+      // The collaborators are read only once their list opens, and Details opens with it
       // shut. The history's log, read as Details opens, says Details' reads have gone out.
       const collaboratorsRead = `/api/v1/issues/${seeded.key}/collaborators`;
       await expect(
@@ -2200,7 +2200,7 @@ async function seedAgentsThread(): Promise<{ key: string; message: string }> {
   return { key: issue.key, message: message.id };
 }
 
-// R4 of dispatch://INFRA-3948: `t v` opens `/activity` with the history's heading in view and the
+// `t v` opens `/activity` with the history's heading in view and the
 // focus in the history, and a Close there is the later word; `/collaborators` and `t o` open the
 // People section the reader closed, with the collaborators' list open and the focus on its
 // control; the address of an agents' turn opens Details at that turn, its folded day open, marked
@@ -2360,15 +2360,15 @@ test("t v and t o open Details at the history and at the collaborators, and an a
   });
 });
 
-// R4 of dispatch://INFRA-3948: `/issues/<key>/activity` opens Details at the history. The page
+// `/issues/<key>/activity` opens Details at the history. The page
 // arrives with the log unread, so the history's heading has its box while the list under it is
 // still the loading line, and Details cannot yet scroll it to the top: the landing must still
 // leave the heading at the top of Details' view once the list is drawn. The log's answer is
 // held for 1.5 s, which a cold load over a slow link gives, and the window is short, so what
 // Details draws above the history is taller than its view. Found by the tester on a running
-// build of 3bd86200 with INFRA-1196's copy: a load of /activity, and `t v` from a load with
-// Details shut, left the heading at 828 of 900 px, under every property, with one entry's top
-// in view and Details scrolled to the end of what it then held.
+// build of 3bd86200 with a copy of a large real issue: a load of /activity, and `t v` from a
+// load with Details shut, left the heading at 828 of 900 px, under every property, with one
+// entry's top in view and Details scrolled to the end of what it then held.
 test("/activity read cold opens Details with the history's heading at the top of its view", async ({
   browser,
 }) => {
@@ -2401,12 +2401,12 @@ test("/activity read cold opens Details with the history's heading at the top of
   });
 });
 
-// R4 of dispatch://INFRA-3948: the address of an agents' turn opens Details with that turn marked
+// The address of an agents' turn opens Details with that turn marked
 // and on screen. The marked turn is drawn whole (`CutWords whole`), so a long one is taller than
 // Details' view: its head - the author and the time that is its address - must be what the
 // reader lands on, never cut above the view. Found by the tester on a running build of
-// 3bd86200 with INFRA-1196's copy: a turn of 338 words, 1,083 px tall, landed centred, its top at
-// -65 px, its author and time out of view.
+// 3bd86200 with a copy of a large real issue: a turn of 338 words, 1,083 px tall, landed
+// centred, its top at -65 px, its author and time out of view.
 test("the address of a long agents' turn lands on its head", async ({ browser }) => {
   await phase(
     browser,
@@ -2446,7 +2446,7 @@ test("the address of a long agents' turn lands on its head", async ({ browser })
   );
 });
 
-// R2 of dispatch://INFRA-3948: at 767 px and below Details covers the page, so a link of the
+// At 767 px and below Details covers the page, so a link of the
 // history that leaves it, and Reply, close Details; a turn's own time is the turn's address,
 // which opens Details at it, so it leaves Details open, and never hides it for a moment.
 test("on a phone a link of the history and Reply close Details", async ({ browser }) => {
@@ -2526,7 +2526,7 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
   );
 });
 
-// R8 and R9 of dispatch://INFRA-3948: "What references this row" is read only when pressed, with
+// "What references this row" is read only when pressed, with
 // Details open, and lists the comment that cites the focused statement by the page's word for a
 // comment and the comment's first line, a link that focuses the comment's row; no row is named by
 // an address, a slug or "spec block"; the issue draws no control; the focus moving closes the

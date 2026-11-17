@@ -238,8 +238,8 @@ test("a reader on one of two threads whose events are unread keeps their entry w
   }
 });
 
-// R7 of dispatch://INFRA-3948: a turn's Reply is drawn only under the page's writer, and sets it
-// to reply to that turn; the box at the foot of the outline that sends it is part L's.
+// A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn; the
+// page draws no box at the foot of the outline that sends it yet.
 test("a turn's Reply sets the writer to reply to that turn", async () => {
   const restoreReads = stubHistoryReads([], [agentMessage("m-turn", 60)]);
   const queryClient = new QueryClient({
@@ -305,7 +305,7 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
   }
 });
 
-// R4 of dispatch://INFRA-3948: the address of a turn in a day before today opens that day with
+// The address of a turn in a day before today opens that day with
 // the turn marked, and the day's line is then the reader's like any other: a press on it closes
 // the day the address opened.
 test("a day the address opened closes when the reader presses its line", async () => {
@@ -379,7 +379,7 @@ test("a day the address opened closes when the reader presses its line", async (
     expect(document.querySelector('[data-history-item="m-earlier"]')).toBeNull();
 
     // A document's lines link to it in the page's ink, as an upload's do, never in the
-    // application's link blue (decision 56).
+    // application's link blue.
     for (const name of ["draft.md", "plan.md"]) {
       const link = screen.getByRole("link", { name });
       expect(link.getAttribute("href")).toBe(`/issues/${KEY}/artifacts/plan-md`);
@@ -425,14 +425,14 @@ function claimAgo(seq: number, ago: number): DispatchEvent {
   return { ...claim(seq), created_at: new Date(Date.now() - ago * 1000).toISOString(), id: seq };
 }
 
-// R4 of dispatch://INFRA-3948: the address of a turn of an agents' thread opens Details at the
+// The address of a turn of an agents' thread opens Details at the
 // history with that turn marked and on screen, whatever page of the log the thread's first turn
 // is on. Here the log's first page is full, 200 claims of the last few minutes, and the agents'
 // thread began half an hour ago, before every event of that page: the history draws a thread
 // only once the page that reaches back to it is read (`HistoryInput.loadedFrom`), so the turn
 // the address names must still be reached and marked. Found by the tester on a running build of
-// b0082656 with INFRA-1196's copy, whose log holds 769 events: the address of a comment of an
-// agents' thread older than the first page opened Details and marked nothing.
+// b0082656 with a copy of a large real issue, whose log holds 769 events: the address of a
+// comment of an agents' thread older than the first page opened Details and marked nothing.
 test("the address of an agents' turn older than the log's first page marks that turn", async () => {
   const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
   const olderPage = [claimAgo(10, 3600), claimAgo(9, 3601)];
@@ -463,11 +463,11 @@ test("the address of an agents' turn older than the log's first page marks that 
   }
 });
 
-// R2 and R5 of dispatch://INFRA-3948: the history is the issue's log as last read, and a read
+// The history is the issue's log as last read, and a read
 // that fails says so with Retry. A read that fails once the history holds the log - a refetch
 // after an event, or on a later open of Details past the query's stale time - leaves the entries
-// it holds drawn. Found by the tester on a running build of b0082656: with INFRA-1196's 79
-// entries drawn, Details closed and opened again 31 s later with the log answering 500 drew
+// it holds drawn. Found by the tester on a running build of b0082656: with a large real issue's
+// 79 entries drawn, Details closed and opened again 31 s later with the log answering 500 drew
 // "Could not load the activity." and no entry at all.
 test("a failed read of the log once the history holds it keeps every entry it holds", async () => {
   const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
@@ -520,10 +520,10 @@ function upload(seq: number, ago: number, name: string): DispatchEvent {
   } as DispatchEvent;
 }
 
-// R2 of dispatch://INFRA-3948: "Each event's line has Pin and Unpin, and a reload keeps the
-// pin." One author's uploads in one minute are one entry, and that entry is the line of each of
-// its events. Found by the tester on a running build of b0082656: every line of INFRA-1196's
-// history drew Pin but the entry of thirteen uploads, which drew none.
+// Each event's line has Pin and Unpin, and a reload keeps the pin. One author's uploads in one
+// minute are one entry, and that entry is the line of each of its events. Found by the tester on
+// a running build of b0082656: every line of a large real issue's history drew Pin but the entry
+// of thirteen uploads, which drew none.
 test("the entry of one author's uploads has Pin, as every other line of the history does", async () => {
   const restoreReads = stubHistoryReads([
     upload(3, 10, "a.png"),
@@ -557,7 +557,7 @@ test("the entry of one author's uploads has Pin, as every other line of the hist
 // the focus in the history rather than on the page, as Details' Unpin does (IssueMargin.test.tsx):
 // Load older, gone once the log has ended, hands it to a control the page it read added, where
 // Load older stood; the Retry of a failed read, gone once the read lands, to the history's
-// heading. Neither move scrolls Details: the reader keeps their place (R3).
+// heading. Neither move scrolls Details: the reader keeps their place.
 test("a control of the history that goes away under the focus leaves the focus in the history", async () => {
   const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
@@ -615,14 +615,14 @@ test("a control of the history that goes away under the focus leaves the focus i
   }
 });
 
-// R3 of dispatch://INFRA-3948: the reader keeps their place in the history. A failed next page
+// The reader keeps their place in the history. A failed next page
 // is said where Load older stood, and its Retry reads that page: it does Load older's work in
 // Load older's place, at the foot of the list, so once the page lands the focus goes where Load
 // older hands it - to a control the page added - and never to the history's heading at the top,
 // from which the reader's next Tab scrolls Details back to the head of the list. Found by the
-// tester on a running build of 3bd86200 with INFRA-1196's copy: with 81 entries drawn, the next
-// page answered 500 once, and its Retry pressed by keyboard put the focus on the heading
-// "History" once the page landed.
+// tester on a running build of 3bd86200 with a copy of a large real issue: with 81 entries
+// drawn, the next page answered 500 once, and its Retry pressed by keyboard put the focus on
+// the heading "History" once the page landed.
 test("the Retry of a failed next page hands the focus to the page it read, as Load older does", async () => {
   const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];

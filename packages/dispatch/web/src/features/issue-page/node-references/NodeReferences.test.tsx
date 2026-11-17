@@ -221,7 +221,7 @@ test("the focus moving to another row closes the list, so the next row costs no 
   });
   expect(control.getAttribute("aria-expanded")).toBe("false");
   expect(getReferences.mock.calls).toHaveLength(1);
-  // The reader coming back to the row they opened it on finds it closed too (R9): the row it
+  // The reader coming back to the row they opened it on finds it closed too: the row it
   // was opened on was let go of as the focus left it.
   view.rerender(onRow(STATEMENT_ROW));
   expect(
@@ -279,7 +279,7 @@ test("an edge of a kind or to a node this page does not know is left out", async
 // as its parent and no document. The list reads it as the comment it is: named "comment", not
 // "document", opened at the comment, once however many of its blocks hold the mention. A citing
 // node of another issue is named by that word alone, says which issue, and each row says when
-// the reference was made (R19).
+// the reference was made.
 test("a comment's block that mentions the row reads as that comment, with where it is from and when", async () => {
   const block = (id: string, text: string): GraphEdge => ({
     created_at: "2026-11-14T10:00:00Z",
@@ -328,9 +328,9 @@ test("a comment's block that mentions the row reads as that comment, with where 
   expect(items[1]?.querySelector("[data-reference-time]")?.textContent).toBe("15 Nov");
 });
 
-// D4 of dispatch://INFRA-3948/artifact/plan-md: the read's excerpt is the citing node's stored
-// text, the markdown its author typed with the addresses it cites, and the page holds no words
-// of a node of another issue. Such a node is named by its word, with its issue and its time.
+// The read's excerpt is the citing node's stored text, the markdown its author typed with the
+// addresses it cites, and the page holds no words of a node of another issue. Such a node is
+// named by its word, with its issue and its time.
 test("a citing node of another issue is drawn by its kind's word with its issue and its time, never its excerpt", async () => {
   const stored = "The **rail** follows [the statement](dispatch://LAY-2/spec#b-r1) closely.";
   const elsewhere: GraphEdge = {
@@ -365,9 +365,9 @@ test("a citing node of another issue is drawn by its kind's word with its issue 
   expect(screen.getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.block })).toBeDefined();
 });
 
-// R8 of dispatch://INFRA-3948 (R22 of dispatch://INFRA-1196, ruling 5): a node the read gives no
-// words for - no excerpt and no text of its own - is named by its word alone, which is then its
-// link. Its address, the slug of its document and its block id are no name.
+// A node the read gives no words for - no excerpt and no text of its own - is named by its
+// word alone, which is then its link. Its address, the slug of its document and its block id
+// are no name.
 test("a node the read gives no words for is drawn by its word alone, with no address", async () => {
   const wordless: GraphEdge = {
     created_at: "2026-11-15T08:00:00Z",

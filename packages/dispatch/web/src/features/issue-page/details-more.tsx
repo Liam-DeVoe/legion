@@ -46,8 +46,8 @@ const HISTORY = '[data-testid="issue-history"]';
 const DRAWING_FRAMES = 20;
 
 /**
- * The people of the issue, under Opened by in Details' People section (dispatch://INFRA-1196
- * R13, R19): the sessions subscribed to it, counted, each with Unsubscribe; and everyone who
+ * The people of the issue, under Opened by in Details' People section: the sessions subscribed
+ * to it, counted, each with Unsubscribe; and everyone who
  * worked it, running or not, which the nine-tab page gave a tab of its own. The collaborators
  * are read only once a reader opens their list, or once `/issues/<key>/collaborators` opens it,
  * so the People section costs the page one request on any other address: the subscribers' count.
@@ -165,8 +165,8 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
 }
 
 /**
- * The facts of the row the reader's focus is on, between Details' sections and Pinned
- * (dispatch://INFRA-1196 R12, R14), with the controls today's cards had for it and what
+ * The facts of the row the reader's focus is on, between Details' sections and Pinned, with the
+ * controls today's cards had for it and what
  * references it. Until the outline gives a row the focus, and whenever the reader is on no row,
  * the focus is the issue, so the facts are the issue's own: its kind, its title and its status.
  */
@@ -182,8 +182,7 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
 }
 
 /**
- * The issue's history, under Pinned (dispatch://INFRA-1196 R15, R20), and the addresses and
- * keys that open Details at it.
+ * The issue's history, under Pinned, and the addresses and keys that open Details at it.
  *
  * `/issues/<key>/activity`, and the address of a comment or a message of a thread agents wrote
  * among themselves, open Details at the history - its heading brought into view, or that turn
@@ -196,7 +195,7 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * they open.
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
- * leaves Details shut costs no request for it (R21). The comments, messages and asks an item's
+ * leaves Details shut costs no request for it. The comments, messages and asks an item's
  * address is told by are the outline's own reads, under its keys.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
@@ -275,7 +274,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   }, [arrival, openDetails, openDetailsAt, opensCollaborators]);
   const drawsHistory = drawer?.open === true || opensHistory;
   // The reader's read mark for this visit, where the history draws the line that says what is
-  // new (R2): where it stood when the history first drew for this issue, and lower once it has
+  // new: where it stood when the history first drew for this issue, and lower once it has
   // been moved back elsewhere, never higher. It is held here and not in the history, which is
   // not drawn while Details is shut, so a close and an open of Details keep the line where the
   // reader found it, however far the mark moved on in between.

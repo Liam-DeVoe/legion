@@ -321,7 +321,7 @@ test("a block of a document is not read as an item", () => {
   ]);
 });
 
-// R19: each source in the old panel carried the citing node's issue or project, and each edge
+// Each source in the old panel carried the citing node's issue or project, and each edge
 // its time; a row carries both, and keeps the time of its first edge.
 test("a row carries where the citing node is from and when it referenced the row", () => {
   const rows = referenceRows(NO_WORDS, [

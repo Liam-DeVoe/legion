@@ -183,7 +183,7 @@ test("the collaborators say when Legion's record could not be read, and when nob
     ).toEqual(["writer"]);
 
     // A read that fails once the list holds an answer keeps that answer: the failure and its
-    // Retry are drawn above the list it held (decision 98).
+    // Retry are drawn above the list it held.
     unavailable.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
     await act(() =>
       unavailable.client.invalidateQueries({ queryKey: ["issue", "CORE-1", "collaborators"] })
@@ -225,7 +225,7 @@ test("the collaborators say when Legion's record could not be read, and when nob
   }
 });
 
-// R5 of dispatch://INFRA-3948: how someone worked the issue reaches the page as the server's
+// How someone worked the issue reaches the page as the server's
 // token - `assignee`, `claimed`, `posted`, `answered` - and the list draws the page's word for
 // it, for a person and for an agent alike, so no reader is shown the token itself.
 test("a collaborator's reasons are the page's words, never their tokens", async () => {

@@ -79,9 +79,9 @@ function Worked({
  * click from the conversation it had; a person is their login as plain text, as everywhere.
  *
  * It is drawn in the People section of the issue page's one right-hand panel, behind that
- * section's own disclosure (dispatch://INFRA-1196 R12, `details-more.tsx`), where the nine-tab
+ * section's own disclosure (`details-more.tsx`), where the nine-tab
  * page gave it a tab of its own. What a read answered stays drawn when a later read fails, with
- * the failure and its Retry above it (decision 98); the failure is drawn alone only while no read
+ * the failure and its Retry above it; the failure is drawn alone only while no read
  * has answered.
  */
 export function IssueCollaboratorList({

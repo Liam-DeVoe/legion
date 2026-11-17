@@ -18,8 +18,8 @@ import { CONTROL_LABELS, issueStatusWord } from "./page-words";
 import { plainWords } from "./tree-drafts";
 
 /**
- * The issue's history, as the panel draws it (dispatch://INFRA-1196 R15, R20): every event that
- * is no row of the outline, newest first, by day.
+ * The issue's history, as the panel draws it: every event that is no row of the outline, newest
+ * first, by day.
  *
  * It holds the issue's status moves, its claims and releases, its handoffs, its documents added
  * and removed, every other event of the issue itself, and the comments and messages agents wrote
@@ -121,7 +121,7 @@ const UPLOAD_RUN_MS = 60_000;
  *  part in - and for its creation always, since this list draws a thread agents wrote among
  *  themselves from the issue's comments and messages, each turn whole; what happened to such a
  *  thread after - a mention that could not be delivered, a resolution, an edit - is no node's,
- *  so it is a line here (R15, `ofOutlineRow`). An ask's are left out for a question alone: an
+ *  so it is a line here (`ofOutlineRow`). An ask's are left out for a question alone: an
  *  approval request is no row of the outline - the identity block draws its step
  *  (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's. */
 const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
@@ -191,7 +191,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         Date.parse(event.created_at) - Date.parse(run.at) <= UPLOAD_RUN_MS;
       // The run is named by its newest upload and lists its files newest first, as the history
       // lists every entry: an older page that extends the run adds files under the ones the
-      // reader is on and leaves its name, so the entry is neither moved nor drawn anew (R3).
+      // reader is on and leaves its name, so the entry is neither moved nor drawn anew.
       if (near && run !== undefined) {
         const files = [upload, ...run.entry.files];
         const grown = {
@@ -252,7 +252,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     }
     day.entries.push(entry);
   }
-  // Today and yesterday are headed in the page's words (decision 14), an older day by its date
+  // Today and yesterday are headed in the page's words, an older day by its date
   // as the Activity tab writes it out. Yesterday is read back from today's noon, so no change of
   // the clocks moves it to another day.
   const noon = new Date(`${input.today}T12:00:00`);
@@ -347,11 +347,11 @@ function threadEntry(
 
 /**
  * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
- * line names by a token in the page's words (dispatch://INFRA-3948 D6, R22 of
- * dispatch://INFRA-1196): a delivery's target by the agent it went to, never its address or
+ * line names by a token in the page's words, as an address is no name: a delivery's target by
+ * the agent it went to, never its address or
  * `session:<id>`; the status a reopened issue went into by its word; and a stored text it
  * quotes, an approval request's question or the reason it was resolved with, by its plain words,
- * as the outline names an ask (`plainWords`, decision 95), never the markup its author typed or a
+ * as the outline names an ask (`plainWords`), never the markup its author typed or a
  * bare `dispatch://` address, which reads as its short form. Every other text a line of the
  * history holds is a name, a key or the server's own words, none of which is markdown.
  */

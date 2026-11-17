@@ -12,9 +12,9 @@ import {
 import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 
 /**
- * The issue's history as the panel draws it (dispatch://INFRA-1196 R15): every event that is no
- * row of the outline, newest first, by day, with one author's uploads within a minute as one
- * entry and the threads agents wrote among themselves drawn whole.
+ * The issue's history as the panel draws it: every event that is no row of the outline, newest
+ * first, by day, with one author's uploads within a minute as one entry and the threads agents
+ * wrote among themselves drawn whole.
  */
 
 const KEY = "CORE-1";
@@ -265,7 +265,7 @@ test("each day is headed, newest first, and the read mark falls between read and
     ["2026-11-14", false],
     ["2026-11-13", false],
   ]);
-  // Today and Yesterday are the page's own words, each a word it declares (decision 14); an
+  // Today and Yesterday are the page's own words, each a word it declares; an
   // older day is its date, written out in the reader's locale.
   expect(
     wordsIn(`${days[0]?.label} ${days[1]?.label}`).filter((word) => !DECLARED_WORDS.includes(word)),
@@ -327,7 +327,7 @@ test("a thread that began before the oldest event read so far waits for its page
 });
 
 // What happened to a thread agents wrote among themselves is no row's of the outline, so it is
-// a line of the history (R15); the same events of a comment a person wrote are the outline's.
+// a line of the history; the same events of a comment a person wrote are the outline's.
 test("a delivery and a resolution of an agents' thread are lines of the history", () => {
   seq = 0;
   const among = comment("among", "2026-11-15T09:00:00Z", AGENT);
@@ -356,7 +356,7 @@ test("a delivery and a resolution of an agents' thread are lines of the history"
 // A delivery's line names where it went by the attempt's target, an address - `session:<id>`, or
 // `role:<token>` for a role a session held - which no reader names an agent by: the history
 // draws the agent it went to as the page names an agent (`AgentName`), from the session the
-// attempt reached, else the one its target names (dispatch://INFRA-3948 D6).
+// attempt reached, else the one its target names.
 test("a delivery of an agents' thread names its agent, never its address", () => {
   seq = 0;
   const among = comment("among", "2026-11-15T09:00:00Z", AGENT);
@@ -393,11 +393,11 @@ test("a delivery of an agents' thread names its agent, never its address", () =>
   ]);
 });
 
-// R22 of dispatch://INFRA-1196 and ruling 5: the page draws a stored text by its words, never
-// the markup its author typed or an address. An approval request is a line of the history (the
-// outline draws no row for it), and its line quotes the request's question. Found by the tester
-// on a running build of b0082656 with INFRA-1196's copy: the lines of the spec's approval request
-// read “… The new page reaches `main` in parts …”, the backticks drawn as typed.
+// The page draws a stored text by its words, never the markup its author typed or an address.
+// An approval request is a line of the history (the outline draws no row for it), and its line
+// quotes the request's question. Found by the tester on a running build of b0082656 with a
+// copy of a large real issue: the lines of the spec's approval request read “… The new page
+// reaches `main` in parts …”, the backticks drawn as typed.
 test("an approval request's line draws its question's words, never its markup or an address", () => {
   seq = 0;
   const question =

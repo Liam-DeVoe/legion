@@ -80,7 +80,7 @@ function Focus({ node }: { node: FocusedNode }): ReactNode {
   return null;
 }
 
-// R6 of dispatch://INFRA-3948: until the outline gives a row the focus, and whenever the reader
+// Until the outline gives a row the focus, and whenever the reader
 // is on no row, the facts are the issue's own - its kind, its title and its status - and the
 // issue draws no list of what references it, because Details' "Referenced by" row holds it.
 test("with no node focused, the facts are the issue's", () => {
@@ -111,8 +111,8 @@ test("with no node focused, the facts are the issue's", () => {
   }
 });
 
-// R7 of dispatch://INFRA-3948: Edit on the reader's own comment is drawn only under the page's
-// writer, and sets it to edit that comment and its words; the box that saves it is part L's.
+// Edit on the reader's own comment is drawn only under the page's writer, and sets it to edit
+// that comment and its words; the page draws no box that saves it yet.
 test("Edit on the reader's own comment sets the writer to edit it", async () => {
   let writer: OutlineWriter | undefined;
   function Probe(): ReactNode {
@@ -232,7 +232,7 @@ function renderPeople() {
 /** The Subscribers row's control, which carries the count once the read answers. */
 const SUBSCRIBERS = new RegExp(`^${PROPERTY_LABELS.subscribers}`, "u");
 
-// R5 of dispatch://INFRA-3948: the subscribers' read, which counts them on every load, says so
+// The subscribers' read, which counts them on every load, says so
 // where it failed, with no count it cannot make, and its Retry reads them again.
 test("a failed read of the subscribed agents says so, with Retry", async () => {
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers")
@@ -257,7 +257,7 @@ test("a failed read of the subscribed agents says so, with Retry", async () => {
     expect(document.activeElement, "the focus fell to the page with Retry").toBe(subscribers);
 
     // A read that fails once the row holds an answer keeps what it holds: the count and the
-    // agents, with the failure and its Retry beside them (decision 98).
+    // agents, with the failure and its Retry beside them.
     await userEvent.click(subscribers);
     await screen.findByRole("button", { name: "Unsubscribe" });
     getIssueSubscribers.mockRejectedValueOnce(
@@ -279,7 +279,7 @@ test("a failed read of the subscribed agents says so, with Retry", async () => {
   }
 });
 
-// R5 of dispatch://INFRA-3948: Unsubscribe asks for Confirm first; a write Dispatch refused says
+// Unsubscribe asks for Confirm first; a write Dispatch refused says
 // so, and its Retry sends the same session's unsubscribe again.
 test("a failed Unsubscribe says so, with Retry", async () => {
   let subscribed = [SUBSCRIBER];
@@ -334,7 +334,7 @@ test("a failed Unsubscribe says so, with Retry", async () => {
   }
 });
 
-// R6 of dispatch://INFRA-3948: under "The row you are on", the facts of the row the reader is on:
+// Under "The row you are on", the facts of the row the reader is on:
 // its kind with its first line, its state where its kind has one, and who wrote it.
 test("the facts name the focused node's kind, first line, state and author", async () => {
   const question: FocusedNode = {
@@ -420,7 +420,7 @@ function FactsOverState(): ReactNode {
   return <DetailsFocusedNode issue={issue} state={state} />;
 }
 
-// R6 of dispatch://INFRA-3948: the card controls of a comment that heads a thread and suggests a
+// The card controls of a comment that heads a thread and suggests a
 // change follow its facts. Each sends its own write, and the facts then draw what that write
 // left: Unpin once it is pinned, Reopen once its thread is resolved - with its Accept and Reject
 // still there, since resolving decides no suggestion - and neither once the suggestion is taken.
@@ -569,7 +569,7 @@ function messageAttempt(over: Partial<MessageDelivery>): MessageDelivery {
   };
 }
 
-// R6 of dispatch://INFRA-3948, and the Spec's `activity-feed-names-mention-delivery-outcomes`:
+// The Spec's `activity-feed-names-mention-delivery-outcomes`:
 // each delivery of the focused comment says how it stands. One that could not reach its agent
 // reads "Not delivered", with Retry only while a Retry cannot deliver it twice (`isSafeRetry`),
 // and one the listener holds for a stopped session names the wait, as `queuedParts` builds it.
@@ -625,7 +625,7 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
   const client = readsHeld();
   // The outline read the comments a minute ago, and the app's client holds a read 30 s
   // (`main.tsx`): the facts read them from the cache all the same, so the focus landing on the
-  // comment costs no request (R9).
+  // comment costs no request.
   client.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
   client.setQueryData(["comments", KEY], [mentioned], { updatedAt: Date.now() - 60_000 });
   client.setQueryData(["issue-messages", KEY], [thread]);
@@ -678,7 +678,7 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
     expect(createCommentDelivery).toHaveBeenCalledTimes(1);
 
     // A mention sent to a role is named by the session that took it, and one no session took
-    // by the page's word for an agent: an address is no name (D6 of dispatch://INFRA-3948).
+    // by the page's word for an agent: an address is no name.
     const roled = bobsComment("comment-2", {
       deliveries: [
         attempt("role:legion-p-core-1-tester", { session_id: "tester-7" }),
@@ -781,7 +781,7 @@ function HistoryInDrawer({ hold }: { hold: DrawerHold }): ReactNode {
   );
 }
 
-// R2 of dispatch://INFRA-3948: the line that says what is new stands where the reader's mark
+// The line that says what is new stands where the reader's mark
 // stood when the history first drew in this visit. The history is not drawn while Details is
 // shut, so `DetailsHistory` holds that mark: a move of the mark in between - another tab read
 // the issue - leaves the line where the reader found it when Details opens again.
@@ -792,7 +792,7 @@ test("the line that says what is new holds across a close and an open of Details
   const hold: DrawerHold = {};
   // The outline read the issue's comments, messages and asks a minute ago, and the app's client
   // holds a read 30 s (`main.tsx`): each open of Details draws the history from them all the
-  // same, so an open costs no request but the log's (R9).
+  // same, so an open costs no request but the log's.
   const outlineReads = [
     spyOn(api, "listComments").mockResolvedValue([OWN_COMMENT]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),

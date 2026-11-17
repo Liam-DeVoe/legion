@@ -31,7 +31,7 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 // On the new page the outline is the issue's conversation, so Details' list of what references
 // the issue leaves out what the issue's own asks, comments and messages cite of it, and its
-// control counts the rows the list shows (dispatch://INFRA-3948 R10, decision 76).
+// control counts the rows the list shows.
 
 const REFERENCE = buildDispatchReference({ key: "CORE-1", kind: "issue" });
 const CREATED_AT = "2026-11-16T10:00:00Z";
@@ -148,7 +148,7 @@ test("with page false an issue's own comment that references it is listed, and w
     );
     expect(kept.getByText(WORDS.otherComment)).toBeInTheDocument();
     expect(within(pageList).getByRole("heading")).toHaveTextContent("Referenced by (1)");
-    // Every colour the list draws in Details is the page's (R10, decision 56): its link and its
+    // Every colour the list draws in Details is the page's: its link and its
     // excerpt as much as its heading and its lines, so no element carries the application's.
     const applicationColours = new Set(
       [linkText, linkHoverText, textSecondaryOnSurface, textMutedOnSurface, borderDefault].flatMap(

@@ -245,8 +245,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
         marginShell(page).getByRole("tab", { name: /^(Comments|Pinned)\b/ })
       ).toHaveCount(0);
       // The facts of the row the reader is on quote that row, which may be the issue's
-      // question or a comment, by design (part M's R6, decision 147); nothing else of Details
-      // draws the conversation.
+      // question or a comment, by design; nothing else of Details draws the conversation.
       const outsideFacts = (text: string) =>
         marginShell(page)
           .getByText(text, { exact: false })

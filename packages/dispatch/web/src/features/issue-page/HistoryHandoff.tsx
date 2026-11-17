@@ -28,8 +28,8 @@ interface FieldRow extends HandoffField {
 }
 
 /**
- * The disclosure on a handoff's line in the issue's history (dispatch://INFRA-1196 R15, R19:
- * "the conversation's handoff cards ... the history in the panel"): Show fields opens the
+ * The disclosure on a handoff's line in the issue's history, which took over the conversation's
+ * handoff cards: Show fields opens the
  * version's body under the line - each top-level field a labelled row, the `proof` list one row
  * per entry, as the old conversation's handoff card drew it - and Hide fields closes it. The
  * body is read when the reader opens it, and a version never changes once written, so the read

@@ -151,9 +151,9 @@ function stubIssueApi() {
     spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-    // Part M's People rows count the issue's subscribed agents on every load (`details-more.tsx`).
+    // Details' People rows count the issue's subscribed agents on every load (`details-more.tsx`).
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
-    // Part M's history reads the issue's log while Details is open (`IssueHistory.tsx`).
+    // Details' history reads the issue's log while Details is open (`IssueHistory.tsx`).
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
   ];
   const pinReads = {

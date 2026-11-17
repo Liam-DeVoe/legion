@@ -5,12 +5,11 @@ import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
 
 /**
- * What the rows of part M of dispatch://INFRA-1196 (`e2e/issue-page-m.e2e.ts`) read of Details
- * on the new issue page: the history, the facts of the focused row, and the way to them.
+ * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
+ * history, the facts of the focused row, and the way to them.
  *
- * This is part M's file (decision 2 of dispatch://INFRA-1196/artifact/part-decisions-md): it
- * imports part D's `e2e/issue-page.ts`, part G's `e2e/issue-page-g.ts` and part I's
- * `e2e/issue-page-i.ts`, and copies none of their readers.
+ * This file is those rows' own: it imports the readers of `e2e/issue-page.ts`,
+ * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, and copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *
@@ -50,8 +49,8 @@ export function focusedNodeFacts(page: Page): Locator {
 
 /**
  * Opens the issue, puts the focus on node `id`'s row as a reader's press does, and opens Details
- * at its facts. An item's own address (`/asks/<id>`, `/comments/<id>`) puts the focus on its
- * node only once part N lands, so a row reaches the node through the outline instead
+ * at its facts. An item's own address (`/asks/<id>`, `/comments/<id>`) does not put the focus on
+ * its node yet, so a row reaches the node through the outline instead
  * (`focusedRowFacts`).
  */
 export async function rowFacts(page: Page, issueKey: string, id: string): Promise<Locator> {

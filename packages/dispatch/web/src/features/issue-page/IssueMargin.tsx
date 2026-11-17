@@ -232,7 +232,7 @@ export function IssueMarginPanel({
   // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
   // control has a number only once the list has been read, and then it is the rows the list
   // shows, since the issue's count also holds its own asks, comments and messages, which the list
-  // leaves out (`listedEdges`, dispatch://INFRA-3948 R10).
+  // leaves out (`listedEdges`).
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   // Approve and Request changes are here wherever no approval request waits on the reader,
