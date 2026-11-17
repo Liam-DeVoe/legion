@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ---------------------------------------------------------------------------
@@ -111,8 +112,11 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 		fmt.Fprintln(stderr, "agent-secrets enroll: AGENT_SECRETS_KEY_DIR is required")
 		return exitUsageError
 	}
+	// The directory holds key.pem, so it is named by its variable, never by its path, and its
+	// errors print the system's reason alone (redact.File).
+	const keyDirNamed = "the directory AGENT_SECRETS_KEY_DIR names"
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
+		fmt.Fprintf(stderr, "agent-secrets enroll: make %s: %v\n", keyDirNamed, redact.File(err))
 		return 1
 	}
 	sock, _ := helperSocket()
@@ -135,7 +139,7 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 	}
 	path := filepath.Join(dir, enrollmentFile)
 	if err := writeFileAtomic(path, []byte(resp.EnrollmentID+"\n"), 0o600); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s: %v\n", resp.EnrollmentID, path, err)
+		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s in %s: %v\n", resp.EnrollmentID, enrollmentFile, keyDirNamed, redact.File(err))
 		return 1
 	}
 	fmt.Fprintln(stdout, resp.EnrollmentID)

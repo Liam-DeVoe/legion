@@ -87,10 +87,14 @@ func (m *MetadataIdentity) Token(ctx context.Context) (string, string, error) {
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
 }
 
-// Describe names the audience as MachineAudienceVar sets it and only as internal/redact's
-// allow-list prints a URL: whole when it is a plain http(s) URL, and as the fixed phrase beside
-// the variable's name otherwise, since the audience is a configured value a person can paste a
-// credential into, and this text is in every trade's log line and error.
+// Describe names the audience MachineAudienceVar sets: as written when it is a plain http(s) URL
+// (internal/redact's allow-list), and by the variable alone otherwise, since the audience is a
+// configured value a person can paste a credential into, and this text is in every trade's log
+// line and error.
 func (m *MetadataIdentity) Describe() string {
-	return "this machine's Google identity token for " + redact.URL(m.Audience) + " (" + MachineAudienceVar + " names the audience, " + googleidentity.MetadataHostVar + " the metadata server)"
+	audience := "the audience " + MachineAudienceVar + " names"
+	if redact.Clean(m.Audience) {
+		audience = m.Audience + " (" + MachineAudienceVar + ")"
+	}
+	return "this machine's Google identity token for " + audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
 }

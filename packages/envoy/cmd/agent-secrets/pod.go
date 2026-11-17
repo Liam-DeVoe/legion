@@ -202,6 +202,12 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 // key is kept on purpose (a new key while the old enrollment is live is refused
 // ALREADY_ENROLLED), so the marker is what makes keeping it safe. A box's launcher writes the
 // same file for the same reason.
+//
+// No line here names the key directory or the token file by its path but the renewal command
+// printed on success: it is a command to paste, and both paths were just used (the token file
+// read and its token accepted, the directory made and key.pem written in it), so it names the
+// paths the run used, as the GCP forms' retry commands name the credentials file that signed
+// them in. Every other line names them by their flags (outDir, outKeyFile, --pod-token-file).
 func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
@@ -286,11 +292,7 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 	// else the $XDG_RUNTIME_DIR default (identity.go, keyDir), and never through --out: a pod
 	// that enrolled into a directory named by --out alone would otherwise be handed a command
 	// that exits 2, finding no session identity. Both words are shell-quoted (shellWord), so
-	// the line pastes as it reads whatever the directory and the token file are named. This is
-	// the one line that prints either path: it is a command to paste, both paths were just used
-	// (the token file read and its token accepted, the directory made and key.pem written in it),
-	// and a printed command names the path the run used, as the GCP forms' retry commands name
-	// the credentials file that signed them in.
+	// the line pastes as it reads whatever the directory and the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
 	fmt.Fprintln(stdout, enrollmentID)

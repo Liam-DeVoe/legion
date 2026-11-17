@@ -29,7 +29,7 @@ func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
 		{"--out under a directory that cannot be made", "--out", nil, []string{"--out", "/proc/" + secret + "/out"}},
 		{"AGENT_SECRETS_KEY_DIR under a directory that cannot be made", "AGENT_SECRETS_KEY_DIR", []string{"AGENT_SECRETS_KEY_DIR=/proc/" + secret + "/out"}, nil},
 		{"--out a directory this user cannot write", "--out", nil, []string{"--out", readOnly}},
-		{"control: --out made fine, token missing", "--pod-token-file", nil, []string{"--out", filepath.Join(dir, "ok-"+secret)}},
+		{"an --out made fine, the refusal at the missing token file instead", "--pod-token-file", nil, []string{"--out", filepath.Join(dir, "ok-"+secret)}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := append([]string{"enroll", "--pod", "--service", "svc", "--pod-token-file", token}, row.args...)
@@ -45,6 +45,30 @@ func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
 				t.Errorf("stderr %q does not name %s", stderr, row.setting)
 			}
 		})
+	}
+}
+
+// TestEnrollHelperNeverPrintsTheKeyDirectory: enroll --helper keeps key.pem's enrollment in the
+// directory AGENT_SECRETS_KEY_DIR names, so a directory that cannot be made is named by that
+// variable and the system's reason, never by its path. Control: the same run with a directory it
+// can make goes on to ask the helper, and fails there instead, naming no directory.
+func TestEnrollHelperNeverPrintsTheKeyDirectory(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	const secret = "hunter2keydir-helper-4d1a"
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, secret)
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "none.sock")
+	args := []string{"enroll", "--helper", "--runtime-id", "r1", "--thumbprint", "tp1"}
+	_, stderr, exit := runAgentSecrets(t, binary, "http://unused", "", []string{"AGENT_SECRETS_KEY_DIR=" + filepath.Join(blocked, "keys"), "AGENT_SECRETS_HELPER_SOCK=" + sock}, args...)
+	if exit == 0 || strings.Contains(stderr, secret) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR") || !strings.Contains(stderr, "not a directory") {
+		t.Errorf("exit %d, stderr %q; want a refusal naming AGENT_SECRETS_KEY_DIR and the system's reason, and not the path", exit, stderr)
+	}
+	_, stderr, exit = runAgentSecrets(t, binary, "http://unused", "", []string{"AGENT_SECRETS_KEY_DIR=" + filepath.Join(dir, "ok-"+secret), "AGENT_SECRETS_HELPER_SOCK=" + sock}, args...)
+	if exit == 0 || strings.Contains(stderr, secret) || strings.Contains(stderr, "not a directory") {
+		t.Errorf("control: exit %d, stderr %q; want the run to get past the directory and fail at the helper", exit, stderr)
 	}
 }
 
