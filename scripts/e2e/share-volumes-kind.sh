@@ -46,9 +46,11 @@ transcript_to "$evidence/transcript.log"
 # with a configuration of the proof's own (two exports, NFSv4.0, no grace period).
 nfs_image=registry.k8s.io/sig-storage/nfs-provisioner@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
 
-# The nats-server the run installs when the caller names none: the 2.10 line the daemon's own NATS
-# tests pin (packages/daemon/internal/testnats/nats.go), as lib/live-daemon-proof.sh pins it.
-nats_version=v2.10.22
+# The nats-server the run installs when the caller names none: the hub's v2.15.1, the server the
+# daemon's own NATS tests run (packages/daemon/internal/testnats/nats.go, Image), as
+# lib/live-daemon-proof.sh pins it. The daemon's boot refuses a nats-server below v2.11.12,
+# v2.12.4 or v2.14.0 (packages/envoy/natsversion).
+nats_version=v2.15.1
 
 cluster=legion-share-volumes-$$
 work=$(mktemp -d "/tmp/legion-e2e-share-volumes.$$.XXXXXXXX")

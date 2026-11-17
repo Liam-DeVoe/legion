@@ -4488,7 +4488,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the `v2.15.1` that `lib/live-daemon-proof.sh` pins, which the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 So is the Envoy listener: built from this checkout's `packages/envoy/cmd/listener` and run on that broker as `envoy-session-delivery.sh` starts one, with `ENVOY_MACHINE_ID`, `NATS_URLS` and a `HOME` of its own, on a socket [`lib/held-port.py`](#libheld-portpy) holds for it (`ENVOY_LISTEN_FD`), and stopped before the broker on any exit.
 It runs without the caller's `NATS_NKEY_SEED` and `NATS_NKEY_SEED_FILE`, as the other proofs' listeners do: the broker has no users, and nats.go refuses an nkey such a server does not support, so a seed in the caller's environment would leave the listener unhealthy.
 Its sessions get consumer delivery, and the run's anonymous NATS user holds the session consumers' calls and the task bucket's reads, so it relays each claim's task value to the session holding the claim's role.
