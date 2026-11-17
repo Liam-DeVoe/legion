@@ -222,7 +222,9 @@ type scratchReview struct {
 // database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
 // writes. The spec document every issue is created with gives its primary document a settled
 // version 1 to approve. experimentSource, set before boot, is the random source the booted daemon
-// draws a `random` experiment with; nil is the daemon's own.
+// draws a `random` experiment with; nil is the daemon's own. daemonLog, set before boot, also
+// receives the daemon's log, as a live proof keeps it for its evidence; nil keeps it in logs
+// alone.
 type personHandoverRig struct {
 	t                *testing.T
 	baseURL          string
@@ -233,6 +235,7 @@ type personHandoverRig struct {
 	rt               *fake.Runtime
 	d                *daemon
 	experimentSource func(uint64) (uint64, error)
+	daemonLog        io.Writer
 }
 
 // personHandoverSpec is the spec every issue of these proofs is created with.
@@ -246,9 +249,20 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
-	natsURL := testnats.URL(t)
-	baseURL, token := startScratchDispatchWithNATS(t, natsURL)
-	cfg := workflowConfig(t, natsURL)
+	return newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, admissionCap)
+}
+
+// newPersonHandoverRigOn is newPersonHandoverRig over the scratch Dispatch dispatch describes,
+// whose events go to dispatch.natsURL, a NATS server the caller holds: the package's own, or the
+// one a live proof's script runs. The daemon consumes Dispatch's events from that server.
+func newPersonHandoverRigOn(t *testing.T, dispatch scratchDispatchOptions, admissionCap int) *personHandoverRig {
+	t.Helper()
+	if dispatch.natsURL == "" {
+		t.Fatal("newPersonHandoverRigOn was given no NATS server, and the daemon reads Dispatch's events off one")
+	}
+	scratch := startScratchDispatchOn(t, dispatch)
+	baseURL, token := scratch.base, scratch.token
+	cfg := workflowConfig(t, dispatch.natsURL)
 	// Dispatch takes a project key of at most ten characters; workflowConfig's is longer.
 	cfg.Project = "P" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
@@ -293,7 +307,11 @@ func (r *personHandoverRig) boot() {
 	o.controllerFirstWake = time.Hour
 	o.experimentSource = r.experimentSource
 	r.rt = rt
-	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	var logged io.Writer = r.logs
+	if r.daemonLog != nil {
+		logged = io.MultiWriter(r.logs, r.daemonLog)
+	}
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // create creates an issue of the rig's project through Dispatch's API as identity, with fields

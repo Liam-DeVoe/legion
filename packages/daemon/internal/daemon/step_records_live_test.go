@@ -294,27 +294,34 @@ func (l *stepRecordsLive) steps() (string, int) {
 // cli runs the dispatch CLI with args as the person and returns both streams and its exit code.
 func (l *stepRecordsLive) cli(args ...string) (string, int) {
 	l.t.Helper()
-	command := exec.Command("bun", append([]string{filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
-	command.Dir = l.cliHome
-	// A person's own shell running dispatch by hand: the host and a session of their own, the
-	// server and their personal token. Nothing else of the caller's environment reaches it but
-	// PATH, and its home, configuration file (absent) and session state are the run's own.
+	return dispatchCLI(l.t, l.root, l.cliHome, l.dispatch.base, stepRecordsReaderSession, l.reader, args...)
+}
+
+// dispatchCLI runs the dispatch CLI of root (packages/envoy-client/bin/dispatch.ts under bun) with
+// args against the Dispatch at url, as session with the bearer token, and returns both streams and
+// its exit code. It runs as a shell running dispatch by hand does: the host and a session of its
+// own, the server and the token. Nothing else of the caller's environment reaches it but PATH,
+// and its home, configuration file (absent) and session state are the run's own, under home.
+func dispatchCLI(t *testing.T, root, home, url, session, token string, args ...string) (string, int) {
+	t.Helper()
+	command := exec.Command("bun", append([]string{filepath.Join(root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
+	command.Dir = home
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + filepath.Join(l.cliHome, "home"),
-		"TMPDIR=" + l.cliHome,
-		"XDG_CONFIG_HOME=" + filepath.Join(l.cliHome, "config"),
-		"XDG_STATE_HOME=" + filepath.Join(l.cliHome, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(l.cliHome, "cache"),
-		"ENVOY_CONFIG_FILE=" + filepath.Join(l.cliHome, "envoy.json"),
-		"DISPATCH_STATE_DIR=" + filepath.Join(l.cliHome, "dispatch-state"),
+		"HOME=" + filepath.Join(home, "home"),
+		"TMPDIR=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
+		"XDG_STATE_HOME=" + filepath.Join(home, "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, "cache"),
+		"ENVOY_CONFIG_FILE=" + filepath.Join(home, "envoy.json"),
+		"DISPATCH_STATE_DIR=" + filepath.Join(home, "dispatch-state"),
 		"DISPATCH_HOST=omp",
-		"DISPATCH_SESSION_ID=" + stepRecordsReaderSession,
-		"DISPATCH_URL=" + l.dispatch.base,
-		"DISPATCH_TOKEN=" + l.reader,
+		"DISPATCH_SESSION_ID=" + session,
+		"DISPATCH_URL=" + url,
+		"DISPATCH_TOKEN=" + token,
 	}
-	if err := os.MkdirAll(filepath.Join(l.cliHome, "home"), 0o700); err != nil {
-		l.t.Fatal(err)
+	if err := os.MkdirAll(filepath.Join(home, "home"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
@@ -322,7 +329,7 @@ func (l *stepRecordsLive) cli(args ...string) (string, int) {
 	if err := command.Run(); err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			l.t.Fatalf("run `dispatch %s` under bun: %v", strings.Join(args, " "), err)
+			t.Fatalf("run `dispatch %s` under bun: %v", strings.Join(args, " "), err)
 		}
 		code = exit.ExitCode()
 	}

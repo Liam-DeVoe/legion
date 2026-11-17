@@ -385,6 +385,14 @@ Each item below names a script, then what it proves.
   a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
+- `experiment.sh`
+
+  a project's declared experiment draws a group for each new issue, and the group sets how the issue is done, driven against the real Dispatch server this checkout builds, on a database of its own with its events on the run's own `nats-server`, and the whole daemon booted with `dispatch_url` at it, its project declaring the experiment `planning` at mode `on`, whose arm `a` names `plan: owner` and arm `b` `plan: default`:
+  two issues handed to Legion at the arm `a` read in `legion state` as `planning: 2 issues — 2 a (on)`, each with its assignment in `legion state --json`;
+  the owner of the first writes `plan.md` with `dispatch artifact` and gives it with `register_plan`, which takes it, and its run starts at `implementing`;
+  after the daemon is booted again at the arm `b`, `register_plan` on a third issue is answered `409 PLAN_NOT_TAKEN` at both sends, its run starts at `planning`, the project's default steps, and the first two issues keep the arm `a`.
+  No GitHub, no cluster
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -4981,6 +4989,47 @@ It reads an issue that is done, so every step of it has ended.
 | 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
 
 `scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
+
+## experiment.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/experiment.sh     # → "experiment e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a project's declared experiment draws a group for each new issue and that the group sets how the issue is done, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A measured run took 40 seconds with a warm Go build cache: 15 to build the driver and 23 for the proof, which builds Dispatch and `legion` first.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch and `legion` from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestExperimentLive` (`internal/daemon/plan_experiment_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the draw's path is stood in for.
+The driver starts Dispatch from this checkout (`startScratchDispatchOn`), on a database of its own with its events on the run's broker, creates a project of the run's own (`P<9 hex digits>`) and maps `acme/widgets` to it, as the person's handover proof does (`personHandoverRig`, `internal/daemon/person_handover_scratch_dispatch_test.go`).
+It boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server and an admission cap of three, its project declaring the experiment `planning` at mode `on` and unit `issue`, with the arm `a` (`plan: owner`) and the arm `b` (`plan: default`); the daemon consumes Dispatch's events from the broker, so it records and draws each issue when the person hands it over.
+Each issue is created by a session with the `legion` label and handed to Legion as the person's `todo` through Dispatch's API, and its gate is registered by its architect and approved by the person.
+Its owner writes `plan.md` with the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts artifact --issue <KEY> --name plan.md --content …`), run as a session with the server's agent token, and gives it with `POST /legion/v1/plans/register`, as the architect's plugin does.
+The operator reads the groups with the `legion` this checkout builds (`legion state`, with `LEGION_DAEMON_URL` at the daemon).
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `group-recorded` | two issues handed to Legion with the arm `a` in force | `legion state` prints `planning: 2 issues — 2 a (on)`, and `legion state --json` shows on each issue its assignment of `planning`, arm `a`, mode `on`, with the instant of its draw; control: before either issue, `legion state` prints `planning: none` |
+| `owner-plan-taken` | the owner of the first issue writes the plan `implementer reviewer` as `plan.md` and gives it; the person approves the issue's registered gate | `register_plan` answers `200`, and the issue's run starts at `implementing` on the plan of the source `owner` |
+| `default-not-taken` | the daemon stopped and booted again with the arm `b` in force; a third issue handed to Legion; its owner writes and gives the same plan, twice; the person approves the issue's registered gate | each send answered `409 PLAN_NOT_TAKEN` with the sentence of the group (`intake.PlanNotTaken`); the issue's run starts at `planning`, the project's default steps, on the plan of the source `default`; `legion state` prints `planning: 3 issues — 2 a (on), 1 b (on)`, the first two issues keeping the arm `a`; control, run by hand: with the group's check taken out of `planGiven` (`internal/workflow/plan.go`), the first send is answered `200` and this step fails |
+
+What the proof stands in for lies outside the draw:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for a repository's default branch and the issue branch;
+the Apps' tokens are placeholders; Envoy's listener is unreachable, as the rig leaves it;
+and no agent runs: each claim is launched by the package's fake runtime, and nothing plays it.
+`EXPERIMENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
 
