@@ -88,12 +88,13 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
   });
 }
 
-/** Draws the decision's controls, inside `NoTooltips`, as the new page draws them, where `page`
- *  holds, and on today's surface where it does not. */
+/** Draws the decision's controls over `answer`, with the decisions document's text read answered
+ *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
+ *  draws them. */
 function renderActions(
   answer: IssueDecisions = read,
   documentText: string | Error = DOCUMENT_TEXT,
-  page = false
+  { page = false }: { page?: boolean } = {}
 ): { text: DocumentTextSpy; unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
@@ -322,7 +323,7 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
       const own = TONES[surface];
       const other = TONES[surface === "page" ? "main" : "page"];
       const user = userEvent.setup();
-      const { unmount } = renderActions(read, DOCUMENT_TEXT, surface === "page");
+      const { unmount } = renderActions(read, DOCUMENT_TEXT, { page: surface === "page" });
       try {
         await user.click(
           await screen.findByRole("button", { name: CONTROL_LABELS.change_decision })
