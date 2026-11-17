@@ -82,15 +82,6 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 	return got
 }
 
-func token(t *testing.T, issue string, role claim.Role) string {
-	t.Helper()
-	got, err := claim.NewToken("legion", issue, role)
-	if err != nil {
-		t.Fatalf("token of %s %s: %v", issue, role, err)
-	}
-	return string(got)
-}
-
 func isStart(w record.StepRecord) bool { return w.StartedAt != nil && w.EndedAt == nil }
 func isEnd(w record.StepRecord) bool   { return w.EndedAt != nil && w.Result != nil }
 
@@ -176,7 +167,7 @@ func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
 	}
 	end, start := writes[before], writes[before+1]
 	assertEnd(t, end, "step", 4, 1, "failed", new(2))
-	if end.Role != "reviewer" || end.Type != "review" || end.Agent != token(t, "LEGION-208", claim.RoleReviewer) {
+	if end.Role != "reviewer" || end.Type != "review" || end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleReviewer) {
 		t.Fatalf("the review's end = %+v, want the reviewer's", end)
 	}
 	if !isStart(start) || start.Step != 2 || start.Role != "implementer" || start.ID != StepID("LEGION-208", 1, "default", "step", 2, 2) {
@@ -293,7 +284,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	if start.Session == nil || *start.Session != "s1" || start.Model != nil || !start.StartedAt.Equal(stepClock) {
 		t.Fatalf("the start = %+v, want session s1, no model, started at %s", start, stepClock)
 	}
-	if len(asked) != 2 || string(asked[0]) != token(t, "LEGION-208", claim.RoleTester) || string(asked[1]) != token(t, "LEGION-208", claim.RoleReviewer) {
+	if len(asked) != 2 || string(asked[0]) != treeRoleToken(t, "LEGION-208", claim.RoleTester) || string(asked[1]) != treeRoleToken(t, "LEGION-208", claim.RoleReviewer) {
 		t.Fatalf("the agents asked = %v, want the tester's at the end, then the reviewer's at the start", asked)
 	}
 
@@ -322,7 +313,7 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 			t.Fatalf("step rows = %+v, want the end of reviewing and the start of accepting", writes)
 		}
 		start := writes[1]
-		if !isStart(start) || start.Step != 5 || start.Role != "acceptance" || start.Type != "review" || start.Agent != token(t, "LEGION-208", claim.RoleArchitect) {
+		if !isStart(start) || start.Step != 5 || start.Role != "acceptance" || start.Type != "review" || start.Agent != treeRoleToken(t, "LEGION-208", claim.RoleArchitect) {
 			t.Fatalf("the start of accepting = %+v, want step 5, acceptance, review, the tree architect", start)
 		}
 	})
@@ -404,7 +395,7 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 		t.Fatalf("ends of LEGION-209's merge = %+v, want exactly one", ends)
 	}
 	assertEnd(t, ends[0], "merge", 0, 3, "passed", nil)
-	if !ends[0].EndedAt.Equal(stepClock) || ends[0].Agent != token(t, "LEGION-209", claim.RoleMerger) {
+	if !ends[0].EndedAt.Equal(stepClock) || ends[0].Agent != treeRoleToken(t, "LEGION-209", claim.RoleMerger) {
 		t.Fatalf("the merge's end = %+v, want it ended at the merge's %s by the merger", ends[0], stepClock)
 	}
 	if got := issueAt(t, pool, "LEGION-209"); got != phase.Done {
@@ -619,7 +610,7 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 	end := writes[0]
 	assertEnd(t, end, "step", 3, 1, "passed", nil)
 	if end.ID != StepID("LEGION-208", 1, "default", "step", 3, 0) || end.StartedAt == nil || !end.StartedAt.Equal(t0) ||
-		end.Role != "tester" || end.Type != "testing" || end.Agent != token(t, "LEGION-208", claim.RoleTester) {
+		end.Role != "tester" || end.Type != "testing" || end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleTester) {
 		t.Fatalf("the end = %+v, want count 0, the tester's identity and its start at %s", end, t0)
 	}
 }
