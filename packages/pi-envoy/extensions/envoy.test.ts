@@ -1645,8 +1645,8 @@ async function bootSessionPod(
       const before = listener.registrations(manager.id);
       intervals[0]?.();
       await until(
-        () => listener.registrations(manager.id) > before,
-        "the heartbeat's registration"
+        "the heartbeat's registration",
+        () => listener.registrations(manager.id) > before
       );
       await settle();
     },
