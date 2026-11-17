@@ -1,6 +1,7 @@
 import { overtakenLineOf } from "../issue-address";
 import type { NodeChip, NodeLife, ParentLine, TreeNode } from "../issue-tree";
 import { isOvertaken, isProposed, type OpenedBranches } from "../tree-fold";
+import { withoutVersion } from "../tree-keys";
 
 /**
  * A node's life and who may read it, on the issue's tree (dispatch://INFRA-4063 R1, R2, R5, R7).
@@ -33,16 +34,19 @@ function marksOf(from: NodeStates | undefined): NodeStates | undefined {
   };
 }
 
-/** The marks of each node of `root` that has a reference and a mark, as `marksAt` reads them,
- *  by that reference: what a chip naming the node carries. */
+/** The marks of each node of `root` that has a reference and a mark, as `marksOfNode` reads
+ *  them, by that reference without the version it pins (`tree-keys.ts`'s `withoutVersion`):
+ *  what a chip naming the node carries, at whatever version the chip pins it. */
 function marksByReference(
   root: TreeNode,
-  marksAt: (node: TreeNode) => NodeStates | undefined
+  marksOfNode: (node: TreeNode) => NodeStates | undefined
 ): ReadonlyMap<string, NodeStates> {
   const found = new Map<string, NodeStates>();
   const walk = (node: TreeNode): void => {
-    const marks = marksAt(node);
-    if (node.reference !== undefined && marks !== undefined) found.set(node.reference, marks);
+    const marks = marksOfNode(node);
+    if (node.reference !== undefined && marks !== undefined) {
+      found.set(withoutVersion(node.reference), marks);
+    }
     for (const child of node.children) walk(child);
   };
   walk(root);
@@ -54,10 +58,13 @@ function marksByReference(
  * marks its entry holds and no other: a live or settled node has none. A node that is overtaken
  * is `closed`, and so is every node under it (R5). A proposed node and a closed one draw no gap,
  * the page's own included (R2, R5): a gap says what the issue's work still lacks, and neither
- * is part of that work. Each chip, in `chips` and in `alsoUnder`, carries the marks of the node
- * whose reference it names, and a parent line those of the node it names, so a node is marked
- * wherever it is drawn (R2, R7). Every node's `held` is counted again by `heldBy` over its new
- * children, which counts a parent's overtaken children as the one row that folds them.
+ * is part of that work. A closed node waits on nobody either: a later node took its place, so
+ * the page opens on none of them and draws none in the waiting tone, though an open question
+ * among them is still a `question`, which `q` reaches (R3, R6). Each chip, in `chips` and in
+ * `alsoUnder`, carries the marks of the node whose reference it names, whatever version it
+ * pins, and a parent line those of the node it names, so a node is marked wherever it is drawn
+ * (R2, R7). Every node's `held` is counted again by `heldBy` over its new children, which
+ * counts a parent's overtaken children as the one row that folds them.
  *
  * With no states at all it answers `root` itself.
  */
@@ -69,7 +76,7 @@ export function stampStates(
   if (states.size === 0) return root;
   const byReference = marksByReference(root, (node) => marksOf(states.get(node.id)));
   const chipWith = (chip: NodeChip): NodeChip => {
-    const marks = byReference.get(chip.ref);
+    const marks = byReference.get(withoutVersion(chip.ref));
     return marks === undefined ? chip : { ...chip, ...marks };
   };
   const lineWith = (line: ParentLine): ParentLine => {
@@ -85,7 +92,7 @@ export function stampStates(
       alsoUnder: own.alsoUnder.map(chipWith),
       children,
       chips: own.chips.map(chipWith),
-      ...(closed ? { closed: true } : {}),
+      ...(closed ? { closed: true, waiting: false } : {}),
       gaps: closed || isProposed(own) ? [] : own.gaps,
       held: heldBy(children),
       ...(own.parentLine === undefined ? {} : { parentLine: lineWith(own.parentLine) }),
@@ -116,17 +123,21 @@ export function overtakenRefs(root: TreeNode): ReadonlySet<string> {
   return refs;
 }
 
-/** The marks of each node of `root` that has a reference and a mark, by that reference: what
- *  a place naming a node by its address draws beside it (R2, R7). */
+/** The marks of each node of `root` that has a reference and a mark, by that reference without
+ *  the version it pins (`tree-keys.ts`'s `withoutVersion`): what a place naming a node by its
+ *  address draws beside it (R2, R7). An address that pins a version is read through `marksAt`,
+ *  which takes the version off as the map's keys have it off. */
 export function statesByReference(root: TreeNode): ReadonlyMap<string, NodeStates> {
   return marksByReference(root, marksOf);
 }
 
-/** The node whose line of overtaken children must be open for the node at the end of `path` to
- *  be drawn (R6, `issue-address.ts`'s `overtakenLineOf`): the parent of the first overtaken
- *  node the path runs through; undefined where it runs through none. */
-export function lineFor(path: readonly TreeNode[] | undefined): string | undefined {
-  return overtakenLineOf(path);
+/** The marks `states` (`statesByReference`) holds for the node `reference` names, whatever
+ *  version the reference pins; undefined where it holds none. */
+export function marksAt(
+  states: ReadonlyMap<string, NodeStates>,
+  reference: string
+): NodeStates | undefined {
+  return states.get(withoutVersion(reference));
 }
 
 /**
@@ -140,7 +151,7 @@ export function withLine(
   opened: OpenedBranches,
   path: readonly TreeNode[] | undefined
 ): OpenedBranches {
-  const line = lineFor(path);
+  const line = overtakenLineOf(path);
   if (line === undefined || path === undefined) return opened;
   // The rest of the path from the line's own node, which may stand above another line.
   const below = path.slice(path.findIndex((node) => node.id === line) + 1);

@@ -36,6 +36,7 @@ export function TreeRows({
   onOpenDeeper,
   onOvertaken,
   onPin,
+  onStop,
   onToggle,
   openBody,
   pinned,
@@ -64,6 +65,9 @@ export function TreeRows({
    *  (dispatch://INFRA-4063 R5). */
   onOvertaken?: (id: string, open: boolean) => void;
   onPin: (row: string) => void;
+  /** Makes the line of overtaken nodes `key` names the tree's one tab stop as it takes the
+   *  focus, which a row's own `onFocus` does for a row (dispatch://INFRA-4063 R5). */
+  onStop?: (key: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
   /** The node whose body the preset opens without being asked (R7). */
   openBody?: string;
@@ -98,6 +102,8 @@ export function TreeRows({
             <OvertakenLine
               key={key}
               onOvertaken={onOvertaken}
+              onStop={() => onStop?.(key)}
+              {...(report?.row === key ? { report: report.line } : {})}
               row={row}
               tabStop={tabStop === key}
             />

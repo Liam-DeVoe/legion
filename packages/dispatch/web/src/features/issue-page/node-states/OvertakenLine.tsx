@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 
-import { pageGuideLineBg, pageQuietText } from "../../../theme/classes";
+import { pageGuideLineBg, pageMutedText, pageQuietText } from "../../../theme/classes";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS } from "../page-words";
 import type { OvertakenRow } from "../tree-fold";
@@ -16,14 +16,24 @@ import type { OvertakenRow } from "../tree-fold";
  * every fold opens it: the reader does. A press opens or closes it in place, and so do the keys
  * `useTreeKeymap.ts` binds on it (Enter, and the arrows). It stands for no node, so its focus
  * focuses none: Details goes on drawing what it drew, as it does for a deeper branch's line.
+ * Its focus makes it the tree's one tab stop, as a row's does (`onStop`), so a key pressed on
+ * it that answers in words, which no row holds the focus to draw, is drawn at it (`report`).
  */
 export function OvertakenLine({
   onOvertaken,
+  onStop,
+  report,
   row,
   tabStop,
 }: {
   /** Opens or closes the line, by the id of the node whose overtaken children it folds. */
   onOvertaken?: (id: string, open: boolean) => void;
+  /** Makes the line the tree's one tab stop, which its focus does and nothing else: it opens
+   *  no row's body and focuses no node (`IssueTree.tsx`'s `stop`). */
+  onStop?: () => void;
+  /** What a key pressed on the line answers, where it answers in words: drawn at the line,
+   *  last, as a row draws it (`NodeRow`'s `report`). */
+  report?: string;
   row: OvertakenRow;
   /** Whether the line is the tree's one tab stop. */
   tabStop: boolean;
@@ -34,9 +44,10 @@ export function OvertakenLine({
     <div
       aria-expanded={row.open}
       aria-level={row.level}
-      className={`relative flex min-w-0 cursor-pointer pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
+      className={`relative flex min-w-0 cursor-pointer flex-col pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
       data-overtaken-line=""
       onClick={() => onOvertaken?.(row.of.id, !row.open)}
+      onFocus={() => onStop?.()}
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={tabStop ? 0 : -1}
@@ -53,6 +64,16 @@ export function OvertakenLine({
       <span className="font-medium" {...pageChrome}>
         {`${row.held} ${CONTROL_LABELS.overtaken_count}`}
       </span>
+      {report === undefined ? null : (
+        <p
+          className={`text-xs leading-5 ${pageMutedText}`}
+          data-row-report=""
+          role="status"
+          {...pageChrome}
+        >
+          {report}
+        </p>
+      )}
     </div>
   );
 }

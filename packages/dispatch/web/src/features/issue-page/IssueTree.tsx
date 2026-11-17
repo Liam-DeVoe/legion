@@ -249,7 +249,7 @@ export function IssueTree({
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
   const drawn = treeRows(
     rooted,
-    cycle === EVERYTHING ? everythingOpened(rooted) : shown,
+    cycle === EVERYTHING ? { ...everythingOpened(rooted), overtaken: shown.overtaken } : shown,
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
   );
@@ -801,6 +801,7 @@ export function IssueTree({
             onOpenDeeper={openDeeper}
             onOvertaken={toggleOvertaken}
             onPin={pin}
+            onStop={setStop}
             // A branch opens where it is at every width (R16): below 1024 px the outline draws
             // one level under the node it is read from, so an opened branch deeper than that is
             // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.

@@ -52,6 +52,8 @@ function withoutVersion(reference: string): string {
   return reference.replace(/@v\d+/g, "");
 }
 
+export { withoutVersion };
+
 /**
  * The decision behind the node `id`: the first decision of the tree, in reading order, that
  * names that node among its chips. A decision names every spec block it links
