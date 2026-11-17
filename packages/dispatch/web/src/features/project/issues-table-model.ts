@@ -1,13 +1,82 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState } from "@tanstack/react-table";
-import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type {
+  Actor,
+  IssueSummary,
+  LegionBoardCard,
+  LegionBoardColumn,
+  LegionBoardResponse,
+  UpdateIssueInput,
+} from "../../api/types";
 import type { LayoutColumns } from "../../components/table-layout";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
+import { LEGION_PHASES, type LegionFacts, legionFactsOf, legionPhaseTitle } from "./issues-legion";
+import {
+  ASKS_PICKS,
+  activityPick,
+  asksPick,
+  createdByReader,
+  DURATION_PICKS,
+  type DurationPick,
+  durationPick,
+  inWindow,
+  LEGION_PHASE_PICKS,
+  LEGION_TREE_PICKS,
+  legionPick,
+  ME,
+  NONE_PICK,
+  phaseColumnPick,
+  phaseHoursPicks,
+  QUEUE_PICKS,
+  REVIEW_ROUND_PICKS,
+  ROLE_PICKS,
+  readAsksPick,
+  readWindow,
+  reviewRoundsPick,
+  sinceDurationPick,
+  WAITING_REASON_PICKS,
+  WORKER_STATE_PICKS,
+  waitingReasonPick,
+  workerPicks,
+} from "./issues-views";
+
+/** An issue's card on the Legion board: the card, and the board column it is in, by its id and
+ *  the board's own label for it. That column is the issue's Legion phase. */
+export interface BoardCardRow {
+  readonly card: LegionBoardCard;
+  readonly column: LegionBoardColumn["id"];
+  readonly label: string;
+}
+
+/** A read's status as TanStack Query names it (`query.status`): no answer yet, a failed read,
+ *  or an answer. A caller hands a query's `status` as it is. */
+export type ReadStatus = "pending" | "error" | "success";
+
+/** What a project with a Legion daemon reads beside the listing, and how far each read is: the
+ *  board route (`legionBoardQuery`), and the facts of the closed rows its `issues` map does not
+ *  hold (`legionItemsQuery`). A read the page does not make, such as the items of a view that
+ *  lists no closed row, is `success` with no answer. */
+export interface LegionReads {
+  readonly board: LegionBoardResponse | undefined;
+  readonly boardStatus: ReadStatus;
+  readonly items: Readonly<Record<string, LegionFacts>> | undefined;
+  readonly itemsStatus: ReadStatus;
+}
+
+/** What the rows read beyond the listing: the Legion reads of a project with a Legion daemon
+ *  (`undefined` for a project with none, for one whose daemon setting has not answered, and for
+ *  a listing of no project), and the signed-in login, which `f.author=@me` names. */
+export interface ItemContext {
+  readonly legion?: LegionReads;
+  readonly viewer?: string;
+}
 
 export interface Item {
   readonly issue: IssueSummary;
+  /** Its place in Start next's queue: the Todo issues labelled `legion`, in rank order. Start
+   *  next keeps this rule of its own, apart from the Queue column's number (`place`). */
   readonly queue?: number;
   readonly author: string;
   readonly claimedBy: string;
@@ -15,6 +84,21 @@ export interface Item {
    *  its claim to the next agent that asks. The Claimed by filter's "Nobody or lapsed". */
   readonly claimFree: boolean;
   readonly search: string;
+  /** Its card on the board, where the daemon gives it one. A done issue has none. */
+  readonly card?: BoardCardRow;
+  /** Its Legion facts (Work time, Time per phase, Review rounds, Legion tree), where the read
+   *  that holds them answered and it has Legion work. */
+  readonly facts?: LegionFacts;
+  /** How far the read of its facts is. Only `success` tells that an issue with no `facts` has no
+   *  Legion work: a pending or failed read is not missing facts. */
+  readonly factsRead: ReadStatus;
+  /** The Queue column's number: the card's `waiting_place` in a project with a Legion daemon,
+   *  else Start next's number (`queue`). */
+  readonly place?: number;
+  /** In the Legion queue: it has a place, or its card is in the board's Queue column. */
+  readonly queued: boolean;
+  /** Whether the reader created it, or an agent session the reader owns did (`f.author=@me`). */
+  readonly mine: boolean;
 }
 
 /** The attributes the List's own rows carry, which the table core is told to read: its keys
@@ -55,8 +139,9 @@ export const WRITES_IN_FLIGHT = 8;
 export type ColumnFilterSpec =
   | {
       readonly kind: "picks";
-      /** Every value this row files under here: its filter options and its facet counts. */
-      readonly values: (item: Item) => string[];
+      /** Every value this row files under here: its filter options and its facet counts. A
+       *  length of time is counted to `nowMs`. */
+      readonly values: (item: Item, nowMs: number) => readonly string[];
       /** The heading this row groups under; absent when the column cannot group. */
       readonly group?: (item: Item) => string;
       /** The order the filter lists its values in; by count when absent. */
@@ -72,7 +157,10 @@ export type ColumnFilterSpec =
       /** A value out of the URL as this column keeps it. */
       readonly normalize?: (value: string) => string;
     }
-  | { readonly kind: "text"; readonly value: (item: Item) => string };
+  | { readonly kind: "text"; readonly value: (item: Item) => string }
+  /** A window of time, `<N>d`, `<from>..<to>` or `all` (`readWindow` in `issues-views.ts`), over
+   *  the moment `value` reads, which is null where the row has none. */
+  | { readonly kind: "range"; readonly value: (item: Item) => string | null };
 
 /** Every column the table has. Narrow enough that a rendering, a width or a minimum keyed by
  *  an id no column carries fails to compile. */
@@ -83,23 +171,41 @@ export type ColumnId =
   | "key"
   | "title"
   | "status"
+  | "legion_phase"
   | "assignee"
   | "author"
   | "labels"
   | "claim"
   | "asks"
   | "created"
-  | "updated";
+  | "updated"
+  | "closed"
+  | "roles"
+  | "activity"
+  | "waited"
+  | "waiting_reason"
+  | "time_in_phase"
+  | "work_hours"
+  | "review_rounds"
+  | "legion"
+  | "phase_hours";
 
 /** One column's identity: everything about it that is not how its cell renders. The column
  *  definitions, `columnIds`, `groupable`, `facets`, the default widths and the minimums are all
- *  derived from this list, so a new column is one entry here plus its cell. */
+ *  derived from this list, so a new column is one entry here plus its cell. These are the
+ *  Issues tab's widths; a table another page draws keeps today's (`EMBEDDED_WIDTHS`). */
 export interface ColumnSpec {
   readonly id: ColumnId;
   /** Its width before the reader drags it. */
   readonly size: number;
-  /** How narrow a drag may take it: label, sort mark, a 44 px filter target and padding. */
+  /** How narrow a drag or a narrow window may take it below 1280 px, where every button is a
+   *  44 px touch target: the whole header label, its sort mark and its 44 px filter button with
+   *  the cell's padding. From 1280 px the filter button is 32 px, and a filtered column's
+   *  minimum is 12 px less (`columnMinimums`), unless its cell sets it (`cellMin`). */
   readonly min: number;
+  /** Its minimum is what its cell holds, not its header, so it is the same at any width: a key
+   *  with its unread dot, two lines of a title, a status chip or a claim chip whole. */
+  readonly cellMin?: true;
   /** How narrow it may go on a phone, where the key and the title are the row. */
   readonly compactMin?: number;
   /** Stays in view while the table scrolls sideways. */
@@ -111,13 +217,19 @@ export interface ColumnSpec {
 
 const one = (
   value: (item: Item) => string,
-  rest: { order?: readonly string[]; show?: (value: string) => string; groups?: boolean } = {}
+  rest: {
+    order?: readonly string[];
+    show?: (value: string) => string;
+    groups?: boolean;
+    always?: readonly string[];
+  } = {}
 ): ColumnFilterSpec => ({
   kind: "picks",
   values: (item) => [value(item)],
   ...(rest.groups === false ? {} : { group: value }),
   ...(rest.order === undefined ? {} : { order: rest.order }),
   ...(rest.show === undefined ? {} : { show: rest.show }),
+  ...(rest.always === undefined ? {} : { always: rest.always }),
 });
 
 export const priorityName = (value: string) => (value === "" ? "No priority" : `P${value}`);
@@ -125,6 +237,121 @@ export function ageOf(iso: string): string {
   const days = (Date.now() - new Date(iso).getTime()) / 86_400_000;
   return days < 1 ? "Today" : days < 7 ? "This week" : days < 30 ? "This month" : "Older";
 }
+
+/**
+ * How each of the five measures is taken, in the words of the Design's method table: the one or
+ * two sentences its header's tooltip, a Board card's fact and the Columns menu's muted line say.
+ * Each says what the server computes (`legion/metrics` and `api/legion_board.go` on #3578).
+ */
+export const MEASURE_METHODS: Readonly<Partial<Record<ColumnId, string>>> = {
+  work_hours:
+    "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.",
+  phase_hours:
+    "Work time goes to Waiting on a person while the issue's ask or root waits, else to its phase or Other. A root does not count the hours it waits on its children.",
+  review_rounds:
+    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases.",
+  waited:
+    "Dispatch shows the time since Legion asked a person, when the issue waits on a person, or else since its Legion phase started.",
+  time_in_phase:
+    "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
+};
+
+/** A value's words from `words`, or the value as it is where `words` has none: a value this
+ *  build does not know keeps its own text. */
+const wordsOf =
+  (words: Readonly<Record<string, string>>) =>
+  (value: string): string =>
+    words[value] ?? value;
+
+const NONE_WORD = "None";
+
+const durationWords = wordsOf({
+  "under-1h": "Under 1 hour",
+  "1h-1d": "1 hour to 1 day",
+  "1d-7d": "1 to 7 days",
+  "over-7d": "Over 7 days",
+  [NONE_PICK]: NONE_WORD,
+} satisfies Record<DurationPick, string>);
+
+/** Worker state's words for each `slot_use`. */
+export const workerStateWords = wordsOf({
+  working: "Working",
+  between_turns: "Between turns",
+  held_children: "Waiting on child issues",
+  held_person: "Waiting on a person",
+  held_idle: "Idle",
+  [NONE_PICK]: NONE_WORD,
+});
+
+/** Why it waits' words for each `waiting.reason`. */
+export const waitingReasonWords = wordsOf({
+  ready: "Ready to start",
+  slot: "Capacity to go on",
+  blocked: "A blocker",
+  person: "A person",
+  [NONE_PICK]: NONE_WORD,
+});
+
+/** A Legion role as the Workers column names it: `implementer` is Implementer. */
+export const workerName = (role: string): string =>
+  role === NONE_PICK ? NONE_WORD : `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
+
+/** The part of `hours_by_phase` that no phase took (`breakdownOther` on #3578). */
+export const OTHER_PHASE = "other";
+
+/** Time per phase's phases, in the board's order and Other last: the Legion phases from Design
+ *  to Held, since Queue never has hours. */
+export const WORK_PHASES: readonly string[] = [
+  ...LEGION_PHASES.flatMap((phase) => (phase.id === "queue" ? [] : [phase.id])),
+  OTHER_PHASE,
+];
+
+/** A phase of `hours_by_phase` by its name: a Legion phase's title, or Other. */
+export const workPhaseTitle = (phase: string): string =>
+  phase === OTHER_PHASE ? "Other" : legionPhaseTitle(phase);
+
+/** The sum of a row's hours by phase, 0 where its facts hold none: Time per phase's total, which
+ *  its sort reads. */
+export function phaseHoursTotal(facts: Pick<LegionFacts, "hours_by_phase"> | undefined): number {
+  let total = 0;
+  for (const hours of Object.values(facts?.hours_by_phase ?? {})) if (hours > 0) total += hours;
+  return total;
+}
+
+/** The issue's work time in hours, or undefined where none was measured: an issue with no
+ *  Legion work, one whose facts read has not answered, or one whose facts hold no measured work
+ *  (`work_first_at` null, which the server answers with `work_hours` 0). A missing work time
+ *  draws an empty cell, never 0. */
+export function workHoursOf(item: Pick<Item, "facts">): number | undefined {
+  const facts = item.facts;
+  if (facts === undefined) return undefined;
+  return facts.work_first_at === null && !(facts.work_hours > 0) ? undefined : facts.work_hours;
+}
+
+const HOUR_MS = 3_600_000;
+
+/** The moment a card's time runs from, in milliseconds, or undefined where it has none. */
+export function sinceMs(since: string | null | undefined): number | undefined {
+  if (since === null || since === undefined) return undefined;
+  const at = Date.parse(since);
+  return Number.isNaN(at) ? undefined : at;
+}
+
+/** The filter of a column that holds a length of time: every duration pick, in its order. */
+const duration = (pick: (item: Item, nowMs: number) => readonly string[]): ColumnFilterSpec => ({
+  kind: "picks",
+  values: pick,
+  order: DURATION_PICKS,
+  show: durationWords,
+  always: DURATION_PICKS,
+});
+
+/** The picks of a facts column: `picks` where the row's facts read has answered, else none,
+ *  since a pending or failed read is not an issue with no Legion work. */
+const factsPicks =
+  (picks: (item: Item) => readonly string[]) =>
+  (item: Item): readonly string[] =>
+    item.factsRead === "success" ? picks(item) : [];
 
 /** `created_at` and `created_by` as this build's pages read them while a release rolls out: a
  *  Dispatch process of the release before the one that added the two members answers with
@@ -163,8 +390,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   { id: "select", size: 44, min: 44, pinned: true, sortable: false },
   {
     id: "priority",
-    size: 140,
-    min: 140,
+    size: 132,
+    min: 132,
     pinned: true,
     filter: one((item) => String(item.issue.priority ?? ""), {
       order: ["0", "1", "2", "3", ""],
@@ -173,33 +400,43 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "queue",
-    size: 96,
+    size: 124,
     min: 124,
-    filter: one((item) => (item.queue === undefined ? "Not queued" : "Queued"), {
-      order: ["Queued", "Not queued"],
+    // The address keeps the values `Queued` and `Not queued` (`f.queue=Queued`), so a link of
+    // today keeps working; the reader sees the set by its name, the Legion queue.
+    filter: one((item) => (item.queued ? "Queued" : "Not queued"), {
+      order: QUEUE_PICKS,
+      show: wordsOf({ Queued: "In Legion queue", "Not queued": "Not in Legion queue" }),
       groups: false,
     }),
   },
   {
+    // A ten-character key and its unread dot, whole.
     id: "key",
-    size: 104,
-    min: 108,
-    compactMin: 88,
+    size: 124,
+    min: 124,
+    compactMin: 124,
+    cellMin: true,
     pinned: true,
     filter: { kind: "text", value: (item) => item.issue.key },
   },
   {
+    // Two lines of the title at 240 px hold about 60 characters, half of a median INFRA title,
+    // so its subject reads. Title gives way first, down to this.
     id: "title",
     size: 380,
-    min: 116,
+    min: 240,
     compactMin: 120,
+    cellMin: true,
     pinned: true,
     filter: { kind: "text", value: (item) => item.issue.title },
   },
   {
+    // The widest status chip whole ("NEEDS REVIEW", 134 px) with the cell's padding.
     id: "status",
-    size: 128,
-    min: 132,
+    size: 150,
+    min: 150,
+    cellMin: true,
     filter: {
       kind: "picks",
       values: (item) => [item.issue.status],
@@ -214,16 +451,41 @@ export const COLUMNS: readonly ColumnSpec[] = [
     },
   },
   {
+    // The board column the issue's card is in, beside its status and never merged with it. An
+    // issue the daemon holds no card for has none. The address keeps the board's column ids
+    // (`f.legion_phase=implementing`).
+    id: "legion_phase",
+    size: 168,
+    min: 168,
+    // The ten phases are offered in the board's order, then None, whatever the rows hold.
+    filter: one((item) => phaseColumnPick(item.card?.column), {
+      order: LEGION_PHASE_PICKS,
+      show: (value) => (value === NONE_PICK ? NONE_WORD : legionPhaseTitle(value)),
+      always: LEGION_PHASE_PICKS,
+    }),
+  },
+  {
     id: "assignee",
-    size: 180,
-    min: 148,
+    size: 150,
+    min: 140,
     filter: one((item) => item.issue.assignee ?? "Unassigned"),
   },
-  { id: "author", size: 200, min: 164, filter: one((item) => item.author) },
+  {
+    // Me (`f.author=@me`) is the reader who opens the page, so a saved link means its reader.
+    id: "author",
+    size: 180,
+    min: 156,
+    filter: {
+      kind: "picks",
+      values: (item) => (item.mine ? [item.author, ME] : [item.author]),
+      group: (item) => item.author,
+      show: (value) => (value === ME ? "Me" : value),
+    },
+  },
   {
     id: "labels",
-    size: 200,
-    min: 132,
+    size: 180,
+    min: 124,
     filter: {
       kind: "picks",
       // The project's own spelling of each label, which is the Board's too: one `?label=` is
@@ -235,9 +497,12 @@ export const COLUMNS: readonly ColumnSpec[] = [
     },
   },
   {
+    // The claim chip whole: "Claimed by", the holder's name, which truncates down to 48 px, the
+    // time and "not running", with the cell's padding.
     id: "claim",
-    size: 220,
-    min: 164,
+    size: 324,
+    min: 324,
+    cellMin: true,
     filter: {
       kind: "picks",
       values: (item) => (item.claimFree ? [item.claimedBy, UNCLAIMED_FACET] : [item.claimedBy]),
@@ -245,15 +510,24 @@ export const COLUMNS: readonly ColumnSpec[] = [
     },
   },
   {
+    // Whether the issue has an open ask, not how many: the address keeps `any` and `none`, and a
+    // link of the count the filter picked before keeps its rows (`readAsksPick`).
     id: "asks",
-    size: 96,
-    min: 148,
-    filter: one((item) => String(item.issue.open_asks), { groups: false }),
+    size: 152,
+    min: 140,
+    filter: {
+      kind: "picks",
+      values: (item) => [asksPick(item.issue.open_asks)],
+      order: ASKS_PICKS,
+      show: wordsOf({ any: "With open asks", [NONE_PICK]: "No open asks" }),
+      always: ASKS_PICKS,
+      normalize: readAsksPick,
+    },
   },
   {
     id: "created",
-    size: 120,
-    min: 148,
+    size: 132,
+    min: 132,
     // A server of the release before the one that added `created_at` sends none, so the filter
     // asks `createdAt` and files a row without a time under Older, the bucket an issue old
     // enough to come from that release would reach anyway. `AGES` keeps its four values. No row
@@ -269,9 +543,113 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "updated",
-    size: 120,
-    min: 148,
+    size: 136,
+    min: 136,
     filter: one((item) => ageOf(item.issue.updated_at), { order: AGES }),
+  },
+  {
+    id: "closed",
+    size: 124,
+    min: 124,
+    filter: { kind: "range", value: (item) => item.issue.closed_at },
+  },
+  {
+    // The roles of the workers the daemon runs on the issue, or None.
+    id: "roles",
+    size: 136,
+    min: 136,
+    filter: {
+      kind: "picks",
+      values: (item) => workerPicks(item.card?.card.roles),
+      order: ROLE_PICKS,
+      show: workerName,
+    },
+  },
+  {
+    // What the worker on an issue the daemon holds capacity for does now (`slot_use`).
+    id: "activity",
+    size: 168,
+    min: 168,
+    filter: one((item) => activityPick(item.card?.card.slot_use), {
+      order: WORKER_STATE_PICKS,
+      show: workerStateWords,
+      groups: false,
+    }),
+  },
+  {
+    id: "waited",
+    size: 176,
+    min: 176,
+    filter: duration((item, nowMs) => [sinceDurationPick(item.card?.card.waiting?.since, nowMs)]),
+  },
+  {
+    // What holds the card up (`waiting.reason`): set for a card in the queue, and for a root
+    // that waits on a person outside it.
+    id: "waiting_reason",
+    size: 164,
+    min: 164,
+    filter: one((item) => waitingReasonPick(item.card?.card.waiting), {
+      order: WAITING_REASON_PICKS,
+      show: waitingReasonWords,
+      groups: false,
+    }),
+  },
+  {
+    id: "time_in_phase",
+    size: 224,
+    min: 224,
+    filter: duration((item, nowMs) => [sinceDurationPick(item.card?.card.phase_since, nowMs)]),
+  },
+  {
+    id: "work_hours",
+    size: 148,
+    min: 148,
+    filter: duration(
+      factsPicks((item) => {
+        const hours = workHoursOf(item);
+        return [durationPick(hours === undefined ? undefined : hours * HOUR_MS)];
+      })
+    ),
+  },
+  {
+    id: "review_rounds",
+    size: 180,
+    min: 180,
+    filter: {
+      kind: "picks",
+      values: factsPicks((item) => [reviewRoundsPick(item.facts?.review_rounds)]),
+      order: REVIEW_ROUND_PICKS,
+      show: wordsOf({ "3-or-more": "3 or more", [NONE_PICK]: NONE_WORD }),
+      always: REVIEW_ROUND_PICKS,
+    },
+  },
+  {
+    // Where the issue stands in its Legion tree: the root, a child under it, or None for an
+    // issue with no Legion work. Two picks select their union.
+    id: "legion",
+    size: 156,
+    min: 156,
+    filter: {
+      kind: "picks",
+      values: factsPicks((item) => [legionPick(item.facts)]),
+      order: LEGION_TREE_PICKS,
+      show: wordsOf({ root: "Root", child: "Child", [NONE_PICK]: NONE_WORD }),
+      always: LEGION_TREE_PICKS,
+    },
+  },
+  {
+    // Its filter picks the phases with hours and has no None: a row with no hours is in no pick.
+    id: "phase_hours",
+    size: 284,
+    min: 284,
+    // On a phone it holds its name over its Share and Hours control, its filter and its bar.
+    compactMin: 156,
+    filter: {
+      kind: "picks",
+      values: factsPicks((item) => phaseHoursPicks(item.facts?.hours_by_phase)),
+      order: WORK_PHASES,
+      show: workPhaseTitle,
+    },
   },
 ];
 const columnSpec: ReadonlyMap<string, ColumnSpec> = new Map(
@@ -287,46 +665,190 @@ const groupable: readonly string[] = COLUMNS.filter(
   (column) => column.filter?.kind === "picks" && column.filter.group !== undefined
 ).map((column) => column.id);
 export const canGroupBy = (id: string) => groupable.includes(id);
-/** Each registry column's minimum and its phone minimum, by id. Looked up by a column id, so a
- *  lookup can miss: a column the registry gives no such width. */
-export const COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
-  COLUMNS.map((column) => [column.id, column.min])
-);
-export const COMPACT_COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
+/** How much wider a button is below 1280 px, where every button is a 44 px touch target
+ *  (`styles.css`), than a filter button's 32 px from 1280 px. */
+const TOUCH_TARGET_GAIN = 44 - 32;
+const minimumsFor = (touch: boolean): Readonly<Partial<Record<string, number>>> =>
+  Object.fromEntries(
+    COLUMNS.map((column) => [
+      column.id,
+      touch || column.filter === undefined || column.cellMin
+        ? column.min
+        : column.min - TOUCH_TARGET_GAIN,
+    ])
+  );
+const TOUCH_MINIMUMS = minimumsFor(true);
+const WIDE_MINIMUMS = minimumsFor(false);
+/** Each registry column's minimum by id, with the buttons in use: 44 px touch targets below
+ *  1280 px (`touch`), 32 px filter buttons from 1280 px. Looked up by a column id, so a lookup
+ *  can miss: a column the registry gives no such width. */
+export const columnMinimums = (touch: boolean) => (touch ? TOUCH_MINIMUMS : WIDE_MINIMUMS);
+const COMPACT_COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
   COLUMNS.flatMap((column) =>
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
   )
 );
-/** A column's narrowest on a phone: its phone minimum where the registry gives one. */
-const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[id] ?? 0;
+/** A column's narrowest on a phone, which has touch targets: its phone minimum where the
+ *  registry gives one. */
+export const phoneMin = (id: string): number => COMPACT_COLUMN_MIN[id] ?? TOUCH_MINIMUMS[id] ?? 0;
+
+/** One width rule of a table another page draws: its starting width, its minimum, and its
+ *  narrowest on a phone where that differs. */
+interface EmbeddedWidth {
+  readonly size: number;
+  readonly min: number;
+  readonly phone?: number;
+}
 
 /**
- * The List's layout, for `useTableLayout`: every registry column, at the registry's starting
- * width and never below its minimum, with Updated hidden until a reader shows it. Select,
- * Priority, Key and Title stay pinned within 60% of a box 640 px wide or wider, Title narrowing
- * first; on a phone, where the key and the title are what identify a row, Select, Key and Title
- * stay pinned within 85% of the box, Key at its phone width and Title taking what is left down
- * to its phone minimum, so an edge of the next column shows the table scrolls sideways. Every
- * saved `dispatch.project-table.<key>` record was written for these columns, whether its key is
- * a project or the one key every table scoped to a priority shares (`IssuesTable`).
+ * The registry columns an issue table another page draws has (the priority pages'), at today's
+ * widths: those tables keep today's columns and look. They also offer Closed, with its date
+ * range filter, hidden until the reader shows it. The Legion columns read a project's daemon
+ * board, so they are the Issues tab's alone.
+ */
+const EMBEDDED_WIDTHS: Readonly<Partial<Record<ColumnId, EmbeddedWidth>>> = {
+  select: { size: 44, min: 44 },
+  priority: { size: 140, min: 140 },
+  queue: { size: 96, min: 124 },
+  key: { size: 104, min: 108, phone: 88 },
+  title: { size: 380, min: 116, phone: 120 },
+  status: { size: 128, min: 132 },
+  assignee: { size: 180, min: 148 },
+  author: { size: 200, min: 164 },
+  labels: { size: 200, min: 132 },
+  claim: { size: 220, min: 164 },
+  asks: { size: 96, min: 148 },
+  created: { size: 120, min: 148 },
+  updated: { size: 120, min: 148 },
+  closed: { size: 120, min: 148 },
+};
+/** Those columns, in the registry's order. */
+const EMBEDDED_IDS: readonly ColumnId[] = COLUMNS.flatMap(({ id }) =>
+  EMBEDDED_WIDTHS[id] === undefined ? [] : [id]
+);
+/** A column's narrowest on a phone in a table another page draws. */
+export const embeddedPhoneMin = (id: string): number => {
+  const width = EMBEDDED_WIDTHS[id as ColumnId];
+  return width?.phone ?? width?.min ?? 0;
+};
+
+/**
+ * The layout of an issue table another page draws, for `useTableLayout`: today's columns at
+ * today's widths and never below today's minimums, with Updated and Closed hidden until a reader
+ * shows them. Select, Priority, Key and Title stay pinned within 60% of a box 640 px wide or
+ * wider, Title narrowing first; on a phone, where the key and the title are what identify a row,
+ * Select, Key and Title stay pinned within 85% of the box, Key at its phone width and Title
+ * taking what is left down to its phone minimum, so an edge of the next column shows the table
+ * scrolls sideways. Every saved `dispatch.project-table.<key>` record was written for these
+ * columns, whether its key is a project or the one key every table scoped to a priority shares
+ * (`IssuesTable`).
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
-  ids: COLUMNS.map((column) => column.id),
+  ids: EMBEDDED_IDS,
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
-  hiddenByDefault: { updated: false } satisfies Partial<Record<ColumnId, boolean>>,
-  sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
-  minimums: COLUMN_MIN,
+  hiddenByDefault: { updated: false, closed: false } satisfies Partial<Record<ColumnId, boolean>>,
+  sizes: Object.fromEntries(EMBEDDED_IDS.map((id) => [id, EMBEDDED_WIDTHS[id]?.size])),
+  minimums: Object.fromEntries(EMBEDDED_IDS.map((id) => [id, EMBEDDED_WIDTHS[id]?.min])),
   pins: {
     wide: { columns: COLUMNS.filter((column) => column.pinned).map(({ id }) => id), share: 0.6 },
     phone: {
       columns: ["select", "key", "title"] satisfies ColumnId[],
       share: 0.85,
-      widths: { key: phoneMin("key") },
-      flexibleMin: phoneMin("title"),
+      widths: { key: embeddedPhoneMin("key") },
+      flexibleMin: embeddedPhoneMin("title"),
     },
     flexible: "title" satisfies ColumnId,
   },
 };
+
+const viewLayouts = new Map<string, LayoutColumns>();
+
+/**
+ * One view's layout on the Issues tab, for `useTableLayout`: every registry column, Select and
+ * `shown` (`shownColumns` in `issues-views.ts`) first in that order, which is the order a view
+ * draws until the reader drags a column, and every other column hidden until the reader shows
+ * it. Each column starts at the registry's width and never goes below its minimum with the
+ * buttons in use (`touch`, `columnMinimums`). The pinned columns the view shows (Select,
+ * Priority, Key and Title) stay within 60% of a box 640 px wide or wider, Title narrowing first.
+ * On a phone Select and Key stay pinned, and Title takes the rest of the box down to its phone
+ * minimum. Held per set of columns and button size, since the stored layout is read again
+ * whenever the rules' identity changes.
+ */
+export function viewLayoutColumns(shown: readonly string[], touch: boolean): LayoutColumns {
+  const name = `${shown.join(",")}|${touch}`;
+  const known = viewLayouts.get(name);
+  if (known !== undefined) return known;
+  const ids = [
+    ...new Set<string>([
+      "select",
+      ...shown.filter((id) => columnSpec.has(id)),
+      ...COLUMNS.map(({ id }) => id),
+    ]),
+  ];
+  const visible = new Set<string>(["select", ...shown]);
+  const made: LayoutColumns = {
+    ids,
+    rowAttribute: ISSUE_ROW_ATTRIBUTE,
+    hiddenByDefault: Object.fromEntries(
+      ids.flatMap((id) => (visible.has(id) ? [] : [[id, false]]))
+    ),
+    sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
+    minimums: columnMinimums(touch),
+    pins: {
+      wide: {
+        columns: COLUMNS.filter((column) => column.pinned && visible.has(column.id)).map(
+          ({ id }) => id
+        ),
+        share: 0.6,
+      },
+      phone: {
+        columns: (["select", "key"] satisfies ColumnId[]).filter((id) => visible.has(id)),
+        // Just under the whole box: its two border pixels are not the rows'.
+        share: 0.99,
+        widths: { key: phoneMin("key"), phase_hours: phoneMin("phase_hours") },
+        flexibleMin: phoneMin("title"),
+      },
+      flexible: "title" satisfies ColumnId,
+    },
+  };
+  viewLayouts.set(name, made);
+  return made;
+}
+
+/**
+ * The widths a view draws its columns at in a box `boxWidth` wide until the reader drags one:
+ * where `ids`, the columns shown in their order, and the `trailing` width after them do not fit,
+ * Title gives way first, down to its minimum, then every other column but Select toward its
+ * minimum, each by its share of the room they have. What still does not fit scrolls sideways
+ * under the pinned columns. `widths` are the ones the layout draws (`useTableLayout`'s
+ * `responsive.sizing`).
+ */
+export function fitViewWidths(
+  ids: readonly string[],
+  widths: Readonly<Record<string, number>>,
+  minimums: Readonly<Partial<Record<string, number>>>,
+  boxWidth: number,
+  trailing: number
+): Record<string, number> {
+  const fitted = { ...widths };
+  // The box's two border pixels are not the columns'.
+  let over = ids.reduce((sum, id) => sum + (fitted[id] ?? 0), 0) + trailing - boxWidth + 2;
+  const title = fitted.title;
+  if (over > 0 && title !== undefined && ids.includes("title")) {
+    const cut = Math.min(over, Math.max(0, title - (minimums.title ?? 0)));
+    fitted.title = title - cut;
+    over -= cut;
+  }
+  if (over <= 0) return fitted;
+  const room = ids
+    .filter((id) => id !== "select" && id !== "title")
+    .map((id) => [id, Math.max(0, (fitted[id] ?? 0) - (minimums[id] ?? 0))] as const);
+  const total = room.reduce((sum, [, slack]) => sum + slack, 0);
+  if (total === 0) return fitted;
+  const given = Math.min(over, total);
+  for (const [id, slack] of room) fitted[id] = (fitted[id] ?? 0) - (given * slack) / total;
+  return fitted;
+}
 
 /** What this table holds in the address, in the shape every table holds it
  *  (`lib/page-address.ts`), and the narrowing a link names beside it; `readUrl` and `writeUrl`
@@ -352,10 +874,49 @@ const hasLabel = (issue: Pick<IssueSummary, "labels">, label: string) =>
  *  `Legion` is in Legion's queue. */
 export const isQueued = (issue: Pick<IssueSummary, "status" | "labels">) =>
   issue.status === "todo" && hasLabel(issue, "legion");
+
+/** Every card of the board by its issue, with the column it is in. A card whose issue is not in
+ *  the listing names no row. */
+export function cardsByKey(board: LegionBoardResponse | undefined): Map<string, BoardCardRow> {
+  const cards = new Map<string, BoardCardRow>();
+  for (const column of board?.columns ?? [])
+    for (const card of column.cards ?? [])
+      cards.set(card.key, { card, column: column.id, label: column.label });
+  return cards;
+}
+
+const NO_CARDS: ReadonlyMap<string, BoardCardRow> = new Map();
+
+/**
+ * A row's facts and how far their read is. The board's `issues` map holds the facts of every open
+ * issue with Legion phase work and of every issue the board shows, so once the board has answered
+ * an open row it does not hold has no Legion work. A closed row it does not hold takes its facts
+ * from the items read (`legionFactsOf`), and has none once that read answered without it.
+ */
+function factsOf(
+  issue: Pick<IssueSummary, "key" | "status">,
+  legion: LegionReads | undefined
+): Pick<Item, "facts" | "factsRead"> {
+  if (legion === undefined) return { factsRead: "success" };
+  const { board, boardStatus, items, itemsStatus } = legion;
+  if (board === undefined) return { factsRead: boardStatus === "error" ? "error" : "pending" };
+  const facts = legionFactsOf(issue.key, board, items);
+  if (facts !== undefined) return { facts, factsRead: "success" };
+  return { factsRead: issue.status === "done" ? itemsStatus : "success" };
+}
+
+/**
+ * The table's rows: each issue with the names the table reads it by and, in a project with a
+ * Legion daemon (`context.legion`), its card, its place in the Legion queue and its facts. The
+ * rows keep the order of `issues`, which is the listing's own (status, rank, created, key), and
+ * every sort ends with it, since TanStack's last tie-break is a row's index; a caller that joins
+ * the open listing and the done one lists the open rows first, as the listing's order does.
+ */
 export function buildItems(
   issues: readonly IssueSummary[],
   label: (actor: Actor) => string,
-  isFree: (issue: IssueSummary) => boolean = (issue) => issue.claim === null
+  isFree: (issue: IssueSummary) => boolean = (issue) => issue.claim === null,
+  { legion, viewer }: ItemContext = {}
 ): Item[] {
   // Rank's alphabet is byte-ordered, not locale-ordered. Two issues of one rank break the tie
   // by `compareCreated`, not `compareTimestamps`: a server of the release before the one that
@@ -372,9 +933,14 @@ export function buildItems(
           : compareCreated(a, b) || a.key.localeCompare(b.key)
     );
   const positions = new Map(queue.map((issue, index) => [issue.key, index + 1]));
+  const cards = legion === undefined ? NO_CARDS : cardsByKey(legion.board);
   return issues.map((issue) => {
     const author = issue.created_by ? label(issue.created_by) : "Unknown";
     const claimedBy = issue.claim ? label(issue.claim.actor) : "Nobody";
+    // The daemon gives cards to open issues, so a done issue has none.
+    const card = issue.status === "done" ? undefined : cards.get(issue.key);
+    const place =
+      legion === undefined ? positions.get(issue.key) : (card?.card.waiting_place ?? undefined);
     return {
       issue,
       queue: positions.get(issue.key),
@@ -389,6 +955,11 @@ export function buildItems(
         claimedBy,
         ...(issue.labels ?? []),
       ].join(" "),
+      ...(card === undefined ? {} : { card }),
+      ...factsOf(issue, legion),
+      ...(place === undefined ? {} : { place }),
+      queued: place !== undefined || card?.column === "queue",
+      mine: createdByReader(createdBy(issue), viewer),
     };
   });
 }
@@ -433,22 +1004,33 @@ export function matchesSearch(item: Item, query: string): boolean {
         (word.length >= 5 && searchWords().some((candidate) => withinOneEdit(candidate, word)))
     );
 }
-export function facets(item: Item, id: string): string[] {
+/** The values `item` files under in column `id`'s filter, a length of time counted to `nowMs`. */
+export function facets(item: Item, id: string, nowMs = Date.now()): readonly string[] {
   const filter = columnFilterSpec(id);
-  return filter?.kind === "picks" ? filter.values(item) : [];
+  return filter?.kind === "picks" ? filter.values(item, nowMs) : [];
 }
-export function matchesFilters(item: Item, filters: ColumnFiltersState, except?: string): boolean {
+/** Whether `item` passes every filter but `except`'s, a window or a length of time counted to
+ *  `nowMs`. */
+export function matchesFilters(
+  item: Item,
+  filters: ColumnFiltersState,
+  except?: string,
+  nowMs = Date.now()
+): boolean {
   return filters.every(({ id, value }) => {
     if (id === except) return true;
     const filter = columnFilterSpec(id);
     if (filter?.kind === "text")
       return filter.value(item).toLowerCase().includes(String(value).toLowerCase());
+    if (filter?.kind === "range")
+      return inWindow(filter.value(item), readWindow(String(value ?? ""), nowMs));
     if (!Array.isArray(value) || value.length === 0) return true;
+    const values = facets(item, id, nowMs);
     return filter?.kind === "picks" && filter.match === "all"
       ? value.every((picked: string) =>
-          facets(item, id).some((entry) => entry.toLowerCase() === picked.toLowerCase())
+          values.some((entry) => entry.toLowerCase() === picked.toLowerCase())
         )
-      : facets(item, id).some((entry) => value.includes(entry));
+      : values.some((entry) => value.includes(entry));
   });
 }
 /** The headings that stand for "none of them", wherever a column has one: they read last, after
@@ -477,16 +1059,19 @@ export function groupValue(id: string, item: Item): string {
   const filter = columnFilterSpec(id);
   return filter?.kind === "picks" && filter.group !== undefined ? filter.group(item) : "";
 }
+/** How many of `items` each value of column `id` would list, under the search and every other
+ *  filter, a window or a length of time counted to `nowMs`. */
 export function facetCounts(
   items: readonly Item[],
   id: string,
   filters: ColumnFiltersState,
-  search: string
+  search: string,
+  nowMs = Date.now()
 ): Map<string, number> {
   const counts = new Map<string, number>();
   for (const item of items)
-    if (matchesFilters(item, filters, id) && matchesSearch(item, search)) {
-      for (const value of new Set(facets(item, id)))
+    if (matchesFilters(item, filters, id, nowMs) && matchesSearch(item, search)) {
+      for (const value of new Set(facets(item, id, nowMs)))
         counts.set(value, (counts.get(value) ?? 0) + 1);
     }
   return counts;
@@ -570,7 +1155,7 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
           {
             id,
             value:
-              filter?.kind === "text"
+              filter?.kind === "text" || filter?.kind === "range"
                 ? params.get(param)
                 : params
                     .getAll(param)

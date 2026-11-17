@@ -1,24 +1,41 @@
 import { expect, test } from "bun:test";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import type { IssueSummary } from "../../api/types";
+import type {
+  IssueSummary,
+  LegionBoardCard,
+  LegionBoardFacts,
+  LegionBoardResponse,
+} from "../../api/types";
+import { LEGION_PHASES, type LegionFacts, type LegionPhase } from "./issues-legion";
 import {
   buildItems,
+  COLUMNS,
+  canGroupBy,
   clearPicked,
   columnFilterSpec,
+  columnMinimums,
   compareGroups,
   defaultView,
   facetCounts,
+  fitViewWidths,
+  groupValue,
+  ISSUE_TABLE_COLUMNS,
+  type ItemContext,
   isQueued,
+  MEASURE_METHODS,
   matchesFilters,
   matchesSearch,
+  phoneMin,
   queuedInOrder,
   readSelection,
   readUrl,
   selectIssues,
   startNextWrites,
   UNCLAIMED_FACET,
+  viewLayoutColumns,
   writeUrl,
 } from "./issues-table-model";
+import { BOARD_FED_COLUMNS, viewColumns, viewFor, viewsGrammar } from "./issues-views";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -359,4 +376,550 @@ test("a sort or a page step leaves a longer ?q= a link carried whole", () => {
   const prefixed = new URLSearchParams(`w.q=${long}`);
   expect(readUrl(prefixed, "w").search).toBe(long);
   expect(writeUrl(prefixed, { ...readUrl(prefixed, "w"), page: 1 }, "w").get("w.q")).toBe(long);
+});
+
+// --- The Legion columns ------------------------------------------------------------------------
+
+const NOW = Date.parse("2026-11-17T12:00:00Z");
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoardCard {
+  return {
+    blocked_by: null,
+    children: 0,
+    key,
+    phase: "",
+    phase_since: null,
+    priority: null,
+    roles: null,
+    slot: null,
+    slot_since: null,
+    slot_use: null,
+    title: key,
+    tree: key,
+    tree_slot: null,
+    waiting: null,
+    waiting_on: null,
+    waiting_place: null,
+    ...overrides,
+  };
+}
+
+function facts(overrides: Partial<LegionBoardFacts> = {}): LegionBoardFacts {
+  return {
+    closed_at: null,
+    hours_by_phase: null,
+    opened_at: "2026-11-01T00:00:00Z",
+    review_rounds: 0,
+    root_key: "CORE-1",
+    slot_hours: 0,
+    tree_depth: 0,
+    updated_at: "2026-11-17T00:00:00Z",
+    waiting_reason: "",
+    work_first_at: "2026-11-01T00:00:00Z",
+    work_hours: 0,
+    work_last_at: null,
+    ...overrides,
+  };
+}
+
+/** The board route's answer: its ten columns in the board's order, each with the cards
+ *  `cards` gives it, and the `issues` map. */
+function board(
+  cards: Partial<Record<LegionPhase, LegionBoardCard[]>>,
+  issues: Record<string, LegionBoardFacts>
+): LegionBoardResponse {
+  return {
+    columns: LEGION_PHASES.map(({ id, title }) => ({ id, label: title, cards: cards[id] ?? [] })),
+    computed_at: "2026-11-17T12:00:00Z",
+    header: {
+      facts_cursor_age_seconds: null,
+      facts_updated_at: null,
+      legion_issues: 0,
+      queue_length: 0,
+      read_at: null,
+      read_error: null,
+      read_ok: true,
+      slot_cap: null,
+      slots_in_use: 0,
+      trees: 0,
+    },
+    issues,
+    project: "CORE",
+    settings: null,
+  };
+}
+
+const alice = { kind: "user", id: "alice" };
+const bob = { kind: "user", id: "bob" };
+
+/** Nine rows of a project with a Legion daemon: cards in four columns, facts from the board's
+ *  map and from the items read, and rows with no Legion work. */
+const LEGION_ISSUES: IssueSummary[] = [
+  issue("CORE-1", { created_by: alice }),
+  issue("CORE-2", {
+    labels: ["legion"],
+    rank: "b",
+    created_by: { kind: "session", id: "s-1", owner: "alice" },
+  }),
+  issue("CORE-3", { rank: "c", created_by: bob }),
+  issue("CORE-4", { labels: ["legion"], rank: "a", created_by: bob }),
+  issue("CORE-5", { status: "in_progress", created_by: bob }),
+  issue("CORE-6", { rank: "d", created_by: bob }),
+  issue("CORE-7", { status: "done", closed_at: ago(DAY), created_by: bob }),
+  issue("CORE-8", { status: "done", closed_at: ago(40 * DAY), created_by: bob }),
+  issue("CORE-9", { status: "backlog", open_asks: 2, created_by: bob }),
+];
+const LEGION_BOARD = board(
+  {
+    implementing: [
+      card("CORE-1", {
+        roles: ["reviewer", "implementer"],
+        slot_use: "working",
+        phase_since: ago(2 * HOUR),
+      }),
+    ],
+    queue: [
+      card("CORE-2", {
+        waiting_place: 1,
+        waiting: { reason: "ready", since: ago(30 * 60_000), blocked_by: null },
+      }),
+      card("CORE-6", {
+        waiting_place: 2,
+        waiting: { reason: "blocked", since: ago(2 * DAY), blocked_by: ["CORE-9"] },
+      }),
+      // A Queue card the daemon's line gives no place.
+      card("CORE-3", { waiting: { reason: "slot", since: ago(3 * DAY), blocked_by: null } }),
+    ],
+    awaiting_person: [
+      card("CORE-5", {
+        roles: ["architect"],
+        slot_use: "held_person",
+        phase_since: ago(10 * DAY),
+        waiting: { reason: "person", since: ago(10 * DAY), blocked_by: null },
+      }),
+    ],
+  },
+  {
+    "CORE-1": facts({
+      work_hours: 30,
+      review_rounds: 3,
+      hours_by_phase: { implementing: 20, reviewing: 10 },
+    }),
+    // Legion worked it and measured no work and no review round.
+    "CORE-5": facts({ tree_depth: 1, work_first_at: null, work_hours: 0, hours_by_phase: {} }),
+  }
+);
+/** CORE-7's facts, which only the items read of `legion-work-time` holds. */
+const CLOSED_FACTS: LegionFacts = {
+  closed_at: ago(DAY),
+  hours_by_phase: { design: 1, other: 4 },
+  review_rounds: 1,
+  root_key: "CORE-7",
+  tree_depth: 0,
+  work_first_at: "2026-11-10T00:00:00Z",
+  work_hours: 5,
+};
+const ANSWERED: ItemContext = {
+  legion: {
+    board: LEGION_BOARD,
+    boardStatus: "success",
+    items: { "CORE-7": CLOSED_FACTS },
+    itemsStatus: "success",
+  },
+  viewer: "alice",
+};
+const legionRows = (context: ItemContext = ANSWERED) =>
+  buildItems(LEGION_ISSUES, (actor) => actor.id, undefined, context);
+/** Each value of column `id` and how many rows it would list, with no other filter. */
+const countsOf = (id: string, context?: ItemContext) =>
+  Object.fromEntries(facetCounts(legionRows(context), id, [], "", NOW));
+const showOf = (id: string) => {
+  const filter = columnFilterSpec(id);
+  if (filter?.kind !== "picks" || filter.show === undefined) throw new Error(`${id} shows none`);
+  return filter.show;
+};
+const keysWhere = (filters: { id: string; value: unknown }[], context?: ItemContext) =>
+  legionRows(context)
+    .filter((item) => matchesFilters(item, filters, undefined, NOW))
+    .map((item) => item.issue.key);
+
+test("each card column picks what the rows' cards hold, in the board's words and order", () => {
+  expect(countsOf("legion_phase")).toEqual({
+    implementing: 1,
+    queue: 3,
+    awaiting_person: 1,
+    none: 4,
+  });
+  const phase = columnFilterSpec("legion_phase");
+  if (phase?.kind !== "picks") throw new Error("Legion phase picks");
+  // The ten phases in the board's order, then None, whatever the rows hold.
+  expect(phase.always).toEqual([...LEGION_PHASES.map(({ id }) => id), "none"]);
+  expect(phase.always?.map(showOf("legion_phase"))).toEqual([
+    "Queue",
+    "Design",
+    "Planning",
+    "Implementing",
+    "Testing",
+    "Reviewing",
+    "Accepting",
+    "Merging",
+    "Waiting on a person",
+    "Held",
+    "None",
+  ]);
+  expect(keysWhere([{ id: "legion_phase", value: ["none"] }])).toEqual([
+    "CORE-4",
+    "CORE-7",
+    "CORE-8",
+    "CORE-9",
+  ]);
+
+  expect(countsOf("roles")).toEqual({ reviewer: 1, implementer: 1, architect: 1, none: 7 });
+  expect(columnFilterSpec("roles")).toMatchObject({
+    order: ["architect", "planner", "implementer", "tester", "reviewer", "merger", "none"],
+  });
+  expect(["implementer", "none"].map(showOf("roles"))).toEqual(["Implementer", "None"]);
+
+  expect(countsOf("activity")).toEqual({ working: 1, held_person: 1, none: 7 });
+  expect(
+    ["working", "between_turns", "held_children", "held_person", "held_idle", "none"].map(
+      showOf("activity")
+    )
+  ).toEqual([
+    "Working",
+    "Between turns",
+    "Waiting on child issues",
+    "Waiting on a person",
+    "Idle",
+    "None",
+  ]);
+
+  expect(countsOf("waiting_reason")).toEqual({ ready: 1, blocked: 1, slot: 1, person: 1, none: 5 });
+  expect(["ready", "slot", "blocked", "person", "none"].map(showOf("waiting_reason"))).toEqual([
+    "Ready to start",
+    "Capacity to go on",
+    "A blocker",
+    "A person",
+    "None",
+  ]);
+  // Workers, Worker state and Why it waits offer the values the rows hold, not every pick.
+  for (const id of ["roles", "activity", "waiting_reason"]) {
+    const filter = columnFilterSpec(id);
+    expect(filter?.kind === "picks" ? filter.always : "no picks").toBeUndefined();
+  }
+});
+
+test("the duration columns pick each length to now, and a missing measure is None", () => {
+  expect(countsOf("waited")).toEqual({ "under-1h": 1, "1d-7d": 2, "over-7d": 1, none: 5 });
+  expect(countsOf("time_in_phase")).toEqual({ "1h-1d": 1, "over-7d": 1, none: 7 });
+  // CORE-5's facts hold no measured work (`work_first_at` null): its Work time is None, not 0.
+  expect(countsOf("work_hours")).toEqual({ "1d-7d": 1, "1h-1d": 1, none: 7 });
+  for (const id of ["waited", "time_in_phase", "work_hours"]) {
+    const filter = columnFilterSpec(id);
+    if (filter?.kind !== "picks") throw new Error(`${id} picks`);
+    expect(filter.always).toEqual(["under-1h", "1h-1d", "1d-7d", "over-7d", "none"]);
+    expect(filter.always?.map(showOf(id))).toEqual([
+      "Under 1 hour",
+      "1 hour to 1 day",
+      "1 to 7 days",
+      "Over 7 days",
+      "None",
+    ]);
+  }
+  expect(keysWhere([{ id: "work_hours", value: ["none"] }])).toContain("CORE-5");
+});
+
+test("the facts columns pick counted zeros, Root or Child, and only the phases with hours", () => {
+  // CORE-5 is a counted zero; CORE-8 and the open rows the map does not hold have no Legion work.
+  expect(countsOf("review_rounds")).toEqual({ "3-or-more": 1, "0": 1, "1": 1, none: 6 });
+  expect(["0", "3-or-more", "none"].map(showOf("review_rounds"))).toEqual([
+    "0",
+    "3 or more",
+    "None",
+  ]);
+  expect(countsOf("legion")).toEqual({ root: 2, child: 1, none: 6 });
+  expect(["root", "child", "none"].map(showOf("legion"))).toEqual(["Root", "Child", "None"]);
+  // Several phases select the rows with hours in any of them, and no row is None.
+  expect(countsOf("phase_hours")).toEqual({ implementing: 1, reviewing: 1, design: 1, other: 1 });
+  expect(["design", "held", "other"].map(showOf("phase_hours"))).toEqual([
+    "Design",
+    "Held",
+    "Other",
+  ]);
+  expect(keysWhere([{ id: "phase_hours", value: ["reviewing", "design"] }]).sort()).toEqual([
+    "CORE-1",
+    "CORE-7",
+  ]);
+  for (const id of ["review_rounds", "legion"]) {
+    const filter = columnFilterSpec(id);
+    expect(filter?.kind === "picks" ? filter.always : []).toContain("none");
+  }
+  const hours = columnFilterSpec("phase_hours");
+  expect(hours?.kind === "picks" ? hours.always : "no picks").toBeUndefined();
+  expect(hours?.kind === "picks" ? hours.order : []).not.toContain("none");
+});
+
+test("a facts read that is out or failed is no missing measure: its rows are in no pick", () => {
+  const boardOut: ItemContext = {
+    legion: { board: undefined, boardStatus: "pending", items: undefined, itemsStatus: "pending" },
+  };
+  expect(legionRows(boardOut).map((item) => item.factsRead)).toEqual(
+    LEGION_ISSUES.map(() => "pending")
+  );
+  expect(countsOf("work_hours", boardOut)).toEqual({});
+  expect(keysWhere([{ id: "legion", value: ["none"] }], boardOut)).toEqual([]);
+  const boardFailed: ItemContext = {
+    legion: { board: undefined, boardStatus: "error", items: undefined, itemsStatus: "pending" },
+  };
+  expect(new Set(legionRows(boardFailed).map((item) => item.factsRead))).toEqual(
+    new Set(["error"])
+  );
+  // The board answered: an open row the map does not hold has no Legion work, and a closed one
+  // waits on the items read.
+  for (const itemsStatus of ["pending", "error"] as const) {
+    const rows = legionRows({
+      legion: { board: LEGION_BOARD, boardStatus: "success", items: undefined, itemsStatus },
+    });
+    expect(Object.fromEntries(rows.map((item) => [item.issue.key, item.factsRead]))).toEqual({
+      "CORE-1": "success",
+      "CORE-2": "success",
+      "CORE-3": "success",
+      "CORE-4": "success",
+      "CORE-5": "success",
+      "CORE-6": "success",
+      "CORE-7": itemsStatus,
+      "CORE-8": itemsStatus,
+      "CORE-9": "success",
+    });
+  }
+  const answered = legionRows();
+  expect(answered.find((item) => item.issue.key === "CORE-7")?.facts).toEqual(CLOSED_FACTS);
+  expect(answered.find((item) => item.issue.key === "CORE-8")?.facts).toBeUndefined();
+});
+
+test("the Legion queue is the Place or a Queue card with a daemon, and today's set without", () => {
+  const rows = legionRows();
+  expect(rows.filter((item) => item.queued).map((item) => item.issue.key)).toEqual([
+    "CORE-2",
+    "CORE-3",
+    "CORE-6",
+  ]);
+  expect(rows.map((item) => item.place ?? null)).toEqual([
+    null,
+    1,
+    null,
+    null,
+    null,
+    2,
+    null,
+    null,
+    null,
+  ]);
+  expect(countsOf("queue")).toEqual({ Queued: 3, "Not queued": 6 });
+  expect(["Queued", "Not queued"].map(showOf("queue"))).toEqual([
+    "In Legion queue",
+    "Not in Legion queue",
+  ]);
+  // Start next keeps its own set: the Todo issues labelled `legion`, in rank order.
+  expect(rows.filter((item) => item.queue !== undefined).map((item) => item.issue.key)).toEqual([
+    "CORE-2",
+    "CORE-4",
+  ]);
+  // With no daemon no row has a card or facts, and the Queue is today's number.
+  const plain = legionRows({});
+  expect(plain.filter((item) => item.queued).map((item) => [item.issue.key, item.place])).toEqual([
+    ["CORE-2", 2],
+    ["CORE-4", 1],
+  ]);
+  expect(plain.some((item) => item.card !== undefined || item.facts !== undefined)).toBe(false);
+  expect(new Set(plain.map((item) => item.factsRead))).toEqual(new Set(["success"]));
+  expect(keysWhere([{ id: "queue", value: ["Queued"] }], {})).toEqual(["CORE-2", "CORE-4"]);
+});
+
+test("Open asks picks With and No open asks, and a link that picked a count keeps its rows", () => {
+  expect(countsOf("asks")).toEqual({ any: 1, none: 8 });
+  expect(["any", "none"].map(showOf("asks"))).toEqual(["With open asks", "No open asks"]);
+  expect(readUrl(new URLSearchParams("f.asks=0")).filters).toContainEqual({
+    id: "asks",
+    value: ["none"],
+  });
+  const counted = readUrl(new URLSearchParams("f.asks=2")).filters;
+  expect(counted).toContainEqual({ id: "asks", value: ["any"] });
+  expect(keysWhere(counted.filter(({ id }) => id === "asks"))).toEqual(["CORE-9"]);
+});
+
+test("Created by's Me is the reader, or an agent session the reader owns", () => {
+  expect(countsOf("author")).toEqual({ alice: 1, "s-1": 1, bob: 7, "@me": 2 });
+  expect(showOf("author")("@me")).toBe("Me");
+  const mine = readUrl(new URLSearchParams("f.author=%40me")).filters;
+  expect(keysWhere(mine.filter(({ id }) => id === "author"))).toEqual(["CORE-1", "CORE-2"]);
+  // A reader the page does not know is nobody's Me.
+  expect(countsOf("author", { ...ANSWERED, viewer: undefined })["@me"]).toBeUndefined();
+});
+
+test("Closed filters by its window: the last N days, a range of UTC days, or all", () => {
+  expect(columnFilterSpec("closed")?.kind).toBe("range");
+  expect(readUrl(new URLSearchParams("f.closed=7d")).filters).toContainEqual({
+    id: "closed",
+    value: "7d",
+  });
+  expect(keysWhere([{ id: "closed", value: "7d" }])).toEqual(["CORE-7"]);
+  expect(keysWhere([{ id: "closed", value: "90d" }])).toEqual(["CORE-7", "CORE-8"]);
+  // `from` included and `to` left out.
+  const day = ago(DAY).slice(0, 10);
+  expect(keysWhere([{ id: "closed", value: `${day}..` }])).toEqual(["CORE-7"]);
+  expect(keysWhere([{ id: "closed", value: `..${day}` }])).toEqual(["CORE-8"]);
+  expect(keysWhere([{ id: "closed", value: "all" }])).toHaveLength(LEGION_ISSUES.length);
+});
+
+// T4 found that `readUrl` dropped a sort of a column the table did not have, so Done's own sort
+// read as Open's. Closed is a column now, and Done's address round-trips with its sort.
+test("view=done reads its sort, -closed, and a write of it leaves view=done alone", () => {
+  const grammar = viewsGrammar({
+    read: (params) => readUrl(params),
+    write: (params, view) => writeUrl(params, view),
+  });
+  for (const link of ["view=done", "view=done&sort=-closed"]) {
+    const view = grammar.read(new URLSearchParams(link));
+    expect(view.sorting).toEqual([{ id: "closed", desc: true }]);
+    expect(view.filters).toEqual([{ id: "status", value: ["done"] }]);
+    expect(grammar.write(new URLSearchParams(link), view).toString()).toBe("view=done");
+  }
+  const done = grammar.read(new URLSearchParams("view=done"));
+  const resorted = grammar.write(new URLSearchParams("view=done"), {
+    ...done,
+    sorting: [{ id: "work_hours", desc: true }],
+  });
+  expect(resorted.toString()).toBe("view=done&sort=-work_hours");
+  expect(grammar.read(resorted).sorting).toEqual([{ id: "work_hours", desc: true }]);
+  // Every Legion column is a sort and a filter the address keeps.
+  for (const id of BOARD_FED_COLUMNS)
+    expect(readUrl(new URLSearchParams(`sort=${id}`)).sorting).toEqual([{ id, desc: false }]);
+});
+
+test("Group by offers main's groupings and Legion phase, in the board's order with None last", () => {
+  expect(COLUMNS.filter(({ id }) => canGroupBy(id)).map(({ id }) => id)).toEqual([
+    "priority",
+    "status",
+    "legion_phase",
+    "assignee",
+    "author",
+    "claim",
+    "created",
+    "updated",
+  ]);
+  const heads = [...new Set(legionRows().map((item) => groupValue("legion_phase", item)))];
+  expect(heads.sort((a, b) => compareGroups("legion_phase", a, b))).toEqual([
+    "queue",
+    "implementing",
+    "awaiting_person",
+    "none",
+  ]);
+  expect(readUrl(new URLSearchParams("group=legion_phase")).grouping).toEqual(["legion_phase"]);
+});
+
+test("each measure names its method in the words of the Design's table", () => {
+  expect(Object.keys(MEASURE_METHODS).sort()).toEqual(
+    ["phase_hours", "review_rounds", "time_in_phase", "waited", "work_hours"].sort()
+  );
+  expect(MEASURE_METHODS.time_in_phase).toBe(
+    "Dispatch shows the time since Legion first recorded the issue in its current Legion phase."
+  );
+  expect(MEASURE_METHODS.review_rounds).toBe(
+    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases."
+  );
+});
+
+test("a view's layout shows its own columns in its order, with each header and its button whole", () => {
+  const open = viewLayoutColumns(viewColumns(viewFor("open"), true), false);
+  expect(open.ids.slice(0, 13)).toEqual([
+    "select",
+    "priority",
+    "key",
+    "title",
+    "queue",
+    "status",
+    "author",
+    "asks",
+    "legion_phase",
+    "assignee",
+    "labels",
+    "claim",
+    "created",
+  ]);
+  expect(open.ids).toHaveLength(COLUMNS.length);
+  expect(open.hiddenByDefault).toMatchObject({ updated: false, closed: false, work_hours: false });
+  expect(open.hiddenByDefault).not.toHaveProperty("asks");
+  expect(open.pins?.wide.columns).toEqual(["select", "priority", "key", "title"]);
+  const done = viewLayoutColumns(viewColumns(viewFor("done"), true), true);
+  expect(done.ids.slice(0, 10)).toEqual([
+    "select",
+    "priority",
+    "key",
+    "title",
+    "closed",
+    "phase_hours",
+    "work_hours",
+    "assignee",
+    "author",
+    "labels",
+  ]);
+  // A project with no daemon opens with no Queue and no board-fed column.
+  const plain = viewLayoutColumns(viewColumns(viewFor("open"), false), false);
+  expect(plain.hiddenByDefault).toMatchObject({ queue: false, legion_phase: false });
+  // 44 px buttons below 1280 px, 32 px from it; a minimum its cell sets is the same at both.
+  expect(columnMinimums(true).assignee).toBe(140);
+  expect(columnMinimums(false).assignee).toBe(128);
+  for (const id of ["title", "key", "status", "claim"])
+    expect(columnMinimums(false)[id]).toBe(columnMinimums(true)[id]);
+  expect(columnMinimums(false).title).toBe(240);
+  expect(columnMinimums(true).claim).toBe(324);
+  expect(phoneMin("title")).toBe(120);
+  // The same object for the same columns and buttons, since the stored layout is read again
+  // whenever it changes.
+  expect(viewLayoutColumns(viewColumns(viewFor("open"), true), false)).toBe(open);
+});
+
+test("a view's widths give way at Title first, down to 240 px, then at the other columns", () => {
+  const ids = ["select", "title", "author", "status"];
+  const widths = { select: 44, title: 380, author: 200, status: 150 };
+  const minimums = { select: 44, title: 240, author: 100, status: 150 };
+  expect(fitViewWidths(ids, widths, minimums, 1000, 0)).toEqual(widths);
+  expect(fitViewWidths(ids, widths, minimums, 700, 0)).toEqual({ ...widths, title: 304 });
+  expect(fitViewWidths(ids, widths, minimums, 600, 0)).toEqual({
+    ...widths,
+    title: 240,
+    author: 164,
+  });
+  // What does not fit at every minimum scrolls sideways.
+  expect(fitViewWidths(ids, widths, minimums, 300, 104)).toEqual({
+    ...widths,
+    title: 240,
+    author: 100,
+  });
+});
+
+test("an issue table another page draws keeps today's columns and widths, with Closed hidden", () => {
+  expect(ISSUE_TABLE_COLUMNS.ids).toEqual([
+    "select",
+    "priority",
+    "queue",
+    "key",
+    "title",
+    "status",
+    "assignee",
+    "author",
+    "labels",
+    "claim",
+    "asks",
+    "created",
+    "updated",
+    "closed",
+  ]);
+  expect(ISSUE_TABLE_COLUMNS.hiddenByDefault).toEqual({ updated: false, closed: false });
+  expect(ISSUE_TABLE_COLUMNS.minimums).toMatchObject({ key: 108, title: 116, status: 132 });
+  expect(ISSUE_TABLE_COLUMNS.sizes).toMatchObject({ key: 104, queue: 96, claim: 220 });
 });

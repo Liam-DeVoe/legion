@@ -1,16 +1,19 @@
-import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
-import { useMemo } from "react";
+import type { ColumnDef, FilterFn, RowData, SortingFn } from "@tanstack/react-table";
+import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { UserState } from "../../api/types";
+import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { rangeWords } from "../../components/RangeFilter";
 import type { LayoutColumns } from "../../components/table-layout";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   checkboxAccent,
+  dangerText,
   linkHoverText,
   linkText,
+  skeletonBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -27,18 +30,34 @@ import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
+import { formatPhaseTime, formatWorkTime, type LegionFacts } from "./issues-legion";
 import type { IssueListing } from "./issues-table-data";
 import {
-  COLUMN_MIN,
   COLUMNS,
-  COMPACT_COLUMN_MIN,
   type ColumnId,
+  type ColumnSpec,
   createdAt,
   createdBy,
+  embeddedPhoneMin,
   ISSUE_TABLE_COLUMNS,
   type Item,
+  MEASURE_METHODS,
   matchesFilters,
+  phaseHoursTotal,
+  phoneMin,
+  sinceMs,
+  waitingReasonWords,
+  workerName,
+  workerStateWords,
+  workHoursOf,
 } from "./issues-table-model";
+import {
+  isBoardFedColumn,
+  LEGION_PHASE_PICKS,
+  ROLE_PICKS,
+  WAITING_REASON_PICKS,
+  WORKER_STATE_PICKS,
+} from "./issues-views";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {
@@ -51,18 +70,105 @@ declare module "@tanstack/react-table" {
     always?: readonly string[];
     /** Filter by typed text instead of picking values: for a column of free text. */
     text?: boolean;
+    /** Filter by a window of time (`RangeFilter`): for a column of moments. */
+    range?: boolean;
+    /** How the column's measure is taken, in one or two sentences (`MEASURE_METHODS`), which
+     *  the Columns menu shows under its name. */
+    describe?: string;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
 }
-const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
+const inPicks: FilterFn<Item> = (row, id, value: string[] | string) =>
   matchesFilters(row.original, [{ id, value }]);
 
-/** How each column renders and sorts, for the reader `userState` describes. Keyed by the
- *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
- *  else about a column — whether it filters, what a row files under, what it groups by, how
- *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
- *  never disagree. A row's own checkbox tells `onMark` the row it marks. */
+/** Where `value` stands in `order`, a value this build does not know after the known ones, or
+ *  undefined with no value: a column of named states sorts in their order, its empty cells last
+ *  (`sortUndefined: "last"`). */
+function placeIn(order: readonly string[], value: string | null | undefined): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const index = order.indexOf(value);
+  return index === -1 ? order.length : index;
+}
+
+/** Two runs of a card's time by the moment each started, as lengths: the later start is the
+ *  shorter time, so it sorts first. */
+const shortestFirst: SortingFn<Item> = (a, b, id) =>
+  b.getValue<number>(id) - a.getValue<number>(id);
+
+/** What a facts cell draws while the read of its facts is out, or after it failed: a loading
+ *  mark or an error mark, and never the empty cell of an issue with no Legion work. */
+function FactsReadMark({ read }: { read: "pending" | "error" }): ReactNode {
+  return read === "pending" ? (
+    <span data-facts-read="pending">
+      <span
+        aria-hidden="true"
+        className={`inline-block h-3 w-10 animate-pulse rounded align-middle ${skeletonBg}`}
+      />
+      <span className="sr-only">Loading</span>
+    </span>
+  ) : (
+    <span className={`text-xs font-semibold ${dangerText}`} data-facts-read="error">
+      <span aria-hidden="true">!</span>
+      <span className="sr-only">Could not load</span>
+    </span>
+  );
+}
+
+/** A facts cell: its read's mark while that read is out or failed, nothing for an issue with no
+ *  Legion work, else what `draw` makes of the facts. */
+function factsCell(item: Item, draw: (facts: LegionFacts) => ReactNode): ReactNode {
+  if (item.factsRead !== "success") return <FactsReadMark read={item.factsRead} />;
+  return item.facts === undefined ? null : draw(item.facts);
+}
+
+/** A card's time, from `since` to now, in the words of the Board's card; nothing with no time. */
+function CardTime({ since }: { since: string | null | undefined }): ReactNode {
+  return since === null || since === undefined ? null : (
+    <span className={`text-xs tabular-nums ${textSecondaryOnCanvas}`}>
+      {formatPhaseTime(since, Date.now())}
+    </span>
+  );
+}
+
+/**
+ * The Queue cell: the issue's number in the Legion queue, or "In Legion queue" for a card of the
+ * board's Queue column that the daemon's line gives no number. With no daemon the number is
+ * today's: the Todo issues labelled `legion`, in rank order.
+ */
+function QueuePlace({ place, queued }: { place: number | undefined; queued: boolean }): ReactNode {
+  if (place !== undefined)
+    return (
+      <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
+        #{place}
+      </span>
+    );
+  return queued ? <span className={`text-xs ${textMutedOnCanvas}`}>In Legion queue</span> : null;
+}
+
+/** Who created the issue, at most `clamp` two lines. A server of the release before the one that
+ *  added `created_by` sends none, so the cell asks `createdBy`: an absent creator reads as the
+ *  unknown one rather than reaching `AgentName` as undefined, which would throw and take the
+ *  whole table with it. Without it, `IssuesTable.test.tsx`'s "a row a server sends without
+ *  created_by or created_at renders, with no author and no time" fails in `AgentName`. */
+function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): ReactNode {
+  const actor = createdBy(issue);
+  if (actor === null) return <span className={textSecondaryOnCanvas}>Unknown</span>;
+  return clamp ? (
+    <span className="line-clamp-2 break-words">
+      <AgentName actor={actor} />
+    </span>
+  ) : (
+    <AgentName actor={actor} />
+  );
+}
+
+/** How each column renders and sorts on the Issues tab, for the reader `userState` describes.
+ *  Keyed by the registry's own ids, so a typo or a column with no rendering fails to compile.
+ *  Everything else about a column — whether it filters, what a row files under, what it groups
+ *  by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the
+ *  two never disagree. A row's own checkbox tells `onMark` the row it marks. A column whose rows
+ *  can have no value sorts those rows last whichever way it is sorted (`sortUndefined`). */
 const renderings = (
   userState: UserState | undefined,
   onMark: (key: string) => void
@@ -106,17 +212,22 @@ const renderings = (
   },
   queue: {
     header: "Queue",
-    accessorFn: (item) => item.queue,
-    sortUndefined: "last",
+    accessorFn: (item) => item.place,
     sortDescFirst: false,
-    cell: ({ getValue }) => {
-      const place = getValue<number | undefined>();
-      return place === undefined ? null : (
-        <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
-          #{place}
-        </span>
-      );
+    sortUndefined: false,
+    // By the place, then the rows with no place by rank, which is the order Legion starts the
+    // issues it admits in: so a Queue card with no place follows the numbered ones.
+    sortingFn: (a, b) => {
+      const left = a.original.place;
+      const right = b.original.place;
+      if (left !== undefined && right !== undefined) return left - right;
+      if (left !== undefined) return -1;
+      if (right !== undefined) return 1;
+      const rankA = a.original.issue.rank;
+      const rankB = b.original.issue.rank;
+      return rankA < rankB ? -1 : rankA > rankB ? 1 : 0;
     },
+    cell: ({ row }) => <QueuePlace place={row.original.place} queued={row.original.queued} />,
   },
   key: {
     header: "Key",
@@ -184,29 +295,34 @@ const renderings = (
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
     cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
   },
+  legion_phase: {
+    header: "Legion phase",
+    // The board's order, the rows with no card last.
+    accessorFn: (item) => placeIn(LEGION_PHASE_PICKS, item.card?.column),
+    sortUndefined: "last",
+    sortingFn: "basic",
+    sortDescFirst: false,
+    cell: ({ row }) =>
+      row.original.card === undefined ? null : (
+        <span className={`text-xs whitespace-nowrap ${textSecondaryOnCanvas}`}>
+          {row.original.card.label}
+        </span>
+      ),
+  },
   assignee: {
     header: "Assignee",
     accessorFn: (item) => item.issue.assignee ?? "Unassigned",
+    // A narrow column ends a long address with an ellipsis.
     cell: ({ getValue }) => (
-      <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+      <span className={`block truncate ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
     ),
   },
   author: {
     header: "Created by",
     accessorFn: (item) => item.author,
-    cell: ({ row }) => {
-      // A server of the release before the one that added `created_by` sends none, so the cell
-      // asks `createdBy`: an absent creator reads as the unknown one rather than reaching
-      // `AgentName` as undefined, which would throw and take the whole table with it. Without
-      // it, `IssuesTable.test.tsx`'s "a row a server sends without created_by or created_at
-      // renders, with no author and no time" fails in `AgentName`.
-      const actor = createdBy(row.original.issue);
-      return actor === null ? (
-        <span className={textSecondaryOnCanvas}>Unknown</span>
-      ) : (
-        <AgentName actor={actor} />
-      );
-    },
+    // A session's long name ends on its second line, as the title does, so the row stays as
+    // tall as its title.
+    cell: ({ row }) => <Author clamp issue={row.original.issue} />,
   },
   labels: {
     header: "Labels",
@@ -264,7 +380,202 @@ const renderings = (
       />
     ),
   },
+  closed: {
+    header: "Closed",
+    accessorFn: (item) => item.issue.closed_at ?? undefined,
+    sortUndefined: "last",
+    sortingFn: (a, b, id) => compareTimestamps(a.getValue<string>(id), b.getValue<string>(id)),
+    cell: ({ row }) =>
+      row.original.issue.closed_at === null ? null : (
+        <Timestamp
+          at={row.original.issue.closed_at}
+          className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+        />
+      ),
+  },
+  roles: {
+    header: "Workers",
+    // In `LEGION_ROLES`' order, by the first role and then the next.
+    accessorFn: (item) => {
+      const places = (item.card?.card.roles ?? []).flatMap(
+        (role) => placeIn(ROLE_PICKS, role) ?? []
+      );
+      return places.length === 0 ? undefined : places.sort((a, b) => a - b);
+    },
+    sortUndefined: "last",
+    sortingFn: (a, b, id) => {
+      const left = a.getValue<number[]>(id);
+      const right = b.getValue<number[]>(id);
+      for (let index = 0; index < Math.min(left.length, right.length); index++) {
+        const step = (left[index] ?? 0) - (right[index] ?? 0);
+        if (step !== 0) return step;
+      }
+      return left.length - right.length;
+    },
+    sortDescFirst: false,
+    cell: ({ row }) => (
+      <span className={`text-xs ${textSecondaryOnCanvas}`}>
+        {[...(row.original.card?.card.roles ?? [])]
+          .sort((a, b) => (placeIn(ROLE_PICKS, a) ?? 0) - (placeIn(ROLE_PICKS, b) ?? 0))
+          .map(workerName)
+          .join(", ")}
+      </span>
+    ),
+  },
+  activity: {
+    header: "Worker state",
+    accessorFn: (item) => placeIn(WORKER_STATE_PICKS, item.card?.card.slot_use),
+    sortUndefined: "last",
+    sortingFn: "basic",
+    sortDescFirst: false,
+    cell: ({ row }) => {
+      const use = row.original.card?.card.slot_use;
+      return use === null || use === undefined || use === "" ? null : (
+        <span className={`text-xs ${textSecondaryOnCanvas}`}>{workerStateWords(use)}</span>
+      );
+    },
+  },
+  waited: {
+    header: "Time waiting",
+    accessorFn: (item) => sinceMs(item.card?.card.waiting?.since),
+    sortUndefined: "last",
+    sortingFn: shortestFirst,
+    sortDescFirst: true,
+    cell: ({ row }) => <CardTime since={row.original.card?.card.waiting?.since} />,
+  },
+  waiting_reason: {
+    header: "Why it waits",
+    accessorFn: (item) => placeIn(WAITING_REASON_PICKS, item.card?.card.waiting?.reason),
+    sortUndefined: "last",
+    sortingFn: "basic",
+    sortDescFirst: false,
+    cell: ({ row }) => {
+      const waiting = row.original.card?.card.waiting;
+      if (waiting === null || waiting === undefined || waiting.reason === "") return null;
+      // After A blocker, the issues that block it.
+      const blockers = waiting.reason === "blocked" ? (waiting.blocked_by ?? []) : [];
+      return (
+        <span className={`flex flex-wrap items-center gap-x-1 text-xs ${textSecondaryOnCanvas}`}>
+          {waitingReasonWords(waiting.reason)}
+          {blockers.map((key) => (
+            <Link
+              className={`${linkText} ${linkHoverText}`}
+              key={key}
+              to={buildIssuePath({ key, kind: "issue" })}
+              {...referenceTriggerProps({ key, kind: "issue" })}
+            >
+              {key}
+            </Link>
+          ))}
+        </span>
+      );
+    },
+  },
+  time_in_phase: {
+    header: "Time in Legion phase",
+    accessorFn: (item) => sinceMs(item.card?.card.phase_since),
+    sortUndefined: "last",
+    sortingFn: shortestFirst,
+    sortDescFirst: true,
+    cell: ({ row }) => <CardTime since={row.original.card?.card.phase_since} />,
+  },
+  work_hours: {
+    header: "Work time",
+    accessorFn: workHoursOf,
+    sortUndefined: "last",
+    sortingFn: "basic",
+    sortDescFirst: true,
+    cell: ({ row }) =>
+      factsCell(row.original, () => {
+        const hours = workHoursOf(row.original);
+        return hours === undefined ? null : (
+          <span className={`text-xs tabular-nums ${textSecondaryOnCanvas}`}>
+            {formatWorkTime(hours)}
+          </span>
+        );
+      }),
+  },
+  review_rounds: {
+    header: "Review rounds",
+    accessorFn: (item) => item.facts?.review_rounds,
+    sortUndefined: "last",
+    sortingFn: "basic",
+    sortDescFirst: true,
+    // A counted zero reads 0: Legion worked the issue and no review round reached it.
+    cell: ({ row }) =>
+      factsCell(row.original, (facts) => (
+        <span className="tabular-nums">{facts.review_rounds}</span>
+      )),
+  },
+  legion: {
+    header: "Legion tree",
+    // The roots first, then the children by their root.
+    accessorFn: (item) =>
+      item.facts === undefined ? undefined : item.facts.tree_depth === 0 ? "" : item.facts.root_key,
+    sortUndefined: "last",
+    sortingFn: (a, b, id) =>
+      a.getValue<string>(id).localeCompare(b.getValue<string>(id), undefined, { numeric: true }),
+    sortDescFirst: false,
+    cell: ({ row }) =>
+      factsCell(row.original, (facts) =>
+        facts.tree_depth === 0 ? (
+          <span className="text-xs">Root</span>
+        ) : (
+          <Link
+            className={`text-xs ${linkText} ${linkHoverText}`}
+            to={buildIssuePath({ key: facts.root_key, kind: "issue" })}
+            {...referenceTriggerProps({ key: facts.root_key, kind: "issue" })}
+          >
+            {facts.root_key}
+          </Link>
+        )
+      ),
+  },
+  phase_hours: {
+    header: "Time per phase",
+    // By the total, where an empty cell counts 0.
+    accessorFn: (item) => phaseHoursTotal(item.facts),
+    sortingFn: "basic",
+    sortDescFirst: true,
+    cell: ({ row }) =>
+      factsCell(row.original, (facts) => {
+        const total = phaseHoursTotal(facts);
+        return total === 0 ? null : (
+          <span className={`text-xs tabular-nums ${textSecondaryOnCanvas}`}>
+            {formatWorkTime(total)}
+          </span>
+        );
+      }),
+  },
 });
+
+/**
+ * The cells a table another page draws (the priority pages') draws as today, where the Issues
+ * tab's differ: Queue, Start next's number with the rows that have none after the rest in the
+ * listing's order (where the Issues tab's is the daemon's own number), Assignee whole on one
+ * line, and Created by at every line its name takes.
+ */
+const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<Item>>>>> = {
+  queue: {
+    header: "Queue",
+    accessorFn: (item) => item.queue,
+    sortUndefined: "last",
+    sortDescFirst: false,
+    cell: ({ row }) => <QueuePlace place={row.original.queue} queued={false} />,
+  },
+  assignee: {
+    header: "Assignee",
+    accessorFn: (item) => item.issue.assignee ?? "Unassigned",
+    cell: ({ getValue }) => (
+      <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+    ),
+  },
+  author: {
+    header: "Created by",
+    accessorFn: (item) => item.author,
+    cell: ({ row }) => <Author clamp={false} issue={row.original.issue} />,
+  },
+};
 
 /** The columns only some listings have a use for: which project a row is in, which priorities
  *  it advances, when it was moved into backlog or icebox and by whom, and why. A table has each
@@ -389,12 +700,12 @@ export type ShownColumnId = ListingColumnId | "updated";
 const layouts = new Map<string, LayoutColumns>();
 
 /**
- * The layout of an issues table with the listing columns `columns` (`listingColumns`) that opens
- * with `shown` shown: the registry's own (`ISSUE_TABLE_COLUMNS`), with those listing columns at
- * their widths, and every column the registry opens hidden or a listing column not in `shown`
- * hidden until the reader shows it. A project's table has none of them and names none; each
- * fault list of the priorities page names its own. Built once for each pair and kept, since the
- * stored layout is read again whenever this object changes (`useTableLayout`).
+ * The layout of an issues table another page draws, with the listing columns `columns`
+ * (`listingColumns`), that opens with `shown` shown: today's (`ISSUE_TABLE_COLUMNS`), with those
+ * listing columns at their widths, and every column today's layout opens hidden or a listing
+ * column not in `shown` hidden until the reader shows it. Each fault list of the priorities page
+ * names its own. Built once for each pair and kept, since the stored layout is read again
+ * whenever this object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
@@ -427,42 +738,86 @@ export function issueTableLayout(
   return layout;
 }
 
-/** The List's columns, and a scoped table's listing columns beside them (`issueTableLayout`).
- *  `onMark` is told the row a row's own checkbox marks; it is a dependency of the columns, so a
- *  caller hands a stable one. */
+/** The Issues tab's own table, as against an issue table another page draws (the priority
+ *  pages'), which keeps today's cells: whether the project has a Legion daemon. With none, the
+ *  columns the board route feeds are neither in the Columns menu nor in Group by. */
+export interface IssueTabColumns {
+  readonly hasLegion: boolean;
+}
+
+const REGISTRY: ReadonlyMap<string, ColumnSpec> = new Map(
+  COLUMNS.map((column) => [column.id, column])
+);
+
+/**
+ * The columns of `layout`, in its order: the registry's (`viewLayoutColumns` on the Issues tab,
+ * `issueTableLayout` elsewhere), and a scoped table's listing columns after Title. `onMark` is
+ * told the row a row's own checkbox marks; it is a dependency of the columns, so a caller hands a
+ * stable one, as it does `layout` and `priorityTitles`. A column starts at the layout's width and
+ * goes no narrower than its minimum there (`compact`: a phone's). `tab` marks the Issues tab's
+ * own table; a table without it draws today's cells.
+ */
 export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
   onMark: (key: string) => void,
-  /** The table's layout (`issueTableLayout`): which listing columns it has. */
+  /** The table's layout: which columns it has, their widths and their minimums. */
   layout: LayoutColumns,
   /** Each priority's title by its id, which the Advances column names a priority by; one this
    *  map does not hold, a priority deleted since it was read, is named by its id. */
-  priorityTitles?: ReadonlyMap<string, string>
+  priorityTitles?: ReadonlyMap<string, string>,
+  tab?: IssueTabColumns
 ): ColumnDef<Item>[] {
+  const hasLegion = tab?.hasLegion;
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState, onMark);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
-    const registered = COLUMNS.map((column): ColumnDef<Item> => {
-      const picks = column.filter?.kind === "picks" ? column.filter : undefined;
-      return {
-        ...rendering[column.id],
-        id: column.id,
-        size: column.size,
-        minSize: (compact ? COMPACT_COLUMN_MIN[column.id] : undefined) ?? COLUMN_MIN[column.id],
-        enableResizing: column.id !== "select",
-        enableSorting: column.sortable !== false,
-        enableColumnFilter: column.filter !== undefined,
-        enableGrouping: picks?.group !== undefined,
-        ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
-        ...(column.filter === undefined ? {} : { filterFn: picks ? inPicks : "includesString" }),
-        meta: {
-          ...(column.filter?.kind === "text" ? { text: true } : {}),
-          ...(picks?.order === undefined ? {} : { order: picks.order }),
-          ...(picks?.show === undefined ? {} : { show: picks.show }),
-          ...(picks?.always === undefined ? {} : { always: picks.always }),
+    const embedded = hasLegion === undefined;
+    const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
+      const column = REGISTRY.get(id);
+      if (column === undefined) return [];
+      const filter = column.filter;
+      const picks = filter?.kind === "picks" ? filter : undefined;
+      // A board-fed column of a project with no Legion daemon has nothing to draw.
+      const unfed = hasLegion === false && isBoardFedColumn(column.id);
+      // Today's Queue filter names its values as they are, Queued and Not queued.
+      const show =
+        filter?.kind === "range"
+          ? rangeWords
+          : embedded && column.id === "queue"
+            ? undefined
+            : picks?.show;
+      const describe = MEASURE_METHODS[column.id];
+      const minSize = compact
+        ? embedded
+          ? embeddedPhoneMin(column.id)
+          : phoneMin(column.id)
+        : (layout.minimums?.[column.id] ?? column.min);
+      return [
+        {
+          ...((embedded ? EMBEDDED_RENDERINGS[column.id] : undefined) ?? rendering[column.id]),
+          id: column.id,
+          size: layout.sizes?.[column.id] ?? column.size,
+          minSize,
+          enableResizing: column.id !== "select",
+          enableSorting: column.sortable !== false,
+          enableColumnFilter: filter !== undefined,
+          enableGrouping: picks?.group !== undefined && !unfed,
+          ...(unfed ? { enableHiding: false } : {}),
+          ...(picks?.group === undefined ? {} : { getGroupingValue: picks.group }),
+          ...(filter === undefined
+            ? {}
+            : { filterFn: filter.kind === "text" ? "includesString" : inPicks }),
+          meta: {
+            ...(filter?.kind === "text" ? { text: true } : {}),
+            ...(filter?.kind === "range" ? { range: true } : {}),
+            ...(picks?.order === undefined ? {} : { order: picks.order }),
+            ...(show === undefined ? {} : { show }),
+            ...(picks?.always === undefined ? {} : { always: picks.always }),
+            ...(describe === undefined ? {} : { describe }),
+          },
         },
-      };
+      ];
     });
     const listing = LISTING_COLUMNS.filter(({ id }) => layout.ids.includes(id)).map(
       (column): ColumnDef<Item> => ({
@@ -476,8 +831,9 @@ export function useIssueTableColumns(
         enableGrouping: false,
       })
     );
+    if (listing.length === 0) return registered;
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...listing, ...registered.slice(after)];
-  }, [userState, compact, onMark, layout, priorityTitles]);
+  }, [userState, compact, onMark, layout, priorityTitles, hasLegion]);
 }

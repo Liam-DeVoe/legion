@@ -11,6 +11,7 @@ import { CONTROL } from "./control-names";
 import type { RowNoun } from "./DataTable";
 import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
+import { RangeFilter } from "./RangeFilter";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -39,9 +40,9 @@ export interface ColumnFilterProps<TData> {
 
 /**
  * The one filter a table's header holds: the funnel that opens either a search over the column's
- * values or, for a column of free text, a box to type what it must contain. Which of the two it
- * is comes from the column's `meta`, so a column says once how it filters and every table filters
- * it the same way.
+ * values or, for a column of free text, a box to type what it must contain; or, for a column of
+ * moments, the date range filter (`RangeFilter`). Which of them it is comes from the column's
+ * `meta`, so a column says once how it filters and every table filters it the same way.
  */
 export function ColumnFilter<TData>({
   column,
@@ -53,6 +54,15 @@ export function ColumnFilter<TData>({
 }: ColumnFilterProps<TData>): ReactNode {
   const meta = column.columnDef.meta;
   const name = String(column.columnDef.header);
+  if (meta?.range)
+    return (
+      <RangeFilter
+        column={column}
+        onOpenChange={onOpenChange}
+        open={open}
+        triggerClass={filterTrigger}
+      />
+    );
   if (meta?.text) {
     const value = (column.getFilterValue() as string | undefined) ?? "";
     return (

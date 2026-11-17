@@ -36,7 +36,7 @@ test.each([
   expect(readLayout(key, ISSUE_TABLE_COLUMNS)).toEqual({
     sizing: { title: 360 },
     order: ["status", "key"],
-    visibility: { updated: false, labels: false },
+    visibility: { updated: false, closed: false, labels: false },
   });
 });
 

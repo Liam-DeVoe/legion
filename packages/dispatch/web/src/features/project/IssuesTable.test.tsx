@@ -939,7 +939,7 @@ test("the List writes a reader's saved layout back under the same key in the sam
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(localStorage.getItem("dispatch.project-table.CORE")).toBe(
-    '{"sizing":{"title":360},"order":["status","key"],"visibility":{"updated":true,"labels":false},"kept":1}'
+    '{"sizing":{"title":360},"order":["status","key"],"visibility":{"updated":true,"closed":false,"labels":false},"kept":1}'
   );
 });
 
@@ -947,7 +947,7 @@ test("the List stores a reader's first layout with Updated hidden and no listing
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(localStorage.getItem("dispatch.project-table.CORE")).toBe(
-    '{"sizing":{},"order":[],"visibility":{"updated":false}}'
+    '{"sizing":{},"order":[],"visibility":{"updated":false,"closed":false}}'
   );
 });
 
@@ -1407,7 +1407,7 @@ test("a scoped table lists the issues the server answers for the priority, over 
   // hidden until the reader shows them, and no Moved there or Reason, since its listing asks for
   // no move.
   expect(localStorage.getItem("dispatch.project-table.priority-work")).toBe(
-    '{"sizing":{},"order":[],"visibility":{"updated":false,"project":false,"advances":false}}'
+    '{"sizing":{},"order":[],"visibility":{"updated":false,"closed":false,"project":false,"advances":false}}'
   );
   expect(localStorage.getItem("dispatch.project-table.priority:PRI-7")).toBeNull();
 });
