@@ -584,6 +584,34 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 	}
 }
 
+// In the reviewer's first round its row names no claim: the reviewer submits the review of its
+// first round before it completes, and only a completion writes a row's claim. The read still
+// tells the reviewer's own review from another review-App session's by the session the claims
+// record holds for the claim the daemon starts the reviewer under (workflow.Engine.ReviewerSession),
+// so the controller's approval it lists is set aside and kept as refused, and the round stays
+// undecided, as in a later round.
+func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer})
+	captureHeadAt(t, pool, captureHead)
+	seedCaptureReviewerSession(t, pool, "ses-reviewer")
+	var reads atomic.Int64
+	api := reviewsStandIn(t, func() string {
+		return "[" + listedReviewWithBody(41, reviewReadApp, "APPROVED", captureHead, "2026-10-08T22:15:52Z", "ship it"+legionFooter("ses-controller", captureHead)) + "]"
+	}, &reads).URL
+	w := reviewReadRuntime(pool, api)
+	readCapture(t, w)
+	if got, _ := capturePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the read the issue is in %s, want reviewing", got)
+	}
+	if got, _ := reviewerDecision(t, pool); got != "" {
+		t.Fatalf("the round's recorded decision = %q, want none: the controller's approval is not the reviewer's review", got)
+	}
+	if !w.refusedReviews[41] {
+		t.Fatalf("refused reviews = %v, want the controller's review 41", w.refusedReviews)
+	}
+}
+
 // The case no clock settles: the branch went from the head the record holds to another and a
 // force push put it back, so the head the record holds now is a head it held before the review
 // was written. GitHub gives that review the pull request's current commit_id

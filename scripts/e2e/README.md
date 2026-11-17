@@ -367,7 +367,8 @@ Each item below names a script, then what it proves.
   a later review round is told the commit the review before it read, driven against the real Dispatch server this checkout builds and the whole daemon booted with `dispatch_url` at it, as `handoff-records.sh` drives them, with the review App's review, the implementer's push and GitHub's synchronize as GitHub envelopes:
   the reviewer's task of a first round names no `Last reviewed commit`;
   after the reviewer requests changes at head X, the implementer pushes a new head and the tester passes, the reviewer's task of the second round holds ` Last reviewed commit: X.`;
-  and with that commit cleared from the reviewer's phases row between the rounds, the second round's task names none.
+  with that commit cleared from the reviewer's phases row between the rounds, the second round's task names none;
+  and a first round's `REQUEST_CHANGES` from another review-App session is set aside, leaving the issue in reviewing and no commit recorded.
   No GitHub, no cluster
 
 - `plan-pointer-drive.sh`
@@ -4885,8 +4886,8 @@ the real Dispatch server on a database of its own, a project of the run's own (`
 Three issues are seeded in `testing` on open pull requests whose heads are commit ids of 40 lowercase hexadecimal characters, each with its tester's launch for the boot to relaunch.
 The reviewer's review is the review App's own, published on the `ENVOY_NOTIFICATIONS` stream as Envoy relays GitHub's webhook before the reviewer completes, as the reviewer posts it, its Legion footer naming the pull request's head and a session.
 A footer that names another head, or none, is set aside and decides nothing.
-In a first round the reviewer's phases row names no claim yet, so the review App's login decides who may decide the round, whatever session the footer names.
-Only a footer that names the session the reviewer's claim registered makes the daemon keep the head as the commit the reviewer read.
+A footer that names a session other than the one the claims record holds for the claim the daemon starts the reviewer under is set aside too, in the first round as in every later one, though the reviewer's phases row names no claim before its first completion.
+Only the reviewer's own review decides the round and makes the daemon keep the head as the commit the reviewer read.
 Each check first holds that the task it reads is the reviewing task of its round:
 it says `Phase: reviewing.` and names the tester's handoff of that round by its version, so a check of an absence cannot pass on a task of another round.
 
@@ -4895,7 +4896,7 @@ it says `Phase: reviewing.` and names the tester's handoff of that round by its 
 | `round-1-names-no-commit` | the relaunched tester, prompted to resume its phase, writes its `test` handoff and completes with `pass`; the reviewer the daemon starts registers | the issue in `reviewing`; the reviewer's task names test version 1 and holds no `Last reviewed commit` |
 | `round-2-names-the-commit-of-round-1` | the review App's `REQUEST_CHANGES` at the first head; the implementer's push of a second head and GitHub's synchronize; the implementer's `implement` handoff and its completion at that head; the tester's second `test` handoff and its `pass` | `implementing`, with `phases.reviewed_head` of the reviewer at the first head; the pull request at the second head; `testing`; then `reviewing`, with the reviewer's task naming test version 2 and holding ` Last reviewed commit: <first head>.` |
 | `control-no-record-no-commit` | the same first round and review on the second issue; `phases.reviewed_head` of its reviewer cleared in the daemon's database; the same second round | the first round's task holds no `Last reviewed commit`; the column holds the first head before the clear and reads empty after it; the second round's task names test version 2 and holds no `Last reviewed commit`, where the step before it, the same run with the clear left out, holds one |
-| `other-session-records-no-commit` | the same first round on the third issue; the review App's `REQUEST_CHANGES` at the first head, its footer naming a session the reviewer's claim did not register; the same second round | the first round's task holds no `Last reviewed commit`; `implementing`, with `phases.reviewed_head` of the reviewer empty; the second round's task names test version 2 and holds no `Last reviewed commit`, where `round-2-names-the-commit-of-round-1`, the same first round with the reviewer's own session, holds one |
+| `other-session-records-no-commit` | the same first round on the third issue; the review App's `REQUEST_CHANGES` at the first head, its footer naming a session the reviewer's claim did not register | the first round's task holds no `Last reviewed commit`; the issue still in `reviewing`, the review set aside, with `phases.reviewed_head` of the reviewer empty, where `round-2-names-the-commit-of-round-1`, the same first round with the reviewer's own session, moves the issue to `implementing` with the column at the first head |
 
 The proof's own control: with the call that gives the transition's `task` the reviewed part taken out of `internal/workflow/engine.go`, `round-2-names-the-commit-of-round-1` fails, its task naming test version 2 and no commit.
 With the write of `phases.reviewed_head` taken out of `internal/workflow/review.go` and the step before it left out, `control-no-record-no-commit` fails before its clear, the column reading empty where it should hold the first head.

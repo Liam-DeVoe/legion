@@ -20,12 +20,12 @@ import (
 // a GitHub pull-request review (intake's decodeReview reads it). It is the review App's own, with
 // the Legion footer naming session and head, which is what lets it decide the round at all
 // (workflow's refusesRound): the head is the pull request's current head. The session is held to
-// the one the reviewer's claim records once the reviewer's row names that claim, from its first
-// completion on, and before that the login decides (workflow's byReviewer); only a review naming
-// the claim's session moves the commit the reviewer read (workflow's byReviewersClaim). seq
-// numbers the envelope and reviewID the review: each review a run publishes carries an id and a
-// time after the one before it, so none is ordered behind a review already applied
-// (record.ReviewOrder).
+// the one the claims record holds for the claim the daemon starts the reviewer under, in the first
+// round as in every later one (workflow's byReviewer): only a review naming that session decides
+// the round and moves the commit the reviewer read, and the login decides by itself only while
+// that claim records no session. seq numbers the envelope and reviewID the review: each review a
+// run publishes carries an id and a time after the one before it, so none is ordered behind a
+// review already applied (record.ReviewOrder).
 func (p *liveProof) publishReviewAs(session string, number int, state, head string, seq, reviewID int64) {
 	p.t.Helper()
 	payload, err := json.Marshal(map[string]string{

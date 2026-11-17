@@ -1384,8 +1384,10 @@ These arrive as messages on the Dispatch issue:
   footer names another session (the controller's, an architect's), is set aside and decides
   nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
   a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and
-  `body_truncated`. While the reviewer's session is not yet recorded, the login alone decides,
-  logged as `workflow: the reviewer's session is not recorded; the review App's login decides`.
+  `body_truncated`. The reviewer's session is the one the claims record holds for the claim the
+  daemon starts the reviewer under, in its first round as in every later one. While that claim
+  records no session, or has no row, the login alone decides, logged as `workflow: the reviewer's
+  session is not recorded; the review App's login decides`.
   Envoy caps review bodies at 2048 runes, so the daemon restores a truncated review-App body from
   GitHub before reading its footer; a review it cannot restore (no review id) stays set aside with
   `body_truncated=true`. The remedy for this stall: the reviewer re-submits its review with the

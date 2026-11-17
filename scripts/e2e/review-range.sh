@@ -25,8 +25,9 @@
 #     control can fail;
 #   - other-session-records-no-commit: on a third issue, after the same first round, the review
 #     App's request for changes at the head comes from a session the reviewer's claim did not
-#     register; it moves the issue back to implementing, phases.reviewed_head of the reviewer's row
-#     stays empty, and the reviewer's task of round 2 holds no `Last reviewed commit`.
+#     register; the daemon sets it aside, so the issue is still in reviewing, and
+#     phases.reviewed_head of the reviewer's row stays empty. The second check is the same first
+#     round with the reviewer's own session, which moves the issue and records the head.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as

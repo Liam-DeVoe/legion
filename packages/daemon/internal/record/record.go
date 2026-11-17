@@ -555,11 +555,12 @@ type PhaseRow struct {
 	Decision *ReviewDecision
 	// ReviewedHead is the commit the reviewer's own newest deciding review read: the head named in
 	// the Legion footer of a review that approved or requested changes, submitted as the review App
-	// from the session the claims record holds for the reviewer's claim (workflow's review,
-	// byReviewersClaim), in the first round, before any completion puts that claim on this row, as
-	// in every later one. Only the reviewer's row holds it. A person's review does not move it,
-	// since the reviewer did not read that commit, and neither does another review-App session's
-	// review, even one that decides the round, nor a review that decides nothing. Unlike Decision
+	// from the session the claims record holds for the claim the daemon starts the reviewer under
+	// (workflow's review, byReviewer and reviewersClaim), in the first round as in every later one.
+	// Only the reviewer's row holds it. A person's review does not move it, since the reviewer did
+	// not read that commit; neither does another review-App session's review, a review that decides
+	// nothing, or any review while the reviewer's claim records no session, when the login alone
+	// decides the round and nothing says the review is the reviewer's. Unlike Decision
 	// it outlives its round: no entry into a phase clears it (workflow's clearHandoff, whose list
 	// of fields does not hold it), so the task of the reviewer's next round names it (workflow's
 	// reviewedPart) and the reviewer reads the difference from it to the head. A new generation

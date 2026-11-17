@@ -238,7 +238,11 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // review App submitted (byReviewApp): the controller, an architect and a sibling tree's role post
 // under the same login. A deciding review-App review whose footer names another session decides the
 // round when its author can write (DecidesRound), and the round's decision is that review's; the
-// commit is still the one the reviewer's own last deciding review read. The pull request moves to
+// commit is still the one the reviewer's own last deciding review read. The daemon never reads
+// write access for the review App's own login (daemon's reviewerCanWrite), so production never
+// delivers this review with AuthorCanWrite set: the fixture sets it so that a review of another
+// session reaches the write of the commit while the reviewer's session is recorded, the one case
+// in which byReviewer alone keeps the commit where it stands. The pull request moves to
 // headTwo before the other session's review, so a commit moved by that review would differ from
 // the reviewer's headOne. The reviewer completes round 1 after its review, as it does in
 // production, which is what puts its claim on its row for round 2.
@@ -280,8 +284,11 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 // records on the claim it starts the reviewer under. A deciding review that another review-App
 // session submitted at the head - the controller's, here - records none, so the next round reads
 // the whole change rather than only what came after a commit no review of the reviewer read. The
-// reviewer's own review of round 1 records its head. The control is that other session's review
-// once the reviewer's first completion has put its claim on the row.
+// review is given AuthorCanWrite, which production never sets for the review App (daemon's
+// reviewerCanWrite), so that it decides the round and reaches the write of the commit; the
+// production shape, where it decides nothing, is TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides.
+// The reviewer's own review of round 1 records its head. The control is that other session's
+// review once the reviewer's first completion has put its claim on the row.
 func TestAReviewFromAnotherReviewAppSessionMovesNoCommitInTheReviewersFirstRound(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
