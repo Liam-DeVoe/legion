@@ -17,6 +17,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// todaysDefaultSteps is the five steps of today's default plan, typed here rather than read from
+// DefaultSteps: this file is the oracle of what that list is, so a change of the production list
+// fails here instead of following it.
+var todaysDefaultSteps = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+
 // The place of a phase's step is read from the steps, never stated: a list without the tester shows
 // it, since the place logic takes the steps as a parameter: the reviewer moves up to place 3, and
 // testing runs no step of that list. Today's places, each with its role and type, are held by
@@ -24,7 +29,7 @@ import (
 // is swapped: DefaultSteps answers a fresh copy, so a caller that changes the slice it got changes
 // no later answer.
 func TestStepOfReadsTheDefaultSteps(t *testing.T) {
-	if steps, want := DefaultSteps(), []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}; !slices.Equal(steps, want) {
+	if steps, want := DefaultSteps(), todaysDefaultSteps; !slices.Equal(steps, want) {
 		t.Fatalf("DefaultSteps() = %q, want %q", steps, want)
 	}
 
@@ -70,7 +75,7 @@ func planWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.PlanRec
 func defaultPlanNamed(name string, generation uint64) record.PlanRecord {
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	return record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(name)).String(), Generation: generation, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: slices.Clone(todaysDefaultSteps)}}}
 }
 
 // retroPlace is the place of an issue's retro, which no list of steps holds.
