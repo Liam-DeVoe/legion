@@ -45,6 +45,9 @@ import (
 //   - shares: mode random, a and b of weight 1 each, so the ten recorded arms, in the order of
 //     creation, are the ten arms experiment.Draw gives over a fresh seeded(11), and each issue
 //     runs as its arm says;
+//   - children: the settings of shares, one root handed to Legion and ten children put to todo
+//     under it one at a time: admission draws the root and the workflow draws each child it
+//     records, from the one source, so the eleven arms are the seed's first eleven draws;
 //   - control-no-experiment: the settings of shares with no experiment, so no issue holds a row
 //     of planning, the comparison of shares fails, and each issue runs as with no experiment.
 func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
@@ -85,6 +88,18 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 		t.Logf("the ten issues were drawn %v, the seed's own draws in the order of creation", arms)
 	})
 
+	// Control, run by hand: with the workflow's half of the seam taken out
+	// (engineCfg.ExperimentSource in openWorkflow), each child is drawn from
+	// experiment.CryptoSource, and the comparison fails on the first child the two disagree on.
+	t.Run("children", func(t *testing.T) {
+		declared := planningExperiment(config.ExperimentRandom, "")
+		issues := childrenUnder(t, declared)
+		if err := drawnAsTheSeed(issues, declared, 11); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("the root %s and its ten children were drawn %+v, the seed's own draws in the order of creation", issues[0].key, issues)
+	})
+
 	t.Run("control-no-experiment", func(t *testing.T) {
 		issues := tenIssuesUnder(t, nil)
 		err := drawnAsTheSeed(issues, planningExperiment(config.ExperimentRandom, ""), 11)
@@ -103,8 +118,8 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 
 // seeded is a random source of the shape a draw takes (experiment.Draw): each value is the next
 // of one PCG seeded with seed, below the bound asked. The daemon hands its one source to its
-// admission, its workflow and its API, which draw on goroutines of their own, and a PCG is not
-// safe to share, so one mutex holds it.
+// admission and its workflow, which draw on goroutines of their own, and a PCG is not safe to
+// share, so one mutex holds it.
 func seeded(seed uint64) func(uint64) (uint64, error) {
 	var mu sync.Mutex
 	values := rand.New(rand.NewPCG(seed, seed))
@@ -202,6 +217,36 @@ func tenIssuesUnder(t *testing.T, experiments []config.Experiment) []drawnIssue 
 	return issues
 }
 
+// childrenUnder boots the daemon at a project that declares declared, drawing `random` from
+// seeded(11), hands one root to Legion as the person's todo, and then puts ten children under it
+// to todo, one at a time, each by the person, waiting until the workflow has recorded each. The
+// root is drawn by admission and each child by the workflow, as it records a todo child under a
+// live tree, so the root takes the seed's first draw and the children the next ten. It answers
+// the root and then the children, in the order of creation, each with its row of planning.
+func childrenUnder(t *testing.T, declared config.Experiment) []drawnIssue {
+	t.Helper()
+	r := newPersonHandoverRig(t, len(experimentTitles)+1)
+	r.cfg.Projects[r.cfg.Project] = config.Project{Experiments: []config.Experiment{declared}}
+	r.experimentSource = seeded(11)
+	r.boot()
+	root := r.create(asSession, "Platform migration umbrella", map[string]any{"labels": []string{"legion"}})
+	r.admit(root.Key)
+	issues := []drawnIssue{{key: root.Key}}
+	for _, title := range experimentTitles {
+		child := r.create(asSession, title, map[string]any{"labels": []string{"legion"}, "parent": root.Key})
+		r.setStatus(child.Key, "todo")
+		settled(t, r.d, "record the child "+child.Key, func(s api.State) bool {
+			recorded, ok := s.Issues[child.Key]
+			return ok && recorded.Tree == root.Key
+		})
+		issues = append(issues, drawnIssue{key: child.Key})
+	}
+	for i := range issues {
+		r.readGroup(&issues[i])
+	}
+	return issues
+}
+
 // givePlan gives Legion the plan in version 1 of document as key's owner, as the architect's
 // register_plan does, and answers what the daemon answered. Dispatch settles an uploaded version
 // in its own time, so an answer that Dispatch does not show the version yet is asked again.
@@ -223,20 +268,12 @@ func (r *personHandoverRig) givePlan(key, document string, grant func() string) 
 	return answer
 }
 
-// readDrawn reads, from the daemon's database, issue's row of the experiment planning, the phase
-// its run is at and the source of the plan in force at its generation.
+// readDrawn reads, from the daemon's database, issue's row of the experiment planning
+// (readGroup), the phase its run is at and the source of the plan in force at its generation.
 func (r *personHandoverRig) readDrawn(issue *drawnIssue) {
 	r.t.Helper()
 	ctx := r.t.Context()
-	err := r.pool.QueryRow(ctx, `select variant, plan from experiment_assignments where issue_key = $1 and experiment = 'planning'`,
-		issue.key).Scan(&issue.variant, &issue.plan)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-	case err != nil:
-		r.t.Fatalf("read the row of the experiment planning of %s: %v", issue.key, err)
-	default:
-		issue.drawn = true
-	}
+	r.readGroup(issue)
 	var step string
 	if err := r.pool.QueryRow(ctx, `select phase from issues where key = $1`, issue.key).Scan(&step); err != nil {
 		r.t.Fatalf("read the phase of %s: %v", issue.key, err)
@@ -246,6 +283,21 @@ func (r *personHandoverRig) readDrawn(issue *drawnIssue) {
 		where issue = $1 and generation = (select generation from issues where key = $1)
 		order by version desc limit 1`, issue.key).Scan(&issue.source); err != nil {
 		r.t.Fatalf("read the source of the plan of %s: %v", issue.key, err)
+	}
+}
+
+// readGroup reads issue's row of the experiment planning from the daemon's database: drawn is
+// whether it holds one, and variant and plan are its arm and the arm's plan.
+func (r *personHandoverRig) readGroup(issue *drawnIssue) {
+	r.t.Helper()
+	err := r.pool.QueryRow(r.t.Context(), `select variant, plan from experiment_assignments where issue_key = $1 and experiment = 'planning'`,
+		issue.key).Scan(&issue.variant, &issue.plan)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		r.t.Fatalf("read the row of the experiment planning of %s: %v", issue.key, err)
+	default:
+		issue.drawn = true
 	}
 }
 
