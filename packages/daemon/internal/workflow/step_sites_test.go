@@ -461,3 +461,29 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 		t.Fatalf("the end = %+v, want count 0, the tester's identity and its start at %s", end, t0)
 	}
 }
+
+// An issue at admitted runs no step: the architect works that phase (phase.RoleFor), and the
+// task's first step is planning. So an end and a start of the step an issue at admitted stands in
+// write nothing, and the move out of admitted writes the start of planning and no end, the
+// architect's own completion beside it or not. It is what the three readers of phase.RoleFor in
+// steps.go answer for admitted (internal/textcheck's roleForReaders): startAgent and upgradedStart
+// are never asked there, and endOfTransition's answer is read by no end.
+func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
+	pool := migratedPool(t)
+	root := stepRoot(t, pool, phase.Admitted)
+	engine := stepEngine(nil)
+	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := engine.EndRunningStep(ctx, tx, root); err != nil {
+			return err
+		}
+		return engine.StartStepRecord(ctx, tx, root)
+	})
+	if writes := stepWrites(t, pool, root.Key); len(writes) != 0 {
+		t.Fatalf("an end and a start at admitted wrote %+v, want nothing", writes)
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect, HandoffRecord: "architect-handoff"})
+	writes := stepWrites(t, pool, root.Key)
+	if len(writes) != 1 || !isStart(writes[0]) || writes[0].Kind != "step" || writes[0].Step != 1 || writes[0].Role != "planner" {
+		t.Fatalf("the move out of admitted wrote %+v, want the start of step 1 alone", writes)
+	}
+}

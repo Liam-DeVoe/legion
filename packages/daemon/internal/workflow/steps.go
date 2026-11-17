@@ -236,10 +236,14 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 
 // endOfTransition is how a transition on trigger ends the step of from, moving the issue into to
 // with handoff as the completion's row: endOf's result, the step of to where the work goes back,
-// and the handoff record handoff names when its role is the role of from.
+// and the handoff record handoff names when its role is the role of from. A phase that runs no
+// step, admitted among them, whose role is the architect's, ends no step and names no report.
 func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
+	if _, _, _, _, ok := stepOf(from); !ok {
+		return end
+	}
 	if _, step, _, _, ok := stepOf(to); returns && ok {
 		end.ReturnedTo = new(step)
 	}
