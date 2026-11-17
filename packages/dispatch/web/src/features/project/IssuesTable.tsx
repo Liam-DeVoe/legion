@@ -1316,7 +1316,7 @@ function IssueTableBody({
             by={by}
             lanes={tab.lanes}
             listsDone={listsDone}
-            phasePicks={picksOf(filters, "legion_phase")}
+            phaseFilterPicks={picksOf(filters, "legion_phase")}
             project={tab.project}
             rankRefusal={rankRefusal(
               firstSort,

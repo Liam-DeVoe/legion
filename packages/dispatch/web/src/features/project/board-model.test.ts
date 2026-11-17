@@ -123,7 +123,7 @@ function lines(
   const columns = boardColumns({
     by,
     listsDone: false,
-    phasePicks: [],
+    phaseFilterPicks: [],
     rows: items,
     showIcebox: true,
     statusPicks: by === "status" ? openIssueStatuses : [],
@@ -148,7 +148,7 @@ test("by Status the columns are the picked statuses in order, Icebox a rail unti
       boardColumns({
         by: "status",
         listsDone,
-        phasePicks: [],
+        phaseFilterPicks: [],
         rows: items,
         showIcebox,
         statusPicks,
@@ -173,12 +173,12 @@ test("by Status the columns are the picked statuses in order, Icebox a rail unti
 });
 
 test("by Legion phase the columns are the eleven phases in the board's order and the None rail, kept by the filter's picks", () => {
-  const phaseColumns = (phasePicks: readonly string[]) =>
+  const phaseColumns = (phaseFilterPicks: readonly string[]) =>
     ids(
       boardColumns({
         by: "legion_phase",
         listsDone: true,
-        phasePicks,
+        phaseFilterPicks,
         rows: [],
         showIcebox: true,
         statusPicks: ["todo"],

@@ -95,20 +95,20 @@ export interface BoardColumn {
 export function boardColumns({
   by,
   listsDone,
-  phasePicks,
+  phaseFilterPicks,
   rows,
   showIcebox,
   statusPicks,
 }: {
   by: BoardBy;
   listsDone: boolean;
-  phasePicks: readonly string[];
+  phaseFilterPicks: readonly string[];
   rows: readonly Item[];
   showIcebox: boolean;
   statusPicks: readonly string[];
 }): BoardColumn[] {
   if (by === "legion_phase") {
-    const picked = (id: string) => phasePicks.length === 0 || phasePicks.includes(id);
+    const picked = (id: string) => phaseFilterPicks.length === 0 || phaseFilterPicks.includes(id);
     return [
       ...LEGION_PHASES.filter((phase) => picked(phase.id)).map((phase) => ({
         id: phase.id,

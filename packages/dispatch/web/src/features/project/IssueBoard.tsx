@@ -725,7 +725,7 @@ export function IssueBoard({
   by,
   lanes,
   listsDone,
-  phasePicks,
+  phaseFilterPicks,
   project,
   rankRefusal,
   rows,
@@ -740,7 +740,7 @@ export function IssueBoard({
   /** The view lists done issues: the Done rail opens into a column with their cards. */
   listsDone: boolean;
   /** The picks of the view's Legion phase filter, none for no filter. */
-  phasePicks: readonly string[];
+  phaseFilterPicks: readonly string[];
   project: string;
   /** Why the view's sort lets no rank decide where a card lands within a column (`rankRefusal` in
    *  `board-model.ts`); undefined while the view sorts by Place, first to last. */
@@ -767,7 +767,7 @@ export function IssueBoard({
   const nowMs = Date.now();
   const lines = boardLines(
     rows,
-    boardColumns({ by, listsDone, phasePicks, rows, showIcebox, statusPicks }),
+    boardColumns({ by, listsDone, phaseFilterPicks, rows, showIcebox, statusPicks }),
     by,
     lanes
   );
