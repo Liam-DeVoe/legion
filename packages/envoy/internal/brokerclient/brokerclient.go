@@ -118,8 +118,9 @@ func (e *RefusedError) Error() string { return e.PrintableText() }
 
 // PrintableText is this refusal's sentence, built from fixed words and the answered OAuth error's
 // own status, code and description alone, which is what lets internal/redact print it beside a
-// clean broker URL as it prints that answer (redact.Printable). A caller's words around this
-// error still print nothing there.
+// clean broker URL as it prints that answer (redact.Printable). The code and description go in
+// as the broker wrote them, so where they hold a control character redact prints the answer's
+// own quoted text instead. A caller's words around this error still print nothing there.
 func (e *RefusedError) PrintableText() string {
 	status := 0
 	if e.answer.Response != nil {
@@ -569,11 +570,12 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// handed: `legion controller start` with %w, `agent-secrets self` on stderr, and
 		// this client's own log. So they are redacted here, where the configured address
 		// is known, rather than at each of those. On a clean address the redactor prints
-		// the refusal whole - it is an answered OAuth error with a code and no error_uri
-		// (RefusedError.Unwrap) - and on one that is not clean it prints the status alone,
-		// since a broker, or anyone answering for it, can repeat the credential the address
-		// carries in the words it answers with; any other answer prints its words as the
-		// address lets them (brokeraddr.Address.Words).
+		// the refusal's sentence - RefusedError is a redact.Printable over an answered
+		// OAuth error with a code and no error_uri - or, where the broker's words hold a
+		// control character, that answer's own quoted text; on one that is not clean it
+		// prints the status alone, since a broker, or anyone answering for it, can repeat
+		// the credential the address carries in the words it answers with; any other
+		// answer prints its words as the address lets them (brokeraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
 			return nil, c.brokerURL.Error(newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
