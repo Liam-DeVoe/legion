@@ -644,6 +644,9 @@ export const ANSWER_LINES = freeze({
   statements_unreadable: "Could not load the statements.",
   /** What the Spec view says when the results could not be read, so it marks no statement. */
   results_unreadable: "Could not load the results.",
+  /** What the outline says when the issue's tree could not be read before it first answered,
+   *  so it holds no row to draw. */
+  outline_unreadable: "Could not load the outline.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",

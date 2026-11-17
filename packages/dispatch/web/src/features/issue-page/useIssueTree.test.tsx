@@ -2,6 +2,7 @@ import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
@@ -13,6 +14,8 @@ import type {
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
+import { MarginProvider } from "../margin/margin-context";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { presetView } from "./presets";
@@ -21,6 +24,8 @@ import {
   useKnownAmbiguousReferences,
   useKnownReferenceName,
 } from "./reference-names";
+import { BodySlot } from "./slots/body";
+import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
 import {
   issueTreeKey,
@@ -1206,6 +1211,527 @@ test("a second write while the first write's comments read is out reads the tree
     view.unmount();
   } finally {
     commentsOut?.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** How many reads of the tree, with no view or with `view`, have been sent. */
+function treeReadsOf(view?: "plan" | "spec"): number {
+  return (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.filter(
+    ([, query]) => query?.view === view
+  ).length;
+}
+
+/** Whether the comment is a row of `root`. */
+function holdsComment(root: TreeNode): boolean {
+  return nodesInOrder(root).some((node) => node.id === comment.id);
+}
+
+/** The stage of the issue as `stageWrapper` mounts it, with whichever filter `on` names on, so a
+ *  case can turn one off and on as the reader presses it. */
+function turnedStage(client: QueryClient, on: { preset: "conversation" | "plan" | "spec" }) {
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ViewReadProvider issue={issue} preset={on.preset}>
+        {children}
+      </ViewReadProvider>
+    </QueryClientProvider>
+  );
+}
+
+// A write that lands while the first tree read of the load is still out, or after that read was
+// refused, would otherwise reach the outline only with some later write: the change is answered
+// by one more tree read once the read out settles, and by one read where the first one failed.
+test("a write while the first tree read is out, or after it failed, reads the tree once more", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const firstOut = Promise.withResolvers<void>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads > 1) return treeAnswer([comment]);
+    await firstOut.promise;
+    return treeAnswer([]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(api.listComments).toHaveBeenCalledTimes(1));
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await act(async () => {
+      firstOut.resolve();
+      await Bun.sleep(1_500);
+    });
+    expect(holdsComment(view.result.current), "the write is drawn once the read settles").toBe(
+      true
+    );
+    expect(treeReadsOf(), "one more tree read for the write").toBe(2);
+    view.unmount();
+  } finally {
+    firstOut.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+
+  const again = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValueOnce(
+    new Error("the tree read was refused")
+  );
+  const refused = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(refused) });
+    await waitFor(() => expect(refused.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    expect(view.result.current.blocksHeld).toBe(false);
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    await act(async () => {
+      await refused.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await waitFor(() => expect(holdsComment(view.result.current.root)).toBe(true), {
+      timeout: 3_000,
+    });
+    await act(async () => {
+      await Bun.sleep(1_200);
+    });
+    expect(treeReadsOf(), "one read after the refused one").toBe(2);
+    view.unmount();
+  } finally {
+    for (const stub of again) stub.mockRestore();
+    refused.clear();
+  }
+});
+
+// Once its comments read has failed, the comments query stays marked invalid, so a reply sent
+// next raises no invalidation the page hears; the comments read made for it answers the reply,
+// and the tree is read again for that answer, so the reply is a row with the live feed down.
+test("a reply after a failed comments read reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+
+    (api.listComments as Mock<typeof api.listComments>).mockRejectedValue(
+      new Error("the comments read failed")
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+      await Bun.sleep(1_200);
+    });
+    expect(client.getQueryState(["comments", KEY])?.status).toBe("error");
+    const before = treeReadsOf();
+
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await waitFor(
+      () => expect(holdsComment(view.result.current), "the reply is a row").toBe(true),
+      {
+        timeout: 3_000,
+      }
+    );
+    expect(treeReadsOf()).toBe(before + 1);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A write is read once by the page's own refresh, and the event it raises may queue one more
+// read, never more: the comments read the event asks for answers what the tree read already
+// holds, and that answer reads nothing again.
+test("a write and the event it raises read the tree at most twice", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    const before = treeReadsOf();
+
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await act(async () => {
+      await Bun.sleep(50);
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+      await Bun.sleep(2_500);
+    });
+    expect(holdsComment(view.result.current)).toBe(true);
+    const sent = treeReadsOf() - before;
+    expect(sent, "the write's own read").toBeGreaterThanOrEqual(1);
+    expect(sent, "and at most one for its event").toBeLessThanOrEqual(2);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A reader who leaves the issue and comes back with nothing changed on it in between finds the
+// tree and the reads it is drawn with held, and the page sends none of them again.
+test("coming back to an issue nothing changed on reads nothing again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = stageWrapper(client);
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(api.getReferenceTargets).toHaveBeenCalledTimes(1));
+    first.unmount();
+    const sent = readsSent();
+
+    const back = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(back.result.current)).toBe(TASK_WORDS));
+    await act(async () => {
+      await Bun.sleep(1_200);
+    });
+    expect(readsSent()).toEqual(sent);
+    back.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A filter's view is read the first time the filter is on in a load and held for the rest of
+// it: the reader pressing the filter off and on again finds its answer held, and the page sends
+// no second view read.
+test("a filter's view is read once in a load, and not again when it is pressed off and on", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const specView: TreeAnswer = { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.view === "spec" ? specView : treeAnswer([])
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: { preset: "conversation" | "spec" } = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(view.result.current.views?.spec).toBe(specView));
+    expect(treeReadsOf("spec")).toBe(1);
+
+    on.preset = "conversation";
+    view.rerender();
+    on.preset = "spec";
+    view.rerender();
+    await act(async () => {
+      await Bun.sleep(300);
+    });
+    expect(treeReadsOf("spec"), "no second view read").toBe(1);
+    expect(treeReadsOf(), "one tree read").toBe(1);
+    expect(view.result.current.views?.spec).toBe(specView);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A write marks every view the load holds stale and drops none: the open filter keeps drawing the
+// view it holds while that view is read again, so it never falls back to the tree for the length
+// of the read, and a filter that is off keeps its answer until it is next on, when its view is
+// read again.
+test("a write marks the held views stale, keeps what they draw, and reads the open one again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const second = answerNode("t2", "plan_task", {
+    document: { artifact_id: plan.id, position: 1, slug: PLAN },
+    text: "A second step.",
+  });
+  const planView: TreeAnswer = { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+  const specBefore: TreeAnswer = { ...treeAnswer([]), nodes: [{ ...task, mark: "context" }] };
+  const specAfter: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [
+      { ...task, mark: "context" },
+      { ...second, mark: "context" },
+    ],
+  };
+  let written = false;
+  const specOut = Promise.withResolvers<void>();
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if (query?.view === "plan") return planView;
+    if (query?.view !== "spec") return treeAnswer([]);
+    if (!written) return specBefore;
+    await specOut.promise;
+    return specAfter;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: { preset: "plan" | "spec" } = { preset: "plan" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(view.result.current.views?.plan).toBe(planView));
+    on.preset = "spec";
+    view.rerender();
+    await waitFor(() => expect(view.result.current.views?.spec).toBe(specBefore));
+
+    written = true;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await waitFor(() => expect(treeReadsOf("spec"), "the open view is read again").toBe(2), {
+      timeout: 3_000,
+    });
+    expect(view.result.current.views?.spec, "the open view draws what it held").toBe(specBefore);
+    expect(client.getQueryState(viewKey(KEY, "plan"))?.isInvalidated, "the off view is stale").toBe(
+      true
+    );
+    expect(view.result.current.views?.plan, "the off view keeps its answer").toBe(planView);
+    expect(treeReadsOf("plan")).toBe(1);
+
+    await act(async () => {
+      specOut.resolve();
+      await specOut.promise;
+    });
+    await waitFor(() => expect(view.result.current.views?.spec).toEqual(specAfter));
+    on.preset = "plan";
+    view.rerender();
+    await waitFor(() => expect(treeReadsOf("plan"), "the off view is read when on").toBe(2));
+    view.unmount();
+  } finally {
+    specOut.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A Keep writes the decisions read's new answer into the cache, and a status change the issue
+// read's, with no invalidation; each reads the tree again all the same, so it is drawn while the
+// live feed is down.
+test("a Keep and a status change written into the cache read the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    expect(treeReadsOf()).toBe(1);
+
+    act(() => {
+      client.setQueryData(["decisions", KEY], {
+        decisions: [],
+        document: null,
+        open_questions: [],
+      });
+    });
+    await waitFor(() => expect(treeReadsOf(), "the Keep reads the tree").toBe(2), {
+      timeout: 3_000,
+    });
+    act(() => {
+      client.setQueryData(["issue", KEY], { ...issue, status: "in_progress" });
+    });
+    await waitFor(() => expect(treeReadsOf(), "the status change reads the tree").toBe(3), {
+      timeout: 3_000,
+    });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// After a gap in the live feed the page refreshes every query it holds, the tree and the open
+// view among them, along with every query of the issue: the refresh those changes raise finds
+// the tree and the view already being read for them, so each is read once more, and no read is
+// cancelled.
+test("a refresh of every query reads the tree and the open view once more each", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const signals: AbortSignal[] = [];
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query, init) => {
+      if (init?.signal !== undefined) signals.push(init.signal);
+      await Bun.sleep(20);
+      return query?.view === "spec"
+        ? { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] }
+        : treeAnswer([]);
+    }
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, {
+      wrapper: stageWrapper(client, "spec"),
+    });
+    await waitFor(() => expect(view.result.current.views?.spec).toBeDefined());
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const tree = treeReadsOf();
+    const spec = treeReadsOf("spec");
+    act(() => {
+      refreshQueries(client);
+    });
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect({
+      cancelled: signals.filter((signal) => signal.aborted).length,
+      spec: treeReadsOf("spec") - spec,
+      tree: treeReadsOf() - tree,
+    }).toEqual({ cancelled: 0, spec: 1, tree: 1 });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A write that lands as the reader leaves the issue sends no tree read once nothing draws the
+// tree: it marks the tree stale, and the tree is read when the reader comes back.
+test("a write as the reader leaves reads the tree only when the reader comes back", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = stageWrapper(client);
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(first.result.current)).toBe(TASK_WORDS));
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+      first.unmount();
+    });
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(treeReadsOf(), "no tree read while nothing draws it").toBe(1);
+    expect(client.getQueryState(issueTreeKey(KEY))?.isInvalidated).toBe(true);
+
+    const back = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(holdsComment(back.result.current)).toBe(true));
+    expect(treeReadsOf()).toBe(2);
+    back.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** The line the outline draws over itself for a tree read refused before it first answered. */
+function failedTreeLine(): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>('[data-tree-unreadable] [role="alert"]');
+}
+
+// A tree read refused before it first answered, its retries spent, leaves the tree the issue
+// alone, which draws no row: the body says over the outline that the read failed, with a Retry
+// that reads the tree again, and says nothing of it while the read is out or once it holds an
+// answer.
+test("a refused tree read says so over the outline, and its Retry reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  // The first tree read, held out until the case refuses it; every read after it answers.
+  const first = Promise.withResolvers<never>();
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementationOnce(() => first.promise);
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  // The page's body as the stage draws it, around the hook the case reads the tree's state by.
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <BodySlot issue={issue} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(1));
+    expect(failedTreeLine(), "no failed line while the read is out").toBeNull();
+
+    await act(async () => {
+      first.reject(new Error("the tree read was refused"));
+      await first.promise.catch(() => undefined);
+    });
+    const line = await waitFor(() => {
+      const found = failedTreeLine();
+      if (found === null) throw new Error("the body drew no line for the refused tree read");
+      return found;
+    });
+    const retry = [...line.querySelectorAll("button")].find((one) => one.textContent === "Retry");
+    expect(retry, "the line holds a Retry").toBeDefined();
+
+    await act(async () => retry?.click());
+    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    expect(failedTreeLine(), "no failed line once the read holds data").toBeNull();
+    view.unmount();
+  } finally {
+    first.reject(new Error("the case ended"));
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// One event of another person's write lands while the load's first tree read is still out: the
+// event's refresh marks the issue's comments stale, and the tree is read once more when the first
+// read settles - two tree reads in all, the first and its one follow-up, and never a third.
+test("an event while the first tree read is out reads the tree twice in all", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const firstOut = Promise.withResolvers<void>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads > 1) return treeAnswer([comment]);
+    await firstOut.promise;
+    return treeAnswer([]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(api.listComments).toHaveBeenCalledTimes(1));
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+    await act(async () => {
+      await Bun.sleep(50);
+      firstOut.resolve();
+      await Bun.sleep(2_500);
+    });
+    expect(holdsComment(view.result.current)).toBe(true);
+    expect(treeReadsOf(), "the first tree read and one follow-up").toBe(2);
+    view.unmount();
+  } finally {
+    firstOut.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// Pressing a view off draws the outline again, and the hook is mounted again on the reads it
+// already holds: it builds no tree for them a second time, but answers the tree it built, the
+// same object; a read that answers anew builds a tree of its own.
+test("the outline mounted again on the same reads builds no tree, and a changed read builds one", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(api.getReferenceTargets).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await Bun.sleep(20);
+    });
+    // The root carries the held views beside the built tree, so the tree is its rows.
+    const drawn = first.result.current.children;
+    first.unmount();
+
+    const again = renderHook(() => useIssueTree(issue).root, { wrapper });
+    expect(again.result.current.children, "the tree built for these reads").toBe(drawn);
+
+    act(() => {
+      client.setQueryData(["comments", KEY], [comment]);
+    });
+    await waitFor(() => expect(again.result.current.children).not.toBe(drawn));
+    again.unmount();
+  } finally {
     for (const stub of stubs) stub.mockRestore();
     client.clear();
   }

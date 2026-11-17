@@ -24,6 +24,7 @@ import { citedReferences } from "./row-references";
 import {
   REFRESHED_BY_EVENTS,
   TREE_FILTERS,
+  type TreeAnswer,
   type TreeRead,
   useTreeRead,
   viewQuery,
@@ -66,6 +67,47 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
 /** The references the page publishes as ambiguous until the batched name read answers: none,
  *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
+
+/** The reads a tree is built from (`IssueTreeReads`), each compared by identity. */
+const TREE_INPUTS = [
+  "asks",
+  "comments",
+  "coverage",
+  "decisions",
+  "issue",
+  "results",
+  "targets",
+  "viewer",
+] as const satisfies readonly (keyof IssueTreeReads)[];
+
+/** How many trees are kept for one answer of the tree read: the tree before the names answer,
+ *  with the first read's names and with both reads' names, and one more. */
+const TREES_PER_ANSWER = 4;
+
+/** The trees built for each answer of the tree read, newest last, each with its reads. */
+const builtTrees = new WeakMap<
+  TreeAnswer,
+  readonly { readonly reads: IssueTreeReads; readonly root: TreeNode }[]
+>();
+
+/**
+ * `buildIssueTree` of `reads`, built once for one set of reads: a tree already built from the
+ * same answer of the tree read and the same other reads, each the same object, is that tree.
+ * Every read keeps its answer's object until it answers anew, so a slot the stage mounts again
+ * on the same reads - the outline drawn again as a view is pressed off - builds nothing, and a
+ * read that changed builds a tree of its own. The trees are held by the answer, so they go with
+ * it.
+ */
+function builtTree(reads: IssueTreeReads): TreeNode {
+  const answer = reads.tree;
+  if (answer === undefined) return buildIssueTree(reads);
+  const held = builtTrees.get(answer) ?? [];
+  const found = held.find((one) => TREE_INPUTS.every((input) => one.reads[input] === reads[input]));
+  if (found !== undefined) return found.root;
+  const root = buildIssueTree(reads);
+  builtTrees.set(answer, [...held.slice(1 - TREES_PER_ANSWER), { reads, root }]);
+  return root;
+}
 
 /**
  * The issue's tree, from the page's reads (dispatch://INFRA-1196 R20, dispatch://INFRA-4062 R1
@@ -169,7 +211,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       viewer,
     ]
   );
-  const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
+  const unnamed = useMemo(() => builtTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
   // One request for every name, not one per read that landed. Each of these reads adds to the
   // tree as it arrives - the tree read every node, the decisions read a decision no node holds,
@@ -208,7 +250,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     [targets.data]
   );
   const firstTree = useMemo(
-    () => (first === undefined ? unnamed : buildIssueTree({ ...reads, targets: first })),
+    () => (first === undefined ? unnamed : builtTree({ ...reads, targets: first })),
     [first, reads, unnamed]
   );
   // What the named tree holds that the first read was not given: a block's stored source comes
@@ -264,9 +306,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   usePublishReferenceNames(names, ambiguous);
   const built = useMemo(
     () =>
-      named === undefined || named === first
-        ? firstTree
-        : buildIssueTree({ ...reads, targets: named }),
+      named === undefined || named === first ? firstTree : builtTree({ ...reads, targets: named }),
     [first, firstTree, named, reads]
   );
   const root = useMemo(() => (views === undefined ? built : { ...built, views }), [built, views]);

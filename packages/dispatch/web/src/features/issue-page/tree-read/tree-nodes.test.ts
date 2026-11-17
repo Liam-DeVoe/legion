@@ -965,3 +965,146 @@ test("a cursor the server names twice ends the walk", async () => {
   expect(cursors).toEqual([undefined, "page-2"]);
   expect(JSON.stringify(outcome)).not.toContain("page reads");
 });
+
+/** Each row of `root` as its depth in dashes, its id and its kind, every branch open. */
+function rowsOf(root: TreeNode, depth = 0): string[] {
+  return root.children.flatMap((child) => [
+    `${"-".repeat(depth)}${child.id} ${child.type}`,
+    ...rowsOf(child, depth + 1),
+  ]);
+}
+
+// A block id is unique only inside its document, and an issue that has not converted can hold
+// one id in two documents: each block is a row of its own, by its document's id for it, and a
+// comment the read hangs under the second stands under that one, the nearest node before it of
+// the id its parent names.
+test("two documents' blocks with one block id are two rows, each its own document's", () => {
+  const { root } = drawn(
+    answer(
+      [
+        block("a1", "requirement", KEY, SPEC, 0),
+        block("a1", "plan_task", KEY, PLAN, 0),
+        personsComment("c1", "a1", "2026-11-06T00:00:00Z"),
+      ],
+      [],
+      { converted: false, documents: { plan: PLAN.id, spec: SPEC.id }, tree: null }
+    )
+  );
+
+  expect(rowsOf(root)).toEqual([
+    `${blockNodeId("spec", "a1")} requirement`,
+    `${blockNodeId("plan-md", "a1")} plan_task`,
+    "-c1 comment",
+  ]);
+});
+
+// A child's Verification document carries its parent's slug, and the parent's read holds the
+// child's check beside the parent's own when they share a block id: the parent's check keeps its
+// document's id and its place under the statement it serves, and the child's draws no row.
+test("this issue's check keeps its document's id beside a child's check of the same block id", () => {
+  const tree = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0),
+      block("c1", "check", "r1", VERIFICATION, 0),
+      node("CORE-2", "issue", KEY, { text: "A child of the issue" }),
+      node("c1", "check", "CORE-2", {
+        document: {
+          artifact_id: "artifact-child-verification",
+          position: 0,
+          slug: "verification-md",
+        },
+        issue: "CORE-2",
+      }),
+    ],
+    [tuple("serves", "c1", "r1")],
+    { converted: false, documents: { spec: SPEC.id, verification: VERIFICATION.id }, tree: null }
+  );
+  const reads = { issue: issueDetails() };
+
+  expect(treeIdOf(tree, reads)("c1")).toBe(blockNodeId("verification-md", "c1"));
+  expect(rowsOf(drawn(tree, reads).root)).toEqual([
+    `${blockNodeId("spec", "r1")} requirement`,
+    `-${blockNodeId("verification-md", "c1")} check`,
+    "CORE-2 child_issue",
+  ]);
+});
+
+// A node's role is read node by node: on an issue that has converted, a statement written in the
+// spec carries the spec's `document`, and a criterion, written into the issue's own tree, names
+// none and plays the role whose query takes its kind, so the spec's blocks hold both, in the
+// walk's order; a node of another issue plays no role of this one.
+test("a converted issue's spec blocks hold its criteria beside the statements its spec names", () => {
+  const tree = answer([
+    node("criterion-1", "criterion", KEY),
+    block("r1", "requirement", "criterion-1", SPEC, 0),
+    node("r-above", "requirement", "CORE-0", { issue: "CORE-0" }),
+    block("t1", "plan_task", KEY, PLAN, 0),
+  ]);
+  const issue = { ...issueDetails(), plan_artifact_id: PLAN.id };
+
+  expect(blocksOfRole(tree, "spec", issue)?.map((one) => [one.id, one.from])).toEqual([
+    ["criterion-1", 1],
+    ["r1", 2],
+  ]);
+  expect(blocksOfRole(tree, "plan", issue)?.map((one) => [one.id, one.from])).toEqual([["t1", 0]]);
+});
+
+// Owed: a tuple names its two ends by the read's bare id, so where this issue's plan task `t1`
+// and a child's plan task `t1` are both in the read, the child's `serves` tuple cannot be told
+// from the parent's, and the parent's task is placed again under the statement only the child's
+// task serves. It waits on the model naming a tuple's ends by each node's own identity.
+test.skip("this issue's plan task is not placed by a child's plan task of the same block id @owed", () => {
+  const tree = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0),
+      block("t1", "plan_task", "r1", PLAN, 0),
+      block("r2", "requirement", KEY, SPEC, 1),
+      node("CORE-2", "issue", KEY, { text: "A child of the issue" }),
+      node("t1", "plan_task", "CORE-2", {
+        document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan-md" },
+        issue: "CORE-2",
+      }),
+    ],
+    [tuple("serves", "t1", "r1"), tuple("serves", "t1", "r2")],
+    { converted: false, documents: { plan: PLAN.id, spec: SPEC.id }, tree: null }
+  );
+
+  expect(rowsOf(drawn(tree).root)).toEqual([
+    `${blockNodeId("spec", "r1")} requirement`,
+    `-${blockNodeId("plan-md", "t1")} plan_task`,
+    `${blockNodeId("spec", "r2")} requirement`,
+    "CORE-2 child_issue",
+  ]);
+});
+
+// The asks read says the ask `ask-1` was indexed from the spec's ask block `q-block`, so the two
+// are one row, in the block's place: what the ask node shaped is named on that row as chips, as
+// what the block shaped is, and what the read hangs under the ask stands under that row.
+test("an ask drawn in its block's row names what the ask shaped there", () => {
+  const tree = answer(
+    [
+      block("q-block", "ask", KEY, SPEC, 0),
+      block("r1", "requirement", KEY, SPEC, 1),
+      node("ask-1", "ask", KEY),
+      personsComment("c-under-ask", "ask-1", "2026-11-06T00:00:00Z"),
+    ],
+    [tuple("shaped", "ask-1", "r1")],
+    { converted: false, documents: { spec: SPEC.id }, tree: null }
+  );
+  const reads: IssueTreeReads = {
+    asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q-block" })],
+    issue: issueDetails(),
+  };
+  const { root } = drawn(tree, reads);
+  const row = nodeOf(root, blockNodeId("spec", "q-block"));
+  const shaped = nodeOf(root, blockNodeId("spec", "r1"))?.reference ?? "";
+
+  expect(shaped, "the statement has an address").not.toBe("");
+  expect({
+    children: row?.children.map((child) => child.id),
+    chips: row?.chips.map((chip) => chip.ref),
+  }).toEqual({
+    children: ["c-under-ask"],
+    chips: [shaped],
+  });
+});
