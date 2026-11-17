@@ -43,6 +43,9 @@ func roleRow(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) re
 	return row
 }
 
+// reviewTestedAt is when each review of these tests is submitted.
+var reviewTestedAt = time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
+
 // reviewAt is the review App's review of state as the reviewer posts it, its Legion footer naming
 // head: the shared fixtures record no session on the reviewer's claim, so the login decides
 // (byReviewer).
@@ -69,7 +72,7 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("request-changes", reviewAt(1, "changes_requested", headOne, time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)))
+	apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the request for changes the issue is in %s, want implementing", got)
 	}
@@ -94,20 +97,19 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 // review refused for the head its footer names decides nothing, and a review of an issue outside
 // reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
-	at := time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name   string
 		review intake.PullRequestReview
 		// seed puts the issue where the review finds it, after seedReviewOf.
 		seed func(t *testing.T, pool *pgxpool.Pool)
 	}{
-		{name: "a comment", review: reviewAt(1, "commented", headOne, at)},
+		{name: "a comment", review: reviewAt(1, "commented", headOne, reviewTestedAt)},
 		{name: "a review its footer's head refuses", review: func() intake.PullRequestReview {
-			r := reviewAt(1, "changes_requested", headOne, at)
+			r := reviewAt(1, "changes_requested", headOne, reviewTestedAt)
 			r.Body = reviewBody("the review", headEarlier)
 			return r
 		}()},
-		{name: "a review outside reviewing", review: reviewAt(1, "approved", headOne, at), seed: func(t *testing.T, pool *pgxpool.Pool) {
+		{name: "a review outside reviewing", review: reviewAt(1, "approved", headOne, reviewTestedAt), seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 				Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 		}},
@@ -138,7 +140,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)))
+	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
 	backToReviewing(t, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
@@ -224,18 +226,6 @@ func readsReviewingTask(t *testing.T, round, task string, version int) {
 		t.Fatalf("%s's task = %q, want the reviewing task the tester's handoff version %d started", round, task, version)
 	}
 }
-
-// readsResumeTask fails the test unless task is the resume task of LEGION-208's reviewing phase
-// (ResumePhaseTask), whatever else it names.
-func readsResumeTask(t *testing.T, start, task string) {
-	t.Helper()
-	if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Resume the existing phase work.") {
-		t.Fatalf("%s's task = %q, want the reviewing phase's resume task", start, task)
-	}
-}
-
-// reviewTestedAt is when each review of these tests is submitted.
-var reviewTestedAt = time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
 
 // reviewRoundOne seeds LEGION-208 as a root in testing, its pull request at headOne, and walks
 // it into reviewing on the tester's pass, so the reviewer's first entry of the generation is a
