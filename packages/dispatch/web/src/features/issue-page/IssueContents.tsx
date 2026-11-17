@@ -20,7 +20,7 @@ import {
   pageQuietText,
   pageWaitingBg,
 } from "../../theme/classes";
-import { isViewer } from "../refs/actor";
+import { isContentsEntry } from "./contents-entries";
 import { useFocusedNode } from "./focused-node";
 import {
   drawnLine,
@@ -52,12 +52,14 @@ export interface ContentsEntry {
 }
 
 /**
- * The entries of the list, read off the tree the outline draws: each ask and each comment or
- * message the reader wrote that begins a thread, each under the nearest such entry above it in
- * the tree, in the tree's own order. The issue itself is no entry: the header is the issue (the
- * architect's ruling 5), as the outline draws no row of it. A node drawn under a second parent is
- * listed once, at its own place, and counted once: a transcluded copy and the branch under it
- * are the same nodes as at the edited place, so they are neither listed nor counted again.
+ * The entries of the list, read off the tree the outline draws: each node part D's rule makes an
+ * entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that begins a
+ * thread - each under the nearest such entry above it in the tree, in the tree's own order, so
+ * the list holds as many entries as the view row's Conversation count says (`contentsEntries`).
+ * The issue itself is no entry: the header is the issue (the architect's ruling 5), as the
+ * outline draws no row of it. A node drawn under a second parent is listed once, at its own
+ * place, and counted once: a transcluded copy and the branch under it are the same nodes as at
+ * the edited place, so they are neither listed nor counted again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
@@ -68,7 +70,6 @@ export interface ContentsEntry {
  * entry is counted on none, since the issue has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
-  const TURNS: Partial<Record<TreeNode["type"], true>> = { comment: true, message: true };
   const tally = (): Record<ContentsMark, number> => ({
     children: 0,
     failing: 0,
@@ -92,12 +93,7 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
-      const begunByReader =
-        TURNS[child.type] === true &&
-        TURNS[node.type] !== true &&
-        child.author !== undefined &&
-        isViewer(child.author, viewer);
-      if (child.type === "ask" || begunByReader) {
+      if (isContentsEntry(node, child, viewer)) {
         const children: ContentsEntry[] = [];
         const own = tally();
         walk(child, children, own);

@@ -33,7 +33,9 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksRead, root } = useIssueTree(issue);
+  // Whether the documents' blocks the tree is built from are held, which the head waits on
+  // before it says the spec holds no summary (`blocksHeld`, decision 98).
+  const { blocksHeld, root } = useIssueTree(issue);
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
@@ -50,7 +52,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   if (isFilter(address.preset)) return null;
   return (
     <NoTooltips>
-      <IssueThreeThings look="contents" nameOf={nameOf} reading={!blocksRead} summary={memo} />
+      <IssueThreeThings look="contents" nameOf={nameOf} reading={!blocksHeld} summary={memo} />
       <ContentsList
         focusBranch={focusBranch}
         nameOf={nameOf}

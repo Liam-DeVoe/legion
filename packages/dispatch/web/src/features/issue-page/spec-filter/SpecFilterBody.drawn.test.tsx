@@ -1,14 +1,21 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueries } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { api } from "../../../api/client";
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Actor, CheckBlock, Decision, IssueCheckResults } from "../../../api/types";
+import type {
+  Actor,
+  CheckBlock,
+  Decision,
+  IssueCheckResults,
+  IssueDetails,
+} from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -89,6 +96,31 @@ function FocusedProbe(): ReactNode {
   return <output data-focused-node={focused?.id ?? ""} data-focused-type={focused?.type ?? ""} />;
 }
 
+/** The documents whose blocks the page's tree is built from, as `useIssueTree.ts` finds them:
+ *  the spec, and the plan, Verification and decisions documents the issue read names. */
+function treeDocuments(issue: IssueDetails): string[] {
+  const documents = [
+    primarySpec(issue),
+    roleDocument(issue, "plan"),
+    roleDocument(issue, "verification"),
+    roleDocument(issue, "decisions"),
+  ];
+  return [
+    ...new Set(documents.flatMap((document) => (document === undefined ? [] : [document.id]))),
+  ];
+}
+
+/** The body as the Spec view's slot draws it, told whether the documents' blocks are held as
+ *  the page's tree tells it (`useIssueTree.ts`'s `blocksHeld`): whether the read of every one of
+ *  those documents holds an answer, which a case's reads answer as it says. */
+function HeldBody(props: Omit<ComponentProps<typeof SpecFilterBody>, "blocksHeld">): ReactNode {
+  const blocksHeld = useQueries({
+    combine: (answers) => answers.every((answer) => answer.data !== undefined),
+    queries: treeDocuments(props.issue).map((id) => artifactBlocksQuery(id)),
+  });
+  return <SpecFilterBody {...props} blocksHeld={blocksHeld} />;
+}
+
 /** How one of the page's reads stands when the body is drawn. */
 type ReadState = "answered" | "failed" | "out";
 
@@ -111,8 +143,9 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** The body over `tree`, with `made` as the issue's decisions read and `checks` as its results
- *  read. `decisions`, `results`, `coverage` and `blocks` (the spec's) each say how that read
+/** The body over `tree`, as the Spec view's slot draws it (`HeldBody`), with `made` as the
+ *  issue's decisions read and `checks` as its results read. `decisions`, `results`, `coverage`
+ *  and `blocks` (every document's but the Verification document's) each say how that read
  *  stands - answered, failed, or still out - and each is answered unless a case says so;
  *  `verification`, where a case names it, gives the issue a Verification document whose blocks
  *  read stands so; `names` is what the page's batched reference read named. The page's provider
@@ -199,7 +232,12 @@ function drawBody(
     spies.coverage.mockResolvedValue(coverageRead([]));
   });
   settle(blocks, spies.blocks, () => {
-    client.setQueryData(artifactBlocksQuery(issue.primary_artifact_id).queryKey, []);
+    // Every document's blocks but the Verification document's, which `verification` answers.
+    for (const id of treeDocuments(issue)) {
+      if (id !== issue.verification_artifact_id) {
+        client.setQueryData(artifactBlocksQuery(id).queryKey, []);
+      }
+    }
     spies.blocks.mockResolvedValue([]);
   });
   if (verification !== undefined) {
@@ -235,13 +273,12 @@ function drawBody(
                     <IssueScope />
                     <FocusedProbe />
                     {drawn ? (
-                      <SpecFilterBody
+                      <HeldBody
                         context={context}
                         emptyLine={EMPTY_STATE_LINES.spec}
                         holdsEscape={false}
                         issue={issue}
                         reader={reader}
-                        reading={false}
                         {...(request === undefined ? {} : { request })}
                         {...(reveal === undefined ? {} : { reveal })}
                         root={tree}
