@@ -1948,7 +1948,7 @@ The change that keeps that commit adds, in its migration `20261116234034_phase_r
 An earlier release boots with the column in place: its phases read and its phases write name each column they touch, so it never reads the column, and every row it inserts takes the default, the empty string.
 At the rollback, with the daemon stopped, run the way back that the migration's header gives: it drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That way back is owed to the roll-forward, not to the earlier release.
-An earlier release does not clear the column when it opens a new generation of an issue, so a column left in place could tell the first reviewer of that generation after the roll-forward a commit that a review of the generation before read, where this release names none and the reviewer reads the whole change.
+An earlier release does not clear the column when it opens a new generation of an issue, so a column left in place could tell the first reviewer of that generation after the roll-forward a commit that a review of the generation before read, where this release names none.
 What the drop costs is the commit each reviewer's row held: the next round of each issue then in review reads the whole change.
 
 #### Rolling back the release that tells the merger of a merge-queue removal
