@@ -30,15 +30,21 @@ body: |-
   and no compaction. The process runs on under the session, and the Envoy listener does not yet
   withhold the role its session claimed, so a message another session sends to that role reaches
   the session until it ends. With no process registering the session id, the listener frees the
-  role at the role reaper's first pass after the session is gone, an hour past its last
-  registration, or five minutes after the role claim's last renewal once the daemon's probe has
-  stopped the registration of a gone process; where another claim's live process runs under the
-  same session id, as after a rollback, the role stays with that session while it lives, and the
-  role's messages reach that process. Until the listener withholds the role, an operator leaves
-  such a claim suspended until the other session has ended, or stops the rightful holder's process
-  too. Each boot tries the suspension again; an operator suspends the claim (`legion claims suspend
-  --claim <token>`) once its runtime answers, or stops its pod or pane by hand; it takes no
-  `legion claims forget-session` while it is live. Dispatch's role holders name a live claim's
+  role at the role reaper's first pass after the session's record is gone, which leaves the
+  session bucket at its maximum age (`ENVOY_SESSION_MAX_AGE`, five minutes on a bucket created
+  with it unset) or reads gone at the gone horizon (an hour) where that age is longer; the reaper
+  runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by default. Where another claim's live
+  process runs under the same session id, as after a rollback, the listener keeps the role with
+  that session while it lives, and the role's messages reach that process, whether the boot
+  suspended the claim or could not. The daemon withholds its own messages from such a claim only
+  while it records that session, so `legion claims forget-session` and `legion claims retry
+  --fresh-session` of a claim recording a session it does not hold first ask the listener which
+  session holds the claim's role, and are refused `409` while that session holds it, live or
+  unresponsive, or while the listener gives no answer; the refusal names the claim to suspend
+  (`legion claims suspend --claim <token>`, which stops its process through the daemon), and the
+  forget goes on once the listener names no such holder. Each boot tries the suspension again; an
+  operator suspends the claim once its runtime answers, or stops its pod or pane by hand; it takes
+  no `legion claims forget-session` while it is live. Dispatch's role holders name a live claim's
   session only while the claim holds every name of it. For each claim the boot names that is not
   the rightful holder,
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended

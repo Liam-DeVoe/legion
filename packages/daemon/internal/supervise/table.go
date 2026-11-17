@@ -2457,6 +2457,12 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
 	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+		// A session the claim does not hold is left behind only once its role no longer leads
+		// to the process under it (mayForget); the retry is refused, and the claim left as it
+		// was, until then.
+		if err := m.mayForget(ctx, "retry"); err != nil {
+			return err
+		}
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
 			"refusedRun", m.claim.RefusedRun())
 		// The failure the claim carries is the fuller answer where it has one — it names how many
@@ -2552,13 +2558,17 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
 // rather than resuming the turns the operator asked to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
-// later session.
+// later session. A session the claim records but does not hold is cleared only once the Envoy
+// listener no longer names it as the claim's role holder (mayForget).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if request.Session != m.claim.Session {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
+	}
+	if err := m.mayForget(ctx, "forget-session"); err != nil {
+		return err
 	}
 	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
 		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))

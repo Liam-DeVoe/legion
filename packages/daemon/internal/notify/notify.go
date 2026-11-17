@@ -1,9 +1,11 @@
 // Package notify is the daemon's client for the Envoy listener: it publishes persisted workflow
-// notices through its publish route, and ends a session's registration through its session route.
+// notices through its publish route, reads a role's holder through its role route, and ends a
+// session's registration through its session route.
 package notify
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,6 +53,9 @@ var ErrHolderUnresponsive = errors.New("the role's holder is unresponsive")
 const (
 	ReasonHolderLapsed = roleholder.HolderLapsed
 	StateUnresponsive  = "unresponsive"
+	// StateGone is the `holder_state` of a lapsed holder past the gone horizon, which no longer
+	// renews its claim: the role claim reaper frees the role at its next pass (RoleHolder).
+	StateGone = "gone"
 )
 
 // RoleRefusal is the body the listener writes when it refuses a role publish or a role lookup
@@ -360,6 +365,55 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
 		session, response.Status, strings.TrimSpace(string(body)))
+}
+
+// RoleHolder reads the session the listener names as role's holder, with that holder's state (GET
+// /v1/roles/<role>, roleGetHandler and writeRoleHolderError in packages/envoy/cmd/listener): on the
+// 200 the live holder, its state `live`; on the 404 of a lapsed holder, that holder and its
+// `holder_state`, StateUnresponsive or StateGone, since the claim stands until the role claim
+// reaper takes it and an unresponsive holder takes the role's messages again once its heartbeats
+// land; on the 404 of a role no claim names (roleholder.Unclaimed), no holder at all. A lapsed
+// holder the listener names no state for is an older listener's, whose lapsed holder is no holder
+// at all (StateUnresponsive's comment), and is answered as none. Every other status, a body it
+// cannot read, and a listener it cannot reach are errors, which the caller reads as an answer it
+// does not have: the daemon's forget of a session its claim does not hold refuses on one
+// (supervise.Deps.RoleHolder).
+func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
+	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, err)
+	}
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	switch response.StatusCode {
+	case http.StatusOK:
+		var answer struct {
+			Holder      string `json:"holder"`
+			HolderState string `json:"holder_state"`
+		}
+		if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
+			return "", "", fmt.Errorf("look up the holder of role %s: the listener's answer names no holder: %s", role, strings.TrimSpace(string(body)))
+		}
+		return answer.Holder, cmp.Or(answer.HolderState, "live"), nil
+	case http.StatusNotFound:
+		var refusal RoleRefusal
+		if readErr != nil || json.Unmarshal(body, &refusal) != nil {
+			return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 is unreadable: %s", role, strings.TrimSpace(string(body)))
+		}
+		if refusal.Reason == ReasonHolderLapsed && refusal.Holder != "" && refusal.HolderState != "" {
+			return refusal.Holder, refusal.HolderState, nil
+		}
+		return "", "", nil
+	}
+	return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, strings.TrimSpace(string(body)))
 }
 
 // DeleteConditions is what one clean stop of a dead role's session holds under, and where this

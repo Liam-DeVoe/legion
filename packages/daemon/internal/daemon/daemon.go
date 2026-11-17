@@ -1475,6 +1475,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		Clock:                   p.clock,
 		Log:                     log,
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
@@ -1558,6 +1559,17 @@ func cleanSessionStop(supervising context.Context, envoyURL, token string, log *
 		goneAt := time.Now()
 		go stop.send(supervising, session, goneAt)
 	}
+}
+
+// roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
+// (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
+// claim does not hold asks before it clears anything (supervise's mayForget). With no listener
+// configured it is nil, and nothing is asked.
+func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
+	if envoyURL == "" {
+		return nil
+	}
+	return notify.New(envoyURL, token).RoleHolder
 }
 
 // sessionStop is one role's clean stop in flight: the listener client it goes to, and the log

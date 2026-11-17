@@ -143,9 +143,11 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
-	// unheldWarned is every row publish has written its refusal's Warn line for (an unheldRow), so
-	// a row held at every attempt of its backoff writes one; a row published since is deleted, and
-	// a row that finishes undelivered leaves its one entry.
+	// unheldWarned is every claim publish has written its refusal's Warn line for since that
+	// claim's hold last passed (a claim.Token), so a claim's held rows — one at each attempt of its
+	// backoff, and several of them taking turns — write one line between them. The claim's next
+	// publish the gate admits deletes it, so a later refusal is written again. It holds at most one
+	// entry a claim the supervisor holds.
 	unheldWarned sync.Map
 	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
 	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
@@ -217,17 +219,17 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 
 // publish is every executor's publish to Envoy (r.notices), held to the claims this daemon
 // supervises. A publish to the role topic of a claim the daemon supervises, or to its project's
-// controller topic while the daemon supervises the controller's claim, is made only while that
-// claim holds the session it records (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim
-// the boot could not suspend keeps its process, and that process keeps the Envoy role its session
-// claimed, so a notice, a role message, a phase's end, a hook's prompt, an update ask, a
-// merge-queue removal or a controller notice would reach a process working under another claim's
-// session, or one no claim holds (review rounds 13 and 14 of #4220). Such a publish is not made
-// and answers notify.ErrNoHolder, which every executor already answers its own way — a notice is
-// held for its architect, a merge-queue removal waits, a controller notice is retried on its
-// backoff, and a role message, a phase's end, a hook's prompt and an update ask finish undelivered
-// — so an operator's settle of the name lets the next attempt through. A store that does not
-// answer publishes nothing and fails the attempt, which the row's backoff retries.
+// controller topic under `controller: daemon` (heldTopic), is made only while that claim holds
+// the session it records (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot
+// could not suspend keeps its process, and that process keeps the Envoy role its session claimed,
+// so a notice, a role message, a phase's end, a hook's prompt, an update ask, a merge-queue
+// removal or a controller notice would reach a process working under another claim's session, or
+// one no claim holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
+// notify.ErrNoHolder, which every executor already answers its own way — a notice is held for its
+// architect, a merge-queue removal and a controller notice wait, and a role message, a phase's
+// end, a hook's prompt and an update ask finish undelivered — so an operator's settle of the name
+// lets the next attempt through. A store that does not answer publishes nothing and fails the
+// attempt, which the row's backoff retries.
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
@@ -244,10 +246,10 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 				if !errors.As(err, &refusal) {
 					return fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)
 				}
-				// One line per row and claim, as holdRecorded writes one per refusal (warnRefusal):
-				// a held row asks again at each attempt of its backoff, and several rows of one
-				// claim take turns. A row published since is forgotten.
-				if _, seen := r.unheldWarned.LoadOrStore(unheldRow{token, dedupeKey}, true); !seen {
+				// One line per claim while its hold refuses, as holdRecorded writes one per
+				// refusal (warnRefusal): a held row asks again at each attempt of its backoff,
+				// and several rows of one claim take turns (outbox.unheldWarned).
+				if _, seen := r.unheldWarned.LoadOrStore(token, true); !seen {
 					log := r.log
 					if log == nil {
 						log = slog.Default()
@@ -257,17 +259,10 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 				}
 				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to it: %w", notify.ErrNoHolder, token, err)
 			}
-			r.unheldWarned.Delete(unheldRow{token, dedupeKey})
+			r.unheldWarned.Delete(token)
 		}
 	}
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
-}
-
-// unheldRow is a row publish held for a claim that records a session it does not hold
-// (outbox.unheldWarned).
-type unheldRow struct {
-	claim claim.Token
-	key   string
 }
 
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
@@ -1593,9 +1588,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	}
 	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
-		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
-		// ERROR on every attempt, as the notice executor's own unresponsive branch does
-		// (notice_exceptions.go).
+		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
+		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
+		// executor's own unresponsive branch does (notice_exceptions.go).
 		return wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
 			row.Issue, payload.Role, notify.StateUnresponsive, err)
 	}
@@ -1811,9 +1806,10 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	}
 	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
-		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO then
-		// DEBUG rather than an Error at every attempt, and the row runs again on its backoff, so
-		// an operator's settle of the controller claim's name lets the next attempt through.
+		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
+		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
+		// attempt, and the row runs again on its backoff, so an operator's settle of the
+		// controller claim's name lets the next attempt through.
 		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
 	}
 	if err != nil {

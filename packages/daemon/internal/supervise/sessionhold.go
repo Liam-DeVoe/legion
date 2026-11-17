@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 )
 
 // errHoldUnanswered is a hold the store did not answer (holdRecorded): it says nothing about the
@@ -338,7 +339,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		}
 		m.warnRefusal("supervise: refused a session another claim recorded first",
 			"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", named)
-		return fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))
+		return &heldElsewhereError{holder: holder, err: fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))}
 	}
 	if m.heldNames == nil {
 		m.heldNames = map[Hold]bool{}
@@ -361,6 +362,76 @@ func firstHeldElsewhere(holds []Hold, holders []claim.Token, token claim.Token) 
 		}
 	}
 	return Hold{}, "", false
+}
+
+// heldElsewhereError is holdRecorded's refusal of a name held for another claim, or for none
+// (holder empty), carrying that holder for a caller that names it to an operator (mayForget). Its
+// text and the claim.Refusal it wraps are the refusal's own, so a registration answers exactly
+// what it answered before.
+type heldElsewhereError struct {
+	holder claim.Token
+	err    error
+}
+
+func (e *heldElsewhereError) Error() string { return e.err.Error() }
+func (e *heldElsewhereError) Unwrap() error { return e.err }
+
+// mayForget is nil when the claim may clear the session it records (forgetSession, retry's fresh
+// session), and otherwise why not. A claim holding its session, or recording none, forgets as
+// before and asks nothing more (R9).
+//
+// A claim that records a session it does not hold is the one the outbox withholds its role's
+// messages from (HoldsItsSession), and only while it records that session: once the session is
+// cleared, the claim holds what it records, and its role topic opens. The Envoy listener still
+// names the cleared session as the role's holder while any process registers that session id,
+// and where the name is held for another claim, as after a rollback, that claim's live process
+// does: the role claim reaper keeps a claim whose holder is alive. The role's messages would then
+// reach that process (review round 16 of #4220). So before such a claim clears its session, the
+// listener is asked once who holds the claim's role, and the clear is refused while the cleared
+// session does, live or unresponsive, since an unresponsive holder takes the role's messages
+// again once its heartbeats land. A role no claim names, one a gone holder's claim names, and one
+// another session holds are no such route, and the clear goes on. A listener that does not
+// answer refuses the clear: nothing says the route is closed. The remedy the refusal names is to
+// stop the process under that session first, through the daemon, since a pod or pane stopped by
+// hand is relaunched under the same id (Machine.died).
+//
+// The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
+// so nothing else of this claim waits behind it but the operator who asked.
+func (m *Machine) mayForget(ctx context.Context, request string) error {
+	session := m.claim.Session
+	if session == "" {
+		return nil
+	}
+	err := m.holdRecorded(ctx, session, m.claim.SessionFile)
+	if err == nil {
+		return nil
+	}
+	var refusal claim.Refusal
+	if !errors.As(err, &refusal) {
+		return fmt.Errorf("%s: ask whether %s holds session %s before clearing it: %w", request, m.claim.Token, session, err)
+	}
+	if m.deps.RoleHolder == nil {
+		return nil
+	}
+	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
+	holder, state, lookupErr := m.deps.RoleHolder(asking, string(m.claim.Token))
+	cancel()
+	if lookupErr != nil {
+		return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
+			"%s records session %s, which it does not hold (%v), and the Envoy listener did not say which session holds its role, so clearing the session could let the role's messages reach another claim's process; try again once the listener answers: %w",
+			m.claim.Token, session, err, lookupErr)}
+	}
+	if holder != session || state == notify.StateGone {
+		return nil
+	}
+	whose := "the process registered under it"
+	var held *heldElsewhereError
+	if errors.As(err, &held) && held.holder != "" {
+		whose = fmt.Sprintf("the claim that holds it, %s (`legion claims suspend --claim %s`)", held.holder, held.holder)
+	}
+	return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
+		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach the process under %s: first suspend %s, which stops that process through the daemon (a pod or pane stopped by hand is relaunched under the same id), then ask again once the listener names no holder of the role %s under %s (GET /v1/roles/%s)",
+		m.claim.Token, session, err, session, state, session, whose, m.claim.Token, session, m.claim.Token)}
 }
 
 // admittedSession is a session and file every name of which the store last answered as this
