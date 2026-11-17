@@ -18,6 +18,7 @@ import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   EMPTY_STATE_LINES,
@@ -542,6 +543,96 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   expect(none.getByText(EMPTY_LINE)).toBeTruthy();
   // The outline's tree is still on the page, as it is under every filter.
   expect(none.getByRole("tree", { name: CONTROL_LABELS.tree })).toBeTruthy();
+});
+
+/**
+ * The body as the page draws it before the reads its decisions come from hold an answer: the
+ * tree read and the decisions view each answered by `read` (one that never answers, or one that
+ * fails), the asks and the comments read, and the page's tree as `useIssueTree.ts` builds it
+ * with no tree read answered, which holds no node of the read.
+ */
+function renderUnread(read: () => Promise<never>): RenderResult {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(read);
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], []);
+  const issue = issueDetails();
+  const root = issueTree([]);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// R2 and decision 98, the reviewer's R1 finding on decisions-entries.ts (review 5934996192): the
+// view's decisions are the decisions view read's, else the tree read's, so while neither has
+// answered the view does not know what the issue holds. It draws no line that says the issue
+// has no decisions: a cold load of the Decisions view's address would say so of every issue.
+test("the view says nothing of an issue's decisions while neither of their reads has answered", async () => {
+  const view = renderUnread(() => new Promise<never>(() => {}));
+  try {
+    await waitFor(() => expect(treeReads, "the tree was never read").toHaveBeenCalled());
+    expect(
+      view.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions before any read of them answered"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and decision 98: where the tree read and the decisions view read both failed, the view
+// holds no answer of either, and says the decisions could not be read, with a way to read them
+// again, as the Spec view's column says it of the same reads; it never says the issue has none.
+// Seen on the real stack at 4ce5ad5f, whose server answers the tree read 404: the Decisions view
+// of an issue with decisions read "This issue has no decisions yet."
+test("the view says its decisions could not be read where both of their reads failed", async () => {
+  const view = renderUnread(() =>
+    Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" }))
+  );
+  try {
+    await waitFor(
+      () =>
+        expect(
+          view.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    expect(
+      view.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions where their reads failed"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+  }
 });
 
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
