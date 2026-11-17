@@ -2,20 +2,16 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -35,8 +31,10 @@ import (
 // newest first, and says what each check compared those results with: a `before_merge` check is
 // compared with the pull request heads of the check's own issue and with the head of each branch
 // a CI job's result on that issue names, so a child's pull request and a child's branch answer for
-// nothing against its parent's check. The comparison itself is answered in
-// results_comparison.go.
+// nothing against its parent's check. Who may record which result, and the row each recorder's
+// result becomes, is results_recorder.go's; the two tables the rows live in are results_rows.go's;
+// the comparison is answered in results_comparison.go, and whether a pass stands in
+// results_pass_stands.go.
 
 // checkResultRole bounds the role a result names: the word the pull-request body line prints.
 var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
@@ -54,36 +52,6 @@ const (
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
 // and how much of the check's own words the line of a derived result carries (ciVerdictLine).
 const checkResultReadingRunes = 80
-
-// checkResultColumns is the column list every check_results read scans, in scanCheckResult's
-// order. check_results holds what a role recorded, so a row names no branch and no statement.
-const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact_id::text, check_block_id,
-	check_version, check_sha256, role, surface, run, observed, commit_sha, negative_control,
-	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq,
-	''::text, null::jsonb`
-
-// ciCheckResultColumns is the same column list read from ci_check_results, which holds what a CI
-// job recorded (insertCIJobCheckResult): its role is ciResultRole, a job counts no case and
-// attaches no screenshot, and every row names its branch and its statement.
-const ciCheckResultColumns = `id::text, issue_key, check_issue_key, check_artifact_id::text, check_block_id,
-	check_version, check_sha256, '` + ciResultRole + `'::text, surface, run, observed, commit_sha, negative_control,
-	0, 0, 0, verdict, '{}'::text[], session, actor, created_at, event_seq,
-	branch, attestation`
-
-// codeRefNotABranch refuses a results token whose run is of a ref that names no branch: a CI
-// job records a result for the push of a branch, and its row names that branch.
-const codeRefNotABranch = "REF_NOT_A_BRANCH"
-
-// codeRepositoryNotTheIssues refuses a results token whose run is of another repository than the
-// one the check's issue resolves to.
-const codeRepositoryNotTheIssues = "REPOSITORY_NOT_THE_ISSUES"
-
-// codeBranchNotTheIssues refuses a CI job's result on an issue whose change the branch its run
-// pushed is not (refuseBranchOfAnotherIssue).
-const codeBranchNotTheIssues = "BRANCH_NOT_THE_ISSUES"
-
-// branchRefPrefix is what the ref of a branch push begins with.
-const branchRefPrefix = "refs/heads/"
 
 // resolvedCheck is one `check` block a result names: where it lives, the version its words last
 // changed in and their digest as document_blocks holds them, and the attributes the write judges
@@ -118,17 +86,6 @@ type checkResultInput struct {
 	Skipped         int          `json:"skipped"`
 	Excluded        int          `json:"excluded"`
 	Screenshots     []string     `json:"screenshots"`
-}
-
-// ciJobResultInput is every member a CI job's results token may send on POST
-// /api/v1/issues/{key}/results: what its run observed, and nothing about who the job is, which
-// Dispatch reads from the token and from GitHub. refusalFor names each other member a job's
-// body carries.
-type ciJobResultInput struct {
-	Check    string `json:"check"`
-	Commit   string `json:"commit"`
-	Verdict  string `json:"verdict"`
-	Observed string `json:"observed"`
 }
 
 // checkResultRecorded is the body POST /api/v1/issues/{key}/results answers.
@@ -519,86 +476,6 @@ func keepFieldsOlderCommandsRead(checks []model.CheckBlock) {
 	}
 }
 
-// refusalFor is every refusal a result's own fields earn before anything is read, for the
-// credential that sends them and body, the bytes they were decoded from. A CI job's results
-// token (model.Credential.ResultsOnly) is held to its run (ciJobRefusal); every other credential
-// records a role's result, held to the rules below.
-func (input checkResultInput) refusalFor(credential *model.Credential, body []byte) error {
-	if credential != nil && credential.ResultsOnly {
-		return input.ciJobRefusal(credential.CI, body)
-	}
-	if strings.TrimSpace(input.Check) == "" {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
-	}
-	if !checkResultRole.MatchString(input.Role) {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT",
-			"role is required and is at most 32 characters of a-z and -, the word the pull-request line prints")
-	}
-	if input.Verdict != "pass" && input.Verdict != "fail" {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "verdict is pass or fail")
-	}
-	if !resultCommitSHA.MatchString(input.Commit) {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
-	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
-		}
-	}
-	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
-		return errorf(http.StatusBadRequest, "RESULT_CONTRADICTS",
-			"a pass counts no failed, skipped or excluded case; this one counts %d failed, %d skipped and %d excluded",
-			input.Failed, input.Skipped, input.Excluded)
-	}
-	return nil
-}
-
-// ciJobRefusal is every refusal the body of a CI job's result earns before anything is read, run
-// being the run its results token was minted for. The body names what the run observed and
-// nothing about who the job is, which Dispatch reads from the token and from GitHub, so a member
-// beyond ciJobResultInput's four is refused by name rather than ignored; a body that names one
-// is a caller that thinks it sets it. The commit is the run's, and the run is of a branch push,
-// whose branch its row names (ciJobCheckResult).
-func (input checkResultInput) ciJobRefusal(run *oauthwire.CIRun, body []byte) error {
-	if undeclared := undeclaredMembers(&ciJobResultInput{}, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, codeResultInput,
-			"a CI job's result takes check, commit, verdict and observed alone, and names %s: Dispatch reads who recorded a result from its token, never from its body",
-			strings.Join(undeclared, ", "))
-	}
-	if strings.TrimSpace(input.Check) == "" {
-		return errorf(http.StatusBadRequest, codeResultInput, "check names the check block the result proves")
-	}
-	if input.Verdict != "pass" && input.Verdict != "fail" {
-		return errorf(http.StatusBadRequest, codeResultInput, "verdict is pass or fail")
-	}
-	if !resultCommitSHA.MatchString(input.Commit) {
-		return errorf(http.StatusBadRequest, codeResultInput, "commit is the 40-character lowercase hex commit the job tested")
-	}
-	if run == nil {
-		// brokerTokenActor carries the run of every results token it accepts.
-		return errors.New("a results token's credential carries no run")
-	}
-	if input.Commit != run.SHA {
-		return commitNotTheRuns(input.Commit, run.SHA)
-	}
-	if pushedBranch(*run) == "" {
-		return errorf(http.StatusForbidden, codeRefNotABranch,
-			"this token's run is of %q, which names no branch: a CI job records a result only for the push of a branch",
-			run.Ref)
-	}
-	return nil
-}
-
-// pushedBranch is the branch whose push run ran on: its ref without refs/heads/, and "" for a ref
-// that names no branch.
-func pushedBranch(run oauthwire.CIRun) string {
-	branch, ok := strings.CutPrefix(run.Ref, branchRefPrefix)
-	if !ok {
-		return ""
-	}
-	return branch
-}
-
 // issuesOpenForResult answers whether the recording issue and the check's issue are open, in
 // one query over the rows the caller has already locked (lockIssueRows). It makes no refusal of
 // its own for a closed issue, as requireOpenOwnerStatus does: the results route decides for itself,
@@ -827,164 +704,6 @@ func validCICheck(check model.CheckBlock) bool {
 	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == ""
 }
 
-// refuseResultOfAnotherRecorder refuses a result whose recorder is not the one that does the work
-// of its check (R12: nobody writes a result for work that it did not do), in this order:
-//
-//  1. A check CI proves (docs.CICheckRule answers "") takes no result from any credential but
-//     a CI job's results token: 409 CHECK_PROVED_BY_CI, naming the block and the job.
-//  2. A results token records only the result of a check CI proves whose ci_check, trimmed, is
-//     the name of the token's check run: 409 CHECK_NOT_THIS_JOBS, naming the check, its
-//     ci_check (or that it carries none) and the check run.
-//  3. The token's check run is GitHub's at the token's commit (403 CHECK_RUN_NOT_THE_RUNS), and
-//     the token's repository is the one the check's issue resolves to, compared without case
-//     (server.checkIssueRepository; 403 REPOSITORY_NOT_THE_ISSUES), each naming both. refusalFor
-//     has held the body's commit to the token's already.
-//
-// Any other credential's result for any other check is judged by the rest of the route. Whether
-// the check is CI's is its block's alone (validCICheck), and q reads the check's repository: the
-// pool before the transaction opens, and the transaction itself under the locks. run is the
-// token's check run (ciJobCheckRun), and nil for every other credential.
-func (s *server) refuseResultOfAnotherRecorder(ctx context.Context, q queryer, check resolvedCheck, credential *model.Credential, run *githubapp.CheckRun) error {
-	carries := docs.CarriesCICheck(check.Attributes)
-	rule := ""
-	if carries {
-		rule = docs.CICheckRule(check.Attributes)
-	}
-	provedByCI := carries && rule == ""
-	if credential == nil || !credential.ResultsOnly {
-		if provedByCI {
-			return errorf(http.StatusConflict, "CHECK_PROVED_BY_CI",
-				"check %s names CI job %q: only a run of that job records its result, through the secrets broker",
-				check.BlockID, check.Attributes.CICheck)
-		}
-		return nil
-	}
-	if run == nil || credential.CI == nil {
-		return fmt.Errorf("judge a CI job's result for check %s: the token's check run was not read", check.BlockID)
-	}
-	if !provedByCI || check.Attributes.CICheck != run.Name {
-		named := "carries no ci_check"
-		switch {
-		case carries && !provedByCI:
-			named = fmt.Sprintf("names CI job %q and is no check CI proves (%s)", check.Attributes.CICheck, rule)
-		case carries:
-			named = fmt.Sprintf("names CI job %q", check.Attributes.CICheck)
-		}
-		return errorf(http.StatusConflict, codeCheckNotThisJobs,
-			"check %s %s, and this token's check run is %q: a job records results only for the checks whose ci_check names its check run",
-			check.BlockID, named, run.Name)
-	}
-	if run.HeadSHA != credential.CI.SHA {
-		return checkRunNotTheRuns(run.HeadSHA, run.ID, credential.CI.SHA)
-	}
-	repo, answered := s.checkIssueRepository(ctx, q, check.IssueKey)
-	if !answered {
-		return fmt.Errorf("judge a CI job's result for check %s: the repository of %s did not resolve", check.BlockID, check.IssueKey)
-	}
-	if repo == nil || !strings.EqualFold(*repo, credential.CI.Repository) {
-		resolves := "no repository"
-		if repo != nil {
-			resolves = *repo
-		}
-		return errorf(http.StatusForbidden, codeRepositoryNotTheIssues,
-			"this token's run is of %s, and issue %s resolves to %s: a CI job records a result only for an issue of the repository it ran in",
-			credential.CI.Repository, check.IssueKey, resolves)
-	}
-	return nil
-}
-
-// refuseBranchOfAnotherIssue refuses a CI job's result on issueKey's route when the branch whose
-// push its run ran on does not belong to that issue (delivery.BranchOfIssue): a job's result
-// counts for an issue only on a branch of that issue's change, so a job of one issue's branch
-// never makes a pass stand for another's (403 BRANCH_NOT_THE_ISSUES). The branch is quoted, so
-// a name holding a line break prints on one line.
-func refuseBranchOfAnotherIssue(ctx context.Context, q refs.Queryer, issueKey, branch string) error {
-	belongs, err := delivery.BranchOfIssue(ctx, q, issueKey, branch)
-	if err != nil {
-		return err
-	}
-	if !belongs {
-		return errorf(http.StatusForbidden, codeBranchNotTheIssues,
-			"this token's run pushed branch %q, which is no branch of issue %s: a branch belongs to an issue when it is the head branch of a pull request of that issue, or when the first issue key its name holds is that issue's, as Dispatch attributes a pull request by its branch",
-			branch, issueKey)
-	}
-	return nil
-}
-
-// ciJobCheckRun is the check run a results token was minted in, as GitHub names it in the run's
-// repository, through the cache the project's results route reads it through (specCheckRun). A
-// GitHub that does not answer leaves the result unjudged: 503 CHECK_RUN_UNREADABLE, and the job
-// writes it again.
-func (s *server) ciJobCheckRun(ctx context.Context, ci oauthwire.CIRun) (githubapp.CheckRun, error) {
-	id, err := strconv.ParseInt(ci.CheckRunID, 10, 64)
-	if err != nil {
-		// The verifier admits no other (brokertoken.shapeOf), so this is Dispatch's own fault.
-		return githubapp.CheckRun{}, fmt.Errorf("read the check run of a results token: %w", err)
-	}
-	owner, name, _ := strings.Cut(ci.Repository, "/")
-	run, err := s.specCheckRun(ctx, &repositoryReader{s: s, owner: owner, name: name}, ci.Repository, id)
-	if err != nil {
-		return githubapp.CheckRun{}, errorf(http.StatusServiceUnavailable, codeCheckRunUnreadable,
-			"GitHub did not answer the read of check run %d of %s, so the result was not judged; write it again: %v",
-			id, ci.Repository, err)
-	}
-	return run, nil
-}
-
-// roleCheckResult is the row a role's result is stored as: each field as the role recorded it,
-// under the actor the request resolved to.
-func roleCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, issueKey string) model.CheckResult {
-	return model.CheckResult{
-		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
-		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
-		CheckVersion: check.Version, CheckSHA256: check.SHA256,
-		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
-		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
-		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
-		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
-		Session: sessionOf(actor), Actor: actor,
-	}
-}
-
-// ciJobActor is the actor a CI job's result and its event are recorded under: the session of the
-// run its results token proved, and no person. The person the broker's result entry names ran
-// nothing, so it stays inside the server, as on the project's results route
-// (model.ResultRecorder): the airlock authenticated the run (R12).
-func ciJobActor(actor model.Actor) model.Actor {
-	actor.Owner = nil
-	return actor
-}
-
-// ciJobCheckResult is the row of ci_check_results a CI job's result is stored as
-// (insertCIJobCheckResult): what its run observed, under the identity its token proved and
-// nothing its body named. Its role is ci and its run the check run's name, as on the result
-// derived from that run (ciAnswerOf); what it observed is kept by the rule of the project's
-// results route (cutObserved); its surface and negative control are the check's; its commit is
-// the run's, which ciJobRefusal held the body's to; its session and actor are the run's
-// (ciJobActor); and Branch is the branch whose push the run ran on. Attestation is the in-toto
-// statement of its run (attestedResult.statement), as the project's results route builds one:
-// attempt is the run's attempt (runNumbersOf), and principal the broker's principal of the run
-// (resultPrincipal).
-func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.CIRun, attempt int, principal string, issueKey string) model.CheckResult {
-	session, observed := sessionOf(actor), cutObserved(input.Observed)
-	statement := attestedResult{
-		predicateType: checkBlockResultPredicateType, project: *actor.Project, check: check.Ref,
-		procedureDigest: check.SHA256,
-		test:            model.ResultTest{Job: check.Attributes.CICheck},
-		verdict:         input.Verdict, observed: observed, checkRunName: run.Name,
-		run: ci, attempt: attempt, session: session, principal: principal,
-	}.statement()
-	return model.CheckResult{
-		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
-		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
-		CheckVersion: check.Version, CheckSHA256: check.SHA256,
-		Role: ciResultRole, Surface: check.Surface, Run: run.Name, Observed: observed,
-		CommitSHA: ci.SHA, Branch: pushedBranch(ci), NegativeControl: check.Attributes.NegativeControl,
-		Verdict: input.Verdict, Screenshots: []string{},
-		Session: session, Actor: actor, Attestation: &statement,
-	}
-}
-
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
 // in document order, with its block id. The markdown is read live and parsed; nothing is
 // written. A rendering can repeat an id; the block index keys one row per id, and so does this,
@@ -1173,137 +892,6 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 			return fmt.Errorf("read screenshot %q: %w", screenshot, err)
 		}
 	}
-	return nil
-}
-
-// insertCheckResult writes one role's result as a row of check_results and fills in the
-// created_at the row takes, which the record route answers with: the pointer is the caller's own
-// value, not a copy of it.
-func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult) error {
-	actorJSON, err := encodeJSON(result.Actor)
-	if err != nil {
-		return err
-	}
-	return tx.QueryRow(ctx, `
-		insert into check_results (
-			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
-			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq
-		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-		returning created_at
-	`,
-		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
-		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
-		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq,
-	).Scan(&result.CreatedAt)
-}
-
-// insertCIJobCheckResult is the one writer of ci_check_results: it writes one CI job's result
-// (ciJobCheckResult) with its statement, whose recorded_at is the row's own created_at
-// (stampedAttestation), and fills in that created_at and the stored statement, so the record's
-// answer is what the read answers. The table is the job's alone, and no build before this one
-// reads it, so no job's result ever counts as a role's record of its check.
-func insertCIJobCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult) error {
-	actorJSON, err := encodeJSON(result.Actor)
-	if err != nil {
-		return err
-	}
-	if result.Attestation == nil {
-		return fmt.Errorf("store a CI job's result of check %s: it carries no statement", result.CheckBlockID)
-	}
-	attestation, err := json.Marshal(result.Attestation)
-	if err != nil {
-		return fmt.Errorf("encode the statement of a result: %w", err)
-	}
-	var stored []byte
-	if err := tx.QueryRow(ctx, `
-		insert into ci_check_results (
-			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
-			check_sha256, run, surface, negative_control, observed, commit_sha, branch, verdict,
-			attestation, session, actor, event_seq
-		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			`+stampedAttestation("$15")+`, $16, $17, $18)
-		returning created_at, attestation
-	`,
-		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
-		result.CheckVersion, result.CheckSHA256, result.Run, result.Surface, result.NegativeControl,
-		result.Observed, result.CommitSHA, result.Branch, result.Verdict, attestation,
-		result.Session, actorJSON, result.EventSeq,
-	).Scan(&result.CreatedAt, &stored); err != nil {
-		return err
-	}
-	return decodeAttestation(stored, &result.Attestation)
-}
-
-// loadCheckResults is every result recorded against the checks of one Verification document,
-// from any issue, by the block id of the check each names, newest first within each: a role's
-// from check_results and a CI job's from ci_check_results, in one list. One query serves the
-// whole document: a Verification document holding twenty checks is one round trip, not twenty.
-func loadCheckResults(ctx context.Context, q queryer, artifactID string) (map[string][]model.CheckResult, error) {
-	rows, err := q.Query(ctx, `
-		select `+checkResultColumns+`
-		from check_results
-		where check_artifact_id = $1::uuid
-		union all
-		select `+ciCheckResultColumns+`
-		from ci_check_results
-		where check_artifact_id = $1::uuid
-		order by check_block_id, created_at desc, id desc
-	`, artifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the results of document %s: %w", artifactID, err)
-	}
-	defer rows.Close()
-	results := map[string][]model.CheckResult{}
-	for rows.Next() {
-		result, err := scanCheckResult(rows)
-		if err != nil {
-			return nil, fmt.Errorf("read the results of document %s: %w", artifactID, err)
-		}
-		results[result.CheckBlockID] = append(results[result.CheckBlockID], result)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the results of document %s: %w", artifactID, err)
-	}
-	return results, nil
-}
-
-func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
-	var result model.CheckResult
-	var actorJSON, attestationJSON []byte
-	if err := row.Scan(
-		&result.ID, &result.IssueKey, &result.CheckIssueKey, &result.CheckArtifactID, &result.CheckBlockID,
-		&result.CheckVersion, &result.CheckSHA256, &result.Role, &result.Surface, &result.Run,
-		&result.Observed, &result.CommitSHA, &result.NegativeControl, &result.Failed, &result.Skipped,
-		&result.Excluded, &result.Verdict, &result.Screenshots, &result.Session, &actorJSON,
-		&result.CreatedAt, &result.EventSeq, &result.Branch, &attestationJSON,
-	); err != nil {
-		return model.CheckResult{}, err
-	}
-	if err := json.Unmarshal(actorJSON, &result.Actor); err != nil {
-		return model.CheckResult{}, fmt.Errorf("decode a result's actor: %w", err)
-	}
-	if err := decodeAttestation(attestationJSON, &result.Attestation); err != nil {
-		return model.CheckResult{}, err
-	}
-	return result, nil
-}
-
-// decodeAttestation reads a stored statement into *into: nil for a null one, which every role's
-// row reads as (checkResultColumns).
-func decodeAttestation(stored []byte, into **model.ResultAttestation) error {
-	if stored == nil {
-		*into = nil
-		return nil
-	}
-	statement := new(model.ResultAttestation)
-	if err := json.Unmarshal(stored, statement); err != nil {
-		return fmt.Errorf("decode a result's statement: %w", err)
-	}
-	*into = statement
 	return nil
 }
 
