@@ -135,8 +135,8 @@ func (l *stepRecordsLive) outage() {
 	var last error
 	var lines []stepLine
 	if !testwait.Holds(within, 2*time.Second, func() bool {
-		var output string
-		if output, code = l.steps(); code != 0 {
+		output, code := l.steps()
+		if code != 0 {
 			last = fmt.Errorf("exit %d: %s", code, output)
 			return false
 		}
