@@ -1861,9 +1861,13 @@ const publishBound = 5 * time.Second
 // capture through core NATS (UsesCoreTransport); every notification the stream captures retains
 // JetStream durability. Its signature is an interface method in cistore, outbox and webhook, so a
 // caller that wants JetStream's duplicate verdict calls PublishReportingDuplicate instead, and one
-// that has a deadline of its own calls PublishWithin.
+// that has a deadline of its own calls PublishWithin. It reads no verdict, so a publish whose
+// answer a lost connection took is sent again on the new connection (sendStored): the stream stores
+// one under a message id once.
 func (c *Client) Publish(item contracts.Envelope) error {
-	_, err := c.PublishReportingDuplicate(item)
+	ctx, cancel := context.WithTimeout(context.Background(), publishBound)
+	defer cancel()
+	_, err := c.publishEnvelope(ctx, item, false)
 	return err
 }
 
@@ -1872,7 +1876,7 @@ func (c *Client) Publish(item contracts.Envelope) error {
 // The listener's HTTP handlers publish this way, so a bus they cannot reach is answered inside the
 // deadline their own caller gave them.
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
-	_, err := c.PublishReportingDuplicateWithin(ctx, item)
+	_, err := c.publishEnvelope(ctx, item, false)
 	return err
 }
 
@@ -1883,10 +1887,10 @@ func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) err
 // MsgId, and only within the stream's duplicate window; a core-transport topic
 // has no acknowledgement at all and always reports false.
 //
-// True means "the stream already held this MsgId", not "this call published
-// nothing new": the reconnect retry below republishes after a failure that may
-// have landed, so the very publish that put the message on the subject can come
-// back a duplicate.
+// True means "the stream already held this MsgId" before this call's one send: a publish under a
+// MsgId is not sent again after a connection lost or closed under it (sendStored), since a second
+// send of one that landed would come back a duplicate of its own copy. Such a lost answer is the
+// error, ErrConnectionLost or the closed connection's.
 func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), publishBound)
 	defer cancel()
@@ -1897,10 +1901,17 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 // duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
 // publishBound.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
+	return c.publishEnvelope(ctx, item, true)
+}
+
+// publishEnvelope publishes item over the transport its topic takes and returns the duplicate
+// verdict, false for a core-transport topic. verdict says the caller reads that verdict: a publish
+// under a message id is then sent once, and otherwise sent again after a lost answer (sendStored).
+func (c *Client) publishEnvelope(ctx context.Context, item contracts.Envelope, verdict bool) (bool, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return false, c.PublishCoreContext(ctx, item.Topic, item)
 	}
-	return c.publishJetStream(ctx, item)
+	return c.publishJetStream(ctx, item, verdict)
 }
 
 // StoredAck is the stream's acknowledgement of a stored publish (PublishStoredAck): the stream
@@ -1929,7 +1940,7 @@ type StoredAck struct {
 // publish under the same id; subject must be one the stream captures, or nothing answers the
 // publish.
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
-	ack, err := c.publishJetStreamOn(ctx, subject, item, msgID)
+	ack, err := c.publishJetStreamOn(ctx, subject, item, msgID, true)
 	if err != nil {
 		return StoredAck{}, err
 	}
@@ -1940,9 +1951,10 @@ func (c *Client) PublishStoredAck(ctx context.Context, subject string, item cont
 // exception about a stored message, published on the exception's own topic, which every listener
 // that raises it from its own durable publishes under one id, so the stream keeps one copy. A
 // duplicate the stream drops counts as published, which is the ordinary case for such an
-// exception rather than a fault. Its refusals are PublishStoredAck's.
+// exception rather than a fault. Its refusals are PublishStoredAck's. It reads no verdict, so a
+// publish whose answer a lost connection took is sent again on the new connection (sendStored).
 func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contracts.Envelope, msgID string) error {
-	_, err := c.PublishStoredAck(ctx, subject, item, msgID)
+	_, err := c.publishJetStreamOn(ctx, subject, item, msgID, false)
 	return err
 }
 
@@ -1977,12 +1989,12 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // reaching the wire. What a context that ends during the acknowledgement wait leaves is a message
 // the stream may hold while the caller is answered failure; that is the acknowledgement's own
 // ambiguity, which the MsgId's duplicate window absorbs for an envelope that earns one.
-func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) (bool, error) {
+func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, verdict bool) (bool, error) {
 	msgID := ""
 	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
 		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
 	}
-	ack, err := c.publishJetStreamOn(ctx, item.Topic, item, msgID)
+	ack, err := c.publishJetStreamOn(ctx, item.Topic, item, msgID, verdict)
 	if err != nil {
 		return false, err
 	}
@@ -1994,7 +2006,14 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) 
 // publishJetStream the duplicate verdict, PublishStoredAck the sequence beside it. Every publish
 // of the envelope's own topic passes item.Topic; a kept role message passes the subject it is
 // stored on (PublishStoredAck), which leaves item.Topic the role topic it was published on.
-func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string) (*nats.PubAck, error) {
+//
+// verdict says the caller reads the acknowledgement's duplicate verdict. A publish under a message
+// id whose caller does is sent once (sendStored): a second send of one that landed is stored once
+// but answered as a duplicate, which that caller would read as another writer's copy - the send
+// route hands it to Dispatch as no envelope, the keep reads that copy instead of its own, the wake
+// logs it as already stored. One whose caller reads no verdict is sent again, since the stream
+// settles all it is asked: it stores the message once.
+func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, verdict bool) (*nats.PubAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return nil, err
 	}
@@ -2011,23 +2030,31 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	if msgID != "" {
 		options = append(options, nats.MsgId(msgID))
 	}
-	return c.sendStored(ctx, subject, data, options...)
+	return c.sendStored(ctx, subject, data, msgID != "" && verdict, options...)
 }
 
-// sendStored publishes data to subject on the notification stream under options, once more if the
-// connection had closed under it or was lost under it before its acknowledgement came
-// (ErrConnectionLost, once the connection is back within ctx: Reconnected), and names a refusal as
-// the ErrPublishDenied, ErrTooLarge, ErrStreamFull or ErrDuplicateInProcess it is. It is the one
-// send of the stored path: its callers (publishJetStreamOn, publishStoredRaw) bound ctx, connected
-// first and pass nats.Context(ctx) among the options, so the acknowledgement wait ends with that
-// bound. A publish the loss cut off may have been stored, so the one sent again is stored once
-// only under a Nats-Msg-Id, within the stream's duplicate window; one without an id may be stored
-// twice, as a publish sent again after a closed connection always could.
-func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
+// sendStored publishes data to subject on the notification stream under options, and names a
+// refusal as the ErrPublishDenied, ErrTooLarge, ErrStreamFull or ErrDuplicateInProcess it is. It is
+// the one send of the stored path: its callers (publishJetStreamOn, publishStoredRaw) bound ctx,
+// connected first and pass nats.Context(ctx) among the options, so the acknowledgement wait ends
+// with that bound.
+//
+// A publish whose connection closed under it, or was lost under it before its acknowledgement came
+// (ErrConnectionLost), may have been stored. One that is not once is sent again on the connection
+// that replaces it, within ctx (ensureConnWithContext, Reconnected): a publish under a message id
+// whose caller reads no verdict, which the stream stores once, and one with no precondition, which
+// may be stored twice, as a publish sent again after a closed connection always could. One that
+// is once is sent once and answers the error, since a second send of a write that landed answers
+// what the first send's landing made true, not what its caller asks: a write under an expected last
+// sequence (PublishCursorAt) would be refused as the cursor having moved, and one under a
+// Nats-Msg-Id whose caller reads the duplicate verdict (publishJetStreamOn) would be answered as a
+// duplicate of its own copy. Its caller reads the state again instead and decides from what is
+// stored, or answers the loss as a request the bus did not answer.
+func (c *Client) sendStored(ctx context.Context, subject string, data []byte, once bool, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)
 	switch {
-	case err == nil:
+	case err == nil, once:
 	case errors.Is(err, nats.ErrConnectionClosed):
 		if err := c.ensureConnWithContext(ctx); err != nil {
 			return nil, err
@@ -2067,6 +2094,12 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // Every other failure keeps the error the publish path reports: ErrPublishDenied for a write the
 // connection's user may not make, ErrTooLarge for a subject or body past the server's bounds,
 // ErrStreamFull while the stream holds its byte limit, and ctx's error when ctx ends first.
+//
+// A write whose answer the connection's loss took answers ErrConnectionLost, and one whose
+// connection closed under it the closed connection's error: it is sent once (sendStored), since a
+// second send of a write that landed would be refused as the cursor having moved. Such a write may
+// have landed, so the caller reads the cursor back to learn which (cmd/listener's
+// roleKeepLaneCursor.confirm).
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
 	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
@@ -2076,18 +2109,18 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 }
 
 // publishStoredRaw publishes the raw bytes data to the notification stream on subject - bytes of
-// the caller's own rather than an envelope - under extra, one publish option beyond the context
-// the send already carries, or none when extra is nil, and returns the server's acknowledgement.
-// It is the body of every raw write of the stored path: the subject check, the acknowledgement
-// bound, the connect and the send (sendStored). Its callers name their own failures, since what
-// a refusal means is theirs: PublishCursorAt, which writes under a precondition and reads a
-// refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a record
-// whose one writer keeps no sequence to write against, so the newest write stands.
+// the caller's own rather than an envelope - under precondition, the write's one precondition, or
+// none when it is nil, and returns the server's acknowledgement. It is the body of every raw write
+// of the stored path: the subject check, the acknowledgement bound, the connect and the send
+// (sendStored), which sends a write with a precondition once. Its callers name their own failures,
+// since what a refusal means is theirs: PublishCursorAt, which writes under a precondition and
+// reads a refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a
+// record whose one writer keeps no sequence to write against, so the newest write stands.
 //
-// extra is one option rather than a variadic list because each caller has exactly one or none:
-// a list would have the caller build a slice and this method append to it, where the two sends
-// below build sendStored's own variadic slice once, exactly as each caller built it before.
-func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, extra nats.PubOpt) (*nats.PubAck, error) {
+// precondition is one option rather than a variadic list because each caller has exactly one or
+// none: a list would have the caller build a slice and this method append to it, where the two
+// sends below build sendStored's own variadic slice once, exactly as each caller built it before.
+func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, precondition nats.PubOpt) (*nats.PubAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return nil, err
 	}
@@ -2096,10 +2129,10 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	if err := c.connForRequest(ctx); err != nil {
 		return nil, err
 	}
-	if extra == nil {
-		return c.sendStored(ctx, subject, data, nats.Context(ctx))
+	if precondition == nil {
+		return c.sendStored(ctx, subject, data, false, nats.Context(ctx))
 	}
-	return c.sendStored(ctx, subject, data, nats.Context(ctx), extra)
+	return c.sendStored(ctx, subject, data, true, nats.Context(ctx), precondition)
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
