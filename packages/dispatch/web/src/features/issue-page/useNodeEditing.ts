@@ -4,7 +4,7 @@ import type { Artifact } from "../../api/types";
 import { focusOnDocument } from "../shell/roving";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
-import { caretInBlock, caretOutOfBlock, holdEditorAtBlock } from "./node-caret";
+import { caretInBlock, caretOutOfBlock, holdEditorAtBlock, selectInEditor } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
@@ -140,10 +140,10 @@ export function useNodeEditing({
     // again, Milkdown's among them, which takes the editable out of the box it wraps it in and
     // wraps it in a new one. The browser drops the focus to the page as the editable leaves it:
     // measured in Chromium, a `focusout` with no related target 45 ms after the caret was placed,
-    // and the focus on the page's body after. And the editor writes its own selection back over
-    // the caret while it has not read the caret yet (`caretOutOfBlock`). So while the reader has
-    // not acted, a focus fallen to nothing and a caret moved out of the node's block go back to
-    // the block; from their first act the focus and the caret are theirs.
+    // and the focus on the page's body after, with the caret moved out to where the editable
+    // stood. So while the reader has not acted, a focus fallen to nothing and a caret moved out
+    // of the node's block go back to the block, which the editor takes as its own in the same
+    // task (`caretInBlock`); from their first act the focus and the caret are theirs.
     let settled: (() => void) | undefined;
     const acts = abortOnReaderAct(() => {
       if (settled !== undefined) watch.disconnect();
@@ -196,11 +196,12 @@ export function useNodeEditing({
     // Milkdown's among them, which takes the editable out of the page and puts it back: the
     // focus falls to the page's body while the reader writes, and the keys they press next go
     // nowhere. So the editable losing the focus to nothing (a `focusout` naming no element)
-    // gets it back on the next frame, at the caret it held as it lost it, where it is still in
-    // the row and nothing else has taken the focus by then. The caret is kept as its points,
-    // since a range is moved out of a node the page takes out. A press is the reader's own:
-    // one on blank space takes the focus to nothing in the same task as its `pointerdown` and
-    // `mousedown`, and leaves it there. Escape focuses the row, so it takes nothing back either.
+    // gets it back on the next frame, at the caret it held as it lost it, which the editor takes
+    // as its own at once (`selectInEditor`), where it is still in the row and nothing else has
+    // taken the focus by then. The caret is kept as its points, since a range is moved out of a
+    // node the page takes out. A press is the reader's own: one on blank space takes the focus to
+    // nothing in the same task as its `pointerdown` and `mousedown`, and leaves it there. Escape
+    // focuses the row, so it takes nothing back either.
     const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
     const listening = new AbortController();
     const options = { capture: true, signal: listening.signal };
@@ -236,7 +237,7 @@ export function useNodeEditing({
           pointIn(editable, anchor, anchorOffset) &&
           pointIn(editable, focus, focusOffset)
         ) {
-          window.getSelection()?.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+          selectInEditor(anchor, anchorOffset, focus, focusOffset);
         }
       });
     };

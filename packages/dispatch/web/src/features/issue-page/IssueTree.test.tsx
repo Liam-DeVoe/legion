@@ -2,7 +2,7 @@ import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
@@ -1291,9 +1291,13 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
 });
 
 /** A comment and then a statement of the spec, with Enter pressed on the statement's row, once
- *  the row's editor has drawn the words above the statement (`r0`) and the statement (`r1`), and
- *  Enter's caret is at the start of the statement. Answers the editor's editable. */
-async function editStatement(user: UserEvent): Promise<HTMLElement> {
+ *  the row's editor - `editor`, a plain editable unless given - has drawn the words above the
+ *  statement (`r0`) and the statement (`r1`), and Enter's caret is at the start of the
+ *  statement. Answers the editor's editable. */
+async function editStatement(
+  user: UserEvent,
+  editor: ReactNode = <div contentEditable suppressContentEditableWarning />
+): Promise<HTMLElement> {
   const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
@@ -1303,10 +1307,7 @@ async function editStatement(user: UserEvent): Promise<HTMLElement> {
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, {
-    artifacts: [spec],
-    editor: <div contentEditable suppressContentEditableWarning />,
-  });
+  const view = renderTree(root, { artifacts: [spec], editor });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -1367,17 +1368,90 @@ function wrapAgain(editable: HTMLElement): Promise<void> {
   });
 }
 
+/** An editor that reads its own selection as ProseMirror does: from the document's
+ *  `selectionchange`, while it holds the focus, and from nothing else. `own.block` is the block
+ *  of that selection, which is what a key the editor handles itself acts on. */
+function ReportReadingEditor({ own }: { own: { block?: string | null } }): ReactNode {
+  const editable = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const read = () => {
+      if (document.activeElement === editable.current) own.block = caretBlock();
+    };
+    document.addEventListener("selectionchange", read);
+    return () => document.removeEventListener("selectionchange", read);
+  }, [own]);
+  return <div contentEditable ref={editable} suppressContentEditableWarning />;
+}
+
+/** Drops the `selectionchange` happy-dom reports inside the call that moves the selection: a
+ *  browser reports a move a task after it, so no listener hears it in the task that made it. A
+ *  report dispatched apart from such a call is heard. Answers what restores happy-dom's own. */
+function dropSelectionReports(): () => void {
+  const selection = window.getSelection();
+  if (selection === null) throw new Error("happy-dom draws no selection");
+  let moving = false;
+  const move = (change: () => void) => {
+    moving = true;
+    try {
+      change();
+    } finally {
+      moving = false;
+    }
+  };
+  const collapse = selection.collapse.bind(selection);
+  const setBaseAndExtent = selection.setBaseAndExtent.bind(selection);
+  const spies = [
+    spyOn(selection, "collapse").mockImplementation((node, offset) =>
+      move(() => collapse(node, offset))
+    ),
+    spyOn(selection, "setBaseAndExtent").mockImplementation(
+      (anchor, anchorOffset, focus, focusOffset) =>
+        move(() => setBaseAndExtent(anchor, anchorOffset, focus, focusOffset))
+    ),
+  ];
+  const drop = (event: Event) => {
+    if (moving) event.stopImmediatePropagation();
+  };
+  document.addEventListener("selectionchange", drop, { capture: true });
+  return () => {
+    document.removeEventListener("selectionchange", drop, { capture: true });
+    for (const spy of spies) spy.mockRestore();
+  };
+}
+
+// The editor reads a caret put in it only once the browser reports the move - ProseMirror's
+// observer listens for the document's `selectionchange` - which a browser does a task later, and
+// until then a key the editor handles itself acts on the editor's own selection: measured in
+// Chromium on a busy page, the editor held the focus with its selection at the top of the
+// document for 0.27 to 0.84 s after Enter, and ten Deletes pressed then removed the spec's first
+// heading. The editor takes Enter's caret as its own in the task that puts it there. happy-dom
+// reports a move inside the call that makes it, so that report is dropped here, as no listener
+// hears a browser's in that task.
+test("the editor takes Enter's caret in a statement as its own in the task that puts it there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null } = {};
+  try {
+    await editStatement(user, <ReportReadingEditor own={own} />);
+    expect(own.block, "the editor's own selection is not in the statement's block").toBe("r1");
+  } finally {
+    restore();
+  }
+});
+
 // Two things the editor does to the caret Enter put in a node before the reader has done
 // anything. It changes its plugins after it has drawn the document's text - Dispatch's block
 // views as it binds, its collaborators' cursors once the room has synced - and ProseMirror then
 // makes Milkdown's view again, which takes the editable out of the box it wraps it in and wraps
 // it in a new one: the focus falls to the page's body as the editable leaves the page (measured
-// in Chromium, 45 ms after Enter had put the caret in a statement). And it writes its own
-// selection back over a caret it has not read yet: measured in Chromium, the caret was in the
-// spec's summary 60 ms after it was put in a statement, and the words typed went there. Until
-// the reader acts the row puts the caret back in the node's block; from their first act the
-// caret is where the editor left it, and a focus the editor drops comes back at that caret,
-// not at the node's block (the next row).
+// in Chromium, 45 ms after Enter had put the caret in a statement). And it wrote its own
+// selection back over a caret it had not read yet: measured in Chromium, the caret was in the
+// spec's summary 60 ms after it was put in a statement, and the words typed went there. It reads
+// the caret in the task that puts it there now (the test above), and a caret moved out of the
+// block all the same goes back: until the reader acts the row puts the caret back in the node's
+// block; from their first act the caret is where the editor left it, and a focus the editor
+// drops comes back at that caret, not at the node's block (the next row).
 test("a caret the editor drops or moves goes back to the node's block until the reader acts", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1809,6 +1883,35 @@ test("Right on the row the tree is zoomed to moves to its first child, or says n
   await user.keyboard("{ArrowRight}");
   await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.nothing_under));
   expect(focusedRow(view.container)).toBe("comment-2");
+});
+
+// At 390 by 664 Left on a child of the row the tree is zoomed to asked to zoom to that row,
+// which is the zoom already: the focus stayed and nothing was said. It says so at the row - the
+// issue itself where the tree is zoomed to it, the zoom's own row above where it is zoomed to a
+// row - and on the zoom's own row Left zooms back out one level.
+test("Left on a child of the row the tree is zoomed to says the tree is zoomed to its parent", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.whole_tree));
+  expect(focusedRow(view.container)).toBe("comment-1");
+
+  await user.keyboard(".");
+  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.parent_zoomed));
+  expect(focusedRow(view.container)).toBe("comment-1a");
+  expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull();
+
+  await user.keyboard("{ArrowUp}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+  expect(rowReport(view.container)).toBeUndefined();
 });
 
 /** An issue whose outline holds a comment and then the group of its two children. */

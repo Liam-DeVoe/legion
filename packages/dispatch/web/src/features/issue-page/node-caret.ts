@@ -29,8 +29,9 @@ export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
  * it yet. An editor is ready once it has drawn the document's blocks: it is made editable
  * before it has read the document, and holds no block to put the caret in until then. The focus
  * moves the page by nothing: the box the editor scrolls in is `holdEditorAtBlock`'s to place.
- * Called again, it puts back a caret the editor dropped or moved as it redrew itself
- * (`useNodeEditing.ts`).
+ * The editor takes the caret as its own in the task that gives it the focus (`selectInEditor`),
+ * so no key reaches it before its selection is the block's. Called again, it puts back a caret
+ * the editor dropped or moved as it redrew itself (`useNodeEditing.ts`).
  */
 export function caretInBlock(host: HTMLElement, blockId: string | undefined): boolean {
   const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
@@ -39,22 +40,41 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   }
   editable.focus({ preventScroll: true });
   const start = firstEditableText(blockIn(editable, blockId) ?? editable);
-  // One move, rather than a selection emptied and then filled: where a change of the selection
-  // is reported the moment it is made (happy-dom), the emptied one reads as a caret out of the
-  // block (`caretOutOfBlock`), which places it again, and again.
-  if (start !== null) window.getSelection()?.collapse(start, 0);
+  if (start !== null) selectInEditor(start, 0, start, 0);
   return true;
 }
 
 /**
+ * Puts the selection from `anchor` to `focus` in the editor holding the focus, and has the
+ * editor take it as its own at once. The editor reads a selection put in it only once the
+ * browser reports the change - its observer listens for the document's `selectionchange`
+ * (`prosemirror-view`'s `DOMObserver`) - which the browser does a task later, and later still on
+ * a busy page. Until then a key the editor handles itself (Delete, Backspace, Enter, through its
+ * keymap) acts on the editor's own selection, and the editor writes that selection back over the
+ * DOM's as it takes the focus (its focus handler, 20 ms after it) and as it redraws: measured in
+ * Chromium on a busy page, the editor held the focus with its selection at the top of the
+ * document for 0.27 to 0.84 s after Enter put the caret in a statement, and ten Deletes pressed
+ * then removed the spec's first heading. So the report is made here, in the same task: the
+ * editor reads the selection on it, and the browser's own report, when it comes, holds nothing
+ * new. One move, rather than a selection emptied and then filled: where a change of the
+ * selection is reported the moment it is made (happy-dom), the emptied one reads as a caret out
+ * of the block (`caretOutOfBlock`), which places it again, and again.
+ */
+export function selectInEditor(
+  anchor: Node,
+  anchorOffset: number,
+  focus: Node,
+  focusOffset: number
+): void {
+  window.getSelection()?.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+  document.dispatchEvent(new Event("selectionchange"));
+}
+
+/**
  * Whether the editor in `host` holds the focus with the caret out of `blockId`'s block, where
- * `caretInBlock` put it. The editor reads a caret put in it only once the browser reports the
- * new selection, a task later, and until then writes its own selection back over it - as it
- * takes the focus (`prosemirror-view`'s focus handler, 20 ms after it) and as it redraws - which
- * is where its selection was before the caret went into the block. Measured in Chromium, with
- * the page busy drawing the document, the caret put in a statement was in the spec's summary
- * 60 ms later, and the words the reader typed went there. False where the editor draws no such
- * block: `caretInBlock` put the caret at the start of the editor then.
+ * `caretInBlock` put it: the caret moves out with the editable as the editor makes its views
+ * again (`useNodeEditing.ts`). False where the editor draws no such block: `caretInBlock` put
+ * the caret at the start of the editor then.
  */
 export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined): boolean {
   const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
