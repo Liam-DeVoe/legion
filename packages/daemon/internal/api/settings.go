@@ -46,6 +46,8 @@ type Settings struct {
 	ProviderKeys []string `json:"provider_keys"`
 	// Instructions is the deployment instructions' path, absent while the file sets none.
 	Instructions string `json:"instructions,omitempty"`
+	// PlanGuidance is the path of the owners' plan guidance, absent while the file sets none.
+	PlanGuidance string `json:"plan_guidance,omitempty"`
 	// The durations, in whole seconds as the file takes them.
 	WorkerBootTimeoutSeconds      int `json:"worker_boot_timeout_seconds"`
 	WorkerRPCTimeoutSeconds       int `json:"worker_rpc_timeout_seconds"`
@@ -467,6 +469,7 @@ func SettingsOf(cfg config.Config) Settings {
 		OmpLaunchPrefix:                         stringsOf(cfg.OmpLaunchPrefix),
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
+		PlanGuidance:                            cfg.PlanGuidancePath,
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
 		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),
 		WorkerStopTimeoutSeconds:                seconds(cfg.WorkerStopTimeout),

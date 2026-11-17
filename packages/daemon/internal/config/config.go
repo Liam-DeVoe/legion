@@ -103,6 +103,9 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PlanGuidancePath is the operator's guidance for the plans of the deployment's owners, "" when
+	// none.
+	PlanGuidancePath string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.
 	WorkerStreamPort int
@@ -379,6 +382,7 @@ type fileConfig struct {
 	OmpLaunchPrefix  []string
 	ProviderKeys     []ProviderKey
 	Instructions     *string
+	PlanGuidance     *string
 	WorkerStreamPort *int
 	// WorkerWakesPerMinute is `worker_wakes_per_minute`, read on its own rather than as a count
 	// key: 0 is a value an operator may set, and the count reader refuses it.
@@ -1233,6 +1237,9 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 	cfg.ProviderKeys = file.ProviderKeys
 	if file.Instructions != nil {
 		cfg.InstructionsPath = underConfig(*file.Instructions, configDir)
+	}
+	if file.PlanGuidance != nil {
+		cfg.PlanGuidancePath = underConfig(*file.PlanGuidance, configDir)
 	}
 
 	switch {

@@ -40,9 +40,9 @@ func goldenPath(name string) string {
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
 // on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo and a query
 // on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
-// version form). Every path the settings emit (`state_dir`, `instructions`, the hook's
-// `prompt_file`) is a fixed absolute literal, so the golden does not churn with the temporary
-// directory the file is written under.
+// version form). Every path the settings emit (`state_dir`, `instructions`, `plan_guidance`, the
+// hook's `prompt_file`) is a fixed absolute literal, so the golden does not churn with the
+// temporary directory the file is written under.
 // Hosts are placeholders.
 const settingsFixtureFile = `project: LEGION
 port: 13370
@@ -55,6 +55,7 @@ daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
 instructions: /etc/legion/deployment-instructions.md
+plan_guidance: /etc/legion/plan-guidance.md
 worker_boot_timeout_seconds: 180
 worker_boot_registration_deadline_intervals: 2
 worker_rpc_timeout_seconds: 8

@@ -940,6 +940,7 @@
       "GEMINI_API_KEY"
     ],
     "instructions": "/etc/legion/deployment-instructions.md",
+    "plan_guidance": "/etc/legion/plan-guidance.md",
     "worker_boot_timeout_seconds": 180,
     "worker_rpc_timeout_seconds": 8,
     "worker_stop_timeout_seconds": 30,

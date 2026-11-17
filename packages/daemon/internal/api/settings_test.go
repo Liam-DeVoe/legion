@@ -62,6 +62,7 @@ var settingsEmitted = map[string]string{
 	"Config.OmpLaunchPrefix":                         "omp_launch_prefix",
 	"Config.ProviderKeys":                            "provider_keys (the variable names alone)",
 	"Config.InstructionsPath":                        "instructions",
+	"Config.PlanGuidancePath":                        "plan_guidance",
 	"Config.WorkerBootTimeout":                       "worker_boot_timeout_seconds",
 	"Config.WorkerRPCTimeout":                        "worker_rpc_timeout_seconds",
 	"Config.WorkerStopTimeout":                       "worker_stop_timeout_seconds",
@@ -321,7 +322,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// under runtime kubernetes.
 	wantTop := []string{
 		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "daemon_url",
-		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions",
+		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions", "plan_guidance",
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",
 		"controller_wake_interval_seconds", "worker_boot_registration_deadline_intervals",
