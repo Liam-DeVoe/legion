@@ -262,10 +262,10 @@ test("a failed release is said in the page's colours, with Retry", async () => {
 
 // Release turned disabled while its release was out, which lost the focus of a reader who
 // pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to the
-// page's body (`emulateChromiumFocusFixup` does that here). Release stays enabled and is marked
-// busy, as the page's controls are while they save, and a press while the release is out sends
-// nothing.
-test("Release keeps the focus while its release is out, reads busy, and a second press sends none", async () => {
+// page's body (`emulateChromiumFocusFixup` does that here). Release stays enabled and refuses a
+// press with `aria-disabled` while its release is out, as the page's controls do while they
+// save, and a press then sends nothing.
+test("Release keeps the focus while its release is out, refuses a press, and a second press sends none", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     running("session-one", "Implementer"),
@@ -285,7 +285,7 @@ test("Release keeps the focus while its release is out, reads busy, and a second
       )
     );
     expect(document.activeElement, "Release lost the focus while its release is out").toBe(button);
-    expect(button, "Release is not marked busy while its release is out").toHaveAttribute(
+    expect(button, "Release does not refuse a press while its release is out").toHaveAttribute(
       "aria-disabled",
       "true"
     );
