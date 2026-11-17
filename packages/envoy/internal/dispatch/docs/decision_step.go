@@ -32,6 +32,14 @@ import (
 //     (catchUp): its ask.answered, ask.resolved, ask.opened, ask.follower_added and
 //     ask.follower_removed, each stated on the ask's node under its own event, from its payload,
 //     and never from the row.
+//  3. The restore and the conversion (RestoreAndConvert): the gated steps rewritten without
+//     `decisions`, then, for each issue that still holds a decisions document or an answered ask
+//     whose block left its spec, oldest first and in one transaction each, the restore of those
+//     asks into the spec, the conversion of every section of the decisions document, and the
+//     document's retirement once it holds none (restoreIssueDecisions). It does nothing while
+//     processes.Live lists a process of a commit other than this one's (anotherBuildLive), since
+//     any other build can write a row without its node, and it needs the document service
+//     (UseDocuments), which writes the documents.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
 // (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
@@ -69,6 +77,9 @@ type DecisionStep struct {
 	database *store.Store
 	commit   string
 	logger   *slog.Logger
+	// documents is the document service phase 3 writes the documents through (UseDocuments); nil
+	// until a caller gives it one, and phase 3 does not run while it is.
+	documents *Service
 	// interval is the wait between two ticks of Run: BlockIndexReconcileInterval.
 	interval time.Duration
 	// catchUpOwed is whether phase 2 owes a pass on a tick that finds the fleet one build: true
@@ -132,38 +143,35 @@ func (s *DecisionStep) OwedTotal() *int64 {
 	return &total
 }
 
-// countDecisionStepOwed reads what the restore and the conversion owe, in one statement. It is
-// the one reading of those three counts, which the finders of the restore and the conversion
-// replace part by part:
+// countDecisionStepOwed reads what the restore and the conversion owe, through the finders the
+// third phase itself reads (DecisionStep.RestoreAndConvert), so the count and the step read one
+// finder each:
 //
-//   - a decisions document is an artifact whose role is `decisions` or whose slug is
-//     `decisions-md`;
-//   - an answer whose block left its spec is an answered `question` ask, as its node's
-//     answer_state holds it, whose row's block_artifact_id is its issue's primary document and
-//     whose block id no `document_blocks` row of type `ask` holds in that document, leaving out a
-//     spec whose block index is owed (document_block_versions.version null), whose blocks are not
-//     known yet;
+//   - a decisions document is one decisions_documents() answers: an issue's unretired document
+//     whose role is decisions, or, stored before the role existed, whose slug is that document's;
+//   - an answer whose block left its spec is the main shape of the restore's work
+//     (graphcensus.ReadRestoreWork, graphcensus.RestoreReturns): an answered `question` ask, as
+//     its node holds it, whose row names its issue's spec and whose block id no `document_blocks`
+//     row of type `ask` holds in that spec, leaving out a spec whose block index is owed, whose
+//     blocks are not known yet - the second shape's asks stand in a decisions document, which the
+//     first part counts;
 //   - a list of gated steps that holds `decisions` is a projects row whose gated_steps does.
 func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionStepOwed, error) {
 	var owed DecisionStepOwed
 	if err := q.QueryRow(ctx, `
-		select
-			(select count(*) from artifacts a where a.role = 'decisions' or a.slug = 'decisions-md'),
-			(select count(*) from asks k
-			 join artifacts spec on spec.id = k.block_artifact_id and spec.is_primary
-			 join document_block_versions indexed on indexed.artifact_id = spec.id and indexed.version is not null
-			 where k.kind = 'question' and k.block_id is not null
-			   and (select t.to_id from graph_tuples t
-			        where t.from_kind = $1 and t.from_id = k.id::text and t.kind = $2 and t.to_kind = $3 and t.asserted
-			          and t.seq = (select max(n.seq) from graph_tuples n
-			                       where n.from_kind = t.from_kind and n.from_id = t.from_id
-			                         and n.kind = t.kind and n.to_kind = t.to_kind)) = $4
-			   and not exists (select 1 from document_blocks d
-			                   where d.artifact_id = spec.id and d.block_id = k.block_id and d.type = 'ask')),
-			(select count(*) from projects p where 'decisions' = any(p.gated_steps))
-	`, graphstore.KindAsk, graphstore.TupleAnswerState, graphstore.KindValue, asks.StateAnswered).Scan(
-		&owed.DecisionsDocuments, &owed.AnswersLeftSpec, &owed.GatedStepsLists); err != nil {
+		select (select count(*) from decisions_documents()),
+		       (select count(*) from projects p where 'decisions' = any(p.gated_steps))
+	`).Scan(&owed.DecisionsDocuments, &owed.GatedStepsLists); err != nil {
 		return DecisionStepOwed{}, fmt.Errorf("count what the decisions step owes: %w", err)
+	}
+	work, err := graphcensus.ReadRestoreWork(ctx, q)
+	if err != nil {
+		return DecisionStepOwed{}, fmt.Errorf("count what the decisions step owes: %w", err)
+	}
+	for _, ask := range work {
+		if ask.Shape == graphcensus.RestoreReturns {
+			owed.AnswersLeftSpec++
+		}
 	}
 	owed.Total = owed.DecisionsDocuments + owed.AnswersLeftSpec + owed.GatedStepsLists
 	return owed, nil
@@ -222,7 +230,11 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 		return err
 	}
 	catchUp := work.other || s.catchUpOwed
-	if !work.backfill && !catchUp {
+	// Phase 3 has work while the last count found something owed, and runs only on a fleet of
+	// this one build.
+	owed := s.Owed()
+	restore := s.documents != nil && !work.other && owed != nil && owed.Total > 0
+	if !work.backfill && !catchUp && !restore {
 		return nil
 	}
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
@@ -252,7 +264,23 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 		}
 		s.catchUpOwed = work.other || failed || err != nil
 	}
+	if restore {
+		if _, failures, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
+			s.logger.Error("dispatch: decisions step restore and conversion; the next tick tries again", "error", err)
+		} else {
+			for _, failure := range failures {
+				s.logger.Error("dispatch: decisions step restore and conversion of an issue; the next tick tries again",
+					"issue", failure.Issue, "error", failure.Err)
+			}
+		}
+	}
 	return nil
+}
+
+// UseDocuments gives the step the document service its third phase writes the documents through.
+// A process calls it before the step's first tick; until it does, phase 3 does not run.
+func (s *DecisionStep) UseDocuments(documents *Service) {
+	s.documents = documents
 }
 
 // Run ticks at once and then every interval (BlockIndexReconcileInterval) until ctx ends. It never

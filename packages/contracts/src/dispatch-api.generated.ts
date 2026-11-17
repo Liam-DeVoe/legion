@@ -373,7 +373,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Record that the caller agrees with the decision that block opens, as the text they read it at: {text_sha256}, the decision's own text_sha256 from GET /api/v1/issues/{key}/decisions. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. The block must be the heading block of a decision of an issue's decisions.md outside `## Replaced`: any other block is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
+    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection; or the heading block of a decision of an issue's decisions.md outside `## Replaced`, whose sum is the text_sha256 GET /api/v1/issues/{key}/decisions serves. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, and any other block, is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
     post: operations["postApiV1ArtifactsByIdBlocksByBlockIdKeep"];
     delete?: never;
     options?: never;
@@ -408,7 +408,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. */
+    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. */
     post: operations["postApiV1ArtifactsByIdEdits"];
     delete?: never;
     options?: never;
@@ -577,7 +577,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1194,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). */
+    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1EventsLog"];
     put?: never;
     post?: never;
@@ -1386,7 +1386,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1437,7 +1437,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -1454,7 +1454,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Convert the issue's pre-mortem document {slug}, by slug, into nodes, once {prevented_by, dry_run?, actor?}: one lens of kind pre-mortem under the issue, whose verdict is the document's verdict followed by its two closing sections, What a world-class implementation looks like and The smallest first slice that proves the model, word for word; under it one risk for risk 0 and each numbered risk of the document's newest version, each with its heading, early warning and prevention and a prevented_by tuple to each check its entry names; then a moved_to tuple from the document's address to the lens, which retires the document. prevented_by holds one entry {risk, checks, reason} for each risk the document holds: its number as the document numbers it, the dispatch:// addresses of the check blocks that prevent it, of any issue, empty for none, and why. An entry for a number the document does not hold, a number twice, a risk with no entry, an address that names no check block that is not gone and that the caller may see, a blank reason or check, and an entry of any other shape or type are 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, or the risk no entry names; a body that is not JSON is 400 INVALID_JSON; no document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that holds no verdict, risk or closing section 400 ARTIFACT_INPUT. Each writes nothing. With dry_run every write runs in a savepoint that is rolled back, and the answer is what the call would write, with no address. A document converted already answers 200, writes nothing and names its lens. The write appends no event. Answers 200 {document {address, id, version, moved_to}, dry_run, already_converted, lens {address, kind, on, verdict}, risks [{number, address, heading, early_warning, prevention, prevented_by, reason}], summary}. */
+    /** @description Convert the issue's pre-mortem document {slug}, by slug, into nodes, once {prevented_by, dry_run?, actor?}: one lens of kind pre-mortem under the issue, whose verdict is the document's verdict followed by its two closing sections, What a world-class implementation looks like and The smallest first slice that proves the model, word for word; under it one risk for risk 0 and each numbered risk of the document's newest version, each with its heading, early warning and prevention and a prevented_by tuple to each check its entry names; then a moved_to tuple from the document's address to the lens, and the document retired: it leaves the issue's document list, takes no new text, and its address answers the lens on GET /api/v1/references?to=. prevented_by holds one entry {risk, checks, reason} for each risk the document holds: its number as the document numbers it, the dispatch:// addresses of the check blocks that prevent it, of any issue, empty for none, and why. An entry for a number the document does not hold, a number twice, a risk with no entry, an address that names no check block that is not gone and that the caller may see, a blank reason or check, and an entry of any other shape or type are 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, or the risk no entry names; a body that is not JSON is 400 INVALID_JSON; no document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that holds no verdict, risk or closing section, or that something other than a conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. With dry_run every write runs in a savepoint that is rolled back, and the answer is what the call would write, with no address. A document converted already answers 200, writes nothing and names its lens. The conversion appends one event, the document's document.retired, whose reason names the lens. Answers 200 {document {address, id, version, moved_to}, dry_run, already_converted, lens {address, kind, on, verdict}, risks [{number, address, heading, early_warning, prevention, prevented_by, reason}], summary}. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugPremortemConvert"];
     delete?: never;
     options?: never;
@@ -1573,7 +1573,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
     /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. */
@@ -1591,7 +1591,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The constraints under the issue the caller may see, in the order they were written there: {issue, constraints}, each with its address dispatch://constraint/<uuid>, id, standard, reference, measurement, value and taken_where (null where it holds none), author (the person or session its authored_by tuple names, null for one written on the shared bearer), created_at, state and visibility. A constraint reserved for its author is in its author's list alone, which reads its visibility author, and a constraint that is gone is in no list. It takes no query. An issue Dispatch does not hold is 404 NOT_FOUND. */
+    /** @description The constraints under the issue the caller may see, in the order they were written there: {issue, constraints}, each with its address dispatch://constraint/<uuid>, id, standard, reference, measurement, value and taken_where (null where it holds none), author (the person or session its authored_by tuple names: the session the body named for one written on the shared bearer, null where the write named only a workload), created_at, state and visibility. A constraint reserved for its author is in its author's list alone, which reads its visibility author, and a constraint that is gone is in no list. It takes no query. An issue Dispatch does not hold is 404 NOT_FOUND. */
     get: operations["getApiV1IssuesByKeyConstraints"];
     put?: never;
     /** @description Write one constraint under the issue, {standard, reference} or {measurement, value, taken_where}, with visibility?: what forced a requirement from outside the conversation, a standard with its reference or a measurement with its value and where it was taken, as attributes of the constraint, placed under the issue by its part_of tuple. A body that is neither shape, leaves a field of its shape blank or names fields of both is 400 CONSTRAINT_INPUT; visibility author is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author; an issue Dispatch does not hold is 404 NOT_FOUND. A refused write stores nothing, and the write appends no event. A requirement points at the constraint through POST /api/v1/issues/{key}/nodes/{id}/pointers (constrained_by). Answers 201 with the constraint as GET /api/v1/issues/{key}/constraints lists it. */
@@ -1626,7 +1626,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
+    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each ask node of a question the issue asked, on any of its documents or on the issue itself, and each `decision` block node of any of its documents, each at any state but gone, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}) and that node's state (live, proposed, settled or overtaken), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node, at any state but gone, whose part_of reaches it, with its state and its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -1660,7 +1660,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. */
+    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -1730,7 +1730,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Invoke a lens on one node of the issue {on, kind, verdict?, findings?, triggered_by?, visibility?}: one analysis of one kind of the lens catalogue, logged under the node it looks at by its part_of tuple, with one has_kind tuple to its lens_kind. on is the dispatch:// address, or the store address /nodes/{id} takes, of a node the caller may see that stands under the issue: the issue itself, a document or one of its blocks, an ask, a comment or a message or one of their blocks, or a lens, a finding, a risk or a constraint of the issue; any other is 404 NOT_FOUND. kind is the id of a lens_kind node (GET /api/v1/schema/blocks lists them under lens_kinds): none is 400 LENS_KIND_REQUIRED, and an id no lens_kind node holds 400 INVALID_POINTER. verdict is stored as the lens's verdict. Each of findings is one finding, a block node under the lens at a random block id, addressed dispatch://lens/<uuid>#b-<id>, ranked in the order written. triggered_by is the address of the lens of the issue whose finding asked for this one, a triggered_by tuple. visibility author keeps the lens and its findings to their author, and is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author, the deployment's shared bearer. A refused write stores nothing, and no write appends an event or sends a delivery. Answers 201 with the lens - its address dispatch://lens/<uuid>, kind, on, verdict, triggered_by, author (the person or session its authored_by tuple names, null on the shared bearer), created_at, state and visibility - and its findings, each with its address, text, author, state and visibility. */
+    /** @description Invoke a lens on one node of the issue {on, kind, verdict?, findings?, triggered_by?, visibility?}: one analysis of one kind of the lens catalogue, logged under the node it looks at by its part_of tuple, with one has_kind tuple to its lens_kind. on is the dispatch:// address, or the store address /nodes/{id} takes, of a node the caller may see that stands under the issue: the issue itself, a document or one of its blocks, an ask, a comment or a message or one of their blocks, or a lens, a finding, a risk or a constraint of the issue; any other is 404 NOT_FOUND. kind is the id of a lens_kind node (GET /api/v1/schema/blocks lists them under lens_kinds): none is 400 LENS_KIND_REQUIRED, and an id no lens_kind node holds 400 INVALID_POINTER. verdict is stored as the lens's verdict. Each of findings is one finding, a block node under the lens at a random block id, addressed dispatch://lens/<uuid>#b-<id>, ranked in the order written. triggered_by is the address of the lens of the issue whose finding asked for this one, a triggered_by tuple. visibility author keeps the lens and its findings to their author, and is 403 AUTHOR_NAMES_NOBODY on a credential that proves no author, the deployment's shared bearer. A refused write stores nothing, and no write appends an event or sends a delivery. Answers 201 with the lens - its address dispatch://lens/<uuid>, kind, on, verdict, triggered_by, author (the person or session its authored_by tuple names, the session the body named on the shared bearer, null where the write named only a workload), created_at, state and visibility - and its findings, each with its address, text, author, state and visibility. */
     post: operations["postApiV1IssuesByKeyLenses"];
     delete?: never;
     options?: never;
@@ -1816,7 +1816,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Settle the proposed node {id} names {actor?}: one state tuple at settled, written by the caller, and no event. {id} is the node's store address under the issue, percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, in the words a node nobody wrote answers. A node that is not at proposed is 409 NODE_NOT_PROPOSED. A person settles any proposal - a browser's cookie, or a token holding the person scope, whose settle is written as the person it acts for - and any other caller only a proposal its own credential wrote, the node's made_by compared with that credential whole (for a block of a document, the writer of the version that first held the block); any other is 403 SETTLE_NOT_PERMITTED, naming the node. The deployment's shared agent token proves no author, so it settles nothing. Answers 200 {node: {address, kind, state, visibility}, previous}. */
+    /** @description Settle the proposed node {id} names {actor?}: one state tuple at settled, written by the caller, and no event. {id} is the node's store address under the issue, percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND, in the words a node nobody wrote answers. A node that is not at proposed is 409 NODE_NOT_PROPOSED. A person settles any proposal - a browser's cookie, or a token holding the person scope, whose settle is written as the person it acts for - and any other caller only a proposal whose recorded author (its made_by; for a block of a document, the writer of the version that first held the block) is the author its credential proves, by the one author rule that decides who reads a node reserved for its author: the same person for a personal token or a broker session that names a person, the same session for a broker session that names none, and the same workload for a pod's service-account token; any other is 403 SETTLE_NOT_PERMITTED, naming the node. The deployment's shared agent token proves no author, so it settles nothing. Answers 200 {node: {address, kind, state, visibility}, previous}. */
     post: operations["postApiV1IssuesByKeyNodesByIdSettle"];
     delete?: never;
     options?: never;
@@ -1910,6 +1910,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/role-holders": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    get: operations["getApiV1IssuesByKeyRoleHolders"];
+    /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
+    put: operations["putApiV1IssuesByKeyRoleHolders"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/subscribers": {
     parameters: {
       query?: never;
@@ -1968,7 +1986,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The lenses invoked on one node, and each chain of triggered lenses they stand in: ?on= the node's dispatch:// address (or its store address as /nodes/{id} takes one), any node the caller may see, of an issue or of none; an address that names no node, a node nobody holds and a node the caller may not see are one 404 NOT_FOUND, and an empty on is 400 INVALID_QUERY. It takes no other query: nothing chooses a kind, an edge or a depth. Answers {on, lens, lenses, chains}: on the node read (address, kind, state, visibility); lens the node itself, whole, where it is a lens, else null; lenses the lenses whose part_of tuple points at the node, in the order they were invoked (the seq of that tuple, so a later write of a lens's row does not move it); and chains. Each lens is {address, kind {id, words}, on, author, created_at, verdict, state, visibility, triggered_by, triggered, findings, risks}: kind the lens_kind its has_kind tuple names with that kind's words, on the address of the node it stands on (null where the caller may not see it), author the person or session its authored_by tuple names (null on the shared bearer), triggered_by the lenses its triggered_by tuples point at and triggered the lenses whose triggered_by tuples point at it, each by address in the order written; findings in rank order, each {address, text, rank, state, visibility}, rank the seq of its part_of tuple, a sparse key; risks in the order of their part_of tuples, each {address, heading, early_warning, prevention, prevented_by, state, visibility}, prevented_by the address of each check that prevents it, [] where none does. A chain is {lenses, stopped_at}: the lenses joined to one another by triggered_by tuples the caller may see, walked both ways from each lens on the node (and from the node itself where it is a lens) that no earlier chain lists, breadth first, with a visited set so a cycle lists each lens once, and listed in the order they were invoked. A chain lists at most 50 lenses: past them stopped_at names the first lens it reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has stopped_at null. A chain holds two lenses or more. A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's. */
+    /** @description The lenses invoked on one node, and each chain of triggered lenses they stand in: ?on= the node's dispatch:// address (or its store address as /nodes/{id} takes one), any node the caller may see of a kind a lens stands on - an issue, a document or a block of one, an ask, a comment or a message or a block of one, a lens, a finding, a risk or a constraint - of an issue or of none; an address that names no node, a node of any other kind (a person, a session, a role or a page among them, whatever the store holds of it), a node nobody holds and a node the caller may not see are one 404 NOT_FOUND, and an empty on is 400 INVALID_QUERY. It takes no other query: nothing chooses a kind, an edge or a depth. Answers {on, lens, lenses, chains}: on the node read (address, kind, state, visibility); lens the node itself, whole, where it is a lens, else null; lenses the lenses whose part_of tuple points at the node, in the order they were invoked (the seq of that tuple, so a later write of a lens's row does not move it); and chains. Each lens is {address, kind {id, words}, on, author, created_at, verdict, state, visibility, triggered_by, triggered, findings, risks}: kind the lens_kind its has_kind tuple names with that kind's words, on the address of the node it stands on (null where the caller may not see it), author the person or session its authored_by tuple names (the session the body named on the shared bearer, null where the write named only a workload), triggered_by the lenses its triggered_by tuples point at and triggered the lenses whose triggered_by tuples point at it, each by address in the order written; findings in rank order, each {address, text, rank, state, visibility}, rank the seq of its part_of tuple, a sparse key; risks in the order of their part_of tuples, each {address, heading, early_warning, prevention, prevented_by, state, visibility}, prevented_by the address of each check that prevents it, [] where none does. A chain is {lenses, stopped_at}: the lenses joined to one another by triggered_by tuples the caller may see, walked both ways from each lens on the node (and from the node itself where it is a lens) that no earlier chain lists, breadth first, with a visited set so a cycle lists each lens once, and listed in the order they were invoked. A chain lists at most 50 lenses: past them stopped_at names the first lens it reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has stopped_at null. A chain holds two lenses or more. A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's. */
     get: operations["getApiV1Lenses"];
     put?: never;
     post?: never;
@@ -2642,7 +2660,7 @@ export interface paths {
     /** @description List a project's documents. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. */
+    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. */
     post: operations["postApiV1ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2693,7 +2711,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -3136,7 +3154,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -3223,11 +3241,13 @@ export interface components {
       origin?: components["schemas"]["ActorOrigin"];
       owner?: string;
       project?: string;
+      proven?: boolean;
       service?: string;
     };
     ActorAct: {
       scopes?: string[];
       session?: string;
+      session_proven?: boolean;
       token_id?: string;
       token_name?: string;
     };
@@ -4451,6 +4471,58 @@ export interface components {
       question: string;
       suggestions: components["schemas"]["Suggestions"] | null;
     };
+    DecisionEntry: {
+      answer: null | string;
+      answer_state: null | string;
+      /** Format: date-time */
+      answered_at: null | string;
+      answered_by: null | string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_version: number;
+      decided_by: components["schemas"]["DecisionEntryNode"] | null;
+      declined: boolean;
+      declined_note: null | string;
+      document: components["schemas"]["DecisionEntryDocument"] | null;
+      kept: components["schemas"]["DecisionKeep"] | null;
+      kept_by: null | string;
+      kept_text_sum: null | string;
+      kind: string;
+      multiple: null | boolean;
+      node: components["schemas"]["DecisionEntryNode"];
+      options: components["schemas"]["AskOption"][] | null;
+      question: null | string;
+      readings: components["schemas"]["DecisionReading"][] | null;
+      ref: string;
+      replaced: boolean;
+      resolution: components["schemas"]["AskResolution"] | null;
+      selected: string[] | null;
+      shaped: components["schemas"]["DecisionLink"][] | null;
+      /** @enum {string} */
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+      text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      uncertainty: null | string;
+      uncertainty_reason: null | string;
+      urgency: null | string;
+      waiting_review: boolean;
+    };
+    DecisionEntryDocument: {
+      artifact_id: string;
+      block: string;
+      block_id: string;
+      ref: string;
+    };
+    DecisionEntryNode: {
+      id: string;
+      kind: string;
+    };
     DecisionKeep: {
       artifact_id: string;
       block_id: string;
@@ -4463,9 +4535,22 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_version: number;
+      event?: number;
       from_block: string;
       stale: boolean;
+      /** Format: date-time */
+      text_changed_at?: string;
+      text_changed_event?: number;
       to: components["schemas"]["GraphNode"];
+    };
+    DecisionReading: {
+      artifact_id: null | string;
+      authored_by: components["schemas"]["DecisionEntryNode"] | null;
+      block_id: string;
+      node: components["schemas"]["DecisionEntryNode"];
+      /** @enum {string} */
+      state?: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: null | string;
     };
     DecisionResponse: {
       credential_id: null | string;
@@ -5402,6 +5487,7 @@ export interface components {
     IssueDecisions: {
       decisions: components["schemas"]["Decision"][] | null;
       document: null | string;
+      entries: components["schemas"]["DecisionEntry"][] | null;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
     IssueDesignGate: {
@@ -5547,6 +5633,26 @@ export interface components {
     IssueReferences: {
       members: components["schemas"]["ReferenceMember"][] | null;
       truncated: boolean;
+    };
+    IssueRoleHolder: {
+      /** @enum {string} */
+      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      session: string;
+    };
+    IssueRoleHolderRecord: {
+      /** Format: date-time */
+      recorded_at: string;
+      /** @enum {string} */
+      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      session: string;
+    };
+    IssueRoleHolders: {
+      holders: components["schemas"]["IssueRoleHolderRecord"][] | null;
+      issue: string;
+    };
+    IssueRoleHoldersInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      holders: null | components["schemas"]["IssueRoleHolder"][];
     };
     IssueSummary: {
       advances: components["schemas"]["IssueAdvance"][] | null;
@@ -6330,8 +6436,11 @@ export interface components {
       state: string;
     };
     ReferenceMember: {
+      address?: string;
       artifact: components["schemas"]["Artifact"];
       depth: number;
+      /** @enum {string} */
+      kind?: "artifact" | "lens";
       via: components["schemas"]["ReferenceVia"];
     };
     ReferenceQuestion: {
@@ -11799,6 +11908,78 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyRoleHolders: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueRoleHolders"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyRoleHolders: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IssueRoleHoldersInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueRoleHolders"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -14974,8 +15155,12 @@ export type CredentialSession = components["schemas"]["CredentialSession"];
 export type DashboardBuilds = components["schemas"]["DashboardBuilds"];
 export type Decision = components["schemas"]["Decision"];
 export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
+export type DecisionEntry = components["schemas"]["DecisionEntry"];
+export type DecisionEntryDocument = components["schemas"]["DecisionEntryDocument"];
+export type DecisionEntryNode = components["schemas"]["DecisionEntryNode"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
+export type DecisionReading = components["schemas"]["DecisionReading"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
@@ -15085,6 +15270,10 @@ export type IssueRefResolved = components["schemas"]["IssueRefResolved"];
 export type IssueReferenceSummary = components["schemas"]["IssueReferenceSummary"];
 export type IssueReferenceSummaryDocument = components["schemas"]["IssueReferenceSummaryDocument"];
 export type IssueReferences = components["schemas"]["IssueReferences"];
+export type IssueRoleHolder = components["schemas"]["IssueRoleHolder"];
+export type IssueRoleHolderRecord = components["schemas"]["IssueRoleHolderRecord"];
+export type IssueRoleHolders = components["schemas"]["IssueRoleHolders"];
+export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
 export type ItemBlock = components["schemas"]["ItemBlock"];

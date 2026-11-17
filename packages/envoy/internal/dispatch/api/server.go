@@ -408,11 +408,28 @@ type server struct {
 	// appended, to read whether any of them reaches a subscriber before the commit, and how it
 	// ends one in a rollback.
 	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
+	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
+	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
+	// reaches past the meaning deadline is the test's choice rather than a race between the
+	// meaning query and 300 ms of wall clock (INFRA-3904).
+	crossProjectWait time.Duration
+	// meaningBound overrides the meaning allowance of the related-item check
+	// (relatedMeaningAllowance), which the check's own allowance still caps; zero, which every
+	// server the deployment builds leaves it, means relatedMeaningAllowance. Only a test sets it,
+	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
+	// can be told from that deadline without a clock (INFRA-3904).
+	meaningBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
-	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
-	// (the forced create whose check does not answer), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
+	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'
+	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
+	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
+	// until the bound ends it, so the bound and nothing else decides that case.
+	beforeDuplicateRead func(ctx context.Context) error
 	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
 	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
 	// place under the id a create will write, as a refusal whose insert landed but whose answer the
@@ -621,11 +638,12 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, then for the hub's
-// goroutines, the relay's and the test hooks' listener. The detached work comes first because it
-// is the only work lifetime does not stop: a keyed handler is bounded by keyedHandlerLimit, a
-// delivery by the listener client's receipt timeout per recipient, and each reads and writes
-// through the database pool this wait is holding open for it.
+// its client, then for every live socket and the subscriptions it ran, serving none that opens from
+// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
+// listener. The detached work comes first because it is the only work lifetime does not stop: a
+// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
+// timeout per recipient, and each reads and writes through the database pool this wait is holding
+// open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()
@@ -1099,8 +1117,8 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	// A person at a browser is the person, so their cookie holds every scope and names no agent
-	// that acted for them.
-	return model.Actor{Kind: "user", ID: login, Credential: personCredential}, true, nil
+	// that acted for them. The cookie proved the login, so the actor is Proven.
+	return model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}, true, nil
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
@@ -1183,7 +1201,9 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
-		// actor decoded from JSON carries none (model.Actor.Recorded).
+		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
+		// brokerTokenActor set, with or without an owner, since the credential, not the body,
+		// named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1193,19 +1213,21 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// and never from a body). That pair is what R14 calls "a session the server itself
 		// proved theirs", and the store ties the two with an alias_of tuple on the next write
 		// (graphstore.aliases). The act names the session the credential proved, exactly as
-		// actingPerson names the agent that acted for a person; the actor's kind and id are
-		// left as they were, so every stored author, every event and every reader keeps the
-		// shape it has.
+		// actingPerson names the agent that acted for a person, and is SessionProven for the same
+		// reason actingPerson's is: the credential, not the request, named that session. The
+		// actor's kind and id are left as they were, so every stored author, every event and
+		// every reader keeps the shape it has.
 		//
 		// A session named in a request body earns none of this: the branch below, which every
 		// credential that proves no session of its own takes, records the session the caller
-		// asked for and no act, because an actor that merely claims a session proves nothing
-		// about whose it is (R14).
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
 		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
 			authenticated.Credential.Session == authenticated.ID {
 			actor.Act = &model.ActorAct{
-				Session: authenticated.ID,
-				Scopes:  authenticated.Credential.Scopes,
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
 			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
@@ -1224,6 +1246,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
+		// Not Proven, whatever the body says: the body named this session and the credential
+		// proved none.
 	}, nil
 }
 
@@ -1422,13 +1446,18 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			session = named
 		}
 		act = &model.ActorAct{
-			Session:   session,
-			TokenID:   credential.TokenID,
-			TokenName: credential.TokenName,
-			Scopes:    credential.Scopes,
+			Session: session,
+			// Only the session the credential itself proved; one a personal token's `?session=`
+			// names is the caller's word.
+			SessionProven: session != "" && session == credential.Session,
+			TokenID:       credential.TokenID,
+			TokenName:     credential.TokenName,
+			Scopes:        credential.Scopes,
 		}
 	}
-	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act}, true
+	// Proven: every credential that holds the person scope proves its person - the cookie its
+	// login, a personal or broker-issued token the owner it names.
+	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act, Proven: true}, true
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
@@ -1439,7 +1468,9 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
 // broker-issued token - decides it, and a body naming another session is the disagreement
 // bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for.
+// write recorded as a session the caller merely asked for. The act keeps SessionProven only
+// when the body names the session the credential proved; a session the body alone names is not
+// proven.
 //
 // Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
 // whose input struct does not declare one is a 400, and four of the mutating rows a person's
@@ -1460,6 +1491,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 	}
 	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.
 	act := *actor.Act
+	act.SessionProven = act.SessionProven && act.Session == named
 	act.Session = named
 	actor.Act = &act
 	return actor, true

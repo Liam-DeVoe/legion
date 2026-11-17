@@ -92,9 +92,10 @@ type runReads struct {
 // which answers its kind, her words cut at the 240 runes an edge's excerpt keeps and its own
 // address. At that address, read both ways, the interaction answers her words whole as its text,
 // its one authored_by to her person node and its frames in sequence, the two it appended and then
-// the terminal one. The issue's count moves alike for both, since each tuple points away from the
-// node the run changed, her person node's count is one more for her, its authored_by, and bob
-// reads nothing of the run anywhere.
+// the terminal one. At the far end of that authored_by, read into her person node (the read behind
+// ?to=), the run answers her words cut at 240 runes and no frame. The issue's count moves alike for
+// both, since each tuple points away from the node the run changed, her person node's count is one
+// more for her, its authored_by, and bob reads nothing of the run anywhere.
 func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
@@ -281,6 +282,30 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 				t.Errorf("frame value %d of the run is %d %s %s, want %d %s %s", index+1, got.Sequence, got.Name, data, index+1, want.Name, wantData)
 			}
 		}
+	}
+
+	// At the far end of an edge a run carries the head of its words and no frame: alice's ?to= of
+	// her own person node - the read behind GET /api/v1/references?to=, which a person node, with no
+	// dispatch:// address of its own, is read by here - answers the run at the far end of its
+	// authored_by with its excerpt, and none of its frames, which the run's own address alone answers.
+	into, err := refs.Edges(ctx, database.Pool, model.Actor{Kind: "user", ID: alice},
+		refs.Query{Direction: "in", Kind: graphstore.KindPerson, ID: alice})
+	if err != nil {
+		t.Fatalf("read alice's ?to= of her person node: %v", err)
+	}
+	t.Logf("alice's ?to= of her person node answers %d edge(s)", len(into))
+	byAuthor := slices.DeleteFunc(into, func(edge model.GraphEdge) bool {
+		return edge.Kind != graphstore.TupleAuthoredBy || edge.Node.Kind != graphstore.KindInteraction || edge.Node.ID != run.ID
+	})
+	if len(byAuthor) != 1 {
+		t.Fatalf("alice's ?to= of her person node answers %+v, want the run %s once at the far end of its authored_by", byAuthor, run.ID)
+	}
+	if byAuthor[0].Excerpt == nil || byAuthor[0].Excerpt.Text != excerpt {
+		t.Errorf("the run at the far end of alice's authored_by answers the excerpt %+v, want her words cut at 240 runes, %q", byAuthor[0].Excerpt, excerpt)
+	}
+	if len(byAuthor[0].Node.Frames) != 0 {
+		t.Errorf("the run at the far end of alice's authored_by answers %d frame(s) %+v, want none: a run's frames are its own address's alone",
+			len(byAuthor[0].Node.Frames), byAuthor[0].Node.Frames)
 	}
 
 	// Each tuple points away from the node the run changed, so the issue's count moves alike for

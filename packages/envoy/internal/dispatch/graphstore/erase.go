@@ -31,13 +31,12 @@ import (
 // lock the store's lock order does not already place. A tuple is appended once and never written
 // again, so no other writer's write meets a delete of one.
 //
-// A tuple into the node names it by the kind the graph addresses it by (AddressKind): a finding
-// of a lens is keyed here as a block, and a tuple into it - the part_of of a lens invoked on it -
-// names it lens_block, so the tuples into the node are read and deleted under either.
+// A tuple into the node names it by the kind the graph addresses it by (AddressKind), so the tuples
+// of the node are read and deleted under either kind (NodeTuplesSQL).
 func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) error {
 	addressed := AddressKind(kind, id)
 	tag, err := tx.Exec(ctx, `delete from graph_tuples where seq = any($3::bigint[])
-		and ((from_kind = $1 and from_id = $2) or (to_kind in ($1, $4) and to_id = $2))`, kind, id, seqs, addressed)
+		and `+NodeTuplesSQL("", "$1", "$2", "$4"), kind, id, seqs, addressed)
 	if err != nil {
 		return fmt.Errorf("delete the tuples of %s:%s: %w", kind, id, err)
 	}
@@ -91,14 +90,34 @@ func RedactValues(ctx context.Context, tx pgx.Tx, seqs []int64, values []string)
 	return nil
 }
 
+// NodeTuplesSQL is true of a tuple of either side of one node: one out of the node as the store
+// keys it, or one into it under that kind or under the kind the graph addresses it by
+// (AddressKind). kind, id and addressed are SQL expressions of the caller's query - the node's
+// kind, its id and AddressKind of the two - and prefix is what the query writes before a column
+// of graph_tuples: its alias and a dot, or nothing where it names the table alone. A finding of a
+// lens is keyed as a block, and a tuple into it - the part_of of a lens invoked on it - names it
+// lens_block, so every read and delete of a node's tuples takes both: the erase lists the tuples
+// it deletes (grapherase's readTuples), deletes them by seq (EraseNode) and reads what is left
+// (tuplesLeft) over this one set, and its blockers read the tuples into the node over
+// NodeTuplesIntoSQL.
+func NodeTuplesSQL(prefix, kind, id, addressed string) string {
+	return `((` + prefix + `from_kind = ` + kind + ` and ` + prefix + `from_id = ` + id + `) or (` +
+		NodeTuplesIntoSQL(prefix, kind, id, addressed) + `))`
+}
+
+// NodeTuplesIntoSQL is the half of NodeTuplesSQL into the node: a tuple whose far end is the node,
+// under either kind.
+func NodeTuplesIntoSQL(prefix, kind, id, addressed string) string {
+	return prefix + `to_kind in (` + kind + `, ` + addressed + `) and ` + prefix + `to_id = ` + id
+}
+
 // tuplesLeft is every tuple of either side of the node the delete by seq left, which is every
-// tuple another writer appended since the listing was read, by seq with the fact it states. The
-// tuples into the node are read under addressed too, the kind the graph addresses it by.
+// tuple another writer appended since the listing was read, by seq with the fact it states.
 func tuplesLeft(ctx context.Context, tx pgx.Tx, kind, id, addressed string) ([]string, error) {
 	rows, err := tx.Query(ctx, `
 		select seq || ' (' || from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id || ')'
 		from graph_tuples
-		where (from_kind = $1 and from_id = $2) or (to_kind in ($1, $3) and to_id = $2)
+		where `+NodeTuplesSQL("", "$1", "$2", "$3")+`
 		order by seq`, kind, id, addressed)
 	if err != nil {
 		return nil, fmt.Errorf("read the tuples left of %s:%s: %w", kind, id, err)

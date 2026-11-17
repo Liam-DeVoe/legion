@@ -632,11 +632,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// body names: that session proves nobody. A request that asks for none is project-visible.
 	visibility := graphstore.VisibilityProject
 	if input.Visibility != "" {
-		proving, _, err := s.optionalActor(r)
-		if err != nil {
-			s.writeAuthenticationError(w, err)
+		proving, ok := s.actingReader(w, r)
+		if !ok {
 			return
 		}
+		var err error
 		if visibility, err = graphstore.VisibilityFor(input.Visibility, proving); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1040,7 +1040,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// own write, which takes the author's person node and their session node in one statement
 	// in ascending (kind, id): a follow before it would take the session first and leave the
 	// person to that statement, which is the pair in the other order, and two such writes
-	// racing over a session and an owner the store holds neither of would deadlock (R17).
+	// racing over a session and an owner the store holds neither of would deadlock.
 	if input.AskID != nil {
 		if _, err := asks.FollowAuthor(r.Context(), tx, *input.AskID, actor, createdAt, event.ID); err != nil {
 			s.writeHandlerError(w, err)
@@ -1109,7 +1109,7 @@ type commentStoreWrite struct {
 	// unprojected is a comment any of whose relation ends is past the store's address bound: it
 	// has no node and no tuples, and its row's node columns stay null, so the old comments arm of
 	// graph_edges answers every one of its edges rather than the tuple arm answering it without
-	// the edge the bound would drop (R22).
+	// the edge the bound would drop.
 	unprojected bool
 }
 
@@ -1167,12 +1167,12 @@ func commentStored(
 		}
 		return commentStoreWrite{unprojected: true}, nil
 	}
-	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, visibility, anchorAddress, ownerAddress, project, parties)
-	// The comment is the node this write creates, so a write made for a run names it as changed
-	// by that run (graphstore.Node's Changed) where its cause is appended (caused); its author's
-	// node, which graphstore.Authored writes, is never marked.
-	node.Changed = true
-	return commentStoreWrite{node: node, tuples: tuples}, nil
+	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
+	node.Visibility = visibility
+	// The comment is the node this write creates (graphstore.Created), named changed by a run
+	// where its cause is appended (caused); its author's node, which graphstore.Authored writes,
+	// is never marked.
+	return commentStoreWrite{node: graphstore.Created(node), tuples: tuples}, nil
 }
 
 // rowNode is the node columns a comment's row names: the comment kind and the comment's own id,

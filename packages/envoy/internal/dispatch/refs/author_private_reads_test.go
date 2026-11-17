@@ -30,15 +30,11 @@ var (
 )
 
 // reserveForAuthor reserves the store's node of kind and id for privateAuthor, as the rows a
-// write that asked for `author` would store: the credential proves an author
-// (graphstore.VisibilityFor), and the rows are seeded straight into the store
+// write that asked for `author` would store, seeded straight into the store
 // (graphstoretest.SeedAuthorOnly), since its writer takes a node reserved for its author of no
 // kind these reads answer (graphstore.ErrVisibilityNotAdmitted). What is under test is the read.
 func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	t.Helper()
-	if _, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, privateAuthor); err != nil {
-		t.Fatalf("reserve %s %s for its author: %v", kind, id, err)
-	}
 	if err := graphstoretest.SeedAuthorOnly(context.Background(), tx, graphstore.Node{
 		Kind: kind, ID: id, Supertag: kind, State: graphstore.StateLive,
 		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), MadeBy: privateAuthor, SourceEvent: graphstore.NoEvent,
@@ -74,8 +70,8 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 		t.Errorf("another person's closure = %#v; want no member, since one link is the private comment's and the other reaches the private document", got)
 	}
 	want := []Member{
-		{RefKey: privateDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: publicComment}},
-		{RefKey: publicDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: privateComment}},
+		documentMember(t, tx, privateDocument, 1, model.ReferenceVia{Kind: "comment", ID: publicComment}),
+		documentMember(t, tx, publicDocument, 1, model.ReferenceVia{Kind: "comment", ID: privateComment}),
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closure(privateAuthor); !reflect.DeepEqual(got, want) {

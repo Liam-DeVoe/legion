@@ -966,7 +966,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		// out of the store, so readCommentRows never reads it and this batch never writes one:
 		// a far end past the bound does not reach here (api's commentStored, outbox's rule).
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, graphstore.VisibilityProject,
+		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event,
 			row.anchor, row.owner, row.project, row.parties)
 		nodes = append(nodes, node)
 		// One write writes a node once, so an author several comments of the batch name is made
@@ -1228,6 +1228,313 @@ func writeSessionBatch(ctx context.Context, database *store.Store, batch []sessi
 		return 0, 0, fmt.Errorf("write the nodes of a session batch: %w", err)
 	}
 	return int64(len(nodes)), 2 * int64(len(nodes)), nil
+}
+
+// The backfill's three passes over the runs of the command bar. A process
+// of the release before this one, during a roll or after a rollback, records a run with no
+// interaction node, appends a frame with no frame value, and deletes a run an hour old, row and
+// frames, leaving its node standing. Each pass finds what it owes by an anti-join of one side
+// against the other, row by row, and not by a marker: going_requests and going_events carry no
+// column naming a node, and a run is history, so nothing about a row says whether its node was
+// written. Each writes in a transaction of its own per run, under the lock order the frame path
+// takes (api's appendGoingEvent), and reads again under its locks whether the run still owes it,
+// so a pass beside a live server, and a second run of the backfill, writes nothing it does not
+// owe. A run an erase removed has neither row nor node, so no pass writes it back.
+//
+// Its input is each row's own content - a run's row and its frames - or, for the third, the
+// absence of the row a node projects, which an older process's delete leaves: the store is never
+// read to decide what a row should say, nor a row to mend the store.
+
+// runFrameHeld is true of a going_events row e whose run's interaction node holds a frame value of
+// e's sequence: the anti-join backfillRunFrames finds an older pod's frames by.
+var runFrameHeld = `exists (
+		select 1 from graph_tuples t
+		where t.from_kind = '` + graphstore.KindInteraction + `' and t.from_id = e.request_id::text
+		  and t.kind = '` + graphstore.AttributeFrame + `' and t.to_kind = '` + graphstore.KindValue + `' and t.asserted
+		  and (t.to_id::jsonb->>'sequence')::integer = e.sequence)`
+
+// runRowHeld is true of an interaction node n whose going_requests row stands. Every writer of an
+// interaction keys it by its run's uuid as Postgres writes it, and an id of any other shape is
+// read as a run with no row rather than cast (store.CanonicalUUID), so no node can fail the read.
+var runRowHeld = `exists (
+		select 1 from going_requests r
+		where r.id = ` + store.CanonicalUUID("n.id") + `)`
+
+// runOwed is the from and the where of the runs whose row names no interaction node, which
+// backfillRuns reads in batches and counts once it is done, $1 the interaction kind.
+const runOwed = `
+		from going_requests r
+		where not exists (select 1 from graph_nodes n where n.kind = $1 and n.id = r.id::text)`
+
+// runRowless is the from and the where of the interaction nodes, not gone, whose row is gone
+// (runRowHeld), which backfillGoneRuns reads in batches and counts once it is done, $1 the
+// interaction kind and $2 the gone state.
+var runRowless = `
+		from graph_nodes n
+		where n.kind = $1 and n.state <> $2 and not ` + runRowHeld
+
+// backfillRuns gives every run going_requests holds and the store holds no interaction node of its
+// node, through the one writer of such a node from its row (writeRun, WriteRun): the node, its
+// author's node and tuples, and a frame value of every frame its row holds, in the shape the going
+// POST and the frame path write them. It reads the runs owed in batches by id, and writes each in
+// a transaction of its own, which takes the run's row first and reads again whether the node is
+// there, so a run the frame path or another backfill gave its node meanwhile is left as it is.
+func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: graphstore.KindInteraction}
+	after := uuid.Nil.String()
+	for {
+		owed, err := readOwedRuns(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		for _, id := range owed {
+			written, err := writeOwedRun(ctx, database, id)
+			if err != nil {
+				return done, err
+			}
+			if written.nodes > 0 {
+				done.Rows++
+				done.Nodes += written.nodes
+				done.Tuples += written.tuples
+			}
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	if err := database.Pool.QueryRow(ctx, `select count(*)`+runOwed, graphstore.KindInteraction).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the runs the store holds no node of: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// readOwedRuns reads the runs past after, in id order, whose row names no interaction node, at
+// most limit of them.
+func readOwedRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select r.id::text`+runOwed+` and r.id > $2::uuid
+		order by r.id
+		limit $3
+	`, graphstore.KindInteraction, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
+	}
+	return owed, nil
+}
+
+// writeOwedRun writes the node of one run in a transaction of its own (writeRun).
+func writeOwedRun(ctx context.Context, database *store.Store, id string) (runWritten, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return runWritten{}, fmt.Errorf("begin the node of run %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	written, err := writeRun(ctx, tx, id)
+	if err != nil {
+		return runWritten{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return runWritten{}, fmt.Errorf("commit the node of run %s: %w", id, err)
+	}
+	return written, nil
+}
+
+// backfillRunFrames states a frame value of every going_events row whose run's interaction holds
+// no frame value of that sequence (runFrameHeld): a frame a process of the release before
+// appended to a run this build or the passes before gave a node. Each owed run is written in a
+// transaction of its own (writeRunFrames). Rows counts the frames it stated and Tuples the values,
+// one each, with what writeRun stated of a run that had no node by then.
+func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: graphstore.AttributeFrame}
+	after := uuid.Nil.String()
+	for {
+		owed, err := readOwedFrameRuns(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		for _, run := range owed {
+			frames, written, err := writeRunFrames(ctx, database, run)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += frames
+			done.Tuples += frames + written.tuples
+			done.Nodes += written.nodes
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	var left int64
+	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+runFrameHeld).Scan(&left); err != nil {
+		return done, fmt.Errorf("count the frames the store holds no value of: %w", err)
+	}
+	done.Remaining = left
+	done.Complete = left == 0
+	return done, nil
+}
+
+// readOwedFrameRuns reads the runs past after, in id order, that hold a frame the store holds no
+// value of, at most limit of them. The runs are grouped and ordered by the uuid itself, the order
+// `after` compares in, so the read takes going_events' (request_id, sequence) key in its order.
+func readOwedFrameRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select e.request_id::text from going_events e
+		where e.request_id > $1::uuid and not `+runFrameHeld+`
+		group by e.request_id
+		order by e.request_id
+		limit $2
+	`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
+	}
+	return owed, nil
+}
+
+// writeRunFrames states, in one transaction, a frame value of each frame of run the store holds no
+// value of, and answers how many. It takes the run's interaction node row first
+// (graphstore.LockInteraction), as every frame of this build does (api's appendGoingEvent), so a
+// frame this build is appending to the run commits first, value and row together, and the read
+// under the lock no longer counts it owed. A run with no node by then gets it from its row through
+// writeRun, which states every frame the row holds, and which it answers. The values are read off
+// the rows (readRunFrames), exactly as the frame path states them.
+func writeRunFrames(ctx context.Context, database *store.Store, run string) (int64, runWritten, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, runWritten{}, fmt.Errorf("begin the frames of run %s: %w", run, err)
+	}
+	defer tx.Rollback(ctx)
+	locked, err := graphstore.LockInteraction(ctx, tx, run)
+	if err != nil {
+		return 0, runWritten{}, err
+	}
+	if !locked {
+		written, err := writeRun(ctx, tx, run)
+		if err != nil {
+			return 0, runWritten{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, runWritten{}, fmt.Errorf("commit the node of run %s: %w", run, err)
+		}
+		return 0, written, nil
+	}
+	frames, err := readRunFrames(ctx, tx, run, true)
+	if err != nil {
+		return 0, runWritten{}, err
+	}
+	if len(frames) == 0 {
+		return 0, runWritten{}, nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, frames); err != nil {
+		return 0, runWritten{}, fmt.Errorf("state the frames of run %s: %w", run, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, runWritten{}, fmt.Errorf("commit the frames of run %s: %w", run, err)
+	}
+	return int64(len(frames)), runWritten{}, nil
+}
+
+// backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
+// is gone (runRowHeld): a run a process of the release before deleted an hour old, frames with it,
+// whose node it left standing. The store keeps the node, as it keeps every node an erase has not
+// removed, and the census reads a gone node with no row as no difference. A run an erase removed
+// has no node either, so this states nothing of it.
+func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: "interaction_gone"}
+	after := ""
+	for {
+		owed, err := readRowlessRuns(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		for _, id := range owed {
+			stated, err := writeGoneRun(ctx, database, id)
+			if err != nil {
+				return done, err
+			}
+			if stated {
+				done.Rows++
+				done.Tuples++
+			}
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	if err := database.Pool.QueryRow(ctx, `select count(*)`+runRowless, graphstore.KindInteraction, graphstore.StateGone).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the runs whose row is gone: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// readRowlessRuns reads the interaction nodes past after, in id order, not gone and whose row is
+// gone, at most limit of them.
+func readRowlessRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select n.id`+runRowless+` and n.id > $3
+		order by n.id
+		limit $4
+	`, graphstore.KindInteraction, graphstore.StateGone, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
+	}
+	return owed, nil
+}
+
+// writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
+// of its own, and answers whether it did. It takes the node's row first, as a frame and an erase
+// of the run do, then reads under that lock the node and whether its row stands: the going POST
+// commits a run's node and its row together, so a node it reads has its row whenever the run has
+// one, and a node an erase removed meanwhile is read as none. The write is the node as the store
+// holds it but for its state, a plain write that moves the row and appends the state tuple, made
+// by the run (backfillActor) now, as api's writeNodeState moves a node's state.
+func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin the end of run %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := graphstore.LockInteraction(ctx, tx, id); err != nil {
+		return false, err
+	}
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
+	if err != nil || !held || node.State == graphstore.StateGone {
+		return false, err
+	}
+	var rowHeld bool
+	if err := tx.QueryRow(ctx, `select `+runRowHeld+` from graph_nodes n where n.kind = $1 and n.id = $2`,
+		graphstore.KindInteraction, id).Scan(&rowHeld); err != nil {
+		return false, fmt.Errorf("read whether run %s holds its row: %w", id, err)
+	}
+	if rowHeld {
+		return false, nil
+	}
+	node.State, node.Restates = graphstore.StateGone, false
+	node.MadeAt, node.MadeBy, node.SourceEvent = time.Now().UTC(), backfillActor, graphstore.NoEvent
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		return false, fmt.Errorf("state run %s gone: %w", id, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit the end of run %s: %w", id, err)
+	}
+	return true, nil
 }
 
 // The asks and their followers (dispatch://INFRA-1150 R3). An ask's node holds the documents it is
@@ -1661,324 +1968,4 @@ func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
 		return false, fmt.Errorf("read whether an ask or a follower names no node: %w", err)
 	}
 	return owed, nil
-}
-
-// The backfill's three passes over the runs of the command bar (dispatch://INFRA-1950). A process
-// of the release before this one, during a roll or after a rollback, records a run with no
-// interaction node, appends a frame with no frame value, and deletes a run an hour old, row and
-// frames, leaving its node standing. Each pass finds what it owes by an anti-join of one side
-// against the other, row by row, and not by a marker: going_requests and going_events carry no
-// column naming a node, and a run is history, so nothing about a row says whether its node was
-// written. Each writes in a transaction of its own per run, under the lock order the frame path
-// takes (api's appendGoingEvent), and reads again under its locks whether the run still owes it,
-// so a pass beside a live server, and a second run of the backfill, writes nothing it does not
-// owe. A run an erase removed has neither row nor node, so no pass writes it back.
-//
-// Its input is each row's own content - a run's row and its frames - or, for the third, the
-// absence of the row a node projects, which an older process's delete leaves: the store is never
-// read to decide what a row should say, nor a row to mend the store.
-
-// runFrameHeld is true of a going_events row e whose run's interaction node holds a frame value of
-// e's sequence: the anti-join backfillRunFrames finds an older pod's frames by.
-var runFrameHeld = `exists (
-		select 1 from graph_tuples t
-		where t.from_kind = '` + graphstore.KindInteraction + `' and t.from_id = e.request_id::text
-		  and t.kind = '` + graphstore.AttributeFrame + `' and t.to_kind = '` + graphstore.KindValue + `' and t.asserted
-		  and (t.to_id::jsonb->>'sequence')::integer = e.sequence)`
-
-// runRowHeld is true of an interaction node n whose going_requests row stands. Every writer of an
-// interaction keys it by its run's uuid as Postgres writes it, and an id of any other shape is
-// read as a run with no row rather than cast, so no node can fail the read.
-var runRowHeld = `exists (
-		select 1 from going_requests r
-		where r.id = case when n.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then n.id::uuid end)`
-
-// runNodeLock takes a run's interaction node row, $1 the kind and $2 the run's id, the first lock
-// of a frame's transaction (api's goingNodeLock), and of every pass here that writes the node.
-const runNodeLock = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`
-
-// backfillRuns gives every run going_requests holds and the store holds no interaction node of its
-// node, through the one writer of such a node from its row (writeRun, WriteRun): the node, its
-// author's node and tuples, and a frame value of every frame its row holds, in the shape the going
-// POST and the frame path write them. It reads the runs owed in batches by id, and writes each in
-// a transaction of its own, which takes the run's row first and reads again whether the node is
-// there, so a run the frame path or another backfill gave its node meanwhile is left as it is.
-func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: graphstore.KindInteraction}
-	after := uuid.Nil.String()
-	for {
-		owed, err := readOwedRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		for _, id := range owed {
-			written, err := writeOwedRun(ctx, database, id)
-			if err != nil {
-				return done, err
-			}
-			if written.nodes > 0 {
-				done.Rows++
-				done.Nodes += written.nodes
-				done.Tuples += written.tuples
-			}
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
-	}
-	left, err := readOwedRuns(ctx, database, uuid.Nil.String(), 0)
-	if err != nil {
-		return done, err
-	}
-	done.Remaining = int64(len(left))
-	done.Complete = done.Remaining == 0
-	return done, nil
-}
-
-// readOwedRuns reads the runs past after, in id order, whose row names no interaction node, at
-// most limit of them, or every one where limit is 0.
-func readOwedRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select r.id::text from going_requests r
-		where r.id > $1::uuid
-		  and not exists (select 1 from graph_nodes n where n.kind = $2 and n.id = r.id::text)
-		order by r.id
-		limit nullif($3::integer, 0)
-	`, after, graphstore.KindInteraction, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
-	}
-	return owed, nil
-}
-
-// writeOwedRun writes the node of one run in a transaction of its own (writeRun).
-func writeOwedRun(ctx context.Context, database *store.Store, id string) (runWritten, error) {
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		return runWritten{}, fmt.Errorf("begin the node of run %s: %w", id, err)
-	}
-	defer tx.Rollback(ctx)
-	written, err := writeRun(ctx, tx, id)
-	if err != nil {
-		return runWritten{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return runWritten{}, fmt.Errorf("commit the node of run %s: %w", id, err)
-	}
-	return written, nil
-}
-
-// backfillRunFrames states a frame value of every going_events row whose run's interaction holds
-// no frame value of that sequence (runFrameHeld): a frame a process of the release before
-// appended to a run this build or the passes before gave a node. Each owed run is written in a
-// transaction of its own (writeRunFrames). Rows counts the frames it stated and Tuples the values,
-// one each, with what writeRun stated of a run that had no node by then.
-func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: graphstore.AttributeFrame}
-	after := uuid.Nil.String()
-	for {
-		owed, err := readOwedFrameRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		for _, run := range owed {
-			frames, written, err := writeRunFrames(ctx, database, run)
-			if err != nil {
-				return done, err
-			}
-			done.Rows += frames
-			done.Tuples += frames + written.tuples
-			done.Nodes += written.nodes
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
-	}
-	var left int64
-	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+runFrameHeld).Scan(&left); err != nil {
-		return done, fmt.Errorf("count the frames the store holds no value of: %w", err)
-	}
-	done.Remaining = left
-	done.Complete = left == 0
-	return done, nil
-}
-
-// readOwedFrameRuns reads the runs past after, in id order, that hold a frame the store holds no
-// value of, at most limit of them.
-func readOwedFrameRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select distinct e.request_id::text from going_events e
-		where e.request_id > $1::uuid and not `+runFrameHeld+`
-		order by 1
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
-	}
-	return owed, nil
-}
-
-// writeRunFrames states, in one transaction, a frame value of each frame of run the store holds no
-// value of, and answers how many. It takes the run's interaction node row first, as every frame of
-// this build does (api's appendGoingEvent), so a frame this build is appending to the run commits
-// first, value and row together, and the read under the lock no longer counts it owed. A run with
-// no node by then gets it from its row through writeRun, which states every frame the row holds,
-// and which it answers. The values are read off the rows in SQL (graphstore.FrameValueSQL), dated
-// at each row's created_at and stated by graphstore.FrameWriter, exactly as the frame path states
-// them (graphstore.FrameTuple).
-func writeRunFrames(ctx context.Context, database *store.Store, run string) (int64, runWritten, error) {
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		return 0, runWritten{}, fmt.Errorf("begin the frames of run %s: %w", run, err)
-	}
-	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, runNodeLock, graphstore.KindInteraction, run)
-	if err != nil {
-		return 0, runWritten{}, fmt.Errorf("lock the interaction node of run %s: %w", run, err)
-	}
-	if tag.RowsAffected() == 0 {
-		written, err := writeRun(ctx, tx, run)
-		if err != nil {
-			return 0, runWritten{}, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return 0, runWritten{}, fmt.Errorf("commit the node of run %s: %w", run, err)
-		}
-		return 0, written, nil
-	}
-	rows, err := tx.Query(ctx, `
-		select `+graphstore.FrameValueSQL("e.sequence", "e.name", "e.data")+`, e.created_at
-		from going_events e
-		where e.request_id = $1::uuid and not `+runFrameHeld+`
-		order by e.sequence
-	`, run)
-	if err != nil {
-		return 0, runWritten{}, fmt.Errorf("read the frames of run %s the store holds no value of: %w", run, err)
-	}
-	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
-		var value string
-		var at time.Time
-		if err := row.Scan(&value, &at); err != nil {
-			return graphstore.Tuple{}, err
-		}
-		return graphstore.FrameTuple(run, value, at), nil
-	})
-	if err != nil {
-		return 0, runWritten{}, fmt.Errorf("read the frames of run %s the store holds no value of: %w", run, err)
-	}
-	if len(frames) == 0 {
-		return 0, runWritten{}, nil
-	}
-	if err := graphstore.Write(ctx, tx, nil, frames); err != nil {
-		return 0, runWritten{}, fmt.Errorf("state the frames of run %s: %w", run, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, runWritten{}, fmt.Errorf("commit the frames of run %s: %w", run, err)
-	}
-	return int64(len(frames)), runWritten{}, nil
-}
-
-// backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
-// is gone (runRowHeld): a run a process of the release before deleted an hour old, frames with it,
-// whose node it left standing. The store keeps the node, as it keeps every node an erase has not
-// removed, and the census reads a gone node with no row as no difference. A run an erase removed
-// has no node either, so this states nothing of it.
-func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: "interaction_gone"}
-	after := ""
-	for {
-		owed, err := readRowlessRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		for _, id := range owed {
-			stated, err := writeGoneRun(ctx, database, id)
-			if err != nil {
-				return done, err
-			}
-			if stated {
-				done.Rows++
-				done.Tuples++
-			}
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
-	}
-	left, err := readRowlessRuns(ctx, database, "", 0)
-	if err != nil {
-		return done, err
-	}
-	done.Remaining = int64(len(left))
-	done.Complete = done.Remaining == 0
-	return done, nil
-}
-
-// readRowlessRuns reads the interaction nodes past after, in id order, not gone and whose row is
-// gone, at most limit of them, or every one where limit is 0.
-func readRowlessRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select n.id from graph_nodes n
-		where n.kind = $1 and n.id > $2 and n.state <> $3 and not `+runRowHeld+`
-		order by n.id
-		limit nullif($4::integer, 0)
-	`, graphstore.KindInteraction, after, graphstore.StateGone, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
-	}
-	return owed, nil
-}
-
-// writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
-// of its own, and answers whether it did. It takes the node's row first, as a frame and an erase
-// of the run do, then reads under that lock the node and whether its row stands: the going POST
-// commits a run's node and its row together, so a node it reads has its row whenever the run has
-// one, and a node an erase removed meanwhile is read as none. The write is the node as the store
-// holds it but for its state, a plain write that moves the row and appends the state tuple, made
-// by the run (backfillActor) now, as api's writeNodeState moves a node's state.
-func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, error) {
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		return false, fmt.Errorf("begin the end of run %s: %w", id, err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, runNodeLock, graphstore.KindInteraction, id); err != nil {
-		return false, fmt.Errorf("lock the interaction node of run %s: %w", id, err)
-	}
-	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
-	if err != nil || !held || node.State == graphstore.StateGone {
-		return false, err
-	}
-	var rowHeld bool
-	if err := tx.QueryRow(ctx, `select `+runRowHeld+` from graph_nodes n where n.kind = $1 and n.id = $2`,
-		graphstore.KindInteraction, id).Scan(&rowHeld); err != nil {
-		return false, fmt.Errorf("read whether run %s holds its row: %w", id, err)
-	}
-	if rowHeld {
-		return false, nil
-	}
-	node.State, node.Restates = graphstore.StateGone, false
-	node.MadeAt, node.MadeBy, node.SourceEvent = time.Now().UTC(), backfillActor, graphstore.NoEvent
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
-		return false, fmt.Errorf("state run %s gone: %w", id, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit the end of run %s: %w", id, err)
-	}
-	return true, nil
 }

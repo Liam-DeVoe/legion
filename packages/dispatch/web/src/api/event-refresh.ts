@@ -196,6 +196,24 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
+/** Every document's live text (`["artifact", id, "text"]`) that renders a copy of an ask on
+ *  another document (`copied_from`): a project document's page reads a copy's source from that
+ *  text (`renderedAskOf`), since no route lists a project's asks, and an answer, a resolution or a
+ *  reopening of the source changes no byte of the copy's document, so no event of that document
+ *  refreshes it. Of any document, since the key names the document by id alone; a text that
+ *  renders no copy is not read again. */
+const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) =>
+    query.queryKey.length === 3 &&
+    query.queryKey[2] === "text" &&
+    typeof data === "object" &&
+    data !== null &&
+    "markdown" in data &&
+    typeof data.markdown === "string" &&
+    data.markdown.includes("copied_from="),
+};
+
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
  *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
  *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
@@ -936,6 +954,15 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   }
   if (isAskEvent(event)) {
     appendAskReads(targets, event);
+    // A copy of the ask on another of the project's documents reads its source's state from that
+    // document's live text.
+    if (
+      event.type === "ask.answered" ||
+      event.type === "ask.resolved" ||
+      event.type === "ask.opened"
+    ) {
+      targets.push(LIVE_TEXTS_RENDERING_COPIES);
+    }
   }
   if (isCommentLikeEvent(event)) {
     appendCommentReads(targets, event);

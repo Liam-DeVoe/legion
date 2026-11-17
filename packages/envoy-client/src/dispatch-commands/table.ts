@@ -123,7 +123,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_constraint: acting(constraintCommand),
   dispatch_constraints: acting(constraintsCommand),
   dispatch_pointer: acting(pointerCommand),
-  dispatch_lenses: acting(lensesCommand),
+  dispatch_lenses: onSession(lensesCommand),
   dispatch_state: acting(stateCommand),
   dispatch_settle: acting(settleCommand),
   dispatch_proposed: acting(proposedCommand),

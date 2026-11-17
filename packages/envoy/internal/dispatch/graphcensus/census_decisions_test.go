@@ -147,6 +147,75 @@ func TestTheCensusLeavesOutAMovedToIntoADocumentThatOwesItsBlockIndex(t *testing
 	}
 }
 
+// writeCensusLens writes the lens id at state under CORE-1 through the store's writer, with the
+// tuples beside it: its first write states its part_of, and a write of a lens the store holds moves
+// its state alone, as the state route's write does.
+func writeCensusLens(t *testing.T, database *store.Store, id, state string, tuples ...graphstore.Tuple) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the lens's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	at := time.Now().UTC()
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, id)
+	if err != nil {
+		t.Fatalf("read the lens %s: %v", id, err)
+	}
+	if !held {
+		node = graphstore.Node{Kind: graphstore.KindLens, ID: id, Supertag: graphstore.KindLens,
+			Visibility: graphstore.VisibilityProject, Project: "CORE"}
+		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TuplePartOf,
+			ToKind: graphstore.KindIssue, ToID: "CORE-1"})
+	}
+	node.State, node.MadeAt, node.MadeBy, node.SourceEvent = state, at, censusWriter, graphstore.NoEvent
+	node.KeepsCause, node.Changed = held, held
+	for index := range tuples {
+		tuples[index].At, tuples[index].Who, tuples[index].SourceEvent, tuples[index].Asserted = at, censusWriter, graphstore.NoEvent, true
+	}
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
+		t.Fatalf("write the lens %s %s: %v", id, state, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the lens's write: %v", err)
+	}
+}
+
+// The pre-mortem conversion moves the address of the document it retires to the lens it wrote in
+// its place (api.ConvertPremortem): one moved_to from the document's address, kind artifact at its
+// ref_key, to that lens. The census reads that far end resolved while the lens stands, as
+// graphstore.MovedTo reads it, so the agreeing store with a converted document reads moved_to
+// tuples=1 unresolved=0, no difference, and passes. Once the lens is gone the same tuple's far end
+// resolves to nothing that stands, and the census refuses.
+func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	const lens = "00000000-0000-4000-8000-0000000004a1"
+	writeCensusLens(t, database, lens, graphstore.StateLive, graphstore.Tuple{
+		FromKind: graphstore.KindArtifact, FromID: seeded.document.refKey, Kind: graphstore.TupleMovedTo,
+		ToKind: graphstore.KindLens, ToID: lens,
+	})
+
+	report := storeCensusOf(t, database)
+	var printed strings.Builder
+	report.Write(&printed)
+	moved := storeOnlyKind(t, report, graphstore.TupleMovedTo)
+	line := "census: store-only kind=moved_to tuples=1 unresolved=0 left_out=0\n"
+	if moved.Tuples != 1 || moved.Unresolved != 0 || report.Differences() != 0 || report.Refused() || !strings.Contains(printed.String(), line) {
+		t.Fatalf("a document's move to the lens that stands reads %+v, %d difference(s) and refused=%t, want %q, none and a pass:\n%s",
+			moved, report.Differences(), report.Refused(), line, printed.String())
+	}
+
+	writeCensusLens(t, database, lens, graphstore.StateGone)
+	report = storeCensusOf(t, database)
+	moved = storeOnlyKind(t, report, graphstore.TupleMovedTo)
+	if moved.Tuples != 1 || moved.Unresolved != 1 || !report.Refused() {
+		t.Fatalf("a document's move to a lens that is gone reads %+v and refused=%t, want it unresolved and a refusal",
+			moved, report.Refused())
+	}
+}
+
 // planWithoutSeqScans is the plan Postgres builds for statement with sequential scans off, in a
 // transaction of its own, as api's helper of the same name builds one: a fixture's handful of rows
 // is read fastest whole however the statement is written, so only with that setting does the plan
@@ -200,14 +269,10 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 // graph_tuples through keyed index scans alone, its history probes stating graph_tuples_inbound's
 // predicate (to_kind <> 'value') beside their joins so that index is one they can take. The person
 // and the session row sides read what it read bound as arrays (censusAuthors), so neither reads
-// the history again. What each still reads of graph_tuples goes through graph_tuples_current,
-// keyed on the node it probes: the person side reads the proved owners' alias_of and, for each of
-// its two arms over the nodes whose own record names their author (storeAuthored: the author's
-// login and a proved session's owner), the current authored_by of each reasoning node
-// (reasoningAuthored) and of each run whose row is gone (goneRunsAuthored); the session side reads
-// only those two authored_by reads, in its one arm over those nodes. The store-only kinds read
-// their tuples through graph_tuples_store_only, the partial index of those two kinds (migration
-// 20261116220307), and through no other.
+// the history again: the person side's one read of graph_tuples is the proved owners' alias_of,
+// through graph_tuples_current, and the session side reads it not at all. The store-only kinds
+// read their tuples through graph_tuples_store_only, the partial index of those two kinds
+// (migration 20261116220307), and through no other.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -217,16 +282,14 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	}
 	bound := []any{[]string{}, []string{}, []time.Time{}}
 	if keyed := requireKeyedTupleReads(t, keys, "the person row side",
-		planWithoutSeqScans(t, database, `select p.login from (`+recordedPeople(censusAuthors)+`) p`, bound...),
-		"graph_tuples_current"); keyed != 5 {
-		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want five: the owners' alias_of, and the"+
-			" reasoning nodes' and the gone runs' authored_by in each of its two arms over them", keyed)
+		planWithoutSeqScans(t, database, `select p.login from (`+commentPeople(censusAuthors)+`) p`, bound...),
+		"graph_tuples_current"); keyed != 1 {
+		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want the one of the owners' alias_of", keyed)
 	}
 	if keyed := requireKeyedTupleReads(t, keys, "the session row side",
 		planWithoutSeqScans(t, database, `select s.id from (`+recordedSessions(censusAuthors)+`) s`, bound...),
-		"graph_tuples_current"); keyed != 2 {
-		t.Errorf("the session row side reads graph_tuples through %d scan(s), want two, the reasoning nodes' and the gone"+
-			" runs' authored_by: the stored authors are bound", keyed)
+		"graph_tuples_current"); keyed != 0 {
+		t.Errorf("the session row side reads graph_tuples through %d scan(s), want none: the stored authors are bound", keyed)
 	}
 
 	plan := planWithoutSeqScans(t, database, storeOnlyRead)

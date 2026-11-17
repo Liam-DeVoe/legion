@@ -1,12 +1,12 @@
 import {
-  encodeBlockId,
   hasControlCharacter,
   MAX_BLOCK_ID_BYTES,
   referenceTargetFits,
   utf8Bytes,
 } from "@legion/contracts";
 
-import { parseBlockReference } from "./block-reference";
+import { artifactSlugPattern } from "./artifact-slug";
+import { blockFragment, parseBlockReference } from "./block-reference";
 
 /**
  * The kinds of node a reference names by the node's own id in the store, with no issue key or
@@ -21,7 +21,7 @@ import { parseBlockReference } from "./block-reference";
  * The dashboard has no page for these nodes, so a reference to one is a reference without a route:
  * text cites it as the server indexes it, and nothing links it.
  */
-export const STORE_ADDRESS = {
+const STORE_ADDRESS = {
   /** The kinds addressed by a uuid. */
   uuidKinds: ["interaction", "lens", "risk", "constraint"],
   /** The kind addressed by its slug. */
@@ -34,7 +34,7 @@ export const STORE_ADDRESS = {
 const storeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** A lens kind's slug, written as an artifact's slug is. */
-const storeSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const storeSlug = new RegExp(`^${artifactSlugPattern}$`);
 
 /** Whether `id` is the whole id of a node of `kind` addressed by its store id alone. */
 function isStoreId(kind: string, id: string): boolean {
@@ -83,5 +83,5 @@ export function storeAddressReference(value: string): string | undefined {
   ) {
     return undefined;
   }
-  return `dispatch://${kind}/${id}#b-${encodeBlockId(target.block)}`;
+  return `dispatch://${kind}/${id}${blockFragment(target.block)}`;
 }

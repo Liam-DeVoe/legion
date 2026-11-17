@@ -322,8 +322,7 @@ func readFiledFromItem(ctx context.Context, q queryer, project string, ref text.
 		if err != nil {
 			return nil, false, err
 		}
-		node, tuples := graphstore.CommentFacts(nil, ref.ID, author, row.createdAt, event, graphstore.VisibilityProject,
-			anchor, owner, project, nil)
+		node, tuples := graphstore.CommentFacts(nil, ref.ID, author, row.createdAt, event, anchor, owner, project, nil)
 		item.node = &filedFromNode{nodes: []graphstore.Node{node}, tuples: tuples}
 		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, ref.ID, author, row.createdAt, event); named {
 			for _, written := range authors {

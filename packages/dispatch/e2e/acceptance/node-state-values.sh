@@ -53,10 +53,6 @@ read_bearer
 readonly driver=node-state-values.sh
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
-# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
-# authenticates must name it (enforceCookieOrigin).
-base_host="${base#*://}"
-readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 readonly login="$DEV_SIGNIN_LOGIN"
@@ -65,8 +61,6 @@ readonly database_url="$STORE_DSN"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="node-state-values-$stamp"
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
-readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 # The word one letter off proposed, which the node state does not take.
 readonly misspelled=propsed
 
@@ -76,39 +70,13 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
 cleanup() {
   local code=$?
-  if [[ -n "$key" ]]; then
-    send PATCH "/api/v1/issues/$key" \
-      "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] ||
-      printf '%s: could not close %s: HTTP %s: %s\n' "$driver" "$key" "$status" "$(body)" >&2
-  fi
+  [[ -z "$key" ]] || close_issue "$key"
   rm -rf "$work"
   exit "$code"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-# request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth,
-# or `person`, with the session cookie the dev sign-in left in $work/jar and the dashboard's origin,
-# which the server requires of every write a cookie authenticates. The answer's body goes to
-# $work/body and its HTTP status to $status.
-request() {
-  local -a auth data=()
-  if [[ "$1" == person ]]; then
-    auth=(-b "$work/jar" -H "Origin: $origin")
-  else
-    auth=(-H "@$work/auth")
-  fi
-  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
-  status="$(curl -sS --max-time 60 -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
-    "$base$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# send METHOD PATH [JSON]: request as the agent bearer.
-send() { request agent "$@"; }
-# person_send METHOD PATH [JSON]: request as the person DEV_SIGNIN_LOGIN signed in.
-person_send() { request person "$@"; }
 
 # write_state NODE STATE: the person writes STATE on the node whose store address is NODE (POST
 # /api/v1/issues/{key}/nodes/{id}/state), the answer left as it came.
@@ -182,21 +150,11 @@ refused() {
 
 # --- the catalogue ------------------------------------------------------------------------------
 
-send GET /api/v1/schema/blocks
-want_status 200 "$driver" "read the catalogue"
-held_kinds="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
-  "$work/body")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
-[[ "$held_kinds" == "$seeded_kinds" ]] ||
-  fail "$driver" "the catalogue holds its ten kinds" "it holds $held_kinds of $seeded_kinds"
-pass "$driver" "the catalogue holds its ten kinds"
+seeded_catalogue
 
 # --- setup --------------------------------------------------------------------------------------
 
-status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar" \
-  "$base/auth/_dev/signin?login=$(q "$login")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-want_status 302 setup "dev sign-in as $login"
-grep -q $'\tdsession\t' "$work/jar" || fail setup "dev sign-in as $login" "the answer set no session cookie"
-pass setup "signed in as $login"
+sign_in setup "$login"
 
 cat >"$work/spec.md" <<'SPEC'
 The spec whose requirement and lens this run writes the state of.

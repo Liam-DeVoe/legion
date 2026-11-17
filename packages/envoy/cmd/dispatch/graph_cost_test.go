@@ -4,9 +4,11 @@
 
 package main
 
-// The two cost measurements of dispatch://INFRA-1149 share this file. c-write-cost is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
-// TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
+// Three cost measurements share this file. c-write-cost of dispatch://INFRA-1149 is
+// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost of
+// dispatch://INFRA-1149 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
+// (read_cost_test.go), and c-read-cost of dispatch://INFRA-1950 is
+// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
 // arm's own API, the clock, the order statistic and the table every reading is printed in.
 //
@@ -102,7 +104,7 @@ const (
 
 // costArm is one build serving one database of this run's own.
 type costArm struct {
-	// name is how the arm is printed: "this child" or "the commit before this child".
+	// name is how the arm is printed: "this child" or "the base build".
 	name string
 	// head reports this working copy's build, the arm the budgets are taken on.
 	head bool
@@ -122,7 +124,9 @@ func (a *costArm) ready(t *testing.T) {
 // the commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD`), each
 // on an empty database of its own which that build migrates at boot, and both delivering to one
 // stub Envoy listener, so a delivery costs the same transport on either arm. It answers them in
-// the order they are measured in, this child first.
+// the order they are measured in, this child first. The base arm is named "the base build" and
+// not "the commit before this child": BASELINE_SHA may name a commit that already holds some of
+// this child's own bases.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)
@@ -130,7 +134,7 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 		SigningKey: costSigningKey,
 		Env:        map[string]string{"ENVOY_URL": envoyURL},
 	})
-	base := startCostArm(t, "the commit before this child", false, dispatchOptions{
+	base := startCostArm(t, "the base build", false, dispatchOptions{
 		Binary:     older,
 		SigningKey: costSigningKey,
 		Env:        map[string]string{"ENVOY_URL": envoyURL},
@@ -410,14 +414,16 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 // the block index the backfill marks owed, so that the store holds a node and its tuples for
 // every projection row the seed wrote and every one of those rows names its node, which is
 // when the store's own arm of graph_edges answers them. It is what a deployment runs once the
-// new binary serves (store_census_test.go's runBackfill).
+// new binary serves (store_census_test.go's runBackfill). The mark sends every document whose
+// blocks the backfill named through this child's index pass again, which states each block's
+// parent, so the wait is the one a whole corpus takes to index rather than one tick's.
 func costRunBackfill(t *testing.T, arm *costArm) {
 	t.Helper()
 	if !arm.head {
 		return
 	}
 	runBackfill(t, arm.databaseURL)
-	costBlockIndexDrained(t, arm, 10*time.Minute)
+	costBlockIndexDrained(t, arm, 30*time.Minute)
 	nameless := arm.count(t, `
 		select (select count(*) from comments where node_kind is null)
 		     + (select count(*) from document_blocks where node_kind is null)
@@ -436,5 +442,19 @@ func (a *costArm) analyze(t *testing.T) {
 	t.Helper()
 	if _, err := a.pool.Exec(context.Background(), "analyze"); err != nil {
 		t.Fatalf("%s: analyze the corpus: %v", a.name, err)
+	}
+}
+
+// vacuumAnalyze is analyze with a vacuum before it, `vacuum (analyze)`, for a read measurement
+// whose corpus is settled after its seed and its backfill. The vacuum clears what the two left
+// dead, so no autovacuum pass comes due on one arm in the middle of its readings, where it can
+// invalidate the plans that arm's connections hold - the backfill runs on this head alone, and its
+// rewrite of every projection row leaves dead tuples the base arm has none of - and it sets the
+// pages of a freshly loaded table all-visible, without which the planner avoids an index-only
+// scan however good the statistics are (cmd/dispatch-seed's vacuum).
+func (a *costArm) vacuumAnalyze(t *testing.T) {
+	t.Helper()
+	if _, err := a.pool.Exec(context.Background(), "vacuum (analyze)"); err != nil {
+		t.Fatalf("%s: vacuum and analyze the corpus: %v", a.name, err)
 	}
 }

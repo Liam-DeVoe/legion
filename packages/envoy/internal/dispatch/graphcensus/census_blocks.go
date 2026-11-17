@@ -50,7 +50,7 @@ var blockProjections = []projection{{
 		join artifacts document on document.id = ` + refs.BlockDocumentSQL("d") + `
 		where octet_length(d.node_id) <= ` + addressBound + ` and not (a.kind = 'tree' and ` + roomOwed("d.artifact_id") + `)`,
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockLinkKinds)) + `)
+		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
@@ -65,7 +65,7 @@ var blockProjections = []projection{{
 		" type nodes declare, at any state), whether a row names it or not, and the digest is every link the" +
 		" rows of that block name against every such link its node states now; a row an ask's node holds, and" +
 		" a decision's shaped, from_ask and decided_by, are no part of this kind",
-	// The rows are the block_refs rows of those kinds alone (blockLinkKind). A row marked with an
+	// The rows are the block_refs rows of those kinds alone (blockRefKinds). A row marked with an
 	// ask's node is the ask's shaped, which hangs on that node and not on the block
 	// (refs.TypedFacts.pairs), and a decision's shaped, from_ask and decided_by are ties held triple
 	// by triple by kinds of their own (decisionProjections): none of them is a link of the block
@@ -80,11 +80,11 @@ var blockProjections = []projection{{
 			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
 			from block_refs b
 			where octet_length(b.from_node) <= ` + addressBound + ` and octet_length(b.to_id) <= ` + addressBound + `
-			  and ` + blockLinkKind("b.kind") + ` and b.node_kind is distinct from '` + graphstore.KindAsk + `'
+			  and b.kind in (` + blockRefKinds + `) and b.node_kind is distinct from '` + graphstore.KindAsk + `'
 			group by b.from_node
 		) named on named.from_node = r.from_node
 		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound + `
-		  and ` + blockLinkKind("r.kind") + ` and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 	// Every block node is read, and not only those a row names: a mention or a pointer the store
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
 	// side that began at the rows could never find it. A block whose only links are its
@@ -94,14 +94,14 @@ var blockProjections = []projection{{
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, blockLinkKind("t.kind")) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
 		) held
 		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
-		  and ` + blockLinkKind("r.kind") + ` and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 }, {
 	name:     "block_rank",
 	nodeKind: refs.BlockNodeKind,
@@ -191,17 +191,6 @@ var blockProjections = []projection{{
 		where octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
 	emptyAgrees: true,
 }, blockAuthorProjection}
-
-// blockLinkKind is true of the tuple or block_refs kind the SQL expression kind names while it is
-// a link of a block the block_ref kind holds: a kind refs.IndexBlocks writes into block_refs
-// (refs.BlockRefKindsSQL, read from the store inside the census's own snapshot), but the ties of a
-// decision, which a kind of their own holds triple by triple (tieProjection): a decision's shaped
-// is a pointer of its block, and held here as well it would read a correct row of a drifted
-// decision as a difference, every row of that block sharing one digest.
-func blockLinkKind(kind string) string {
-	return `(` + kind + ` in (` + refs.BlockRefKindsSQL + `) and ` + kind + ` not in ('` + refs.TupleShaped + `', '` +
-		refs.TupleFromAsk + `', '` + graphstore.TupleDecidedBy + `'))`
-}
 
 // outsideArtifact starts the part_of link the block kind reads an authored node's place by where
 // that place is no block of the node's own artifact, followed by that artifact's ref_key: the
@@ -323,7 +312,7 @@ var blockAuthorProjection = projection{
 
 // authorNodeKind and authorNodeID are the kind and the id of the node graphstore.AuthorOf names of
 // the actor a jsonb holds, as authorNode writes them together: a person by the login its actor
-// carries, or by the owner a personal token's carries, canonicalised as recordedPeople does, and a
+// carries, or by the owner a personal token's carries, canonicalised as commentWriterPeople does, and a
 // session by its id; null for an actor that names nobody.
 func authorNodeKind(actor string) string {
 	return `case

@@ -508,16 +508,17 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
+	via := func(kind, id string) model.ReferenceVia { return model.ReferenceVia{Kind: kind, ID: id} }
 	want := []Member{
-		{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: diagramRefKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: artifactRefs["d2"], Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d1"]}},
-		{RefKey: artifactRefs["d3"], Depth: 3, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d2"]}},
-		{RefKey: artifactRefs["d4"], Depth: 4, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d3"]}},
-		{RefKey: artifactRefs["d5"], Depth: 5, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d4"]}},
-		{RefKey: artifactRefs["d6"], Depth: 6, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d5"]}},
-		{RefKey: artifactRefs["d7"], Depth: 7, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d6"]}},
-		{RefKey: artifactRefs["d8"], Depth: 8, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d7"]}},
+		documentMember(t, database.Pool, artifactRefs["d1"], 1, via("comment", commentID)),
+		documentMember(t, database.Pool, diagramRefKey, 1, via("comment", commentID)),
+		documentMember(t, database.Pool, artifactRefs["d2"], 2, via("artifact", artifactIDs["d1"])),
+		documentMember(t, database.Pool, artifactRefs["d3"], 3, via("artifact", artifactIDs["d2"])),
+		documentMember(t, database.Pool, artifactRefs["d4"], 4, via("artifact", artifactIDs["d3"])),
+		documentMember(t, database.Pool, artifactRefs["d5"], 5, via("artifact", artifactIDs["d4"])),
+		documentMember(t, database.Pool, artifactRefs["d6"], 6, via("artifact", artifactIDs["d5"])),
+		documentMember(t, database.Pool, artifactRefs["d7"], 7, via("artifact", artifactIDs["d6"])),
+		documentMember(t, database.Pool, artifactRefs["d8"], 8, via("artifact", artifactIDs["d7"])),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("closure = %#v; want %#v", got, want)

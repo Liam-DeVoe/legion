@@ -466,6 +466,17 @@ func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string,
 		graphstore.ArtifactBytes(nil, *address, mime, int64(size), digest, who, time.Now().UTC()))
 }
 
+// personScoped reports whether a bearer's document write is the person's own, its credential
+// holding the person scope, so the write's context is marked as theirs (docs.WithPersonScope): an
+// agent's write may not drop or retype an answered ask's block (docs.ErrAnsweredAskKept), and a
+// person's may. A browser's actor is the person already, so only a bearer's credential is read,
+// whose recorded actor, the session it names, cannot say. It is read before the write's
+// transaction opens: resolving a personal token reads the pool, which a request holding the
+// transaction's connection may not (store.Pool's guard).
+func (s *server) personScoped(r *http.Request, actor model.Actor) bool {
+	return actor.Kind != "user" && s.callerHoldsScope(r, model.ScopePerson)
+}
+
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -481,6 +492,7 @@ func (s *server) storeArtifact(
 	if !s.putUploadedFile(w, r, kind, sha, input, target) {
 		return
 	}
+	personScoped := kind == "doc" && s.personScoped(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -570,10 +582,8 @@ func (s *server) storeArtifact(
 			if kind != "doc" {
 				facts = graphstore.ArtifactBytes(facts, refKey, input.contentType, int64(len(input.content)), sha, actor, at)
 			}
-			// The document is the node this create makes, so it is marked changed
-			// (graphstore.Node's Changed): a create made for a run names it as changed by it.
-			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at)
-			node.Changed = true
+			// The document is the node this create makes (graphstore.Created).
+			node := graphstore.Created(graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at))
 			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, facts)
 			if err != nil {
 				s.writeHandlerError(w, err)
@@ -647,6 +657,9 @@ func (s *server) storeArtifact(
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
@@ -767,8 +780,9 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval as every version the document service writes
 		// does (docs.carryApproval): when its text is the approved text again, or when every
-		// difference from it is a carry case - the server-owned ask attributes an upload drops
-		// among them - and its decision blocks agree with their nodes.
+		// difference from it is a carry case - the readings of its decisions and answered asks, and
+		// the server-owned ask attributes an upload drops - and its decision blocks agree with
+		// their nodes.
 		carried, err := docs.CarryUploadedApproval(
 			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)
@@ -1345,6 +1359,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	personScoped := s.personScoped(r, actor)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1385,6 +1400,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
 		s.writeHandlerError(w, err)

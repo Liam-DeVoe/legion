@@ -38,10 +38,10 @@ type LensKind struct {
 	ID, Words, Source, Reference string
 }
 
-// LensKindWriter is who a lens kind added after the seed is made by: the command that adds one
+// lensKindWriter is who a lens kind added after the seed is made by: the command that adds one
 // (`envoy-dispatch lens-kind-add`), which runs with the database credential alone and acts for no
 // person. The seed's own nodes are made by the migration's writer, `lens-catalogue`.
-var LensKindWriter = model.Actor{Kind: "system", ID: "lens-kind-add"}
+var lensKindWriter = model.Actor{Kind: "system", ID: "lens-kind-add"}
 
 // ErrLensKindHeld refuses a lens kind whose id the catalogue already holds, at any state: a kind
 // is added once, and a second add of the same id would give it a second source. What a write is
@@ -64,7 +64,7 @@ var ErrLensKindMalformed = errors.New("the lens kind is not one the catalogue ca
 
 // AddLensKind adds one kind to the lens catalogue in the caller's transaction: the lens_kind node,
 // its constraint node holding the source and its reference, and the one constrained_by tuple from
-// the first to the second, each project-visible and live, in no project, made by LensKindWriter at
+// the first to the second, each project-visible and live, in no project, made by lensKindWriter at
 // at, through one Write at the sentinel, since no event records a kind. It answers the
 // constraint's id, a fresh uuid.
 //
@@ -83,44 +83,32 @@ func AddLensKind(ctx context.Context, tx pgx.Tx, kind LensKind, at time.Time) (s
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('lens-kind:' || $1))`, kind.ID); err != nil {
 		return "", fmt.Errorf("take the lock of lens kind %s: %w", kind.ID, err)
 	}
-	var held bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from graph_nodes where kind = $1 and id = $2)`,
-		KindLensKind, kind.ID).Scan(&held); err != nil {
+	if _, held, err := ReadNode(ctx, tx, KindLensKind, kind.ID); err != nil {
 		return "", fmt.Errorf("read whether the catalogue holds lens kind %s: %w", kind.ID, err)
-	}
-	if held {
+	} else if held {
 		return "", &LensKindHeldError{ID: kind.ID}
 	}
 	source := uuid.NewString()
-	nodes := []Node{
-		// Ascending (kind, id), the order a write takes its node rows in: constraint before
-		// lens_kind.
-		{
-			Kind: KindConstraint, ID: source, Supertag: KindConstraint,
-			Visibility: VisibilityProject, State: StateLive,
-			Attributes: map[string]any{AttributeStandard: kind.Source, AttributeReference: kind.Reference},
-			MadeAt:     at, MadeBy: LensKindWriter, SourceEvent: NoEvent,
-		},
-		{
-			Kind: KindLensKind, ID: kind.ID, Supertag: KindLensKind,
-			Visibility: VisibilityProject, State: StateLive,
-			Attributes: map[string]any{AttributeWords: kind.Words},
-			MadeAt:     at, MadeBy: LensKindWriter, SourceEvent: NoEvent,
-		},
+	// Ascending (kind, id), the order a write takes its node rows in: constraint before lens_kind.
+	constraint := Node{
+		Kind: KindConstraint, ID: source, Supertag: KindConstraint,
+		Visibility: VisibilityProject, State: StateLive,
+		Attributes: map[string]any{AttributeStandard: kind.Source, AttributeReference: kind.Reference},
+		MadeAt:     at, MadeBy: lensKindWriter, SourceEvent: NoEvent,
 	}
-	fact := func(fromKind, fromID, kind, toKind, toID string) Tuple {
-		return Tuple{
-			FromKind: fromKind, FromID: fromID, Kind: kind, ToKind: toKind, ToID: toID,
-			At: at, Who: LensKindWriter, SourceEvent: NoEvent, Asserted: true,
-		}
+	lensKind := Node{
+		Kind: KindLensKind, ID: kind.ID, Supertag: KindLensKind,
+		Visibility: VisibilityProject, State: StateLive,
+		Attributes: map[string]any{AttributeWords: kind.Words},
+		MadeAt:     at, MadeBy: lensKindWriter, SourceEvent: NoEvent,
 	}
-	tuples := []Tuple{
-		fact(KindConstraint, source, AttributeReference, KindValue, kind.Reference),
-		fact(KindConstraint, source, AttributeStandard, KindValue, kind.Source),
-		fact(KindLensKind, kind.ID, AttributeWords, KindValue, kind.Words),
-		fact(KindLensKind, kind.ID, TupleConstrainedBy, KindConstraint, source),
-	}
-	if err := Write(ctx, tx, nodes, tuples); err != nil {
+	tuples := append(AttributeTuples(constraint, AttributeReference, AttributeStandard),
+		AttributeTuples(lensKind, AttributeWords)...)
+	tuples = append(tuples, Tuple{
+		FromKind: KindLensKind, FromID: kind.ID, Kind: TupleConstrainedBy, ToKind: KindConstraint, ToID: source,
+		At: at, Who: lensKindWriter, SourceEvent: NoEvent, Asserted: true,
+	})
+	if err := Write(ctx, tx, []Node{constraint, lensKind}, tuples); err != nil {
 		return "", err
 	}
 	return source, nil

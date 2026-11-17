@@ -123,6 +123,13 @@ func (e graphEdge) String() string {
 // of this test holds graph_edges to what that release reads over the same rows.
 const previousGraphEdges = "previous_graph_edges"
 
+// previousCountedEdges is what the previous release's count statement reads in each reading
+// (requireBacklinkCountsAsThePreviousRelease): previousGraphEdges, and beside it the rows of the
+// class `store` graph_edges answers (storeClass), which that release has no arm for and which
+// readEachArm holds to exactly the rows the fixture stated. Over it the count is that release's
+// over every row it reads, and the store's own relations counted as the view counts them.
+const previousCountedEdges = "previous_counted_graph_edges"
+
 // previousGraphEdgesMigration is the migration that last stated graph_edges before this child.
 const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments_answers.up.sql"
 
@@ -148,8 +155,8 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // out of a lens, which the fixture states, and in every reading exactly those, from the tuple arm
 // alone. Every reading counts as well: for every node kind its arm table declares,
 // refs.BacklinkCounts must answer what the previous release's count statement answers over that
-// release's view, at every id of the kind an edge of that view, a tuple or a block reference
-// points at and at one id nothing points at.
+// release's view and the rows of the class `store` beside it, at every id of the kind an edge of
+// that view, a tuple or a block reference points at and at one id nothing points at.
 //
 // The readings, in order. Before the backfill, one document's rows and the comments name no node
 // beside documents the index wrote, and each of the four arms answers rows of its own. After the
@@ -184,7 +191,14 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	// The rows of one document are put back in the shape the release before this one left
 	// them in, so the four old arms answer rows of their own while the store answers the rest.
 	unwriteTheStoreOfADocument(t, database, graphEdgeLegacyRefKey)
+	requireTheIndexStampedTheOtherDocuments(t, database)
 	before := readEachArm(t, database, "before the backfill", moved, tuple, fixture.stored)
+	// The tuple arm answers the stamped rows of the other two documents, so the reading's
+	// comparison of that arm is over rows and not over two empty sets. The rows of its class
+	// `store` are held to the fixture apart, so they are no such row.
+	if stamped, _ := splitStoreClass(before.tuple); len(stamped) == 0 {
+		t.Errorf("the tuple arm answers no row before the backfill, so its comparison with the stamped rows proves nothing")
+	}
 	projected := before.view
 	projectedCounts := before.counts
 	// Each of the four answers rows of its own before the backfill, so finding it empty after
@@ -357,7 +371,7 @@ func tupleArm(t *testing.T, read []graphEdgesArm) movedArm {
 
 // createPreviousGraphEdges creates previousGraphEdges from the statement of the migration that
 // last stated graph_edges before this child, over the same tables, so that what the release
-// before this one reads can be read beside what this one reads.
+// before this one reads can be read beside what this one reads, and previousCountedEdges beside it.
 func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	t.Helper()
 	migration, err := os.ReadFile(previousGraphEdgesMigration)
@@ -371,6 +385,15 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	}
 	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
 		t.Fatalf("create the previous release's view: %v", err)
+	}
+	literals := func(values []string) string { return "'" + strings.Join(values, "', '") + "'" }
+	if _, err := database.Pool.Exec(context.Background(), `create view `+previousCountedEdges+` as
+		select from_kind, from_id, kind, to_kind, to_id from `+previousGraphEdges+`
+		union all
+		select from_kind, from_id, kind, to_kind, to_id from graph_edges
+		where kind in (`+literals(storeClassKinds)+`)
+		   or (kind in (`+literals(storeClassOwnKinds)+`) and from_kind in (`+literals(storeClassSources)+`))`); err != nil {
+		t.Fatalf("create the previous release's view with the class store beside it: %v", err)
 	}
 }
 
@@ -410,9 +433,8 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // exactly the rows of the moved kinds whose row carries it. The rows of the tuple arm's class
 // `store` (storeClass), which the previous release has no arm for, are set apart from both
 // readings first and held, in the whole view and in the tuple arm alike, to exactly the rows the
-// fixture stated of them (stored).
-// It fails as well unless this build's backlink counts are the previous release's over the
-// same rows (requireBacklinkCountsAsThePreviousRelease).
+// fixture stated of them (stored). It fails as well unless this build's backlink counts are the
+// previous release's over the same rows (requireBacklinkCountsAsThePreviousRelease).
 func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm, stored []graphEdgeRow) graphEdgesReading {
 	t.Helper()
 	reading := graphEdgesReading{
@@ -447,30 +469,35 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	}
 	requireSameEdges(t, fmt.Sprintf("%s, arm %d (graph_tuples)", stage, tuple.place),
 		"the tuple arm answers it", tupled, "the previous release reads it from a row that carries its node", marked)
-	reading.counts = requireBacklinkCountsAsThePreviousRelease(t, database, stage, viewStored)
+	reading.counts = requireBacklinkCountsAsThePreviousRelease(t, database, stage)
 	return reading
 }
 
-// storeClass is whether row is one the tuple arms answer as the class `store` (migrations
-// 20261116091932 and 20261116160000): a relation the store holds with no projection row behind
-// it, of a kind changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any
-// node, or part_of or authored_by out of an interaction, a lens, a finding of a lens (the
-// lens_block the arm after the tuple arm writes it as), a risk or a constraint. It is the
-// migrations' own rule, read over a row: a row it leaves out - a comment's authored_by, a block's
-// part_of its parent - that the view answers is held to the previous release's reading, which
-// answers none of them.
+// storeClass is whether row is one the tuple arms answer as the class `store` (migration
+// 20261117020856): a relation the store holds with no projection row behind it, of a kind
+// changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
+// part_of or authored_by out of an interaction, a lens, a finding of a lens (the lens_block the
+// arm after the tuple arm writes it as), a risk or a constraint. It is the migration's own rule,
+// read over a row: a row it leaves out - a comment's authored_by, a block's part_of its parent -
+// that the view answers is held to the previous release's reading, which answers none of them.
 func storeClass(row graphEdgeRow) bool {
-	switch row.kind {
-	case graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy:
-		return true
-	case graphstore.TuplePartOf, graphstore.TupleAuthoredBy:
-		return slices.Contains([]string{
-			graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
-		}, row.fromKind)
-	}
-	return false
+	return slices.Contains(storeClassKinds, row.kind) ||
+		slices.Contains(storeClassOwnKinds, row.kind) && slices.Contains(storeClassSources, row.fromKind)
 }
+
+// The rule storeClass reads, in three lists, so the view previousCountedEdges creates holds the
+// same rows: the kinds of the class out of any node, and the two kinds of it out of the sources
+// that follow them alone.
+var (
+	storeClassKinds = []string{
+		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
+		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
+	}
+	storeClassOwnKinds = []string{graphstore.TuplePartOf, graphstore.TupleAuthoredBy}
+	storeClassSources  = []string{
+		graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
+	}
+)
 
 // splitStoreClass is rows without the rows of the class `store`, and those rows apart.
 func splitStoreClass(rows []graphEdgeRow) (rest, stored []graphEdgeRow) {
@@ -796,12 +823,9 @@ func backlinkTargets(t *testing.T, database *store.Store, kind string) []string 
 // requireBacklinkCountsAsThePreviousRelease fails unless refs.BacklinkCounts answers, for every
 // node kind its arm table declares and at every id backlinkTargets reads for that kind, what the
 // previous release's count statement (docstest.ViewBacklinkCountSQL) answers over
-// previousGraphEdges plus one for each row of the tuple arm's class `store` that points there
-// (stored, which readEachArm holds to the fixture on its own), naming the reading, the kind, the
-// id and both counts at each id the two differ at. The previous release has no arm for that
-// class, so its count statement counts none of those rows. It answers this build's counts, kind
-// by kind.
-func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Store, stage string, stored []graphEdgeRow) map[string]map[string]int {
+// previousCountedEdges, naming the reading, the kind, the id and both counts at each id the two
+// differ at. It answers this build's counts, kind by kind.
+func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Store, stage string) map[string]map[string]int {
 	t.Helper()
 	// The arm table declares a kind for each node kind the registry resolves and for no other, so
 	// its kinds are the node kinds this build reads, the list refs binds where the statement
@@ -814,27 +838,22 @@ func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("%s: count %s backlinks: %v", stage, kind, err)
 		}
-		previous := docstest.ViewBacklinkCounts(t, database.Pool, previousGraphEdges, kind, ids, kinds, nil)
-		for _, row := range stored {
-			if row.toKind == kind && slices.Contains(kinds, row.fromKind) && slices.Contains(ids, row.toID) {
-				previous[row.toID]++
-			}
-		}
+		previous := docstest.ViewBacklinkCounts(t, database.Pool, previousCountedEdges, kind, ids, kinds, nil)
 		if !maps.Equal(count, previous) {
 			named := false
 			for _, id := range ids {
 				if count[id] != previous[id] {
 					named = true
-					t.Errorf("%s: refs.BacklinkCounts counts %d at the %s %s, and the previous release's count statement over %s with the store class's rows counts %d",
-						stage, count[id], kind, id, previousGraphEdges, previous[id])
+					t.Errorf("%s: refs.BacklinkCounts counts %d at the %s %s, and the previous release's count statement over %s counts %d",
+						stage, count[id], kind, id, previousCountedEdges, previous[id])
 				}
 			}
 			// Both answer only ids they were asked about, and never a zero, so this is reached
 			// only by an answer neither statement can give; it is reported whole rather than
 			// passed over.
 			if !named {
-				t.Errorf("%s: refs.BacklinkCounts counts the %s backlinks %v, and the previous release's count statement over %s with the store class's rows counts %v",
-					stage, kind, count, previousGraphEdges, previous)
+				t.Errorf("%s: refs.BacklinkCounts counts the %s backlinks %v, and the previous release's count statement over %s counts %v",
+					stage, kind, count, previousCountedEdges, previous)
 			}
 		}
 		counts[kind] = count
@@ -887,7 +906,9 @@ func requireTheAnnouncementListsTheArmsKinds(t *testing.T, database *store.Store
 	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, previousBuild); err != nil {
 		t.Fatalf("announce the previous release's build as it announces itself: %v", err)
 	}
-	registration, err := processes.Register(ctx, database.Pool, processes.Instance{Commit: thisBuild, SigningKeys: []string{"graph-edges-test-key"}})
+	registration, err := processes.Register(ctx, database.Pool, processes.Instance{
+		Commit: thisBuild, SigningKeys: []string{"graph-edges-test-key"}, SchemaVersion: pmdoc.SchemaVersion(), SchemaCreatable: pmdoc.SchemaCreatable(),
+	})
 	if err != nil {
 		t.Fatalf("register a process serving this build: %v", err)
 	}
@@ -986,6 +1007,35 @@ func unwriteTheStoreOfADocument(t *testing.T, database *store.Store, refKey stri
 		t.Fatalf("unwriting %s left %d block rows and %d link rows naming no node, want some of each", refKey, rows, links)
 	}
 	t.Logf("%s holds %d block rows and %d link rows that name no node", refKey, rows, links)
+}
+
+// requireTheIndexStampedTheOtherDocuments reads, before the backfill, the rows of the two
+// documents the fixture leaves as the block index wrote them, target.md and plan.md: each holds
+// block rows, plan.md holds link rows too, and every one of them carries the node the index
+// stamped. The tuple arm is held to answering exactly the rows that carry their node, so a
+// fixture whose rows carried none would hold it to answering nothing and pass.
+func requireTheIndexStampedTheOtherDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	for _, held := range []struct{ table, refKey string }{
+		{"document_blocks", "CORE-1/target"},
+		{"document_blocks", "CORE-1/plan"},
+		{"block_refs", "CORE-1/plan"},
+	} {
+		var rows, stamped int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*), count(*) filter (where r.node_kind is not null and r.node_address is not null)
+			from `+held.table+` r join artifacts a on a.id = r.artifact_id
+			where a.ref_key = $1
+		`, held.refKey).Scan(&rows, &stamped); err != nil {
+			t.Fatalf("read the %s rows of %s: %v", held.table, held.refKey, err)
+		}
+		if rows == 0 || stamped != rows {
+			t.Errorf("before the backfill %s holds %d %s row(s), %d of them naming the node the block index stamped, want some and every one",
+				held.refKey, rows, held.table, stamped)
+			continue
+		}
+		t.Logf("before the backfill %s holds %d %s row(s), each naming its node", held.refKey, rows, held.table)
+	}
 }
 
 // writeAsThePreviousRelease writes a comment and a block reference as a pod of the release before
@@ -1213,6 +1263,10 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 		t.Fatal("the version that brings one back was not indexed")
 	}
 
+	// The block version 2 dropped and version 3 brought back is one node, stated gone and then
+	// live again, and its row, written again by version 3, names that node.
+	requireTheRestoredBlockIsLive(t, database, "CORE-1/plan", "revive")
+
 	var gone, live int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) filter (where state = 'gone'), count(*) filter (where state = 'live')
@@ -1267,15 +1321,15 @@ const (
 )
 
 // writeTheStoreClass states, through the store's own writer, one tuple of each kind the view's
-// tuple arm answers as its class `store` (migration 20261116091932) and a part_of out of a lens:
+// tuple arm answers as its class `store` (migration 20261117020856) and a part_of out of a lens:
 // a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, written by
 // alice and changed by a run; a risk that a check block covers; and the target's r1, held to a
-// constraint. No writer of those kinds exists at this head, so the nodes are written as their
-// writers will write them, project-visible and live, in CORE. It answers the rows the view is to
-// answer of the class: those, each dated by its tuple and carrying no source_seq, and beside them
-// the one constrained_by tuple from each kind of the lens catalogue to its source, which every
-// migrated store holds (migrations 20261116123354 and 20261116123355), read from the store as
-// the seed wrote them, so a kind the seed adds or drops moves this expectation with it.
+// constraint. Their writers are api's (writeReasoningNodes, recordGoingRequest), which this package
+// cannot import, so the nodes are written here through graphstore.Write, each project-visible and
+// live, in CORE: the view reads no visibility, so the run, which its own writer reserves for its
+// author, answers the same here.
+// It answers the rows the view is to answer of the class: those, each dated by its tuple and
+// carrying no source_seq, and beside them the lens catalogue's seeded sources (seededStoreClass).
 func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()
 	ctx := context.Background()
@@ -1339,14 +1393,14 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 			t.Fatalf("the fixture states %s as of the class store, which the view's rule does not read it as", row)
 		}
 	}
-	return append(rows, seededCatalogueRows(t, database)...)
+	return append(rows, seededStoreClass(t, database)...)
 }
 
-// seededCatalogueRows are the rows the view answers of the class `store` in a store nobody has
-// written to: the one constrained_by tuple from each kind of the lens catalogue to its source,
-// which every migrated store holds (migrations 20261116123354 and 20261116123355), read from the
-// store as the seed wrote them, so a kind the seed adds or drops moves the expectation with it.
-func seededCatalogueRows(t *testing.T, database *store.Store) []graphEdgeRow {
+// seededStoreClass is the rows of the class `store` every migrated store holds before any write:
+// the one constrained_by tuple from each kind of the lens catalogue to its source (migrations
+// 20261116123354 and 20261116123355), read from the store as the seed wrote them, so a kind the
+// seed adds or drops moves every expectation built on them with it.
+func seededStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()
 	seeded, err := database.Pool.Query(context.Background(), `
 		select from_id, to_id, at from graph_tuples
@@ -1435,19 +1489,21 @@ func scanGraphEdgeFixture(t *testing.T, database *store.Store, what, statement s
 // every reading reads the whole view, the view of the release before the store (the same
 // previousGraphEdges) over the same rows, each of the seven moved arms and the tuple arm on their
 // own, and holds the whole view to the previous one row for row, each row of a moved kind to
-// exactly one arm, decided by its own projection row.
+// exactly one arm, decided by its own projection row, the rows of the class `store` to the lens
+// catalogue's seeded sources, which are the only ones this fixture holds (seededStoreClass), and
+// refs.BacklinkCounts, for every node kind, to what the previous release's count statement
+// answers over the same rows (requireBacklinkCountsAsThePreviousRelease).
 //
 // The readings, in order. Before the backfill, three asks and two followers written as a build
 // before this release wrote them, naming no node, come from the three old arms, each of which
 // answers rows of its own, while an ask block this release's writer opens (createAskBlock), whose
 // row and whose author's follower row it marks, comes from the tuple arm alone. After the backfill
 // (`backfill-graph-store`) every row is marked: the three old arms answer nothing, the tuple arm
-// answers every row, and the whole view and refs.BacklinkCounts are what they were before it. An
-// ask and a follower then written as the previous release writes them, naming no node, come from
-// their old arms alone. Then the rollback, as a build of the previous release does it, retracting
-// nothing in the store: a marked follower row and a marked ask (with its follower row) deleted
-// answer from no arm, and a marked follower row deleted and written again naming no node answers
-// once, from the old arm. refs.BacklinkCounts moves exactly as the previous release's rows do.
+// answers every row, and the whole view is what it was before it. An ask and a follower then
+// written as the previous release writes them, naming no node, come from their old arms alone.
+// Then the rollback, as a build of the previous release does it, retracting nothing in the store:
+// a marked follower row and a marked ask (with its follower row) deleted answer from no arm, and a
+// marked follower row deleted and written again naming no node answers once, from the old arm.
 //
 // Each case fails when its arm's marker test is taken out of the view: an old arm without its
 // `node_kind is null` answers a marked row beside the tuple arm, and a tuple arm without its join
@@ -1467,9 +1523,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	createPreviousGraphEdges(t, database)
 
 	fixture := seedAskArmsFixture(t, database, service)
-	// The fixture states no relation of the tuple arm's class `store`, so every reading holds the
-	// ones every migrated store holds and no other.
-	stored := seededCatalogueRows(t, database)
+	stored := seededStoreClass(t, database)
 	before := readEachArm(t, database, "before the backfill", moved, tuple, stored)
 	projectedCounts := before.counts
 	for index, arm := range asked {
@@ -1511,7 +1565,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	// Each reading held its counts to the previous release's count over the rows that release
 	// reads, and those rows are the same on both sides of the backfill, so the counts after it are
 	// the counts before it. A count map that holds nothing compares equal to another that holds
-	// nothing, so the kinds the ask arms point at must each be counted at all.
+	// nothing, so the kinds the three arms point at must each be counted at all.
 	for _, kind := range []string{"artifact", graphstore.KindSession} {
 		if len(projectedCounts[kind]) == 0 {
 			t.Errorf("the %s backlink counts before the backfill are empty, so their comparison proves nothing", kind)
@@ -1686,4 +1740,53 @@ func rollBackAsksAsThePreviousRelease(t *testing.T, database *store.Store, fixtu
 		{graphstore.KindAsk, fixture.created, graphstore.TupleFollowedBy, graphstore.KindSession, createdAskSession},
 	}
 	return deleted, rewritten
+}
+
+// requireTheRestoredBlockIsLive fails unless the block blockID of the document refKey, which a
+// version dropped and a later one brought back, is live now with gone before it in its state's
+// history, and unless its document_blocks row names that node.
+func requireTheRestoredBlockIsLive(t *testing.T, database *store.Store, refKey, blockID string) {
+	t.Helper()
+	ctx := context.Background()
+	address := refKey + "#" + blockID
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, address)
+	if err != nil || !held {
+		t.Fatalf("read the node of the restored block %s: held %t, %v", address, held, err)
+	}
+	if node.State != graphstore.StateLive {
+		t.Errorf("the restored block %s is %s, want %s", address, node.State, graphstore.StateLive)
+	}
+	history, err := graphstore.History(ctx, database.Pool, refs.BlockNodeKind, address, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s: %v", address, err)
+	}
+	states := make([]string, 0, len(history))
+	for _, stated := range history {
+		states = append(states, stated.ToID)
+	}
+	gone := slices.Index(states, graphstore.StateGone)
+	if gone < 0 || states[len(states)-1] != graphstore.StateLive {
+		t.Errorf("the restored block %s states %v, want gone once a version dropped it and live last, once one brought it back",
+			address, states)
+	}
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select d.node_kind, d.node_address from document_blocks d join artifacts a on a.id = d.artifact_id
+		where a.ref_key = $1 and d.block_id = $2
+	`, refKey, blockID).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the row of the restored block %s: %v", address, err)
+	}
+	if nodeKind == nil || nodeAddress == nil || *nodeKind != refs.BlockNodeKind || *nodeAddress != address {
+		t.Errorf("the row of the restored block %s names node %s/%s, want %s/%s", address,
+			deref(nodeKind), deref(nodeAddress), refs.BlockNodeKind, address)
+	}
+	t.Logf("the restored block %s is %s, its state history %v, and its row names it", address, node.State, states)
+}
+
+// deref is the text a nullable column holds, or null where it holds none.
+func deref(text *string) string {
+	if text == nil {
+		return "null"
+	}
+	return *text
 }

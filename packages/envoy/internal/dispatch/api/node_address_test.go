@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // TestFindNodeUnderIssueDecodesTheStoreAddress: the `{id}` of an issue's node routes is the node's
@@ -47,12 +48,7 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 	finding := graphstore.KindLens + "/" + lens + "#finding"
 	writeReasoning := func(issue string, nodes ...reasoningNode) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			_, err := writeReasoningNodes(ctx, tx, reasoningWrite{issue: issue, proving: author, recorded: author, at: time.Now().UTC(), nodes: nodes})
-			return err
-		}); err != nil {
-			t.Fatalf("write the reasoning nodes under %s: %v", issue, err)
-		}
+		writeReasoningAs(t, fixture.database, issue, author, nodes...)
 	}
 	writeReasoning(fixture.issue,
 		reasoningNode{kind: graphstore.KindLens, id: lens, parentKind: refs.BlockNodeKind, parentID: fixture.first,
@@ -196,5 +192,21 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 		if excerpt != test.text {
 			t.Errorf("the edge from %s into its lens shows %q, want %q", test.id, excerpt, test.text)
 		}
+	}
+}
+
+// writeReasoningAs writes nodes under issue through the one write path of the reasoning kinds
+// (writeReasoningNodes), in a transaction of its own, as author, a credential that proves the actor
+// it records, failing the test on a refusal.
+func writeReasoningAs(t *testing.T, database *store.Store, issue string, author model.Actor, nodes ...reasoningNode) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		_, err := writeReasoningNodes(ctx, tx, reasoningWrite{
+			reasoningCaller: reasoningCaller{proving: author, recorded: author}, issue: issue, at: time.Now().UTC(), nodes: nodes,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("write the reasoning nodes under %s as %s: %v", issue, author.ID, err)
 	}
 }

@@ -40,11 +40,16 @@ var Scopes = []string{ScopePerson, ScopeApprove}
 // token: a person who narrows a token afterwards narrows what it may do next, and must not
 // retroactively un-approve what it approved while it held approve (docs.carryVerdict reads these
 // scopes to decide whether an answer can carry an approval).
+//
+// SessionProven says the credential itself proved Session - a broker-issued token's own session -
+// rather than the request naming it (a personal token's `?session=` or body actor). Absent means
+// Dispatch did not see the credential prove it, which is also every act recorded before the mark.
 type ActorAct struct {
-	Session   string   `json:"session,omitempty"`
-	TokenID   string   `json:"token_id,omitempty"`
-	TokenName string   `json:"token_name,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Session       string   `json:"session,omitempty"`
+	SessionProven bool     `json:"session_proven,omitempty"`
+	TokenID       string   `json:"token_id,omitempty"`
+	TokenName     string   `json:"token_name,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
 }
 
 // Holds reports whether the act was made under one scope, as Credential.Holds reports it of the
@@ -103,6 +108,19 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
+	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
+	// broker-issued token its session, and actingPerson's person. It is set by the server and
+	// never read from a request body. An actor whose ID the body named - under the shared agent
+	// token, a personal token or a service-account token, none of which proves a session -
+	// carries none, and neither does any row recorded before the mark existed, so a reader that
+	// counts only proven writers counts no claimed one. A row Dispatch derives from an earlier
+	// write carries that write's actor, and so its mark, whatever credential the request that
+	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
+	// answer it gives the open approval request name the person whose review it carries, proven
+	// when that review's credential proved them, even when the request that wrote the version
+	// proved nobody. The author rule reads it (graphstore's provedAuthor and AuthorIsSQL): a
+	// session that names no person is its own author only where its actor is Proven.
+	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
@@ -120,7 +138,7 @@ type Actor struct {
 // own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
 // issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
 // write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope).
+// (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	return a
@@ -143,9 +161,9 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project and Act are not compared: they say where a write came from and who it acted
-// for, which two requests of one credential differ in, so comparing them would call one
-// credential two.
+// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
+// for and whether its credential proved its id, which two requests of one credential differ in,
+// so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }
@@ -3193,9 +3211,19 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one artifact in an issue's reference closure.
+// ReferenceMember is one member of an issue's reference closure (refs.Closure): Artifact is the
+// document a citation reaches, at Depth through Via, and Kind and Address are the member's own
+// kind and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
+// address where the citation names a document whose address moved to a lens, as the pre-mortem
+// conversion moves the address of the document it retires to the lens it writes in its place.
+// Artifact is then that retired document, whose versions stay readable. A server of the release
+// before answers neither Kind nor Address during a roll, so the OpenAPI document marks them
+// optional (`required:"false"`) and a reader takes a member that carries neither as the document
+// Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
+	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
+	Address  string       `json:"address" required:"false"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }
@@ -3242,16 +3270,17 @@ type ArtifactReferences struct {
 // reads without them during a roll, so the OpenAPI document marks them optional
 // (`required:"false"`) and a reader takes a node that carries neither as live and project.
 // A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
-// the others null.
+// MadeAt, ChangedAt, Parent and ParentVersion null; State and Visibility always hold a value.
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
 // last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
 // `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. A run of
 // the command bar (kind `interaction`, id the run's uuid) stands under no issue, so it carries no
-// IssueKey and no Parent, and reaches the credential that asked it alone; it carries Frames, every
-// frame of its stream in sequence, which no other kind carries, so the member is absent from every
-// other node. Text and Pin are set only on the node a reference read names: Text is a block's
+// IssueKey and no Parent, and reaches the credential that asked it alone; the read of its own
+// address carries Frames, every frame of its stream in sequence, which no other read and no other
+// kind carries, so the member is absent from every other node and from a run at an edge's far
+// end. Text and Pin are set only on the node a reference read names: Text is a block's
 // whole current text, or a run's whole words, which an edge at the run shows only the head of as
 // its excerpt, and Pin answers a reference pinned to a version.
 type GraphNode struct {
@@ -3273,9 +3302,10 @@ type GraphNode struct {
 	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
-	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, and
-	// absent for a run that holds none and for every other kind. A server of the release before
-	// never sends it, and `omitempty` keeps every other node's answer byte for byte as it was.
+	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, on the
+	// read of the run's own address (refs.Node), and absent for a run that holds none, for a run
+	// at an edge's far end and for every other kind. A server of the release before never sends
+	// it, and `omitempty` keeps every other node's answer byte for byte as it was.
 	Frames []GraphFrame `json:"frames,omitempty"`
 }
 
@@ -3319,15 +3349,15 @@ type GraphExcerpt struct {
 // GraphEdgeKinds is every structural edge kind the reference graph answers: the kinds graph_edges'
 // arms over the projections write, the six the node and tuple store states with no projection row
 // behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
-// of the kinds dispatch://INFRA-1950 adds), which the view answers from the tuples alone, and an
-// issue's duplicate_of and filed_from, which the store holds alone too (dispatch://INFRA-1253 R9).
-// blocked_by is the kind graph_edges names an issue's wait on an issue by through this release, in
-// its old arm and its tuple arm alike, the kind a process of the release before reads that wait
-// by; this build's references read answers the same wait as needs (EdgeKindNeeds) and takes
-// either spelling in its kind filter (R10). A typed block's `block[]` attribute makes edges of a
-// kind named by the attribute (pmdoc.LinkKinds), which is none of these but needs: a schema name
-// equal to one would merge silently with it in every reader, and needs is the one relation the
-// two families share, since an issue and a plan node wait by one relation.
+// of an interaction, a lens, a finding, a risk and a constraint), which the view answers from the
+// tuples alone, and an issue's duplicate_of and filed_from, which the store holds alone too
+// (dispatch://INFRA-1253 R9). blocked_by is the kind graph_edges names an issue's wait on an issue
+// by through this release, in its old arm and its tuple arm alike, the kind a process of the
+// release before reads that wait by; this build's references read answers the same wait as needs
+// (EdgeKindNeeds) and takes either spelling in its kind filter (R10). A typed block's `block[]`
+// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is none of these
+// but needs: a schema name equal to one would merge silently with it in every reader, and needs is
+// the one relation the two families share, since an issue and a plan node wait by one relation.
 var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
 	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by",
 	EdgeKindNeeds, "duplicate_of", "filed_from"}
@@ -3397,16 +3427,23 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a block of a decision to a block of the issue's spec: the
-// decision's own block that holds it, the spec block it names, when and in which version of
-// decisions.md the link was first written, and whether the spec block is out of date - the
-// decision changed after it first linked that block, and that block has not changed since.
+// DecisionLink is one link from a decision to a block it shaped: the decision's own block that
+// holds it, the block it names, when and in which version the link was first written, and whether
+// that block is out of date. A link of the decisions document's view reads stale when the
+// decision changed after it first linked that block and that block has not changed since; a link
+// of a decision node (internal/dispatch/decisionread) is its `shaped` tuple, Event the event that
+// wrote the tuple, TextChangedEvent and TextChangedAt the event and the time that wrote the version
+// the block's text last changed in, and Stale true when the block's text changed after the tuple
+// was written (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
 type DecisionLink struct {
-	FromBlock      string    `json:"from_block"`
-	To             GraphNode `json:"to"`
-	CreatedVersion int       `json:"created_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	Stale          bool      `json:"stale"`
+	FromBlock        string     `json:"from_block"`
+	To               GraphNode  `json:"to"`
+	CreatedVersion   int        `json:"created_version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Stale            bool       `json:"stale"`
+	Event            *int64     `json:"event,omitempty"`
+	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
+	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
 // Decision is one decision of an issue's decisions.md: its heading block and every block after
@@ -3435,6 +3472,11 @@ type Decision struct {
 	ChangedAt      *time.Time     `json:"changed_at"`
 	Kept           *DecisionKeep  `json:"kept"`
 	WaitingReview  bool           `json:"waiting_review"`
+	// NodeKind and NodeID name the node a decision node's read answered this for
+	// (decisionread.Decisions): an ask's own node, or a decision's block node. No wire shape
+	// carries them; a caller that asked for several decisions finds each one by them.
+	NodeKind string `json:"-"`
+	NodeID   string `json:"-"`
 }
 
 // DocumentRead is one person's last read version of a document: null when they have read none.

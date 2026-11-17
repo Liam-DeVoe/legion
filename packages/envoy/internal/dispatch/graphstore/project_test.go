@@ -75,7 +75,7 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 	t.Run("a node made with no project takes it from the first write that names one", func(t *testing.T) {
 		// What the comment writer stored before nodes named their project: a comment node with
 		// no project.
-		bare, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, VisibilityProject, "", "", "", nil)
+		bare, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, "", "", "", nil)
 		writeNode(t, ctx, database, bare)
 		requireProjectRow(t, ctx, database, bare.Kind, bare.ID, "", nil)
 		requireNeverStated(t, ctx, database, bare.Kind, bare.ID, AttributeProject)

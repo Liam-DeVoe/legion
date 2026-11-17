@@ -8606,13 +8606,23 @@ describe("executeDispatchTool", () => {
     expect(followedAsk(result.details)).toBeNull();
   });
 
-  // A request names the latest version, and a new version moves it there and back to its agent: a
-  // request made over an open block leaves the human's turn the moment they answer it, and an
-  // answer reaches a version only when the document settles, or sooner with the agent's next edit.
+  // A request asks the human to agree to every point of the latest version, and an open block is
+  // a question they have not decided yet. An answer is held on the ask and writes no version; only
+  // a version the release before wrote records a block's state, settled there by that release.
   describe("dispatch_request_approval with decision blocks in the document", () => {
     const opening = (block: string, state: string) =>
       `:::ask{#${block} urgency="med" multiple="false" state="${state}"}\nQuestion of ${block}?\n:::`;
-    const requestOver = async (blocks: string[], version4: string[], asks: unknown[]) => {
+    // A block as this release renders it: its answer is held on the ask's node, never on the block.
+    const stateless = (block: string) =>
+      `:::ask{#${block} urgency="med" multiple="false"}\nQuestion of ${block}?\n:::`;
+    // `live`, when given, is what the live text (`GET /artifacts/{id}/text`) renders; without it
+    // a read of the live text is an unexpected request.
+    const requestOver = async (
+      blocks: string[],
+      version4: string[],
+      asks: unknown[],
+      live?: string[]
+    ) => {
       const posts: string[] = [];
       const requests: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -8642,6 +8652,13 @@ describe("executeDispatchTool", () => {
         }
         if (target.pathname === "/api/v1/artifacts/artifact-42/versions/4") {
           return response({ number: 4, markdown: ["## Where", ...version4].join("\n\n") });
+        }
+        if (live !== undefined && target.pathname === "/api/v1/artifacts/artifact-42/text") {
+          return response({
+            markdown: ["## Where", ...live].join("\n\n"),
+            token: "sha256:live",
+            version: 4,
+          });
         }
         // An issue's document lists its asks under the issue: the artifact route refuses it.
         if (target.pathname === "/api/v1/issues/DSP-42/asks") return response(asks);
@@ -8696,7 +8713,7 @@ describe("executeDispatchTool", () => {
       );
       const lines = refusal.split("\n");
       expect(lines.slice(0, 4)).toEqual([
-        "dispatch request-approval was not called: spec.md (version 4) has 4 open decision blocks. Answering one writes a new version, which would move this request to that version and leave it waiting on you.",
+        "dispatch request-approval was not called: spec.md (version 4) has 4 open decision blocks. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
         '- "Question of b-1?" (block b-1, ask ask-b-1)',
         "- block b-2, whose ask Dispatch has not opened yet",
         "- block b-3, which version 4 does not hold yet",
@@ -8711,6 +8728,9 @@ describe("executeDispatchTool", () => {
       expect(lines[4]).not.toContain("doc-edit");
       expect(refusal).toContain("even when a human asked for it");
       expect(refusal).toContain("ask them to answer it or to waive it");
+      // An answer is held on the ask, so the refusal never says it writes a version.
+      expect(refusal).toContain("it writes no version and moves no approval");
+      expect(refusal).not.toContain("writes a new version");
       expect(posts).toEqual([]);
     });
 
@@ -8869,7 +8889,7 @@ describe("executeDispatchTool", () => {
         (error: Error) => error.message
       );
       expect(refusal.split("\n").slice(0, 2)).toEqual([
-        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Answering one writes a new version, which would move this request to that version and leave it waiting on you.",
+        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
         '- "Question of b-1?" (block b-1, ask ask-b-1)',
       ]);
       expect(posts).toEqual([]);
@@ -8934,6 +8954,129 @@ describe("executeDispatchTool", () => {
       expect((await outcome).text).toStartWith("Approval requested for spec.md");
       expect(requests.filter((path) => path.startsWith("/api/v1/asks/"))).toEqual([]);
       expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
+    });
+
+    // Once the fleet runs one build, a person's answer is held on the ask's node alone and no
+    // version records a block's state, so the server's read of the ask judges the block: its own
+    // ask from the asks list, a copy's source from the live text, which renders it from the store.
+    const liveText = "/api/v1/artifacts/artifact-42/text";
+    const copyOf = (block: string, state: string) =>
+      `:::ask{#${block} urgency="med" multiple="false" state="${state}" copied_from="ask-source" copied_from_document="dispatch://DSP-42/artifact/plan"}\nQuestion of ${block}?\n:::`;
+
+    test("requests approval over blocks whose asks are answered or resolved when the version records no state", async () => {
+      const { outcome, posts, requests } = await requestOver(
+        ["b-1", "b-2"],
+        [stateless("b-1"), stateless("b-2")],
+        [blockAsk("b-1", "answered"), blockAsk("b-2", "resolved")]
+      );
+
+      expect((await outcome).text).toStartWith("Approval requested for spec.md");
+      expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
+      // Each block has an ask of its own, so the live text is not read.
+      expect(requests).not.toContain(liveText);
+    });
+
+    test("refuses over an open ask the version records no state for, and names no answered one beside it", async () => {
+      const { outcome, posts } = await requestOver(
+        ["b-1", "b-2"],
+        [stateless("b-1"), stateless("b-2")],
+        [blockAsk("b-1", "open"), blockAsk("b-2", "answered")]
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n").slice(0, 2)).toEqual([
+        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+        '- "Question of b-1?" (block b-1, ask ask-b-1)',
+      ]);
+      expect(refusal).not.toContain("block b-2");
+      expect(posts).toEqual([]);
+    });
+
+    test("a copy the version records no state for is taken once the live text shows its source answered", async () => {
+      const { outcome, posts, requests } = await requestOver(
+        ["b-1"],
+        [stateless("b-1")],
+        [],
+        [
+          ':::ask{#b-1 urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-09T09:00:00Z" selected="[]" answer="eu-west-1" copied_from="ask-source" copied_from_document="dispatch://DSP-42/artifact/plan"}\nQuestion of b-1?\n:::',
+        ]
+      );
+
+      expect((await outcome).text).toStartWith("Approval requested for spec.md");
+      expect(requests.filter((path) => path === liveText)).toHaveLength(1);
+      expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
+    });
+
+    test("a copy the version records no state for is refused while the live text shows its source open, naming the source", async () => {
+      const { outcome, posts, requests } = await requestOver(
+        ["b-1", "b-2"],
+        [stateless("b-1"), stateless("b-2")],
+        [],
+        [copyOf("b-1", "open"), stateless("b-2")]
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n").slice(1, 3)).toEqual([
+        "- block b-1, a copy of ask dispatch://DSP-42/ask/ask-source, which is open on DSP-42 plan: answer it there",
+        // The live text renders no source for b-2: no ask stands behind it anywhere yet.
+        "- block b-2, whose ask Dispatch has not opened yet",
+      ]);
+      // One read of the live text serves every copy.
+      expect(requests.filter((path) => path === liveText)).toHaveLength(1);
+      expect(posts).toEqual([]);
+    });
+
+    test("a version the release before wrote is taken by the settled state it records, beside an answered block this release wrote", async () => {
+      const { outcome, posts } = await requestOver(
+        ["b-1", "b-2"],
+        [opening("b-1", "answered"), stateless("b-2")],
+        [blockAsk("b-1", "answered"), blockAsk("b-2", "answered")]
+      );
+
+      expect((await outcome).text).toStartWith("Approval requested for spec.md");
+      expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
+    });
+
+    test("a block a version the release before wrote shows open is refused until the answer reaches a version, beside an answered block this release wrote", async () => {
+      const { outcome, posts } = await requestOver(
+        ["b-1", "b-2"],
+        [opening("b-1", "open"), stateless("b-2")],
+        [blockAsk("b-1", "answered"), blockAsk("b-2", "answered")]
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n").slice(0, 2)).toEqual([
+        "dispatch request-approval was not called: spec.md (version 4) has 1 open decision block. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+        '- "Question of b-1?" (block b-1, ask ask-b-1), answered but still open in version 4: it settles into a version on its own in about two seconds; wait for that version',
+      ]);
+      expect(refusal).not.toContain("block b-2");
+      expect(posts).toEqual([]);
+    });
+
+    test("a line quoting a settled opener cannot hide an open block the version records no state for", async () => {
+      const quoted =
+        'A settled block opens like `:::ask{#b-1 urgency="med" multiple="false" state="answered"}`.';
+      const { outcome, posts } = await requestOver(
+        ["b-1"],
+        [quoted, stateless("b-1")],
+        [blockAsk("b-1", "open")]
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n")[1]).toBe('- "Question of b-1?" (block b-1, ask ask-b-1)');
+      expect(posts).toEqual([]);
     });
   });
 

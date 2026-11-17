@@ -249,10 +249,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, createdAt, graphstore.NoEvent, places)
-	// The ask is the node this create makes, the first AskFacts gives, so it is marked changed
-	// (graphstore.Node's Changed): a create made for a run names it as changed by it. Its
-	// author's node is never marked.
-	nodes[0].Changed = true
+	// The ask is the node this create makes, first of the nodes AskFacts answers
+	// (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
 	askNode, err := graphstore.WriteUncaused(r.Context(), tx, nodes, facts)
 	if err != nil {
 		s.writeHandlerError(w, err)

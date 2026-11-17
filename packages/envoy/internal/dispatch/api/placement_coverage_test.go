@@ -116,8 +116,8 @@ func projectedParent(t *testing.T, database *store.Store, address string) string
 	return *parent
 }
 
-// farEnds is each tuple's far end, kind/id, in order.
-func farEnds(tuples []graphstore.Tuple) []string {
+// tupleFarEnds is each tuple's far end, kind/id, in order.
+func tupleFarEnds(tuples []graphstore.Tuple) []string {
 	ends := make([]string, len(tuples))
 	for index, tuple := range tuples {
 		ends[index] = tuple.ToKind + "/" + tuple.ToID
@@ -131,7 +131,7 @@ func farEnds(tuples []graphstore.Tuple) []string {
 func requirePlaced(t *testing.T, database *store.Store, what, address, kind, id, parent, placement string) {
 	t.Helper()
 	if held := currentTies(t, database, address, graphstore.TuplePartOf); len(held) != 1 || held[0].ToKind != kind || held[0].ToID != id {
-		t.Errorf("%s stands under %v, want exactly one part_of, to %s/%s", what, farEnds(held), kind, id)
+		t.Errorf("%s stands under %v, want exactly one part_of, to %s/%s", what, tupleFarEnds(held), kind, id)
 	}
 	if got := projectedParent(t, database, address); got != parent {
 		t.Errorf("%s's row projects the parent %q, want %q", what, got, parent)
@@ -150,7 +150,7 @@ func requireServes(t *testing.T, database *store.Store, what, address string, ad
 		want[index] = refs.BlockNodeKind + "/" + target
 	}
 	slices.Sort(want)
-	if held := farEnds(currentTies(t, database, address, "serves")); !slices.Equal(held, want) {
+	if held := tupleFarEnds(currentTies(t, database, address, "serves")); !slices.Equal(held, want) {
 		t.Errorf("%s serves %v, want %v", what, held, want)
 	}
 }

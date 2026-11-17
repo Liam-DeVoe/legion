@@ -210,13 +210,15 @@ func (v Versions) Newest(artifactID string) (string, Version) {
 // pass then also reads the store's own statement of the document (heldDocumentBlocks) and states,
 // from the render, what a version dropping those rows would have stated: each block the store
 // holds present that the version does not hold, gone with its pointers (goneSinceStated,
-// retractGonePointers), and each link of a kind block_refs projects that the store asserts out of
-// a block of the document and no pair of the version writes, retracted (unheldLinks). And since
-// that release rewrote the row of each block whose text its version moved and stated no text
-// value, the pass states the text of every block it places (reconcileBlockValues). That is no
-// repair: what decides each statement is the version's render, and the store is read only for
-// what it would go on asserting against it, as reconcileBlockParents reads it for the parents. A
-// pass over a document only this release indexed reads none of it.
+// retractGonePointers), and each link the store asserts out of a block of the document, of a kind
+// a pair of a version writes (heldLinkKinds), that no pair of the version writes, retracted
+// (unheldLinks). A tuple another writer states out of a block - a requirement's constrained_by, a
+// changed_by_run - is no such link, and the pass leaves it where it stands. And since that
+// release rewrote the row of each block whose text its version moved and stated no text value,
+// the pass states the text of every block it places (reconcileBlockValues). That is no repair:
+// what decides each statement is the version's render, and the store is read only for what it
+// would go on asserting against it, as reconcileBlockParents reads it for the parents. A pass
+// over a document only this release indexed reads none of it.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -442,13 +444,15 @@ func IndexBlocks(
 	// that says so is not built here: the node write states a base attribute it moved, with this
 	// write's own time and writer, so a block restored by a later version is stated live by the
 	// same rule and no writer of this store states a base attribute of its own. Its node keeps the
-	// supertag it holds, which no version holding the block is left to say.
+	// supertag it holds, which no version holding the block is left to say. A block this version
+	// dropped is one it changed (blockNode's changed); one another release's version dropped is
+	// not.
 	held, err := heldSupertags(ctx, tx, refKey, dropped)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	gone := make([]string, 0, len(dropped))
-	for _, id := range dropped {
+	for index, id := range dropped {
 		if !blockIDFits(refKey, id) {
 			continue
 		}
@@ -457,7 +461,7 @@ func IndexBlocks(
 			supertag = BlockSupertag
 		}
 		gone = append(gone, blockNodeAddress(refKey, id))
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, document.writer, versionOf(id).At, graphstore.StateGone, supertag, true))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, document.writer, versionOf(id).At, graphstore.StateGone, supertag, index < len(deleted)))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
@@ -1699,8 +1703,14 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // which it names, so a citation written before its target moved still reaches it
 // (dispatch://INFRA-1150 R8); only a target no row holds is followed through block_moved_to, so a
 // link to a block that stands costs the probe alone. A pointer's link counts only while the block
-// it reaches has a type the pointer allows (block_ref_listed). A link either of whose blocks who
-// may not see drops out the same way, since neither end resolves to a node.
+// it reaches has a type the pointer allows, tested as the arm of graph_edges that answers the row
+// tests it (blockRefListed). A link either of whose blocks who may not see drops out the same
+// way, since neither end resolves to a node.
+//
+// It reads no document's address and follows no document's move: it takes the two documents by
+// uuid, and a document the pre-mortem conversion retired, whose address moved to a lens
+// (api.ConvertPremortem), keeps its row, its uuid, its versions and its blocks, so the links to its
+// blocks from a third document read as they did before it was retired.
 func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
 		select r.kind, r.from_node, t.node_id, r.created_at, r.created_version
@@ -1712,7 +1722,7 @@ func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, t
 				block_moved_to(r.to_id)) as node_id
 		) target
 		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
-		where r.artifact_id = $1::uuid and r.to_kind = 'block' and (r.to_types is null or block_ref_listed(r.to_types, t.node_id))
+		where r.artifact_id = $1::uuid and r.to_kind = 'block' and `+blockRefListed("r", "t.node_id")+`
 		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact)
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)

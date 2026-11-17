@@ -8,10 +8,13 @@ package main
 // outruns its node.
 //
 // The test is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode at the end of this
-// file; everything above it is the four corpora it writes, the eight reads it measures over each
-// of them, and the publish-after-commit sequence it runs last. graph_cost_test.go holds the two
-// arms, the clock and the order statistic the two cost measurements share, and write_cost_test.go
-// the document generator and the corpus writers both use.
+// file; everything above it is the four corpora it writes, what each shape is held to, the state
+// before the backfill it puts this child's arm in, and the eight reads it measures over each
+// shape in each state. The second half of the check, that no event outruns its node, is
+// TestNoEventOutrunsItsNode (internal/dispatch/api/no_event_outruns_test.go), which holds the
+// server's own comment write at its seam; the check's run names both tests. graph_cost_test.go
+// holds the two arms, the clock and the order statistic the two cost measurements share, and
+// write_cost_test.go the document generator and the corpus writers both use.
 
 import (
 	"context"
@@ -19,15 +22,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The four corpora, as c-read-cost states them: a document of 8,001 blocks nested eight deep, a
@@ -66,6 +67,10 @@ const (
 	readCostPhrase = "zarf"
 	// readCostIndexWait bounds the wait for the block-index reconciliation to index a corpus.
 	readCostIndexWait = 30 * time.Minute
+	// readCostBefore and readCostAfter are the two states of this child's arm every read is
+	// measured in, named on every line and in every failure that reports a reading of either.
+	readCostBefore = "before the backfill"
+	readCostAfter  = "after the backfill"
 )
 
 // readCostShape is one corpus and what the eight reads address on it.
@@ -90,8 +95,30 @@ type readCostShape struct {
 	// phrase is the word this shape's main document carries and no other document of the
 	// corpus does, which the search read of this shape asks for.
 	phrase string
-	// rows is what the shape holds, printed before any reading is taken.
-	rows []string
+	// intoNode is the store's address of the block into names, `<document ref_key>#<block id>`,
+	// as the server's own reference read names it: block_refs and graph_tuples name a block by
+	// that address and not by the dispatch:// address a reader writes.
+	intoNode string
+	// stated reads, out of one arm's database, the counts the check states this shape by, each
+	// with the least the check's figure allows. The chain states its length, which the walk is
+	// held to instead (chainSteps), so it states no count here.
+	stated func(t *testing.T, arm *costArm, shape *readCostShape) []readCostCount
+	// leastTuples is how many asserted tuples into intoNode this child's arm holds once its
+	// backfill has run. The inbound shape is stated in tuples, and the commit before this child
+	// has no store, so that figure is read on this child's arm alone.
+	leastTuples int64
+	// counts is what the shape holds on its arm (readCostCounts), printed before any reading is
+	// taken and held to the check's figures and to the other arm's (requireReadCostShapes).
+	counts []readCostCount
+}
+
+// readCostCount is one count of what a shape holds, read out of one arm's database. least is the
+// smallest count the check's words allow, and zero for a count the words give no figure for,
+// which is held to the other arm's count alone.
+type readCostCount struct {
+	what  string
+	count int64
+	least int64
 }
 
 // ───── the four corpora ───────────────────────────────────────────────────
@@ -139,6 +166,13 @@ func seedReadCostHeavy(t *testing.T, arm *costArm) *readCostShape {
 		document:    document,
 		documentRef: costDocumentAddress(t, arm, document),
 		into:        targets[0],
+		stated: func(t *testing.T, arm *costArm, shape *readCostShape) []readCostCount {
+			return []readCostCount{
+				{"block(s) of the document of 8,001 blocks", arm.count(t,
+					`select count(*) from document_blocks where artifact_id = $1`, shape.document), readCostHeavyBlocks},
+				{"level(s) that document nests", int64(costNestingDepth(t, arm, shape.document)), writeCostNesting},
+			}
+		},
 	}
 }
 
@@ -163,6 +197,11 @@ func seedReadCostInbound(t *testing.T, arm *costArm) *readCostShape {
 		document:    document,
 		documentRef: costDocumentAddress(t, arm, document),
 		into:        target,
+		leastTuples: readCostInbound,
+		stated: func(t *testing.T, arm *costArm, shape *readCostShape) []readCostCount {
+			return []readCostCount{{"reference(s) into the node the inbound read reads", arm.count(t,
+				`select count(*) from block_refs where to_kind = 'block' and to_id = $1`, shape.intoNode), readCostInbound}}
+		},
 	}
 }
 
@@ -234,9 +273,10 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 	phrase := readCostShapePhrase("person")
 	issue := createCostIssue(t, arm, readCostProject, "The person read against 50,000 rows of other history")
 	targets := costPointerTargets(t, arm, issue, "history-targets.md", costPointerCount(readCostHistoryBlocks))
+	history := make([]string, 0, readCostHistoryDocuments)
 	for index := range readCostHistoryDocuments {
-		costUploadDocumentAs(t, arm, readCostOther, issue, fmt.Sprintf("history%d.md", index),
-			costDocumentText(readCostHistoryBlocks, writeCostNesting, costPointerCount(readCostHistoryBlocks), targets, index, -1))
+		history = append(history, costUploadDocumentAs(t, arm, readCostOther, issue, fmt.Sprintf("history%d.md", index),
+			costDocumentText(readCostHistoryBlocks, writeCostNesting, costPointerCount(readCostHistoryBlocks), targets, index, -1)))
 	}
 	document := costUploadDocument(t, arm, issue, "person.md",
 		"# The document of the person's own shape\n\n"+
@@ -258,12 +298,16 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 		document:    document,
 		documentRef: costDocumentAddress(t, arm, document),
 		into:        targets[0],
+		stated: func(t *testing.T, arm *costArm, _ *readCostShape) []readCostCount {
+			return []readCostCount{{"block row(s) of the other person's history", arm.count(t,
+				`select count(*) from document_blocks where artifact_id = any($1::uuid[])`, history), readCostHistoryRows}}
+		},
 	}
 }
 
 // costUploadDocumentAs writes one version of a document as another person, so a corpus can hold
-// history that is not the person's whose page is read.
-func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, content string) {
+// history that is not the person's whose page is read, and answers its artifact id.
+func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, content string) string {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"name": name, "content": content})
 	if err != nil {
@@ -273,17 +317,32 @@ func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, conten
 	if answer.status != http.StatusCreated {
 		t.Fatalf("%s: upload %s as %s: status %d: %s", arm.name, name, login, answer.status, answer.body)
 	}
+	var created struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(answer.body, &created); err != nil || created.Artifact.ID == "" {
+		t.Fatalf("%s: upload %s as %s: %v: %s", arm.name, name, login, err, answer.body)
+	}
+	return created.Artifact.ID
 }
 
 // ───── what each shape holds, and what each read addresses on it ──────────
 
-// settleReadCost finishes each shape once its arm has indexed it: it resolves the addresses the
-// reads need, which are the server's own answers and not a guess, and reads back what each shape
-// holds.
+// settleReadCost finishes each shape once its arm has indexed it and stands in the state its
+// first readings are taken in: it resolves the addresses the reads need, which are the server's
+// own answers and not a guess, and reads back what each shape holds. The addresses serve both
+// states of this child's arm, because the backfill names the node of a row and moves no row.
 func settleReadCost(t *testing.T, arm *costArm, shapes []*readCostShape) {
 	t.Helper()
 	for _, shape := range shapes {
-		shape.outOf = readCostPointerAt(t, arm, shape.into)
+		into := readCostEdges(t, arm, "to", shape.into)
+		if into.Node.Kind != refs.BlockNodeKind || into.Node.ID == "" {
+			t.Fatalf("%s: the reference read of %s names the node %+v, want a block's", arm.name, shape.into, into.Node)
+		}
+		shape.intoNode = into.Node.ID
+		shape.outOf = readCostPointerAt(t, arm, shape.into, into)
 		if shape.chain == "" {
 			shape.chain = shape.outOf
 		}
@@ -294,38 +353,99 @@ func settleReadCost(t *testing.T, arm *costArm, shapes []*readCostShape) {
 			t.Fatalf("%s: the walk down %q takes %d read(s), and the shape states a chain of %d",
 				arm.name, shape.name, steps, shape.chainSteps)
 		}
-		shape.rows = []string{
-			fmt.Sprintf("%d block(s) of the shape's own documents", arm.count(t,
-				`select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id where a.issue_key = $1`, shape.issue)),
-			fmt.Sprintf("%d block reference(s)", arm.count(t,
-				`select count(*) from block_refs r join artifacts a on a.id = r.artifact_id where a.issue_key = $1`, shape.issue)),
-			fmt.Sprintf("%d comment(s)", arm.count(t, `select count(*) from comments where issue_key = $1`, shape.issue)),
-		}
-		if arm.head {
-			shape.rows = append(shape.rows,
-				fmt.Sprintf("%d tuple(s) into the node the inbound read reads", arm.count(t,
-					`select count(*) from graph_tuples where to_kind = 'block' and to_id = $1 and asserted`,
-					readCostBlockID(shape.into))))
-		}
-		t.Logf("%s: the shape %q holds %s", arm.name, shape.name, strings.Join(shape.rows, ", "))
+		shape.counts = readCostCounts(t, arm, shape)
 	}
 }
 
-// readCostBlockID is the block id a `dispatch://...#b-<id>` address names.
-func readCostBlockID(ref string) string {
-	if cut := strings.LastIndex(ref, "#b-"); cut >= 0 {
-		return ref[cut+len("#b-"):]
+// readCostCounts is what one shape holds on one arm: the rows of the shape's own issue that its
+// reads run over, and the counts the check states the shape by. It prints them, because a reader
+// of the table has to know what each reading was taken over.
+func readCostCounts(t *testing.T, arm *costArm, shape *readCostShape) []readCostCount {
+	t.Helper()
+	counts := []readCostCount{
+		{what: "block(s) of the shape's own documents", count: arm.count(t,
+			`select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id where a.issue_key = $1`, shape.issue)},
+		{what: "block reference(s) out of them", count: arm.count(t,
+			`select count(*) from block_refs r join artifacts a on a.id = r.artifact_id where a.issue_key = $1`, shape.issue)},
+		{what: "comment(s)", count: arm.count(t, `select count(*) from comments where issue_key = $1`, shape.issue)},
 	}
-	return ref
+	if shape.stated != nil {
+		counts = append(counts, shape.stated(t, arm, shape)...)
+	}
+	printed := make([]string, len(counts))
+	for index, count := range counts {
+		printed[index] = fmt.Sprintf("%d %s", count.count, count.what)
+	}
+	t.Logf("%s: the shape %q holds %s, and its chain read takes %d read(s)",
+		arm.name, shape.name, strings.Join(printed, ", "), shape.chainSteps)
+	return counts
+}
+
+// requireReadCostShapes holds each arm's corpus to the shapes c-read-cost states, and the two arms
+// to one corpus. A document of fewer than 8,001 blocks, or nesting fewer than eight deep, a node
+// with fewer than 5,000 references into it, or fewer than 50,000 rows of another person's history
+// is not the shape the check measures. A count on one arm that differs from the same count on the
+// other means the two arms are read over two corpora, and a comparison of their readings then
+// compares nothing. Either ends the run before a reading is taken, naming every count that failed.
+func requireReadCostShapes(t *testing.T, state string, head, base *costArm, shapes map[*costArm][]*readCostShape) {
+	t.Helper()
+	var failed []string
+	for index, shape := range shapes[head] {
+		other := shapes[base][index]
+		for _, held := range []struct {
+			arm   *costArm
+			shape *readCostShape
+		}{{head, shape}, {base, other}} {
+			for _, count := range held.shape.counts {
+				if count.count < count.least {
+					failed = append(failed, fmt.Sprintf("%s: %q holds %d %s, and the check states at least %d",
+						held.arm.name, shape.name, count.count, count.what, count.least))
+				}
+			}
+		}
+		if len(shape.counts) != len(other.counts) {
+			failed = append(failed, fmt.Sprintf("%q: %s reads %d count(s) and %s reads %d",
+				shape.name, head.name, len(shape.counts), base.name, len(other.counts)))
+			continue
+		}
+		for at, count := range shape.counts {
+			if count.count != other.counts[at].count {
+				failed = append(failed, fmt.Sprintf("%q holds %d %s on %s and %d on %s",
+					shape.name, count.count, count.what, head.name, other.counts[at].count, base.name))
+			}
+		}
+	}
+	if len(failed) > 0 {
+		t.Fatalf("%s, %s: the corpora are not the shapes c-read-cost states, so no reading of them is the measurement it asks for:\n%s",
+			head.name, state, strings.Join(failed, "\n"))
+	}
+	t.Logf("%s, %s: each shape holds at least what c-read-cost states, and every count is the same on both arms", head.name, state)
+}
+
+// requireReadCostTuples holds this child's arm, once its backfill has run, to the tuples the
+// inbound shape is stated in: at least 5,000 asserted tuples into the node its tuples-into read
+// reads. The commit before this child holds no store, so its corpus is held to the references
+// alone (requireReadCostShapes).
+func requireReadCostTuples(t *testing.T, head *costArm, shapes []*readCostShape) {
+	t.Helper()
+	for _, shape := range shapes {
+		tuples := head.count(t,
+			`select count(*) from graph_tuples where to_kind = 'block' and to_id = $1 and asserted`, shape.intoNode)
+		t.Logf("%s, %s: %d asserted tuple(s) into %s, the node the tuples-into read of %q reads",
+			head.name, readCostAfter, tuples, shape.intoNode, shape.name)
+		if tuples < shape.leastTuples {
+			t.Fatalf("%s, %s: %q holds %d asserted tuple(s) into %s, and the check states at least %d",
+				head.name, readCostAfter, shape.name, tuples, shape.intoNode, shape.leastTuples)
+		}
+	}
 }
 
 // readCostPointerAt is the address of one block that points at the block ref names, read out of
 // that block's own inbound edges: the tuples-out read and the chain walk both start there.
-func readCostPointerAt(t *testing.T, arm *costArm, ref string) string {
+func readCostPointerAt(t *testing.T, arm *costArm, ref string, edges model.GraphReferences) string {
 	t.Helper()
-	edges := readCostEdges(t, arm, "to", ref)
 	for _, edge := range edges.Edges {
-		if edge.Node.Kind == "block" && edge.Node.Ref != "" {
+		if edge.Node.Kind == refs.BlockNodeKind && edge.Node.Ref != "" {
 			return edge.Node.Ref
 		}
 	}
@@ -436,184 +556,219 @@ func readCostWalkOnce(t *testing.T, arm *costArm, shape *readCostShape) (time.Du
 	return total, steps
 }
 
-// ───── no event outruns its node ──────────────────────────────────────────
+// ───── the state before the backfill ──────────────────────────────────────
 
-// readCostEventNodeSequence proves no event is published before the transaction that wrote it
-// commits, and none at all for a transaction that rolled back.
-//
-// One connection of the test's own holds a transaction open: it appends an event through the
-// real broker and writes a node through the real store writer under that event's id. A second
-// connection - the server's own pool, through its event-log route, and a connection of the
-// test's own for the node - reads while that transaction is open and finds neither the event nor
-// the node. The transaction commits, and the event and its node are both there at once. The run
-// then does the whole sequence again with a rollback, and neither ever arrives. So a publish
-// before the commit, and a publish for a transaction that rolled back, each fail here.
-func readCostEventNodeSequence(t *testing.T, arm *costArm, issue string) {
+// readCostProjectionTables are the three tables whose rows graph_edges answers from an old arm
+// while the row names no node, and from the store's own arm once it names one.
+var readCostProjectionTables = []string{"comments", "document_blocks", "block_refs"}
+
+// readCostBeforeTheBackfill puts this child's arm in the state between its migration and its
+// backfill, which is also what a pod of the release before writes during a roll: every row of
+// the corpus as that release writes it, naming no node, and the store holding nothing the
+// backfill writes for those rows. The view then answers every row from its old arms, which is
+// the first of the two readings R21 and R22 ask for. The run holds the arm to that state before
+// it reads anything, and analyses what the clearing left, as it analyses the corpus it wrote.
+func readCostBeforeTheBackfill(t *testing.T, head *costArm) {
 	t.Helper()
-	for _, ending := range []string{"commit", "rollback"} {
-		ctx := context.Background()
-		before := readCostHighestEvent(t, arm)
-		conn, err := arm.pool.Acquire(ctx)
-		if err != nil {
-			t.Fatalf("take the writing connection: %v", err)
-		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			conn.Release()
-			t.Fatalf("open the writing transaction: %v", err)
-		}
-		broker := events.NewBroker()
-		actor := model.Actor{Kind: "user", ID: costLogin}
-		appended, err := broker.Append(ctx, tx, model.Event{
-			IssueKey: &issue, Type: "comment.created", Actor: actor,
-			Payload: map[string]any{"reason": "the event-and-node sequence of c-read-cost"},
-		})
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			conn.Release()
-			t.Fatalf("append the event: %v", err)
-		}
-		node := graphstore.Node{
-			Kind: "comment", ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", appended.ID),
-			Supertag: "comment", Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
-			MadeAt: time.Now().UTC(), MadeBy: actor, SourceEvent: appended.ID,
-		}
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
-			_ = tx.Rollback(ctx)
-			conn.Release()
-			t.Fatalf("write the event's node: %v", err)
-		}
-		// The transaction is open. A second connection sees neither side of it. What is held
-		// against the stream is this event's own id and not an empty answer: the server's own
-		// loops write events of their own while this runs, and an event of theirs on the
-		// stream is no failure of this one's.
-		if readCostEventOnTheStream(t, arm, before, appended.ID) {
-			t.Errorf("the event appended at %d was on the event stream while the transaction that appended it was still open, so an event outran its commit",
-				appended.ID)
-		}
-		if readCostNodeIsThere(t, arm, node) {
-			t.Errorf("the node of an event not yet committed is readable on a second connection")
-		}
-
-		if ending == "commit" {
-			if err := tx.Commit(ctx); err != nil {
-				conn.Release()
-				t.Fatalf("commit the writing transaction: %v", err)
-			}
-		} else if err := tx.Rollback(ctx); err != nil {
-			conn.Release()
-			t.Fatalf("roll the writing transaction back: %v", err)
-		}
-		conn.Release()
-
-		onTheStream := readCostEventOnTheStream(t, arm, before, appended.ID)
-		readable := readCostNodeIsThere(t, arm, node)
-		switch ending {
-		case "commit":
-			if !onTheStream {
-				t.Errorf("the committed event %d never arrived on the event stream", appended.ID)
-			}
-			if !readable {
-				t.Errorf("the committed event %d arrived with its node unreadable, so an event outran its node", appended.ID)
-			}
-			t.Logf("the event appended at %d arrived on a second connection the moment its transaction committed, with its node readable at once", appended.ID)
-		case "rollback":
-			if onTheStream {
-				t.Errorf("the event %d of a rolled-back transaction arrived on the event stream", appended.ID)
-			}
-			if readable {
-				t.Errorf("the node of a rolled-back transaction is readable")
-			}
-			t.Logf("the same sequence ending in a rollback published no event at all (the id it would have taken was %d) and left no node", appended.ID)
-		}
+	readCostTakeTheStoreOff(t, head)
+	requireReadCostNodes(t, head, readCostBefore, false)
+	head.analyze(t)
+	var kinds []string
+	if err := head.pool.QueryRow(context.Background(),
+		`select coalesce(array_agg(distinct kind order by kind), '{}') from graph_nodes`).Scan(&kinds); err != nil {
+		t.Fatalf("%s: read the node kinds the store holds: %v", head.name, err)
 	}
+	t.Logf("%s, %s: the store holds nodes of the kinds %v alone%s", head.name, readCostBefore, kinds, costStoreCounts(t, head))
 }
 
-// readCostHighestEvent is the event log's highest id now, which the reads below page from.
-func readCostHighestEvent(t *testing.T, arm *costArm) int64 {
-	t.Helper()
-	return arm.count(t, `select coalesce(max(id), 0) from events`)
-}
-
-// readCostEventOnTheStream reports whether the event stream, read on the server's own
-// connection past the id after, answers the event id: the read a reader of the log takes.
-func readCostEventOnTheStream(t *testing.T, arm *costArm, after, id int64) bool {
-	t.Helper()
-	return slices.Contains(readCostEventsAfter(t, arm, after), id)
-}
-
-// readCostEventsAfter is what that stream answers past after.
-func readCostEventsAfter(t *testing.T, arm *costArm, after int64) []int64 {
-	t.Helper()
-	read := arm.server.call(t, http.MethodGet,
-		"/api/v1/events/log?after="+strconv.FormatInt(after, 10), "", http.StatusOK)
-	var answer []struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(read, &answer); err != nil {
-		t.Fatalf("read the event log past %d: %v: %s", after, err, read)
-	}
-	ids := make([]int64, 0, len(answer))
-	for _, event := range answer {
-		ids = append(ids, event.ID)
-	}
-	return ids
-}
-
-// readCostNodeIsThere reports whether the node is readable on a connection of the test's own,
-// which is not the one the writing transaction holds.
-func readCostNodeIsThere(t *testing.T, arm *costArm, node graphstore.Node) bool {
+// readCostTakeTheStoreOff is graph_edges_cutover_test.go's unwriteTheStoreOfADocument over the
+// whole corpus, which is all this database holds. It takes off every column this child's
+// migrations add to a projection row and the release before leaves null (each row's node, a
+// block's parent, a document's store version and the backfill's mark), and every node and tuple
+// of the kinds the backfill writes for those rows: blocks, comments and their authors, and the
+// sessions, roles and pages beside them. The type nodes the migrations seed stay, as they stand
+// before any backfill. It is the test's own fixture and no production path.
+func readCostTakeTheStoreOff(t *testing.T, arm *costArm) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := arm.pool.Acquire(ctx)
+	tx, err := arm.pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("take the reading connection: %v", err)
+		t.Fatalf("%s: begin taking the store off the corpus: %v", arm.name, err)
 	}
-	defer conn.Release()
-	_, found, err := graphstore.ReadNode(ctx, conn.Conn(), node.Kind, node.ID)
-	if err != nil {
-		t.Fatalf("read the node %s %s: %v", node.Kind, node.ID, err)
+	defer tx.Rollback(ctx)
+	// The rows go first: each names its node under a foreign key, so a node deleted while a row
+	// still names it would be refused.
+	for _, statement := range []string{
+		`update comments set node_kind = null, node_address = null`,
+		`update document_blocks set node_kind = null, node_address = null, parent_block_id = null`,
+		`update block_refs set node_kind = null, node_address = null`,
+		`update document_block_versions set store_version = null, store_owed_at = null`,
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: take the store's columns off the corpus (%s): %v", arm.name, statement, err)
+		}
 	}
-	return found
+	kinds := []string{refs.BlockNodeKind, graphstore.KindComment, graphstore.KindPerson,
+		graphstore.KindSession, graphstore.KindRole, graphstore.KindPage}
+	for _, statement := range []string{
+		`delete from graph_tuples where from_kind = any($1) or to_kind = any($1)`,
+		`delete from graph_nodes where kind = any($1)`,
+	} {
+		if _, err := tx.Exec(ctx, statement, kinds); err != nil {
+			t.Fatalf("%s: take the store's rows of the corpus away (%s): %v", arm.name, statement, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("%s: commit taking the store off the corpus: %v", arm.name, err)
+	}
+}
+
+// requireReadCostNodes holds this child's arm to the state its readings are named by: before the
+// backfill no row of the three projection tables names its node, and after it every row does. It
+// prints how many rows of each table it read and fails on a table holding none, because a rule
+// over every row of an empty table holds of nothing.
+func requireReadCostNodes(t *testing.T, arm *costArm, state string, named bool) {
+	t.Helper()
+	held := make([]string, 0, len(readCostProjectionTables))
+	for _, table := range readCostProjectionTables {
+		rows := arm.count(t, `select count(*) from `+table)
+		naming := arm.count(t, `select count(*) from `+table+` where node_kind is not null`)
+		switch {
+		case rows == 0:
+			t.Fatalf("%s, %s: %s holds no row, so a rule over the node_kind of every row of the corpus holds of nothing",
+				arm.name, state, table)
+		case !named && naming != 0:
+			t.Fatalf("%s, %s: %d of the %d %s row(s) name their node (node_kind is not null), want none: graph_edges answers such a row from the store's own arm, so a reading of it is no reading of the old arms' per-row test",
+				arm.name, state, naming, rows, table)
+		case named && naming != rows:
+			t.Fatalf("%s, %s: %d of the %d %s row(s) name no node (node_kind is null), want none: graph_edges answers such a row from an old arm, so a reading of it is no reading of the store's own arm",
+				arm.name, state, rows-naming, rows, table)
+		}
+		held = append(held, fmt.Sprintf("%d of the %d %s row(s) name their node", naming, rows, table))
+	}
+	t.Logf("%s, %s: %s", arm.name, state, strings.Join(held, ", "))
+}
+
+// ───── the measurement ────────────────────────────────────────────────────
+
+// readCostMeasure takes every reading of the eight reads over the four shapes with this child's
+// arm in one state, interleaved with the same reads at the commit before this child, prints them
+// all, and holds each read's p99 to the budget. The commit before this child is read again beside
+// each state, because two readings are compared only where they were taken together, under one
+// load of this pod. Every line and every failure names the state.
+func readCostMeasure(t *testing.T, state string, head, base *costArm, shapes map[*costArm][]*readCostShape) {
+	t.Helper()
+	// No tick of either server's own runs inside a measured window. The lease goes back once
+	// this state's readings are taken, because the backfill between the two states leaves a
+	// mark that this child's own reconciliation drains.
+	for _, arm := range []*costArm{head, base} {
+		defer costHoldBlockIndex(t, arm)()
+	}
+	headName := head.name + ", " + state
+	readings := []costReading{}
+	held := map[string]map[string]costReading{}
+	for _, read := range readCostReads() {
+		held[read.name] = map[string]costReading{}
+		for shapeIndex, shape := range shapes[head] {
+			measured := []*costArm{head, base}
+			if read.headOnly {
+				measured = []*costArm{head}
+			}
+			taken := costInterleaved(t, read.name, shape.name, costReadReadings, measured, func(subject *costArm, _ int) time.Duration {
+				subject.ready(t)
+				return read.take(t, subject, shapes[subject][shapeIndex])
+			})
+			for _, subject := range measured {
+				reading := taken[subject]
+				if subject == head {
+					reading.arm = headName
+				}
+				readings = append(readings, reading)
+				held[read.name][shape.name+" @ "+subject.name] = reading
+			}
+		}
+	}
+	t.Logf("the readings with %s:", headName)
+	costTableOf(t, readings)
+
+	for _, read := range readCostReads() {
+		for _, shape := range shapes[head] {
+			here := held[read.name][shape.name+" @ "+head.name]
+			if read.headOnly {
+				t.Logf("%s over %q, %s: p99 %.1f ms. "+
+					"%s serves no such read - GET /api/v1/people/{login}/nodes "+
+					"is this child's own route - so this reading is held to no rise: there is no reading "+
+					"at the older arm to rise from.",
+					read.name, shape.name, headName, costMilliseconds(here.p99()), base.name)
+				continue
+			}
+			before := held[read.name][shape.name+" @ "+base.name]
+			rise := here.p99() - before.p99()
+			t.Logf("%s over %q, %s: p99 %.1f ms against %.1f ms at %s, a rise of %.1f ms against the %s budget",
+				read.name, shape.name, headName, costMilliseconds(here.p99()),
+				costMilliseconds(before.p99()), base.name, costMilliseconds(rise), costBudget)
+			if rise > costBudget {
+				t.Errorf("%s over %q, %s: p99 %.1f ms against %.1f ms at %s, a rise of %.1f ms, over the %s budget (this child's readings %s; %s's %s)",
+					read.name, shape.name, headName, costMilliseconds(here.p99()),
+					costMilliseconds(before.p99()), base.name, costMilliseconds(rise), costBudget,
+					here.printed(), base.name, before.printed())
+			}
+		}
+	}
 }
 
 // ───── the run ────────────────────────────────────────────────────────────
 
-// No read this child changes gets slower, and no event outruns its node.
+// No read this child changes gets slower.
 //
 // Eight reads are measured over each of four corpora, at this child's head and at the commit
 // this branch forked from, in one run, interleaved, over one corpus written to each arm by one
-// seeding pass. This child's arm is read after its backfill, where every projection row names
-// its node and the store's own arm of graph_edges answers it. Every
-// reading is printed and the statistic is a real order statistic by nearest rank. It takes 200
-// readings of each read on each arm, as the root's R22 requires, because p99 by nearest rank is
-// the ceil(0.99 x n)th: at twenty readings, and at fifty, that is the slowest of them, so one
+// seeding pass. Each corpus is held to the shape the check states, and the two arms to the same
+// counts, before anything is read. This child's arm is read in two states. Before its backfill
+// no projection row names its node, so the view answers every row from its old arms and each
+// reading carries their per-row test; that is the state between the migration and the backfill,
+// and during a roll. After it every row names its node, so the store's own arm answers it and
+// each reading carries that arm's join to its projection row. Every reading is printed and the
+// statistic is a real order statistic by nearest rank. It takes 200 readings of each read on
+// each arm in each state, as the root's R22 requires, because p99 by nearest rank is the
+// ceil(0.99 x n)th: at twenty readings, and at fifty, that is the slowest of them, so one
 // scheduling hiccup of this pod decides a cell on its own. At two hundred it is the 198th. A read
-// whose p99 rises by more than 100 ms fails, and the failure prints the read, the shape and both
-// readings.
+// whose p99 rises by more than 100 ms in either state fails, and the failure prints the read, the
+// shape, the state and both readings.
 //
-// The run then reads each notification against its own node from a second connection, which is
-// the second half of this check: an event is on no reader's stream before the transaction that
-// appended it commits, it is there with its node the moment it does, and a transaction that
-// rolled back publishes nothing at all.
+// The name is the check's. Its second half, that no event outruns its node, is
+// TestNoEventOutrunsItsNode in internal/dispatch/api, which holds the server's own comment write
+// at its seam before the commit, and the check's run names both tests.
 func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) {
 	t.Log(costGVisorNote)
 	t.Log("how each arm is driven: both arms are server processes of their own build, each serving " +
 		"a database of its own which that build migrated at boot, and each is driven over its own " +
 		"HTTP API by this test, which encodes every request before the clock starts and reads every " +
-		"answer to its end before it stops. This child's arm is read after its backfill, so every " +
-		"reading of it is a reading of the store's own arm.")
+		"answer to its end before it stops. This child's arm is read twice: before its backfill, with " +
+		"the store taken off the corpus so that every row is answered from the old arms of graph_edges, " +
+		"and after it, when the store's own arm answers every row. The commit before this child is " +
+		"read beside each.")
 
 	listener := costEnvoy(t)
 	listener.Accept(true)
 	head, base := startCostArms(t, listener.URL)
+	arms := []*costArm{head, base}
 	shapes := map[*costArm][]*readCostShape{}
-	for _, arm := range []*costArm{head, base} {
+	for _, arm := range arms {
 		shapes[arm] = seedReadCost(t, arm)
 	}
-	costRunBackfill(t, head)
-	for _, arm := range []*costArm{head, base} {
+	// Each arm indexes what it was sent before the store is taken off it, so that no pass of
+	// this child's own writes a node after the clearing.
+	for _, arm := range arms {
 		costBlockIndexDrained(t, arm, readCostIndexWait)
+	}
+	// The seed analysed each corpus before its arm's own tick had indexed the documents a write
+	// defers, so the commit before this child is analysed again over what it now holds, as this
+	// child's arm is analysed in each of its two states.
+	base.analyze(t)
+
+	readCostBeforeTheBackfill(t, head)
+	for _, arm := range arms {
 		t.Logf("%s: the whole corpus holds %d document block(s), %d block reference(s) and %d comment(s)%s",
 			arm.name,
 			arm.count(t, `select count(*) from document_blocks`),
@@ -622,72 +777,19 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 			costStoreCounts(t, arm))
 		settleReadCost(t, arm, shapes[arm])
 	}
+	requireReadCostShapes(t, readCostBefore, head, base, shapes)
+	readCostMeasure(t, readCostBefore, head, base, shapes)
 
-	// The two subjects: this child's arm and the older build.
-	subjects := []*costArm{head, base}
-	corpus := func(subject *costArm) []*readCostShape {
-		if subject.head {
-			return shapes[head]
-		}
-		return shapes[base]
+	costRunBackfill(t, head)
+	requireReadCostNodes(t, head, readCostAfter, true)
+	// The statistics of the clearing are of an empty store, and the backfill filled it again.
+	head.analyze(t)
+	for _, shape := range shapes[head] {
+		shape.counts = readCostCounts(t, head, shape)
 	}
-
-	// No tick of either server's own runs inside a measured window.
-	for _, arm := range []*costArm{head, base} {
-		defer costHoldBlockIndex(t, arm)()
-	}
-
-	readings := []costReading{}
-	held := map[string]map[string]costReading{}
-	for _, read := range readCostReads() {
-		held[read.name] = map[string]costReading{}
-		for shapeIndex := range shapes[head] {
-			measured := subjects
-			if read.headOnly {
-				measured = []*costArm{head}
-			}
-			shapeName := shapes[head][shapeIndex].name
-			taken := costInterleaved(t, read.name, shapeName, costReadReadings, measured, func(subject *costArm, _ int) time.Duration {
-				subject.ready(t)
-				return read.take(t, subject, corpus(subject)[shapeIndex])
-			})
-			for _, subject := range measured {
-				reading := taken[subject]
-				readings = append(readings, reading)
-				held[read.name][shapeName+" @ "+subject.name] = reading
-			}
-		}
-	}
-	costTableOf(t, readings)
-
-	for _, read := range readCostReads() {
-		for shapeIndex := range shapes[head] {
-			shapeName := shapes[head][shapeIndex].name
-			if read.headOnly {
-				here := held[read.name][shapeName+" @ "+head.name]
-				t.Logf("%s over %q: p99 %.1f ms. "+
-					"The commit before this child serves no such read - GET /api/v1/people/{login}/nodes "+
-					"is this child's own route - so this reading is held to no rise: there is no reading "+
-					"at the older arm to rise from.",
-					read.name, shapeName, costMilliseconds(here.p99()))
-				continue
-			}
-			before := held[read.name][shapeName+" @ "+base.name]
-			here := held[read.name][shapeName+" @ "+head.name]
-			rise := here.p99() - before.p99()
-			t.Logf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms against the %s budget",
-				read.name, shapeName, head.name, costMilliseconds(here.p99()),
-				costMilliseconds(before.p99()), costMilliseconds(rise), costBudget)
-			if rise > costBudget {
-				t.Errorf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (this child's readings %s; the commit before's %s)",
-					read.name, shapeName, head.name, costMilliseconds(here.p99()),
-					costMilliseconds(before.p99()), costMilliseconds(rise), costBudget,
-					here.printed(), before.printed())
-			}
-		}
-	}
-
-	readCostEventNodeSequence(t, head, shapes[head][0].issue)
+	requireReadCostShapes(t, readCostAfter, head, base, shapes)
+	requireReadCostTuples(t, head, shapes[head])
+	readCostMeasure(t, readCostAfter, head, base, shapes)
 }
 
 // readCostShapePhrase is the word one shape's main document carries and no other document of the
