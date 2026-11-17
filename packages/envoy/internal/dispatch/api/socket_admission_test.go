@@ -260,8 +260,8 @@ func TestASocketWhoseCallerStopsResolvingDuringTheLoadIsAnsweredAsItsLoadAndNotA
 			// A socket the heartbeat ended is refused with the class of the heartbeat's cause on
 			// the document service's line (docs' refuseUnservedSocket), which carries no cause
 			// otherwise.
-			for line := range strings.Lines(logged.String()) {
-				if strings.Contains(line, "a document socket was refused") && strings.Contains(line, " cause=") {
+			for line := range strings.Lines(logged.Lines("a document socket was refused")) {
+				if strings.Contains(line, " cause=") {
 					t.Errorf("a heartbeat that found the pool busy ended the socket: %s", line)
 				}
 			}

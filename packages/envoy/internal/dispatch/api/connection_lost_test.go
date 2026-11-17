@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,10 +17,9 @@ import (
 // insertEditBody is the body of an edit that appends a paragraph, which changes the document, so
 // the edit writes a version and reads its two reports in its transaction (editArtifact).
 func insertEditBody(markdown string) map[string]any {
-	return map[string]any{
-		"ops":   []map[string]string{{"op": "insert", "after": "end", "markdown": markdown}},
-		"actor": sessionActor(),
-	}
+	body := insertAtEnd(markdown)
+	body["actor"] = sessionActor()
+	return body
 }
 
 // INFRA-592's ten-times freeze, reproduced: the database stops answering as a document edit rolls
@@ -114,13 +111,7 @@ func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *t
 	if busy := logs.Lines("request found the database busy"); !strings.Contains(busy, "conn closed") {
 		t.Fatalf("logged %q, want the line to name the closed connection", busy)
 	}
-	var versions int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from artifact_versions where artifact_id = $1
-	`, issue.PrimaryArtifactID).Scan(&versions); err != nil {
-		t.Fatalf("count the document's versions: %v", err)
-	}
-	if versions != 1 {
+	if versions := specVersionCount(t, database, issue.PrimaryArtifactID); versions != 1 {
 		t.Fatalf("the document holds %d versions, want the seeded one alone: the refused edit committed", versions)
 	}
 }
@@ -129,56 +120,29 @@ func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *t
 // and nothing it holds says whether Postgres applied it before the session ended. It stays 500
 // COMMIT_OUTCOME_UNKNOWN with no Retry-After (store.ErrCommitTimeout) and the ERROR line naming
 // the unknown outcome, never the retryable 503 a connection lost before the COMMIT is answered
-// with: a client that sent it again could write twice. The COMMIT is held in a deferred trigger
-// on doc_updates, which every edit appends to, and its backend is ended with pg_terminate_backend
-// while it waits there.
+// with: a client that sent it again could write twice. The COMMIT is held at the test's lock
+// (holdCommits), and its backend is ended with pg_terminate_backend while it waits there.
 func TestAnEditWhoseBackendIsTerminatedDuringItsCommitIsAnOutcomeNobodyKnows(t *testing.T) {
 	logs := captureDebugLog(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	exec := func(what, sql string, args ...any) {
-		t.Helper()
-		if _, err := database.Pool.Exec(context.Background(), sql, args...); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	}
-	exec("create the commit gate", `create table tester_commit_gate (armed boolean)`)
-	exec("create the slow trigger's function", `create function tester_slow_commit() returns trigger language plpgsql as $$
-		begin
-			if exists (select 1 from tester_commit_gate) then perform pg_sleep(30); end if;
-			return null;
-		end $$`)
-	exec("create the slow trigger", `create constraint trigger tester_slow_commit after insert on doc_updates
-		deferrable initially deferred for each row execute function tester_slow_commit()`)
 	issue := createInteractionIssue(t, handler, "TEST", "The edit's backend is terminated at its COMMIT", "Before.")
-	exec("arm the commit gate", `insert into tester_commit_gate values (true)`)
-	// Disarmed however the test ends, so the document service's shutdown appends nothing slowly.
-	t.Cleanup(func() { _, _ = database.Pool.Exec(context.Background(), `delete from tester_commit_gate`) })
+	release := holdCommits(t, database)
 
-	data, err := json.Marshal(insertEditBody("Written as its COMMIT's backend is terminated."))
-	if err != nil {
-		t.Fatalf("encode the edit: %v", err)
-	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", bytes.NewReader(data))
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Authorization", "Bearer agent-token")
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		answered <- response
+		answered <- sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits",
+			insertEditBody("Written as its COMMIT's backend is terminated."))
 	}()
+	waitForHeldCommit(t, database)
 	var backend int32
-	pollUntil(t, 10*time.Second, "the edit's COMMIT waits in the slow trigger", func() bool {
-		return database.Pool.QueryRow(context.Background(), `
-			select pid from pg_stat_activity
-			where query = 'commit' and wait_event = 'PgSleep' and application_name = $1
-		`, "dispatch-"+store.RequestsPool).Scan(&backend) == nil
-	})
 	var ended bool
-	if err := database.Pool.QueryRow(context.Background(), `select pg_terminate_backend($1, 5000)`, backend).Scan(&ended); err != nil || !ended {
+	if err := database.Pool.QueryRow(context.Background(), `
+		select pid, pg_terminate_backend(pid, 5000) from pg_stat_activity
+		where lower(query) = 'commit' and wait_event = 'advisory' and application_name = $1
+	`, "dispatch-"+store.RequestsPool).Scan(&backend, &ended); err != nil || !ended {
 		t.Fatalf("terminate the COMMIT's backend %d: ended=%v err=%v", backend, ended, err)
 	}
-	exec("disarm the commit gate", `delete from tester_commit_gate`)
+	release()
 	response := awaitResponse(t, answered)
 
 	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"COMMIT_OUTCOME_UNKNOWN"`) {

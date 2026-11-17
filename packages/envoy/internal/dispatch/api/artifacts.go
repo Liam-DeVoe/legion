@@ -790,7 +790,6 @@ func (s *server) storeArtifact(
 		if target.IssueKey != nil {
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
-		var err error
 		if superseded, err = s.supersededApprovalAdvice(
 			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
 		); err != nil {

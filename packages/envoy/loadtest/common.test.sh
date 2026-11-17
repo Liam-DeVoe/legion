@@ -860,7 +860,7 @@ quiet_with() {
 }
 
 # case_quiet_box: a step starts only on a box at most LOADTEST_MAX_BUSY_BEFORE busy (default 0.10,
-# the bar itself included), reading every 30 s while the box is busier, for up to
+# the bar itself included), reading every 30 s while the box is busier, until the pauses add up to
 # LOADTEST_QUIET_WAIT seconds (default 900); past that it is refused, naming every reading, the bar
 # and the wait. A bar or a wait that is not one is refused before any reading, and so is a reading
 # that is not a fraction.

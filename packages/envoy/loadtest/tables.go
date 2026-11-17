@@ -543,13 +543,13 @@ func boxBusyBeforeCell(m *metaFile) string {
 	if m == nil || (m.BoxBusyBefore == nil && m.BoxBusyGate == nil) {
 		return "-"
 	}
-	percent := func(v *float64) string {
+	reading := func(v *float64) string {
 		if v == nil {
 			return "-"
 		}
 		return num(100**v, 0) + "%"
 	}
-	return percent(m.BoxBusyBefore) + " / " + percent(m.BoxBusyGate)
+	return reading(m.BoxBusyBefore) + " / " + reading(m.BoxBusyGate)
 }
 
 // memStatsHeapMark follows the heap cell of an older run's step, whose summary.json holds

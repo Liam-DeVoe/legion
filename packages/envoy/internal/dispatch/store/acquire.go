@@ -185,7 +185,7 @@ func IsPoolBusy(err error) bool { return errors.Is(err, ErrPoolBusy) }
 // with its connection, so nothing of it committed, and it never passes through this package's
 // pools in the first place - it runs on the pgx transaction the caller holds.
 var ErrStatementOutcomeUnknown = errors.New(
-	"the database stopped answering on the connection after this statement reached it; it ran outside a transaction, so its outcome is unknown",
+	"this statement reached the database, and the database stopped answering or the connection ended before its answer came; it ran outside a transaction, so its outcome is unknown",
 )
 
 // IsStatementOutcomeUnknown reports whether err is a statement run outside a transaction whose
@@ -227,7 +227,7 @@ func stalled(ctx context.Context, err error) bool {
 //     transaction; commitTimedOut names that one ErrCommitTimeout, whatever shape the stall
 //     took - the commit's own bound passing, or the socket timing out under it.
 func DatabaseStalled(ctx context.Context, err error) bool {
-	return stalled(ctx, err) && !errors.Is(err, ErrStatementOutcomeUnknown) && !errors.Is(err, ErrCommitTimeout)
+	return stalled(ctx, err) && !outcomeUnknown(err)
 }
 
 // connectionLost reports whether err is the connection to Postgres having ended under the call, in
@@ -239,9 +239,7 @@ func DatabaseStalled(ctx context.Context, err error) bool {
 //     answer. pgconn closes a connection on every failure of a call it cannot recover from - a
 //     read cut off by a context or a bound (its DeadlineContextWatcherHandler puts a deadline on
 //     the socket), a socket that broke, a rollback that failed (pgx's Conn.die) - so every call
-//     on that connection after the one that met the failure meets this. A write in INFRA-592's
-//     ten-times freeze met it on its settlement record, after its own report's savepoint rollback
-//     ran out its bound and was dropped unread;
+//     on that connection after the one that met the failure meets this;
 //   - a *pgconn.PgError of severity FATAL or PANIC: Postgres ended the session - an
 //     administrator's pg_terminate_backend (57P01), the idle-in-transaction bound
 //     (RequestIdleInTransactionTimeout, 25P03), a shutdown or a crash - and pgconn closes the
@@ -270,6 +268,11 @@ func connectionLost(err error) bool {
 	return severity == "FATAL" || severity == "PANIC"
 }
 
+// lostAfterSent reports whether err is the connection ending under a call (connectionLost) that
+// had been sent: pgconn marks a call it refused before sending anything safe to retry (its
+// connLockError, `conn closed`), and that call cannot have run.
+func lostAfterSent(err error) bool { return connectionLost(err) && !pgconn.SafeToRetry(err) }
+
 // ConnectionLost reports whether err is a connection to Postgres that ended under a call
 // (connectionLost) after which nothing the caller asked for can have committed, so its request may
 // be refused as busy and sent again, as DatabaseStalled reports a stall. Every such call a caller
@@ -284,7 +287,15 @@ func connectionLost(err error) bool {
 //   - a COMMIT this server sent before the connection ended under it; commitTimedOut names that
 //     one ErrCommitTimeout.
 func ConnectionLost(err error) bool {
-	return connectionLost(err) && !errors.Is(err, ErrStatementOutcomeUnknown) && !errors.Is(err, ErrCommitTimeout)
+	return connectionLost(err) && !outcomeUnknown(err)
+}
+
+// outcomeUnknown reports whether err is a call that reached the database and may have committed
+// although its answer never came: a statement one of these pools ran outside a transaction
+// (ErrStatementOutcomeUnknown) or a COMMIT (ErrCommitTimeout). DatabaseStalled and ConnectionLost
+// answer false for both, so neither is offered as a retry.
+func outcomeUnknown(err error) bool {
+	return IsStatementOutcomeUnknown(err) || IsCommitTimeout(err)
 }
 
 // Unserved reports whether err is any call a bound of this server's ended before the database
@@ -348,7 +359,7 @@ func poolBusy(ctx context.Context, pool string, err error, commits outcome) erro
 			return fmt.Errorf("%s pool: %w: the database stopped answering on the connection, and this call commits nothing: %w", pool, ErrPoolBusy, err)
 		}
 		return fmt.Errorf("%s pool: %w: %w", pool, ErrStatementOutcomeUnknown, err)
-	case connectionLost(err) && commits == commitsItself && !pgconn.SafeToRetry(err):
+	case commits == commitsItself && lostAfterSent(err):
 		return fmt.Errorf("%s pool: %w: the connection ended under it: %w", pool, ErrStatementOutcomeUnknown, err)
 	case ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded):
 		return err

@@ -449,10 +449,7 @@ func refusalClass(err error) string {
 	case errors.As(err, &outside):
 		// The request pool's places outside admission were all held (admission.Outside): the
 		// queue for one was full, or no place came free within the wait.
-		if outside.Reason == admission.QueueFull {
-			return string(admission.QueueFull)
-		}
-		return string(admission.WaitExceeded)
+		return string(outside.Reason)
 	case errors.Is(err, identity.ErrNoIdentity):
 		// The heartbeat's re-resolution found the caller no longer signed in.
 		return "no_identity"

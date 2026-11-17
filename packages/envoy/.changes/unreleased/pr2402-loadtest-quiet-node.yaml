@@ -4,7 +4,8 @@ body: |-
   stopped, `run-step.sh` reads how busy the box is with `loadgen box-busy`, the measure of
   `meta.json`'s `box_busy_before`, and starts the step on a reading at or under
   `LOADTEST_MAX_BUSY_BEFORE` (default 0.10). Above it, the step waits for the box to go quiet,
-  reading it again every 30 seconds for up to `LOADTEST_QUIET_WAIT` seconds (default 900); a box
+  reading it again every 30 seconds until its pauses add up to `LOADTEST_QUIET_WAIT` seconds
+  (default 900; each reading takes its own 5 seconds besides, about 17.5 minutes in all); a box
   still busier after that refuses the step, and its not-run record carries every reading, the bar
   and the wait. A step that starts keeps the gate's readings and bar in `meta.json`
   (`box_busy_gate`, the reading it started on, `box_busy_gate_readings` and `box_busy_gate_max`)

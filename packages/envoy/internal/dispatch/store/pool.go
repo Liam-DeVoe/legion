@@ -690,7 +690,7 @@ func commitTimedOut(ctx context.Context, readOnly bool, err error) error {
 			return fmt.Errorf("%w: the database did not answer this read-only transaction's COMMIT, which commits nothing: %w", ErrPoolBusy, err)
 		}
 		return fmt.Errorf("%w: %w", ErrCommitTimeout, err)
-	case connectionLost(err) && !pgconn.SafeToRetry(err) && !readOnly:
+	case !readOnly && lostAfterSent(err):
 		return fmt.Errorf("%w: the connection ended under the COMMIT: %w", ErrCommitTimeout, err)
 	}
 	return err
@@ -830,10 +830,8 @@ func RollbackContext(ctx context.Context) (context.Context, context.CancelFunc) 
 // (connectionLost): the transaction the rollback was part of has ended without committing, and
 // whatever runs on that connection next is refused `conn closed`. So a write whose own rollback
 // of a savepoint inside its transaction met that is refused 503 DATABASE_BUSY, and the client may
-// send it again (admission.WriteUnserved). INFRA-592's ten-times freeze met it: a document edit's
-// report rolled its savepoint back as the database stopped answering, the rollback's bound passed
-// five seconds later, its error was dropped, and the edit's settlement record met the closed
-// connection and answered 500 INTERNAL (api's endAdviceSavepoint).
+// send it again (admission.WriteUnserved). api's endAdviceSavepoint is such a rollback, and says
+// how INFRA-592's ten-times freeze met it.
 //
 // A failure of any other kind, and one met while the bound still stood - a stall of the socket,
 // which DatabaseStalled names, or a connection that ended, which ConnectionLost names - is returned

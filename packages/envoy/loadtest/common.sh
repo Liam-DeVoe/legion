@@ -713,11 +713,13 @@ quiet_pause() { sleep "$1"; }
 # 1.0000), as loadgen box-busy prints one and as loadgen run and the not-run record take it.
 quiet_fraction() { [[ $1 =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; }
 
-# quiet_readings: QUIET_READINGS joined by ", ".
+# quiet_readings [SEPARATOR]: QUIET_READINGS joined by SEPARATOR, ", " when none is given.
 quiet_readings() {
-  local text
-  printf -v text '%s, ' "${QUIET_READINGS[@]}"
-  printf '%s\n' "${text%, }"
+  local separator=${1:-, } text="" reading
+  for reading in "${QUIET_READINGS[@]}"; do
+    text+=$reading$separator
+  done
+  printf '%s\n' "${text%"$separator"}"
 }
 
 # wait_for_quiet_box: return once the box is quiet enough for a step to start, and die when it does
@@ -734,7 +736,7 @@ wait_for_quiet_box() {
   quiet_fraction "$bar" ||
     die "LOADTEST_MAX_BUSY_BEFORE='$bar' is not a fraction between 0 and 1 written like 0.10: it is the busiest the box may read (loadgen box-busy) for a step to start"
   [[ $wait_s =~ ^[0-9]+$ ]] ||
-    die "LOADTEST_QUIET_WAIT='$wait_s' is not a whole number of seconds like 900: it is how long a step waits for a busy box to go quiet"
+    die "LOADTEST_QUIET_WAIT='$wait_s' is not a whole number of seconds like 900: it is how long a step's pauses may add up to while it waits for a busy box to go quiet, each reading taking 5 s besides"
   QUIET_READINGS=()
   QUIET_BAR=$bar
   QUIET_WAIT=$((10#$wait_s))
