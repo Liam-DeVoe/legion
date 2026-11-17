@@ -1,36 +1,15 @@
 import { expect, test } from "bun:test";
 
 import type { StepRecord } from "../../api/types";
+import { stepRecord as record } from "./step-record-fixture";
 import { stepTasks } from "./steps-model";
-
-function record(fields: Partial<StepRecord> & Pick<StepRecord, "id">): StepRecord {
-  return {
-    agent: "legion-leg-leg-1-implementer",
-    attempt: 1,
-    ended_at: "2026-11-16T09:40:00Z",
-    generation: 1,
-    issue: "LEG-1",
-    kind: "step",
-    model: "anthropic/claude-opus-5",
-    report: null,
-    result: "passed",
-    returned_to: null,
-    role: "implementer",
-    session: "",
-    started_at: "2026-11-16T09:00:00Z",
-    step: 2,
-    task: "default",
-    type: "implementation",
-    ...fields,
-  };
-}
 
 // What the tab draws, without a DOM: the server's tasks in the server's order, each task's runs
 // in the order the read listed them, a retro and a merge named by their kind, and a run that has
 // not ended read as running.
 test("stepTasks keeps the server's order and names each run's step, state and times", () => {
   const tasks = stepTasks({
-    issue: "LEG-1",
+    issue: "CORE-1",
     tasks: [
       {
         steps: [
@@ -109,9 +88,9 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
 
 // The generated shape lets both lists be null, and an issue Legion never ran has no task at all.
 test("stepTasks reads a null list as empty", () => {
-  expect(stepTasks({ issue: "LEG-1", tasks: null })).toEqual([]);
-  expect(stepTasks({ issue: "LEG-1", tasks: [] })).toEqual([]);
-  expect(stepTasks({ issue: "LEG-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
+  expect(stepTasks({ issue: "CORE-1", tasks: null })).toEqual([]);
+  expect(stepTasks({ issue: "CORE-1", tasks: [] })).toEqual([]);
+  expect(stepTasks({ issue: "CORE-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
     { rows: [], task: "default" },
   ]);
 });
@@ -120,7 +99,7 @@ test("stepTasks reads a null list as empty", () => {
 // its place, with the server's own word, rather than dropped or read as one of the known states.
 test("stepTasks keeps a run whose result or kind it does not know, in the server's words", () => {
   const [task] = stepTasks({
-    issue: "LEG-1",
+    issue: "CORE-1",
     tasks: [
       {
         steps: [

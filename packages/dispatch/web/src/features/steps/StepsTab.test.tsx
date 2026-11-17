@@ -6,31 +6,10 @@ import userEvent from "@testing-library/user-event";
 
 import { installResizeObserver, layOutScrollBox } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
-import type { IssueSteps, StepRecord } from "../../api/types";
+import type { IssueSteps } from "../../api/types";
 import { scrollFadeTrailing } from "../../theme/classes";
 import { StepsTab } from "./StepsTab";
-
-function record(fields: Partial<StepRecord> & Pick<StepRecord, "id">): StepRecord {
-  return {
-    agent: "legion-leg-leg-1-implementer",
-    attempt: 1,
-    ended_at: "2026-11-16T09:40:00Z",
-    generation: 1,
-    issue: "CORE-1",
-    kind: "step",
-    model: "anthropic/claude-opus-5",
-    report: null,
-    result: "passed",
-    returned_to: null,
-    role: "implementer",
-    session: "",
-    started_at: "2026-11-16T09:00:00Z",
-    step: 2,
-    task: "default",
-    type: "implementation",
-    ...fields,
-  };
-}
+import { stepRecord as record } from "./step-record-fixture";
 
 function renderTab(read: () => Promise<IssueSteps>) {
   const listSteps = spyOn(api, "listSteps").mockImplementation(read);
