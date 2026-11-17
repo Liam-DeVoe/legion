@@ -234,12 +234,22 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
       const field = declared instanceof z.ZodOptional ? declared.unwrap() : declared;
       if (field instanceof z.ZodString) fields[name] = api.string().optional();
       else if (field instanceof z.ZodNumber) {
-        const { isInt, minValue, maxValue } = field;
+        // zod's own minValue and maxValue fold an exclusive bound into an inclusive one (`gt(0)`
+        // reads as a minValue of 0) and give a side with no bound as -Infinity or Infinity, never
+        // the null their type allows, so the bounds are read from the field's checks: an inclusive
+        // one is declared as it is, a side with none declares none, and an exclusive one, which
+        // the host's number takes no form of, throws as a kind this does not map does.
+        const { minimum, maximum, exclusiveMinimum, exclusiveMaximum } = field._zod.bag;
+        if (exclusiveMinimum !== undefined || exclusiveMaximum !== undefined) {
+          throw new Error(
+            `phase op field ${name} has an exclusive bound, which phaseOpParameters does not map`
+          );
+        }
         fields[name] = api
           .number({
-            int: isInt,
-            ...(minValue === null ? {} : { min: minValue }),
-            ...(maxValue === null ? {} : { max: maxValue }),
+            int: field.isInt,
+            ...(minimum === undefined ? {} : { min: minimum }),
+            ...(maximum === undefined ? {} : { max: maximum }),
           })
           .optional();
       } else if (field instanceof z.ZodBoolean) fields[name] = api.boolean().optional();
