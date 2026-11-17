@@ -171,3 +171,181 @@ func TestGitHistoryListsBothPathsOfAMove(t *testing.T) {
 		t.Errorf("git read a commit id as an option and wrote %s (%v)", leak, err)
 	}
 }
+
+// GitHistory's answer is a fact of the two trees alone: no setting of the repository or of the
+// machine changes it. A changed path that the list does not hold would carry a result across a
+// change of its tie (R8), and R48 names the case: "a check whose test did not run although code
+// that the check runs changed". Each row: a clone at dir with commits A and B, the row's setting,
+// and the paths that differ between the trees of A and B, or ok false where the clone does not hold
+// A. The git commands of the test read no configuration of the machine (GIT_CONFIG_GLOBAL,
+// GIT_CONFIG_NOSYSTEM), and a row sets its own.
+func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
+	for name, value := range map[string]string{
+		"GIT_CONFIG_GLOBAL":   "/dev/null",
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME":     "Author A",
+		"GIT_AUTHOR_EMAIL":    "author-a@example.com",
+		"GIT_COMMITTER_NAME":  "Author A",
+		"GIT_COMMITTER_EMAIL": "author-a@example.com",
+	} {
+		t.Setenv(name, value)
+	}
+	type clone struct {
+		dir string
+		t   *testing.T
+	}
+	git := func(c clone, args ...string) string {
+		c.t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", c.dir}, args...)...).CombinedOutput()
+		if err != nil {
+			c.t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(c clone, path, content string) {
+		c.t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(c.dir, path)), 0o755); err != nil {
+			c.t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(c.dir, path), []byte(content), 0o600); err != nil {
+			c.t.Fatal(err)
+		}
+	}
+	commit := func(c clone, message string) string {
+		c.t.Helper()
+		git(c, "add", "-A")
+		git(c, "commit", "-q", "--allow-empty", "-m", message)
+		return git(c, "rev-parse", "HEAD")
+	}
+	const sub1, sub2 = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	// submodule commits A with the submodule sub at sub1 and .gitmodules with ignore, then B with sub
+	// at sub2: a gitlink names a commit of the submodule, which this clone does not need to hold.
+	submodule := func(c clone, ignore string) (string, string) {
+		c.t.Helper()
+		modules := "[submodule \"sub\"]\n\tpath = sub\n\turl = ./sub.git\n"
+		if ignore != "" {
+			modules += "\tignore = " + ignore + "\n"
+		}
+		write(c, ".gitmodules", modules)
+		git(c, "update-index", "--add", "--cacheinfo", "160000,"+sub1+",sub")
+		git(c, "add", ".gitmodules")
+		git(c, "commit", "-q", "-m", "A")
+		a := git(c, "rev-parse", "HEAD")
+		git(c, "update-index", "--cacheinfo", "160000,"+sub2+",sub")
+		git(c, "commit", "-q", "-m", "B")
+		return a, git(c, "rev-parse", "HEAD")
+	}
+	for _, row := range []struct {
+		name string
+		make func(c clone) (a, b string, h GitHistory) // the commits, after the row's setting
+		want []string
+		ok   bool
+	}{
+		{"control: a moved submodule, with no setting", func(c clone) (string, string, GitHistory) {
+			a, b := submodule(c, "")
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"sub"}, true},
+		{"a moved submodule whose committed .gitmodules sets ignore = all", func(c clone) (string, string, GitHistory) {
+			a, b := submodule(c, "all")
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"sub"}, true},
+		{"a moved submodule whose .git/config sets ignore = all", func(c clone) (string, string, GitHistory) {
+			a, b := submodule(c, "")
+			git(c, "config", "submodule.sub.ignore", "all")
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"sub"}, true},
+		{"a moved submodule with diff.ignoreSubmodules = all", func(c clone) (string, string, GitHistory) {
+			a, b := submodule(c, "")
+			git(c, "config", "diff.ignoreSubmodules", "all")
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"sub"}, true},
+		{"names with a letter that is not ASCII, a space, a tab, a quote and a line feed, with core.quotePath = true", func(c clone) (string, string, GitHistory) {
+			git(c, "config", "core.quotePath", "true")
+			a := commit(c, "A")
+			for _, name := range []string{"é.md", "a b.md", "a\tb.md", `a"b.md`, "a\nb.md"} {
+				write(c, name, "1\n")
+			}
+			return a, commit(c, "B"), GitHistory{Dir: c.dir}
+		}, []string{"a\tb.md", "a\nb.md", "a b.md", `a"b.md`, "é.md"}, true},
+		{"a move with diff.renames = copies", func(c clone) (string, string, GitHistory) {
+			git(c, "config", "diff.renames", "copies")
+			write(c, "p/data.json", `{"a":1}`+"\n")
+			a := commit(c, "A")
+			git(c, "mv", "p/data.json", "docs.json")
+			return a, commit(c, "B"), GitHistory{Dir: c.dir}
+		}, []string{"docs.json", "p/data.json"}, true},
+		{"a change of a letter's case with core.ignoreCase = true", func(c clone) (string, string, GitHistory) {
+			git(c, "config", "core.ignoreCase", "true")
+			write(c, "A.go", "package p\n")
+			a := commit(c, "A")
+			git(c, "mv", "A.go", "a.go")
+			return a, commit(c, "B"), GitHistory{Dir: c.dir}
+		}, []string{"A.go", "a.go"}, true},
+		{"a .gitattributes line that makes each file no text, and a textconv that gives each one text", func(c clone) (string, string, GitHistory) {
+			write(c, ".gitattributes", "* -diff\n*.txt diff=same\n")
+			git(c, "config", "diff.same.textconv", "echo same")
+			write(c, "a.bin", "1\n")
+			write(c, "b.txt", "1\n")
+			a := commit(c, "A")
+			write(c, "a.bin", "2\n")
+			write(c, "b.txt", "2\n")
+			return a, commit(c, "B"), GitHistory{Dir: c.dir}
+		}, []string{"a.bin", "b.txt"}, true},
+		{"a replace ref that puts another commit in the place of B", func(c clone) (string, string, GitHistory) {
+			write(c, "a.go", "1\n")
+			a := commit(c, "A")
+			write(c, "b.go", "1\n")
+			b := commit(c, "B")
+			write(c, "c.go", "1\n")
+			git(c, "replace", b, commit(c, "C"))
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"b.go"}, true},
+		{"diff.relative = true, with the history at a directory of the clone", func(c clone) (string, string, GitHistory) {
+			git(c, "config", "diff.relative", "true")
+			write(c, "p/a.go", "1\n")
+			write(c, "q.go", "1\n")
+			a := commit(c, "A")
+			write(c, "p/a.go", "2\n")
+			write(c, "q.go", "2\n")
+			return a, commit(c, "B"), GitHistory{Dir: filepath.Join(c.dir, "p")}
+		}, []string{"p/a.go", "q.go"}, true},
+		{"color.ui = always", func(c clone) (string, string, GitHistory) {
+			git(c, "config", "color.ui", "always")
+			git(c, "config", "color.diff", "always")
+			a := commit(c, "A")
+			write(c, "a.go", "1\n")
+			return a, commit(c, "B"), GitHistory{Dir: c.dir}
+		}, []string{"a.go"}, true},
+		{"GIT_DIR of the process naming another clone", func(c clone) (string, string, GitHistory) {
+			write(c, "a.go", "1\n")
+			a := commit(c, "A")
+			write(c, "b.go", "1\n")
+			b := commit(c, "B")
+			other := clone{dir: c.t.TempDir(), t: c.t}
+			git(other, "init", "-q")
+			c.t.Setenv("GIT_DIR", filepath.Join(other.dir, ".git"))
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"b.go"}, true},
+		{"a shallow clone that does not hold A", func(c clone) (string, string, GitHistory) {
+			write(c, "a.go", "1\n")
+			a := commit(c, "A")
+			write(c, "b.go", "1\n")
+			b := commit(c, "B")
+			shallow := filepath.Join(c.t.TempDir(), "shallow")
+			if out, err := exec.Command("git", "clone", "-q", "--depth", "1", "file://"+c.dir, shallow).CombinedOutput(); err != nil {
+				c.t.Fatalf("git clone --depth 1: %v\n%s", err, out)
+			}
+			return a, b, GitHistory{Dir: shallow}
+		}, nil, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c := clone{dir: t.TempDir(), t: t}
+			git(c, "init", "-q")
+			a, b, h := row.make(c)
+			got, ok := h.Changed(a, b)
+			if ok != row.ok || !slices.Equal(got, row.want) {
+				t.Errorf("Changed(A, B) = %q, %t; want %q, %t", got, ok, row.want, row.ok)
+			}
+		})
+	}
+}

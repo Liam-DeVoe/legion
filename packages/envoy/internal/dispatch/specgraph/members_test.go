@@ -27,9 +27,9 @@ var scenarioFileTypes = map[string]reflect.Type{
 }
 
 // libraryInputTypes is the type of each input that a caller of the library gives: an Input of
-// Derive and CheckStates, the FixtureHistory that a scenario gives as its History, and the units of
-// WaitCycle.
-var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[FixtureHistory](), reflect.TypeFor[[]Unit]()}
+// Derive and CheckStates, the FixtureHistory that a scenario gives as its History, the GitHistory
+// of a clone, and the units of WaitCycle.
+var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[FixtureHistory](), reflect.TypeFor[GitHistory](), reflect.TypeFor[[]Unit]()}
 
 // structTypes is each struct type of this package that a value of type t holds, t itself first,
 // through pointers, slices, maps and members. It does not go into Tree, the spec files of
@@ -72,7 +72,7 @@ func inputTypes() []reflect.Type {
 func TestEachMemberOfAnInputHasAMark(t *testing.T) {
 	t.Parallel()
 	var files []string
-	for _, name := range append(slices.Clone(scenarioRequired), scenarioOptional...) {
+	for _, name := range append(slices.Clone(scenarioRequired), slices.Collect(maps.Keys(scenarioOptional))...) {
 		if strings.HasSuffix(name, ".json") {
 			files = append(files, name)
 		}
@@ -201,6 +201,7 @@ func memberScenario(t *testing.T) fstest.MapFS {
 	put("jobs.json", in.JobRuns)
 	put("subjects.json", subjects)
 	put("units.json", units)
+	put("uncited.json", map[string]map[string]string{})
 	return fsys
 }
 

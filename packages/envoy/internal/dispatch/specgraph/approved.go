@@ -63,7 +63,8 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is written
 // in other letters, a field that one object gives two times, a value of another type than
 // approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
-// after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
+// after it, and a null at any place, such as null or "nodes": null), a file with no list of nodes
+// ({}), a node with no id, an id on
 // two nodes, a node with no version, version numbers that do not go up from 1, a version with no
 // time or with one older than the one before it, and a block that is not its node's one block as
 // Print writes it, in an error that names the node, by its id as quoted prints a value of the input,

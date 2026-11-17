@@ -100,14 +100,18 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)},
 			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
 		// R13: "A query that cannot read its data, or that passes a time or row limit, gives unknown."
-		// Such a run read no transaction, so it may name none, and then it counts at each transaction:
-		// the newest run at tx1 could not run.
-		{name: "a pass at tx1, then a run that could not run and names no transaction", check: g, tx: "tx1",
-			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour), run(g, "", "", OutcomeCouldNotRun, 2*time.Hour)},
+		// Such a run names the transaction that it tried to read, the subject's, and counts there
+		// alone (TestTheDerivationRefusesAnInputThatIsNotWhole refuses one that names none): the newest
+		// run at tx1 could not run, and one at tx2 says nothing of tx1.
+		{name: "a pass at tx1, then a run at tx1 that could not run", check: g, tx: "tx1",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour), run(g, "tx1", "", OutcomeCouldNotRun, 2*time.Hour)},
 			want: CheckState{State: "unknown", Reason: "could_not_run"}, statements: "unknown"},
 		{name: "control: the same, then a pass at tx1", check: g, tx: "tx1",
-			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour), run(g, "", "", OutcomeCouldNotRun, 2*time.Hour), run(g, "tx1", "", OutcomePass, 3*time.Hour)},
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour), run(g, "tx1", "", OutcomeCouldNotRun, 2*time.Hour), run(g, "tx1", "", OutcomePass, 3*time.Hour)},
 			want: CheckState{State: "true", Reason: "passed", From: "tx1"}, statements: "met"},
+		{name: "a failure at tx1, then a run at tx2 that could not run", check: g, tx: "tx1",
+			runs: []Result{run(g, "tx1", "", OutcomeFail, time.Hour), run(g, "tx2", "", OutcomeCouldNotRun, 2*time.Hour)},
+			want: CheckState{State: "false", Reason: "failed", From: "tx1"}, statements: "not_met"},
 		{name: "the head of a branch judges no check of the graph", check: g, branch: "b",
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)}, absent: true},
 	} {

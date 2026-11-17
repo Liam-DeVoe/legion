@@ -13,14 +13,29 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
-// The four scenarios of The Spec (specgraph's testdata/scenarios), each with the answers that the
-// spec gives it in want.txt: state prints want.txt byte for byte, exit 0 and nothing on stderr. No
-// flag of the test writes want.txt, and a scenario with no want.txt fails the test, which would read
-// nothing. The control runs carry with no tie, so that no result carries: the comparison can fail.
+// Each scenario of specgraph's testdata/scenarios, each with the answers that the spec gives it in
+// want.txt: state prints want.txt byte for byte, exit 0 and nothing on stderr. The four of The Spec
+// (carry, one-commit-two-answers, earlier-text, wait-cycle) are among them, and the test fails when
+// one is missing; the others hold shapes that the sweep of specgraph reads. No flag of the test writes
+// want.txt, and a scenario with no want.txt fails the test, which would read nothing. The control
+// runs carry with no tie, so that no result carries: the comparison can fail.
 func TestScenarios(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
-	for _, name := range []string{"carry", "one-commit-two-answers", "earlier-text", "wait-cycle"} {
+	entries, err := os.ReadDir(fixture(t, "scenarios"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	for _, ofTheSpec := range []string{"carry", "one-commit-two-answers", "earlier-text", "wait-cycle"} {
+		if !slices.Contains(names, ofTheSpec) {
+			t.Errorf("the scenarios %q do not hold %s", names, ofTheSpec)
+		}
+	}
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dir := fixture(t, "scenarios", name)
@@ -101,7 +116,7 @@ func TestScenarioRefusals(t *testing.T) {
 		return func(t *testing.T, dir string) { writeFile(t, filepath.Join(dir, file), []byte(content)) }
 	}
 	result1 := func(version, kind, outcome string) func(t *testing.T, dir string) {
-		return write("results.json", `[{"check":"a-restart-loses-no-message","check_version":`+version+`,"kind":"`+kind+`","outcome":"`+outcome+`","commit":"c1"}]`)
+		return write("results.json", `[{"check":"a-restart-loses-no-message","check_version":`+version+`,"kind":"`+kind+`","outcome":"`+outcome+`","commit":"c1","leg":""}]`)
 	}
 	replace := func(file, old, new string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) { replaceIn(t, filepath.Join(dir, file), old, new) }
@@ -114,6 +129,8 @@ func TestScenarioRefusals(t *testing.T) {
 	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
 	const unitForm = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
+	const jobRunForm = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
+	const uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
 	for _, row := range []struct {
 		name, scenario string
 		change         func(t *testing.T, dir string)
@@ -179,15 +196,34 @@ func TestScenarioRefusals(t *testing.T) {
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","at":"yesterday"}]`),
 			"results.json", `result 1: it is not in the form ` + resultForm + `: the value at "/at" is of another type`},
 		{"a job run whose ended is a string", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":"c1","ended":"yes"}]`),
-			"jobs.json", `job run 1: it is not in the form {"job":"<job>","leg":"<leg>","commit":"<commit>","ended":true}: the value at "/ended" is of another type`},
+			"jobs.json", `job run 1: it is not in the form ` + jobRunForm + `: the value at "/ended" is of another type`},
 		{"a unit whose serves is a string", "wait-cycle", write("units.json", `[{"id":"u-a","serves":"a-message-survives-a-restart","needs":[],"waits_on":[]}]`),
 			"units.json", `unit 1: it is not in the form {"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}: the value at "/serves" is of another type`},
 		{"subjects.json that is no array", "carry", write("subjects.json", `{"commit":"c2"}`),
 			"subjects.json", `it is not in the form [{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"` + timeForm + `"}, …]`},
 		{"an uncited check whose rule is a list", "carry", write("uncited.json", `{"c1":{"a-restart-loses-no-message":["x"]}}`),
-			"uncited.json", `it is not in the form {"<commit>":{"<check id>":"<R48 rule>"}}: the value at "/c1/a-restart-loses-no-message" is of another type`},
-		{"an approved spec with no list of nodes", "carry", write("approved.json", `{"nodes":null}`),
-			"approved.json", `specgraph: approved spec: it holds no "nodes" list`},
+			"uncited.json", `it is not in the form ` + uncitedForm + `: the value at "/c1/a-restart-loses-no-message" is of another type`},
+		// A JSON null says nothing at its place, so the reader refuses it at each place of each file,
+		// with its pointer: a content label of null would read as the empty label, so a changed file
+		// would look unchanged and a result would carry (R8); a jobs.json of null would read as no run
+		// of a job, which hides a leg that ended with no result (R9); an uncited.json of null, or a map
+		// of one commit of null, would read as no refusal (R48); and a list of null as no list.
+		{"a content label of the history that is null", "carry",
+			replace("history.json", `"packages/envoy/cmd/listener/main.go": "2"`, `"packages/envoy/cmd/listener/main.go": null`),
+			"history.json", `specgraph: history: it is not in the form ` + historyForm + `: the value at "/commits/5/files/packages~1envoy~1cmd~1listener~1main.go" is null`},
+		{"a jobs.json that is null", "carry", write("jobs.json", `null`), "jobs.json", `it is not in the form [` + jobRunForm + `, …]: it is null`},
+		{"a member of a job run that is null", "carry", write("jobs.json", `[{"job":"go-checks","leg":null,"commit":"c1","ended":true}]`),
+			"jobs.json", `it is not in the form [` + jobRunForm + `, …]: the value at "/0/leg" is null`},
+		{"an uncited.json that is null", "carry", write("uncited.json", `null`), "uncited.json", `it is not in the form ` + uncitedForm + `: it is null`},
+		{"a map of one commit of uncited.json that is null", "carry", write("uncited.json", `{"c2":null}`),
+			"uncited.json", `it is not in the form ` + uncitedForm + `: the value at "/c2" is null`},
+		{"an approved spec with a list of nodes that is null", "carry", write("approved.json", `{"nodes":null}`),
+			"approved.json", `specgraph: approved spec: it is not in the form ` + approvedForm + `: the value at "/nodes" is null`},
+		// R48: CI refuses a check at a commit; a scenario says which it refused, {} for none, as
+		// jobs.json says which jobs ran, [] for none. One that does not hold uncited.json says nothing
+		// of the refusals, which would read as none.
+		{"no uncited.json", "carry", func(t *testing.T, dir string) { removeAll(t, filepath.Join(dir, "uncited.json")) },
+			"uncited.json", "does not exist"},
 		{"a subject with a branch and a deploy", "carry",
 			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","deploy":"d1","now":"2026-11-14T00:00:00Z"}]`),
 			"subjects.json", "subject 1: it sets both branch and deploy; a subject sets exactly one of them"},
@@ -237,48 +273,55 @@ func TestScenarioRefusals(t *testing.T) {
 			"results.json", `result 1: outcome "skip" is not pass, fail or could_not_run`},
 		// A result names the one subject that it read: a commit, a deploy or a transaction of the graph.
 		{"a result that names two subjects", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","graph_tx":"tx1"}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","graph_tx":"tx1","leg":""}]`),
 			"results.json", "result 1: it names the subjects commit and graph_tx; a result reads one subject"},
+		// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of another."
+		// A result or a job run that leaves out leg would read as the leg of no matrix, "", which a
+		// result of the job from before its matrix reports: a leg that ended with no result would read
+		// as reported. So each sets leg, "" for a job with no matrix.
+		{"a result with no leg", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","job":"go-checks","attempt":1,"at":"2026-11-12T10:00:00Z","seq":1}]`),
+			"results.json", `result 1: it is not in the form ` + resultForm + `: the value at "/leg" is not set`},
+		{"a job run with no leg", "carry", write("jobs.json", `[{"job":"go-checks","commit":"c1","ended":true}]`),
+			"jobs.json", `job run 1: it is not in the form ` + jobRunForm + `: the value at "/leg" is not set`},
 		// A member that a result does not set would be its zero value, and the derivation would read
 		// that value as a real one: a failure with no at as older than every approval, one with no
 		// subject, no job or no test_commit as one that counts nowhere, and of two results at one at and
 		// one seq the one listed first as the later. Each hides a failure (R7: "A pass and a failure on
 		// one such subject and one procedure make the state unknown"), so the reader refuses it.
 		{"a result with no at", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","seq":5}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","leg":"","seq":5}]`),
 			"results.json", "result 1: it sets no at"},
 		{"a run of a check of the code with no commit", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","job":"go-checks","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","job":"go-checks","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no commit, the subject that a check of the code reads"},
 		{"a failing example of a check of the code with no commit", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"failing_example","outcome":"pass","job":"go-checks","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"failing_example","outcome":"pass","job":"go-checks","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no commit, the subject that a check of the code reads"},
 		{"a run of a check of production with no deploy", "carry",
-			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"run","outcome":"fail","at":"2026-11-12T12:00:00Z","seq":4}]`),
+			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"run","outcome":"fail","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
 			"results.json", "result 1: it sets no deploy, the subject that a check of production reads"},
 		{"a run of a program check with no job", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no job, and only the reports of the job of its check count"},
 		{"two results of a check at one at and one seq", "carry", write("results.json", `[`+
-			`{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","job":"go-checks","at":"2026-11-12T10:00:00Z","seq":1},`+
-			`{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","at":"2026-11-12T10:00:00Z","seq":1}]`),
+			`{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","job":"go-checks","leg":"","at":"2026-11-12T10:00:00Z","seq":1},`+
+			`{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","leg":"","at":"2026-11-12T10:00:00Z","seq":1}]`),
 			"results.json", "result 2: it has the at and the seq of result 1, so neither of the two is the later"},
 		// The order of record is at, then seq, which Dispatch numbers from 1: a result with no seq
 		// would read as seq 0, before each result of its at, so a later failure would be hidden.
 		{"a result with no seq", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","at":"2026-11-12T11:00:00Z"}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","leg":"","at":"2026-11-12T11:00:00Z"}]`),
 			"results.json", "result 1: it sets no seq"},
 		{"a result with seq 0", "carry",
-			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","at":"2026-11-12T11:00:00Z","seq":0}]`),
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","leg":"","at":"2026-11-12T11:00:00Z","seq":0}]`),
 			"results.json", "result 1: it sets no seq"},
 		// A job run with no job or no commit is a run of no job, or at no commit, and one that does not
-		// say that it ended would read as one that did not: each hides a leg that ended with no result
-		// (R9: "When a check has no result that counts after a run of its job ends, it reads unknown").
-		// A job run is a run that ended.
+		// set ended would read as one that did not end: each hides a leg that ended with no result (R9:
+		// "When a check has no result that counts after a run of its job ends, it reads unknown"). A
+		// run that has not ended sets "ended": false.
 		{"a job run with no ended", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":"c1"}]`),
-			"jobs.json", "job run 1: it does not set ended to true: a job run is a run of its job that ended"},
-		{"a job run that did not end", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":"c1","ended":false}]`),
-			"jobs.json", "job run 1: it does not set ended to true: a job run is a run of its job that ended"},
+			"jobs.json", `job run 1: it is not in the form ` + jobRunForm + `: the value at "/ended" is not set`},
 		{"a job run with no job", "carry", write("jobs.json", `[{"leg":"","commit":"c1","ended":true}]`),
 			"jobs.json", "job run 1: it sets no job"},
 		{"a job run with no commit", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","ended":true}]`),
@@ -291,7 +334,7 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a history that does not set commits", "carry", write("history.json", `{}`),
 			"history.json", `specgraph: history: it is not in the form ` + historyForm + `: the value at "/commits" is not set`},
 		{"a history whose commits are null", "carry", write("history.json", `{"commits":null}`),
-			"history.json", `specgraph: history: it is not in the form ` + historyForm + `: the value at "/commits" is not set`},
+			"history.json", `specgraph: history: it is not in the form ` + historyForm + `: the value at "/commits" is null`},
 		// A unit with no serves, needs or waits_on would read as one with none, which hides a cycle of
 		// waits (R29); [] is none.
 		{"a unit with no serves", "wait-cycle", write("units.json", `[{"id":"u-a","needs":[],"waits_on":[]}]`),
@@ -299,7 +342,7 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a unit with no needs", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"waits_on":[]}]`),
 			"units.json", `unit 1: it is not in the form ` + unitForm + `: the value at "/needs" is not set`},
 		{"a unit whose waits_on is null", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":null}]`),
-			"units.json", `unit 1: it is not in the form ` + unitForm + `: the value at "/waits_on" is not set`},
+			"units.json", `it is not in the form [` + unitForm + `, …]: the value at "/0/waits_on" is null`},
 		{"a unit with no id", "wait-cycle", write("units.json", `[{"serves":[],"needs":[],"waits_on":[]}]`),
 			"units.json", "unit 1 has no id"},
 		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
@@ -319,47 +362,6 @@ func TestScenarioRefusals(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "missing")
 		expect(t, runBinary(t, binary, "", "state", "--scenario", missing), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
 	})
-}
-
-// A time of the JSON files is RFC 3339 with an upper-case T, and Z or an offset, and the reader
-// orders it by its instant; the zero instant of year 1, at any offset, is no time. Each row: carry
-// at m2, the commit that production runs at deploy d1, with a caught failing example of its check
-// of production and one more failing run at d1, recorded after its pass (seq 6), at the row's at.
-// Its pass is at 12:00:00Z, so 13:00:01+01:00 is one second after it and 12:59:59+01:00 one second
-// before it, whatever their text.
-func TestATimeIsReadByItsInstant(t *testing.T) {
-	t.Parallel()
-	binary := cmdtest.Build(t, "spec-check")
-	const check = "production-delivery-takes-under-a-second"
-	for _, row := range []struct {
-		name, at, want string
-	}{
-		{"a failure one second after the pass, at +01:00", "2026-11-12T13:00:01+01:00", "  check " + check + ": false (failed, counted from d1)"},
-		{"a failure one second before the pass, at +01:00", "2026-11-12T12:59:59+01:00", "  check " + check + ": true (passed, counted from d1)"},
-		{"a failure at the zero instant, at +01:00", "0001-01-01T01:00:00+01:00", ""},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			dir := copyScenario(t, "carry")
-			for _, commit := range []string{"c2", "c3", "c4"} {
-				removeAll(t, filepath.Join(dir, "files", commit))
-			}
-			writeJSONFile(t, filepath.Join(dir, "subjects.json"), []any{map[string]any{"commit": "m2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}})
-			var results []any
-			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			fault := map[string]any{"check": check, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-12T11:00:00Z", "seq": 5}
-			run := map[string]any{"check": check, "check_version": 1, "kind": "run", "outcome": "fail", "deploy": "d1", "at": row.at, "seq": 6}
-			writeJSONFile(t, filepath.Join(dir, "results.json"), append(results, fault, run))
-			got := runBinary(t, binary, "", "state", "--scenario", dir)
-			if row.want == "" {
-				expect(t, got, result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") + ": result 6: it sets no at\n"})
-				return
-			}
-			if got.code != 0 || !slices.Contains(strings.Split(got.stdout, "\n"), row.want) {
-				t.Errorf("exit %d, no line %q in:\n%s%s", got.code, row.want, got.stdout, got.stderr)
-			}
-		})
-	}
 }
 
 // A node of approved.json sets removed and partly_checked: one that sets neither would read as
@@ -389,54 +391,6 @@ func TestAnApprovedNodeSetsRemovedAndPartlyChecked(t *testing.T) {
 				`: the value at "/nodes/4/` + member + `" is not set` + "\n"}
 			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), want)
 			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(dir, "files", "c2"), "--approved", approved), want)
-		})
-	}
-}
-
-// R9: "Six cases read as unknown, and never as true. … And a check whose current text has no
-// failing example that failed when it should." R7: "Of several results that count, the latest
-// counts." The order of record is at, then seq. Each row: carry, with one more failing example of
-// its code check at c1, on which the test missed the fault, at the at of carry's caught failing
-// example, with the row's seq. With no seq, or seq 0, the record would sort before the caught one,
-// and the check would read true at m2, the head of main: the reader refuses it. With seq 5 it is
-// the later record, and the check reads unknown there. TestAcceptAFailureWithNoSeqIsNeverHidden is
-// the same for a failure of production.
-func TestAMissedFailingExampleWithNoSeqIsNeverHidden(t *testing.T) {
-	t.Parallel()
-	binary := cmdtest.Build(t, "spec-check")
-	for _, row := range []struct {
-		name string
-		seq  any // nil: the member is absent
-		want []string
-	}{
-		{"no seq", nil, nil},
-		{"seq 0", 0, nil},
-		{"control: seq 5, after the caught failing example", 5, []string{
-			"statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: failing_example_missed)",
-			"  check a-restart-loses-no-message: unknown (failing_example_missed)"}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			dir := copyScenario(t, "carry")
-			var results []any
-			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			missed := map[string]any{"check": "a-restart-loses-no-message", "check_version": 1, "kind": "failing_example", "outcome": "pass",
-				"commit": "c1", "job": "go-checks", "leg": "", "attempt": 1, "at": "2026-11-12T10:05:00Z", "fault_author": "agent-b", "test_authors": []string{"agent-a"}}
-			if row.seq != nil {
-				missed["seq"] = row.seq
-			}
-			writeJSONFile(t, filepath.Join(dir, "results.json"), append(results, missed))
-			got := runBinary(t, binary, "", "state", "--scenario", dir)
-			if row.want == nil {
-				expect(t, got, result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") + ": result 5: it sets no seq\n"})
-				return
-			}
-			lines := subjectLines(got.stdout, "m2, the head of main")
-			for _, want := range row.want {
-				if got.code != 0 || !slices.Contains(lines, want) {
-					t.Errorf("exit %d, no line %q at m2 in:\n%s%s", got.code, want, got.stdout, got.stderr)
-				}
-			}
 		})
 	}
 }
@@ -503,7 +457,7 @@ func TestARefusalNamesALongValueOfTheWriterInPart(t *testing.T) {
 	commit, check, unit, blanks := long("a-commit-"), long("a-check-"), long("a-unit-"), strings.Repeat(" ", 262144)
 	const now = `"now":"2026-11-14T00:00:00Z"`
 	result := func(check, kind, outcome string) string {
-		return `[{"check":"` + check + `","check_version":1,"kind":"` + kind + `","outcome":"` + outcome + `","commit":"c1","job":"go-checks","at":"2026-11-12T10:00:00Z","seq":1}]`
+		return `[{"check":"` + check + `","check_version":1,"kind":"` + kind + `","outcome":"` + outcome + `","commit":"c1","job":"go-checks","leg":"","at":"2026-11-12T10:00:00Z","seq":1}]`
 	}
 	for _, row := range []struct {
 		name, scenario, file, content string
@@ -677,8 +631,8 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 // which the subject line names, whichever transaction is newer or was recorded last, and reads
 // unknown at a subject that names no graph_tx or one that no result read (R10: "Unknown: every
 // other case"). R13: "A query that cannot read its data, or that passes a time or row limit, gives
-// unknown": a run that could not run read no transaction, so it may name none, and it counts at each
-// transaction, while a run that passed or failed names the transaction that it read, or the reader
+// unknown": a run that could not run names the transaction that it tried to read, the subject's,
+// and counts there alone, as a run that passed or failed names the one that it read, or the reader
 // refuses it. Each row: carry at m2 alone, as the commit that production runs at deploy d1, with a
 // query of the graph as the one check of its leaf (carry's code check taken out), the row's runs of
 // it, and a caught failing example.
@@ -691,11 +645,11 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 		ProcedureText:  "The query reads each message record of the graph.\nIt returns each message record that has no delivery record.",
 		FailingExample: "A copy of the graph with one message record that has no delivery record."}
 	run := func(outcome, tx, at string, seq int) any {
-		return map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": outcome, "graph_tx": tx, "at": at, "seq": seq}
+		return map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": outcome, "graph_tx": tx, "leg": "", "at": at, "seq": seq}
 	}
 	twoRuns := []any{run("fail", "tx2", "2026-11-13T12:00:00Z", 21), run("pass", "tx1", "2026-11-13T13:00:00Z", 22)}
 	noTx := func(outcome string) any {
-		return map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": outcome, "at": "2026-11-13T13:00:00Z", "seq": 22}
+		return map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": outcome, "leg": "", "at": "2026-11-13T13:00:00Z", "seq": 22}
 	}
 	deploy := "spec-check: subject m2, the commit that production runs at deploy d1"
 	leaf, check := "statement a-stored-message-survives-a-restart: ", "  check "+graph.ID+": "
@@ -715,9 +669,12 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 		{"a failure at tx2, then a pass at tx1; no graph_tx", "", twoRuns, deploy, unknown, ""},
 		{"a failure at tx1; no graph_tx", "", []any{run("fail", "tx1", "2026-11-13T12:00:00Z", 21)}, deploy, unknown, ""},
 		{"a pass at tx1; no graph_tx", "", []any{run("pass", "tx1", "2026-11-13T12:00:00Z", 21)}, deploy, unknown, ""},
-		{"a pass at tx1, then a query that could not run and names no transaction; graph_tx tx1", "tx1",
-			[]any{run("pass", "tx1", "2026-11-13T12:00:00Z", 21), noTx("could_not_run")}, deploy + ", and the graph at transaction tx1",
-			[]string{leaf + "unknown (check " + graph.ID + ": could_not_run)", check + "unknown (could_not_run)"}, ""},
+		{"a failure at tx1, then a query at tx2 that could not run; graph_tx tx1", "tx1",
+			[]any{run("fail", "tx1", "2026-11-13T12:00:00Z", 21), run("could_not_run", "tx2", "2026-11-13T13:00:00Z", 22)}, deploy + ", and the graph at transaction tx1",
+			[]string{leaf + "not met (check " + graph.ID + " is false)", check + "false (failed, counted from tx1)"}, ""},
+		{"a failure at tx1, then a query that could not run and names no transaction; graph_tx tx1", "tx1",
+			[]any{run("fail", "tx1", "2026-11-13T12:00:00Z", 21), noTx("could_not_run")}, "", nil,
+			"result 4: it sets no graph_tx, the subject that a check of the graph reads"},
 		{"a pass at tx1, then a failure that names no transaction; graph_tx tx1", "tx1",
 			[]any{run("pass", "tx1", "2026-11-13T12:00:00Z", 21), noTx("fail")}, "", nil,
 			"result 4: it sets no graph_tx, the subject that a check of the graph reads"},
@@ -747,7 +704,7 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			writeFile(t, spec, append(append(content, '\n'), block...))
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			fault := map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-13T11:00:00Z", "seq": 20}
+			fault := map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "leg": "", "at": "2026-11-13T11:00:00Z", "seq": 20}
 			results = append(append(results, fault), row.runs...)
 			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
 			got := runBinary(t, binary, "", "state", "--scenario", dir)
@@ -842,9 +799,9 @@ func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 				var results []any
 				readJSONFile(t, filepath.Join(dir, "results.json"), &results)
 				results = append(results,
-					map[string]any{"check": program.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "test_commit": "c1",
+					map[string]any{"check": program.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "test_commit": "c1", "leg": "",
 						"at": "2026-11-13T11:00:00Z", "seq": 20, "fault_author": "agent-b", "test_authors": []string{"agent-a"}},
-					map[string]any{"check": program.ID, "check_version": 1, "kind": "run", "outcome": "pass", "deploy": "d1", "job": "production-checks",
+					map[string]any{"check": program.ID, "check_version": 1, "kind": "run", "outcome": "pass", "deploy": "d1", "job": "production-checks", "leg": "",
 						"test_commit": "c2", "at": "2026-11-13T12:00:00Z", "seq": 21})
 				writeJSONFile(t, filepath.Join(dir, "results.json"), results)
 			}

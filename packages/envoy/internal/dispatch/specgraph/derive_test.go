@@ -165,8 +165,16 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "a commit of the history with no files", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
+		// A nil value of each type that implements History, a type of the package or of the caller,
+		// would panic where a result carries, and an Input with no history sets no History.
 		{name: "a nil *FixtureHistory", change: func(in *Input) { in.History = (*FixtureHistory)(nil) },
-			want: "specgraph: history: a nil *FixtureHistory holds no commit; an Input with no history sets no History"},
+			want: "specgraph: history: a nil *specgraph.FixtureHistory is no history; an Input with no history sets no History"},
+		{name: "a nil *GitHistory", change: func(in *Input) { in.History = (*GitHistory)(nil) },
+			want: "specgraph: history: a nil *specgraph.GitHistory is no history; an Input with no history sets no History"},
+		{name: "a nil History of a type of the caller", change: func(in *Input) { in.History = historyOfTheCaller(nil) },
+			want: "specgraph: history: a nil specgraph.historyOfTheCaller is no history; an Input with no history sets no History"},
+		{name: "a GitHistory with no Dir", change: func(in *Input) { in.History = GitHistory{} },
+			want: "specgraph: history: a GitHistory sets no Dir, so git would read the clone of the working directory of the process"},
 		{name: "control: no History", change: func(in *Input) { in.History = nil }},
 		{name: "a known tie with no path", change: func(in *Input) { in.Ties = CommitTies{"c1": {checkStateCheck.ID: {Known: true}}} },
 			want: `specgraph: ties: commit "c1": check "a-restart-loses-no-message": specgraph: a tie holds no path`},
@@ -175,16 +183,21 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: job run 1: it sets no job"},
 		{name: "a job run with no commit", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Ended: true}} },
 			want: "specgraph: job run 1: it sets no commit"},
-		// A job run is a run of its job that ended, and the runs and the checks that CI refused at the
-		// subject's commit only lower a state: a run of a leg that ended with no result reads unknown
-		// (R9), and so does a check that CI refused (R48). A caller that gives none of them would read
-		// as one at whose commit no job ran and CI refused no check, so it gives each, empty for none.
-		{name: "a job run that did not end", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Commit: "c1"}} },
-			want: "specgraph: job run 1: it does not set ended to true: a job run is a run of its job that ended"},
+		// The runs and the checks that CI refused only lower a state: a run of a leg that ended with
+		// no result reads unknown (R9), and so does a check that CI refused (R48). A caller that gives
+		// none of them would read as one in whose history no job ran and CI refused no check, so it
+		// gives each, empty for none. A run that has not ended is a run of its job too.
+		{name: "control: a job run that has not ended", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Commit: "c1"}} }},
+		// R13: a query "reads the graph at one transaction", and the runner knows the one that it
+		// tried to read, the subject's: a run that could not run names it too.
+		{name: "a run of a check of the graph that could not run and names no transaction", add: []Check{checkStateGraph}, setup: func(s *checkCase) {
+			s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
+			s.Results = append(s.Results, Result{Check: checkStateGraph.ID, Kind: ResultRun, Outcome: OutcomeCouldNotRun, At: checkStateRun})
+		}, want: "specgraph: result 3: it sets no graph_tx, the subject that a check of the graph reads"},
 		{name: "no list of job runs", change: func(in *Input) { in.JobRuns = nil },
 			want: "specgraph: it sets no JobRuns; an Input at a commit where no job ran sets an empty list"},
 		{name: "no map of the checks that CI refused", change: func(in *Input) { in.Uncited = nil },
-			want: "specgraph: it sets no Uncited; an Input at a commit where CI refused no check sets an empty map"},
+			want: "specgraph: it sets no Uncited; an Input in whose history CI refused no check sets an empty map"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -240,3 +253,8 @@ func checkStates(t *testing.T, in Input) []CheckState {
 	}
 	return states
 }
+
+// historyOfTheCaller is a History of a type that a caller of the library defines.
+type historyOfTheCaller func(from, to string) ([]string, bool)
+
+func (h historyOfTheCaller) Changed(from, to string) ([]string, bool) { return h(from, to) }
