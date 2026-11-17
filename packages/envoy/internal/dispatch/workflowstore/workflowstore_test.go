@@ -323,7 +323,8 @@ func TestTwoWritesOfOneIDAtOneTimeKeepBoth(t *testing.T) {
 
 // The attempt is the place of a record among the records of the same task, step and kind,
 // ordered by generation, then start (a record with no start first), then id. The retro and the
-// merge are both step 0 and count apart, by their kind.
+// merge are both step 0 and count apart, by their kind; two tasks whose runs interleave at one
+// place count them apart, and so do two issues.
 func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	ofKind := func(kind string, place int, role string, generation int64) StepWrite {
@@ -334,13 +335,19 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 		}
 		return write
 	}
+	inTask := func(task string, write StepWrite) StepWrite {
+		write.Task = new(task)
+		return write
+	}
 	written := []StepWrite{
 		startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(1)),
+		inTask("docs", startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(1).Add(30*time.Second))),
 		startOf(ofKind(StepKindStep, 3, "tester", 1), minute(2)),
 		startOf(ofKind(StepKindRetro, 0, "implementer", 1), minute(3)),
 		startOf(ofKind(StepKindMerge, 0, "merger", 1), minute(4)),
 		// The merge returned the task.
 		startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(5)),
+		inTask("docs", startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(5).Add(30*time.Second))),
 		startOf(ofKind(StepKindStep, 3, "tester", 1), minute(6)),
 		startOf(ofKind(StepKindRetro, 0, "implementer", 1), minute(7)),
 		startOf(ofKind(StepKindMerge, 0, "merger", 1), minute(8)),
@@ -352,19 +359,26 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	for index := len(written) - 1; index >= 0; index-- {
 		put(t, pool, written[index], minute(10))
 	}
+	elsewhere := startOf(implementer(uuid.NewString()), minute(0))
+	elsewhere.Issue = "LEG-2"
+	put(t, pool, elsewhere, minute(10))
+	if other := issueSteps(t, pool, "LEG-2"); len(other) != 1 || other[0].ID != elsewhere.ID || other[0].Attempt != 1 {
+		t.Errorf("LEG-2 lists %+v, want its one run, attempt 1", other)
+	}
 
 	attempts := map[string][]int{}
 	var order []string
 	for _, step := range issueSteps(t, pool, "LEG-1") {
-		key := step.Kind + "/" + step.Role
+		key := step.Task + "/" + step.Kind + "/" + step.Role
 		attempts[key] = append(attempts[key], step.Attempt)
 		order = append(order, step.ID)
 	}
 	want := map[string][]int{
-		"step/implementer":  {1, 2, 3},
-		"step/tester":       {1, 2},
-		"retro/implementer": {1, 2},
-		"merge/merger":      {1, 2},
+		"default/step/implementer":  {1, 2, 3},
+		"docs/step/implementer":     {1, 2},
+		"default/step/tester":       {1, 2},
+		"default/retro/implementer": {1, 2},
+		"default/merge/merger":      {1, 2},
 	}
 	if !reflect.DeepEqual(attempts, want) {
 		t.Errorf("the attempts read %v, want %v", attempts, want)
