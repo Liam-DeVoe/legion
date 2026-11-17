@@ -1039,6 +1039,14 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 			links: []string{openPull}, commit: nearHeadCommit, refused: true,
 			named: []string{"acme/widgets", "acme/tools"}, stateReads: 1,
 		},
+		{
+			// A link a person mistyped names a pull request GitHub answers 404 for: it is no
+			// open or merged pull request, so its repository does not count, and the commit no
+			// repository holds is refused as it was before the issue carried that link.
+			name:  "a link to a pull request GitHub answers 404 for lets no unheld commit through",
+			links: []string{"https://github.com/acme/tools/pull/404"}, commit: nearHeadCommit, refused: true,
+			named: []string{"acme/widgets"}, unnamed: []string{"acme/tools"}, stateReads: 1,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			links := []map[string]string{}
