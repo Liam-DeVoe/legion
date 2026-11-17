@@ -3498,6 +3498,79 @@ test("inside NoTooltips the Request changes dialog keeps the focus inside it whi
   }
 });
 
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: once a change request lands,
+// its dialog closes and gives the focus back to Request changes, the button that opened it, which
+// can still be refused in that render; a `disabled` button takes no focus, and the focus falls to
+// the body. Inside `NoTooltips` the button is `aria-disabled` while the write is out, in place of
+// `disabled`, and takes the focus back. R1 of dispatch://INFRA-3935: outside `NoTooltips` it is
+// `disabled` while the write is out, as on `main`.
+test("inside NoTooltips a change request that lands gives the focus back to Request changes", async () => {
+  const user = userEvent.setup();
+  const awaiting = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "awaiting",
+    waiting_on: "human",
+  });
+  const changesRequested = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "changes_requested",
+    version: 2,
+  });
+  const reason = "The plan names no owner";
+  const review: ArtifactReview = {
+    actor: { id: "alice", kind: "user" },
+    artifact_id: SPEC_ID,
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason,
+    state: "changes_requested",
+    version: 2,
+  };
+  for (const surface of ["inside", "outside"] as const) {
+    let read = awaiting;
+    stubs.getArtifact.mockImplementation(async () => read);
+    const answered = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => answered.promise
+    );
+    const view = draw(<ReadApprovalChip id={SPEC_ID} />, surface);
+    try {
+      const scope = within(view.container);
+      const requestChanges = await scope.findByRole("button", { name: "Request changes" });
+      requestChanges.focus();
+      await user.keyboard("{Enter}");
+      const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
+      await user.type(dialog.getByRole("textbox", { name: "Reason" }), reason);
+      const submit = dialog.getByRole("button", { name: "Request changes" });
+      submit.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(submit.textContent).toBe("Submitting…"));
+      if (surface === "inside") {
+        expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
+        expect(requestChanges.hasAttribute("disabled")).toBe(false);
+      } else {
+        expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+        expect(requestChanges.hasAttribute("disabled")).toBe(true);
+      }
+      read = changesRequested;
+      answered.resolve(review);
+      await scope.findByRole("button", { name: "Changes requested" });
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      if (surface === "inside") expect(document.activeElement).toBe(requestChanges);
+    } finally {
+      answered.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
 // Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: where the clipboard is missing
 // (an origin that is not secure) or refuses, `copyText` copies through a temporary text box that
 // takes the focus and leaves the page, which drops the focus to the body. Inside `NoTooltips` the

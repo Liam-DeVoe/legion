@@ -250,9 +250,14 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
+            {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
+                submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
+                the body in a browser, and Tab would then leave the dialog. Outside both are
+                `disabled` while the write is out, as on `main` (decision 162 of
+                dispatch://INFRA-1196/artifact/part-decisions-md). */}
             <textarea
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
-              disabled={saving}
+              disabled={page === null && saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
               onKeyDown={(event) =>
@@ -264,6 +269,7 @@ function RequestChangesDialog({
                   },
                 })
               }
+              readOnly={page !== null && saving}
               ref={textareaRef}
               value={reason}
             />
@@ -285,9 +291,15 @@ function RequestChangesDialog({
               Cancel
             </button>
             <button
+              aria-disabled={(page !== null && saving) || undefined}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
-              disabled={trimmed === "" || saving}
-              onClick={() => onSubmit(trimmed)}
+              disabled={trimmed === "" || (page === null && saving)}
+              onClick={() => {
+                if (saving) {
+                  return;
+                }
+                onSubmit(trimmed);
+              }}
               type="button"
             >
               {saving ? "Submitting…" : "Request changes"}
@@ -483,14 +495,25 @@ export function ApprovalChip({
             </button>
           )}
           <button
+            // Inside `NoTooltips`, while the write is out, this button is `aria-disabled` and a
+            // press of it does nothing: the dialog it opens gives the focus back to it when a
+            // change request lands, and a `disabled` button takes no focus, which then falls to
+            // the body. Outside it is `disabled` while the write is out, as on `main` (decision
+            // 162 of dispatch://INFRA-1196/artifact/part-decisions-md).
+            aria-disabled={(page !== null && review.isPending) || undefined}
             aria-label={actionNames?.requestChanges}
             className={
               size === "compact"
                 ? pageHeaderControl
                 : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`
             }
-            disabled={review.isPending}
-            onClick={() => setRequestChangesOpen(true)}
+            disabled={page === null && review.isPending}
+            onClick={() => {
+              if (review.isPending) {
+                return;
+              }
+              setRequestChangesOpen(true);
+            }}
             type="button"
           >
             {requestChangesLabel}
