@@ -60,7 +60,8 @@ function saveLabels(draft: readonly string[], labels: readonly string[]): string
 }
 
 /** `main`'s name for the labels control: the name it answers to in every state outside
- *  `NoTooltips`, and inside while the issue has a label and no save is in flight (R1). */
+ *  `NoTooltips`, and inside while the control draws a label (`displayLabels`: the open popover's
+ *  draft, else the issue's labels) and no save is in flight (R1). */
 const editLabelsName = "Edit labels";
 
 /** The name the labels control answers to, which the new issue page's add menu, its `l` key and
@@ -106,8 +107,8 @@ export interface IssueLabelsProps {
   readonly chipClassName?: string;
   readonly disabled: boolean;
   /** The issue's key, `labelsControlName`'s first argument, which ends the control's name inside
-   *  `NoTooltips` while the issue has no label or a save is in flight. Outside `NoTooltips` it
-   *  changes nothing. */
+   *  `NoTooltips` while the control draws no label (`displayLabels`: the open popover's draft,
+   *  else `labels`) or a save is in flight. Outside `NoTooltips` it changes nothing. */
   readonly issueKey?: string;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;

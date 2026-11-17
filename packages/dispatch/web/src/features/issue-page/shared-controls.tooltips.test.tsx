@@ -2076,16 +2076,13 @@ const HOLDS_ITS_LINE = [
   "whitespace-pre",
 ];
 
-/** What lets a value break inside a word: `[overflow-wrap:anywhere]` and its equivalents. */
-const BREAKS_ANYWHERE = [
-  "[overflow-wrap:anywhere]",
-  "break-all",
-  "break-words",
-  "wrap-anywhere",
-  "wrap-break-word",
-];
+/** What lets a value break inside a word: `[overflow-wrap:anywhere]`, the one spelling the shared
+ *  controls use for it inside `NoTooltips`. Unlike `break-words` (`overflow-wrap: break-word`),
+ *  it also lets the value's min-content width shrink below its longest word. */
+const BREAKS_ANYWHERE = "[overflow-wrap:anywhere]";
 
-/** What keeps a value within its line's width. */
+/** What keeps a value within its line's width: `max-w-full`, or `min-w-0`, which a flex item
+ *  needs to shrink below its text. */
 const STAYS_IN_ITS_LINE = ["max-w-full", "min-w-0"];
 
 /**
@@ -2141,15 +2138,15 @@ function holdsItsLine(element: Element): string[] {
     : held;
 }
 
-/** Why `value` cannot wrap inside its row: it breaks nowhere inside a word, it has no bound on
- *  its width, or it, an element of its text inside it, or an element around it up to `root`
- *  holds its line or its width. */
+/** Why `value` cannot wrap inside its row: it does not break anywhere (`BREAKS_ANYWHERE`), it
+ *  has no bound on its width (`STAYS_IN_ITS_LINE`), or it, an element of its text inside it, or
+ *  an element around it up to `root` holds its line or its width (`HOLDS_ITS_LINE`). */
 function wrapOffences(mountName: string, value: Element, root: Element): string[] {
   const named = `${mountName}: ${described(value)}`;
   const offences: string[] = [];
   const own = classOf(value);
-  if (!own.some((token) => BREAKS_ANYWHERE.includes(token))) {
-    offences.push(`${named} breaks nowhere inside a word`);
+  if (!own.includes(BREAKS_ANYWHERE)) {
+    offences.push(`${named} does not break anywhere (${BREAKS_ANYWHERE})`);
   }
   if (!own.some((token) => STAYS_IN_ITS_LINE.includes(token))) {
     offences.push(`${named} carries neither max-w-full nor min-w-0`);
@@ -3486,9 +3483,15 @@ test("inside NoTooltips every value a shared control draws can wrap", async () =
 test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHECKS", () => {
   const unregistered: string[] = [];
   const unread: string[] = [];
+  const empty: string[] = [];
   for (const path of ON_PAGE_FILES) {
     const file = parsedSource(path);
     const pairs = onPagePairs(file);
+    const table = tableEntries("ON_PAGE", file, 0);
+    // A file whose table or whose reads of it the walk does not find under the name `ON_PAGE`
+    // yields no pair to check, and would pass with nothing read.
+    if (table.size === 0) empty.push(`${path}: no ON_PAGE table`);
+    if (pairs.length === 0) empty.push(`${path}: no element reads an ON_PAGE entry`);
     for (const { entries, ground, line, state, text } of pairs) {
       if (registeredAsText(text, ground)) continue;
       unregistered.push(
@@ -3498,11 +3501,12 @@ test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHE
     // Each entry that draws a text colour is read by an element the walk found, so no pair of
     // the table goes unread.
     const drawn = new Set(pairs.flatMap((pair) => pair.entries));
-    for (const [entry, strings] of tableEntries("ON_PAGE", file, 0)) {
+    for (const [entry, strings] of table) {
       const draws = strings.some((className) => (pageLook(className)?.text.size ?? 0) > 0);
       if (draws && !drawn.has(entry)) unread.push(`${path}: ON_PAGE.${entry}`);
     }
   }
+  expect(empty).toEqual([]);
   expect(unread).toEqual([]);
   expect([...new Set(unregistered)]).toEqual([]);
 });

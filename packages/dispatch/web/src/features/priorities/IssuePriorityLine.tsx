@@ -169,10 +169,12 @@ export function IssuePriorityLine({
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
   // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details (R4) and in the
-  // header alike: a priority's title and a refusal's reason are values, which keep `max-w-full`
-  // and break rather than push the line past its row (dispatch://INFRA-3935 R4 and R6, decision
-  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as
-  // on `main`.
+  // header alike: a priority's title and a refusal's reason are values, which break anywhere and
+  // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
+  // after it, the reason with `max-w-full` - rather than push the line past its row
+  // (dispatch://INFRA-3935 R4 and R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as on
+  // `main`.
   const wraps = page !== null;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
@@ -202,7 +204,7 @@ export function IssuePriorityLine({
             {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
                 widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${wraps ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              className={`dispatch-inline-link ${wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}

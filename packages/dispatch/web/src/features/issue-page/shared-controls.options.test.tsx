@@ -191,9 +191,31 @@ beforeEach(() => {
       node: graphNode({ id: "ask-1", kind: "ask" }),
     }),
     githubRest: spyOn(api, "githubRest").mockImplementation(async (path) => {
+      const answer = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
       if (path === "repos/owner/repository/issues/7") {
-        return new Response(JSON.stringify({ state: "open", title: "Ship it" }), {
-          headers: { "Content-Type": "application/json" },
+        return answer({ state: "open", title: "Ship it" });
+      }
+      // A merged pull request whose one check passed, for its state and its checks' chips.
+      if (path === "repos/owner/repository/pulls/8") {
+        return answer({ head: { sha: "abcdef" }, merged: true, state: "closed", title: "Ship it" });
+      }
+      if (path.startsWith("repos/owner/repository/commits/abcdef/check-runs")) {
+        return answer({
+          check_runs: [
+            {
+              check_suite: { id: 1 },
+              conclusion: "success",
+              id: 1,
+              name: "ci",
+              status: "completed",
+            },
+          ],
+        });
+      }
+      if (path.startsWith("repos/owner/repository/actions/runs")) {
+        return answer({
+          workflow_runs: [{ check_suite_id: 1, event: "pull_request", name: "ci" }],
         });
       }
       throw new Error(`no GitHub answer for ${path}`);
@@ -1761,9 +1783,10 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
 
 // dispatch://INFRA-3935 R1: at its defaults each shared control draws `main`'s classes. Each
 // string below is `main`'s class, its theme's constants written out from `main`'s
-// `theme/classes.ts`, for every class the part builds from a template of its own.
+// `theme/classes.ts`, for every class the part builds from a template of its own, and `null`
+// where `main` draws the element with no class.
 test("the default shapes keep main's class strings", async () => {
-  const want: Record<string, string> = {
+  const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
     "approvalPillClassName awaiting":
@@ -1885,6 +1908,12 @@ test("the default shapes keep main's class strings", async () => {
       "inline-flex max-w-full items-center gap-2 text-sm underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "GitHubLink state":
       "shrink-0 rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+    // `main`'s features/issue/GitHubLink.tsx: a pull request's state chip, merged, and its
+    // checks chip.
+    "GitHubLink state, merged":
+      "shrink-0 rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+    "GitHubLink checks":
+      "shrink-0 rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
 
     "SubscribedAgents heading": "text-sm font-semibold text-slate-700 dark:text-slate-300",
 
@@ -1901,6 +1930,8 @@ test("the default shapes keep main's class strings", async () => {
       "inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 max-w-full gap-1 px-1 font-mono text-xs font-medium select-text text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
     "CopyButton copied": "ml-1 text-xs font-medium text-emerald-700 dark:text-emerald-400",
     "CopyButton failed": "ml-1 text-xs font-medium text-rose-700 dark:text-rose-400",
+    // `main`'s components/CopyButton.tsx: the `<code>` a failed copy prints the value in.
+    "CopyButton failed value": "select-all font-mono",
 
     "PinButton, pinned":
       "flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 bg-sky-700 text-white not-refused:hover:bg-sky-800 ",
@@ -1944,6 +1975,8 @@ test("the default shapes keep main's class strings", async () => {
     "MultiSelect clear":
       "min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
 
+    // `main`'s features/doc/ProofDocument.tsx: the open-decisions `<nav>`.
+    "ProofDocument open decisions navigator": "flex min-h-11 items-center gap-2 md:h-7 md:min-h-0",
     "ProofDocument open decisions":
       "inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "ProofDocument open decision link":
@@ -1967,13 +2000,26 @@ test("the default shapes keep main's class strings", async () => {
       "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
     "AskCard asker line":
       "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
+    // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
+    "AskCard turn and asker":
+      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
     "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+    // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
+    "AskCard turn, an agent's":
+      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
+    // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
+    // `AGENT_SPAN_CLASS` (features/refs/AgentName.tsx).
+    "AskCard asker's name":
+      "min-w-0 [overflow-wrap:anywhere] flex min-w-0 items-center whitespace-pre",
     "AskCard hand-on line":
       "mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500 dark:text-slate-400",
     "AskCard hand-on badge":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+    // `main`'s features/inbox/AskCard.tsx: the span that says who handed the question on, which
+    // has no class.
+    "AskCard handed on": null,
     "AskCard answer label": "sr-only",
     "AskCard answer box":
       "block w-full rounded-lg px-3 py-2 font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
@@ -1996,6 +2042,11 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
+    // `main`'s features/inbox/AskCard.tsx: the unsent answer's box, its note and its words.
+    "AskCard unsent answer": "mt-3 rounded-xl border p-3 border-slate-200 dark:border-slate-800",
+    "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
+    "AskCard unsent answer words":
+      "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
   };
 
   const read: Record<string, string | null> = {};
@@ -2138,6 +2189,9 @@ test("the default shapes keep main's class strings", async () => {
       <div data-case="github">
         <GitHubLink link={{ url: "https://github.com/owner/repository/issues/7" }} />
       </div>
+      <div data-case="github pull request">
+        <GitHubLink link={{ url: "https://github.com/owner/repository/pull/8" }} />
+      </div>
       <div data-case="subscribers">
         <SubscribedAgents
           onUnsubscribe={() => undefined}
@@ -2169,6 +2223,7 @@ test("the default shapes keep main's class strings", async () => {
     const scope = within(view.container);
     await scope.findByRole("link", { name: /Rocq and Lean/ });
     await scope.findByText("open");
+    await within(caseOf(view, "github pull request")).findByText("checks: success");
     await waitFor(() =>
       expect(view.container.querySelector('[data-agent-state="unresponsive"]')).not.toBeNull()
     );
@@ -2300,6 +2355,9 @@ test("the default shapes keep main's class strings", async () => {
     const github = within(caseOf(view, "github"));
     classAt("GitHubLink link", github.getByRole("link"));
     classAt("GitHubLink state", github.getByText("open"));
+    const pullRequest = within(caseOf(view, "github pull request"));
+    classAt("GitHubLink state, merged", pullRequest.getByText("merged"));
+    classAt("GitHubLink checks", pullRequest.getByText("checks: success"));
 
     classAt(
       "SubscribedAgents heading",
@@ -2317,8 +2375,9 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unknown);
   }
 
-  // The components' own controls, each at its defaults: a copy that lands and one that fails,
-  // each pin, each look of a refusable button, each connection state and the closed picker.
+  // The components' own controls, each at its defaults: a copy that lands, one that fails with
+  // its value already in its words and one that fails and prints its value, each pin, each look
+  // of a refusable button, each connection state and the closed picker.
   const controls = draw(
     <>
       <div data-case="copy, icon">
@@ -2328,6 +2387,9 @@ test("the default shapes keep main's class strings", async () => {
         <CopyButton value="session-1" what="session ID">
           session-1
         </CopyButton>
+      </div>
+      <div data-case="copy, failed value">
+        <CopyButton value="CORE-2" what="issue key" />
       </div>
       <div data-case="pins">
         <PinButton label="Unpin CORE-1" onClick={() => undefined} pinned />
@@ -2377,8 +2439,15 @@ test("the default shapes keep main's class strings", async () => {
       value: { writeText: async () => Promise.reject(new Error("denied")) },
     });
     await user.click(scope.getByRole("button", { name: "Copy session ID session-1" }));
+    await user.click(scope.getByRole("button", { name: "Copy issue key CORE-2" }));
     await scope.findByText("Copied");
-    await scope.findByText(/Copy failed/);
+    await within(caseOf(controls, "copy, labelled")).findByText(/Copy failed/);
+    classAt(
+      "CopyButton failed value",
+      await within(caseOf(controls, "copy, failed value")).findByText("CORE-2", {
+        selector: "code",
+      })
+    );
     classAt("CopyButton, icon", scope.getByRole("button", { name: "Copy issue key CORE-1" }));
     classAt(
       "CopyButton, labelled",
@@ -2470,6 +2539,7 @@ test("the default shapes keep main's class strings", async () => {
   try {
     const scope = within(decisions.container);
     const nav = await scope.findByRole("navigation", { name: "Open decisions" });
+    classAt("ProofDocument open decisions navigator", nav);
     classAt("ProofDocument open decisions", nav.querySelector("span"));
     classAt("ProofDocument open decision link", within(nav).getByRole("link"));
     classAt(
@@ -2541,9 +2611,9 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unloaded);
   }
 
-  // The card's own elements: a blocking question in full, its answer box and its actions, and
-  // the actions a question-shaped answer offers.
-  const question = openAsk();
+  // The card's own elements: a blocking question in full, who handed it on, its answer box and
+  // its actions, and the actions a question-shaped answer offers.
+  const question = openAsk({ asked_of_at: "2026-10-09T00:00:00Z", asked_of_by: "bob@example.com" });
   const questionCard = draw(
     <AskCard
       ask={question}
@@ -2562,13 +2632,17 @@ test("the default shapes keep main's class strings", async () => {
     const turn = card.getByTestId("turn-ask-1");
     classAt("AskCard turn", turn);
     classAt("AskCard asker line", turn.parentElement?.parentElement);
-    classAt("AskCard asker", card.getByRole("button", { expanded: false, name: /Implementer/ }));
+    classAt("AskCard turn and asker", turn.parentElement);
+    const asker = card.getByRole("button", { expanded: false, name: /Implementer/ });
+    classAt("AskCard asker", asker);
+    classAt("AskCard asker's name", asker.closest("[data-agent-name]"));
     const handOn = card.getByRole("combobox", { name: "Hand this question to" });
     classAt("AskCard hand-on line", handOn.parentElement?.parentElement);
     classAt(
       "AskCard hand-on badge",
       handOn.parentElement?.querySelector("span[aria-hidden='true']")
     );
+    classAt("AskCard handed on", card.getByText(/^handed on by bob@example\.com/));
     const answerBox = card.getByRole("textbox", { name: "Your answer" });
     classAt("AskCard answer label", answerBox.previousElementSibling);
     classAt("AskCard answer box", answerBox);
@@ -2586,6 +2660,52 @@ test("the default shapes keep main's class strings", async () => {
     );
   } finally {
     undraw(questionCard);
+  }
+
+  // A turn an agent holds, and the draft typed into the card above, which outlives that card: a
+  // card of the same question, closed under the reader since, keeps it as the answer it never
+  // sent.
+  const agentsTurn = openAsk({ id: "ask-3", waiting_on: "agent" });
+  const closed = openAsk({
+    resolution: {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-10-08T03:00:00Z",
+      kind: "retracted",
+      reason: "A newer question supersedes this one.",
+    },
+    state: "resolved",
+  });
+  const laterCards = draw(
+    <>
+      <div data-case="agent's turn">
+        <AskCard
+          ask={agentsTurn}
+          getAskThread={async () => threadOf(agentsTurn)}
+          initialThread={threadOf(agentsTurn)}
+        />
+      </div>
+      <div data-case="unsent">
+        <AskCard
+          ask={closed}
+          getAskThread={async () => threadOf(closed)}
+          initialThread={threadOf(closed)}
+        />
+      </div>
+    </>,
+    "outside"
+  );
+  try {
+    await settleReads();
+    classAt(
+      "AskCard turn, an agent's",
+      within(caseOf(laterCards, "agent's turn")).getByTestId("turn-ask-3")
+    );
+    const unsent = within(caseOf(laterCards, "unsent")).getByTestId("ask-unsent-answer");
+    classAt("AskCard unsent answer", unsent);
+    classAt("AskCard unsent answer note", unsent.querySelector("p"));
+    classAt("AskCard unsent answer words", within(unsent).getByText("Which one?"));
+  } finally {
+    undraw(laterCards);
   }
 
   // A compact approval request: its label, its document, the disclosure of the reader's own
