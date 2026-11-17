@@ -83,14 +83,15 @@ const ONE_DEVELOPMENT_ROWS = [
 /** The tags `e2e/accessibility.e2e.ts` holds the dashboard to. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
+/** The page's words the labels control is named from inside `NoTooltips`
+ *  (`labelsControlName`). */
+const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
+
 /** The page's ink, the grey of a link's underline, as the prototype's `.lnk` draws them, and
  *  the quieter grey of a row's name. */
 const INK = "rgb(28, 25, 23)";
 const UNDERLINE = "rgb(168, 162, 158)";
 const QUIET = "rgb(120, 113, 108)";
-
-/** The page's words the labels control's name is built from. */
-const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
 /** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
 function viewportAt(width: number): { height: number; width: number } {

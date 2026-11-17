@@ -194,8 +194,8 @@ export function IssueAddMenu({
     if ((details.labels ?? []).length === 0) {
       // Listed only while the issue has no label, so the control is found by the name it has
       // then: the words it draws and the issue's key ("Add a label to CORE-1"). A save in flight
-      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so no saving
-      // words are passed.
+      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so the name
+      // is the one it has with no save in flight (`saving: false`).
       fields.push({
         label: PROPERTY_LABELS.labels,
         ...atControl(
@@ -230,7 +230,8 @@ export function IssueAddMenu({
       // Listed only while the issue names no component, so the picker's trigger is found by the
       // name it has then, from the attachment the components line draws: the words it draws
       // and the issue's key ("Set components of CORE-1" on an issue not attached, or attached
-      // to none). A save in flight renames it, and the busy trigger is not reached.
+      // to none). A save in flight renames it, and the busy trigger is not reached, so the name
+      // is the one it has with no save in flight (`saving: false`).
       fields.push({
         label: PROPERTY_LABELS.components,
         ...atControl(

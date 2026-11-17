@@ -64,10 +64,11 @@ import { issueTreeKey, issueTreeQuery, type TreeAnswer } from "./tree-read/tree-
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
-/** The page's words the labels and components controls' names are built from. */
-const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
-
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
+
+/** The page's words the labels control and the components picker are named from inside
+ *  `NoTooltips` (`labelsControlName`, `componentsControlName`). */
+const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
 /** The issue's tree read with no node and no tuple in it, as the outline reads it before Details
  *  draws (`tree-read/tree-read.ts`). */
