@@ -46,18 +46,9 @@ export async function plansCommand(context: CommandContext): Promise<DispatchToo
   const since = optionalString(args, "since");
   const until = optionalString(args, "until");
   const read = await client.listProjectPlans(stringArg(args, "project"), { since, until });
-  // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same.
-  const issues = (read.issues ?? []).map((issue) => ({
-    ...issue,
-    plan:
-      issue.plan === null
-        ? null
-        : {
-            ...issue.plan,
-            tasks: (issue.plan.tasks ?? []).map((task) => ({ ...task, steps: task.steps ?? [] })),
-          },
-    ratings: issue.ratings ?? [],
-  }));
+  // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same, here
+  // and in each part of an issue's line.
+  const issues = read.issues ?? [];
   return {
     text: [`${read.project}: ${issues.length} finished issues`, ...issues.map(issueLine)].join(
       "\n"
