@@ -862,7 +862,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
 	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
 	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold.
+	// the text the closed issue's versions hold. One that finds no row to delete credits no edit,
+	// the document owing it nothing, and leaves the kept editor as the settlement that deleted the
+	// row kept it: it is the settlement armed again while that one committed, which runs after it.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
