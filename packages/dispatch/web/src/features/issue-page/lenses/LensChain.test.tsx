@@ -8,7 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
-import type { TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { chipWords } from "../node-row-chip";
@@ -44,9 +44,12 @@ const FURTHER = "dispatch://lens/0c6f1d2e-5555-4a6b-9c1d-5e2f3a4b5c65";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** The statement both lenses read, and its first line as the tree drew it. */
+/** The statement both lenses read: its words, longer than one line, and the one line its row
+ *  draws of them, which the chain names it by. */
 const STATEMENT = statementRef("r1");
-const STATEMENT_LINE = "Store the notices for a day";
+const STATEMENT_WORDS =
+  "Store the notices for a day in the store the listener writes, and drop each one that is older than a day when the next notice of its issue arrives";
+const STATEMENT_LINE = drawnLine(firstLineOf(STATEMENT_WORDS));
 
 function facts(partial: Partial<LensFacts>): LensFacts {
   return { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [], ...partial };
@@ -54,8 +57,8 @@ function facts(partial: Partial<LensFacts>): LensFacts {
 
 /** Every lens of the tree the focused pre-mortem stands in, by address. */
 const PLACES: ReadonlyMap<string, LensPlace> = new Map([
-  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onLine: STATEMENT_LINE }],
-  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onLine: STATEMENT_LINE }],
+  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onLine: STATEMENT_WORDS }],
+  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onLine: STATEMENT_WORDS }],
 ]);
 
 /** The pre-mortem on the statement, triggered by the trade-off analysis. */
@@ -358,7 +361,7 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
   const further = new Map(PLACES).set(FURTHER, {
     id: "lens/5555",
     kindWords: furtherKind,
-    onLine: STATEMENT_LINE,
+    onLine: STATEMENT_WORDS,
   });
   expect(await drawnEnd(further)).toEqual({
     href: "/issues/CORE-1?node=lens%2F5555",

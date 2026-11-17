@@ -493,12 +493,13 @@ function treeReadAnswer(response: Response): boolean {
   );
 }
 
-/** How long `heldTreeAnswer` waits for the read a write, or a reload, sends again. */
+/** How long `heldTreeAnswer` waits for the read a write sends again. */
 const TREE_HELD_MS = 30_000;
 
 /** Waits until the newest read `watch` holds (part T's `treeAnswerOf`) is one `holds` is true
  *  of, and answers it: T's `heldAnswer` answers any read whose every page answered, and this the
- *  read a write or a reload sent again, once it holds what that write or reload changed. */
+ *  read a write sent again, once it holds what that write changed. A reload is no such wait: the
+ *  read from before it already holds what a row looks for, so a row polls what the page draws. */
 export async function heldTreeAnswer(
   watch: TreeAnswerWatch,
   what: string,
@@ -622,7 +623,8 @@ export function lensIdsIn(answer: IssueTreeAnswer): string[] {
 // ---------------------------------------------------------------------------------------------
 
 /** The decisions every owed row cites, as part T's gates cite them (INFRA-1196's 61, 127 and
- *  135, as decision 170 reads them). */
+ *  135, as decision 170 reads them).
+ *  A copy of `issue-page-t.ts`'s `OWED_BY`: W imports it once T exports it. */
 const OWED_BY = "decisions 61, 127, 135";
 
 /** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
@@ -648,6 +650,7 @@ async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeAnsw
     pages.push(next);
     cursor = next.cursor;
   }
+  // A copy of `issue-page-t.ts`'s `mergedPages`: W imports it once T exports it.
   return {
     ...first,
     cursor: null,

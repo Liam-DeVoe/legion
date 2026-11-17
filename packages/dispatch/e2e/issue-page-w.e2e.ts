@@ -1,13 +1,14 @@
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
-import { kindWords } from "../web/src/features/issue-page/lenses/lens-drafts";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
+  CONTROL_LABELS,
   DECLARED_WORDS,
   LENS_ANSWERS,
   LENS_WORDS,
   NODE_TYPE_NAMES,
   type Preset,
+  sentenceCase,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { getIssueCoverage } from "./api";
@@ -19,6 +20,7 @@ import {
   type DrawnRow,
   drawnRows,
   focusRow,
+  focusThePage,
   nodeRow,
   nodeRows,
   PHONE,
@@ -87,15 +89,25 @@ import { assertPageFits } from "./unclipped";
  * read's 404, and on G3, INFRA-1253's T12b, the read's `converted: true` (`convertedGate`). These
  * rows carry no `@owed`: each runs for real once its gates are on the base. Row 2's clause on a
  * finding waits on GF as well, INFRA-1950's 5c85ffdc1b, which stands a lens invoked on a finding
- * under it (`findingGate`, `e2e/issue-page-w.ts`): it is a row of its own, titled for the clause
- * and tagged `@owed`, which checks the three gates the same way and asserts the clause once they
- * are met.
+ * under it (`findingGate`, `e2e/issue-page-w.ts`): it is a row of its own, tagged `@owed`, which
+ * checks the three gates the same way and asserts the clause once they are met. Its title, "a
+ * finding's own row invokes a lens @owed", matches the `-g` of no check, so c-premortem's run,
+ * which inverts no `@owed`, leaves it out, as decision 170 leaves an owed clause out of its check.
  *
- * Each row's first reading of a part W draws is the assertion its check names, so at a base that
- * serves the tree read and holds no part W the row fails there and not at its deadline: row 1 on
- * `the pre-mortem stands under statement 1`, row 2 on `the focused row offers the Lens act`, row
- * 3 on `the load with lenses sends the requests of the load without them`, and row 4 on `the
- * constraint stands at the top level`.
+ * At a base that serves the tree read and holds no part W, each of rows 1 to 4 fails on an
+ * assertion of its own, at the end of a 30 s poll and not at its deadline. Rows 1, 2 and 4 read
+ * first, of what part W draws, the assertion their checks name, and fail there: row 1 on `the
+ * pre-mortem stands under statement 1`, row 2 on `the focused row offers the Lens act` and row 4
+ * on `the constraint stands at the top level`. Row 3 reads first the requests a load sends, which
+ * hold at such a base too, since it reads no lens either, and fails on `the page draws no row for
+ * the pre-mortem`.
+ *
+ * That base is the first half of the Verification document's before-and-after run: a `git
+ * worktree` at W's merge-base, with W's test files and their helpers (`e2e/issue-page-w.ts`)
+ * copied in, and with them W's `page-words.ts`, which holds the words these files read
+ * (`LENS_WORDS`, `LENS_ANSWERS` and the names of the four row types) and draws nothing. These
+ * files import no other module of W's but for a type (`LineName`), which loads nothing, so they
+ * load at that base.
  *
  * One departure from the checks' words, said where it stands: the write layer tries a 5xx again
  * under its key until the reader stops it or the key's day is spent (`writeUnderKey`), so row 2's
@@ -140,9 +152,14 @@ function kindNamed(kinds: readonly LensKind[], kind: string): LensKind {
 }
 
 /** The id the page draws the node `readId` names under, once it draws it: each poll first opens
- *  every branch a fold left shut, which ends with the focus on no row. */
-async function drawnId(page: Page, readId: string, what: string): Promise<string> {
-  const message = `the page draws no row for ${what}`;
+ *  every branch a fold left shut, which ends with the focus on no row. It fails with `message`,
+ *  by default that the page draws no row for `what`. */
+async function drawnId(
+  page: Page,
+  readId: string,
+  what: string,
+  message = `the page draws no row for ${what}`
+): Promise<string> {
   await expect
     .poll(
       async () => {
@@ -359,18 +376,20 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     const kinds = await lensCatalogue();
     const tradeOffWords = kindNamed(kinds, lenses.tradeOff.kind).words;
     const preMortemWords = kindNamed(kinds, lenses.preMortem.kind).words;
-    const statementOne = await drawnId(page, ids.statements[0] ?? "", "statement 1");
 
-    // (2) The pre-mortem's row stands under statement 1's, by the tree's own levels.
+    // (2), the first reading of what part W draws: statement 1's row is drawn, and the
+    // pre-mortem's row stands under it, by the tree's own levels.
     await expect
       .poll(
         async () => {
           await unfoldEveryBranch(page);
-          return drawnParentOf(page, ids.preMortem);
+          const statement = await drawnIdOf(page, ids.statements[0] ?? "");
+          return statement !== null && (await drawnParentOf(page, ids.preMortem)) === statement;
         },
         { message: "the pre-mortem stands under statement 1", timeout: 30_000 }
       )
-      .toBe(statementOne);
+      .toBe(true);
+    const statementOne = await drawnId(page, ids.statements[0] ?? "", "statement 1");
     const tradeOff = await drawnId(page, ids.tradeOff, "the trade-off analysis");
     const preMortem = await drawnId(page, ids.preMortem, "the pre-mortem");
 
@@ -407,13 +426,13 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       await expect(
         row.locator("[data-node-tag]"),
         `${lens.what}'s tag is not its kind's words, capitalised and cut`
-      ).toHaveText(chipWords(kindWords(lens.kind)));
+      ).toHaveText(chipWords(sentenceCase(lens.kind)));
       await expect(row.locator("[data-node-time]"), `${lens.what} draws no time`).toHaveText(/\S/u);
       await focusRow(page, lens.id);
       expect(
         lineReading(await lensLines(row), "kind"),
         `${lens.what}'s body does not draw its kind's words whole`
-      ).toEqual({ label: "", targets: [], words: kindWords(lens.kind) });
+      ).toEqual({ label: "", targets: [], words: sentenceCase(lens.kind) });
     }
 
     // (3) Each lens names the other by a chip, and a press on each chip goes to the other's row
@@ -425,7 +444,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       "the pre-mortem does not read Triggered by with the trade-off analysis's chip"
     ).toEqual({
       label: LENS_WORDS.triggered_by,
-      targets: [{ node: ids.tradeOff, words: chipWords(kindWords(tradeOffWords)) }],
+      targets: [{ node: ids.tradeOff, words: chipWords(sentenceCase(tradeOffWords)) }],
       words: "",
     });
     expect(
@@ -433,7 +452,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       "the trade-off analysis does not read Triggered with the pre-mortem's chip"
     ).toEqual({
       label: LENS_WORDS.triggered,
-      targets: [{ node: ids.preMortem, words: chipWords(kindWords(preMortemWords)) }],
+      targets: [{ node: ids.preMortem, words: chipWords(sentenceCase(preMortemWords)) }],
       words: "",
     });
     await markDocument(page);
@@ -510,7 +529,22 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       .toBe(ids.check1);
 
     // (6) The pre-mortem's chain: one press reads it, and it draws the trade-off analysis, then
-    // the pre-mortem, each with the first line of statement 1, which both stand under.
+    // the pre-mortem, each with the first line the outline draws for statement 1, which both
+    // stand under: the one line statement 1's own row draws while its branch is folded and no row
+    // holds the focus.
+    await nodeRow(page, statementOne)
+      .first()
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.fold })
+      .first()
+      .click();
+    await focusThePage(page);
+    await expect
+      .poll(async () => rowOf(await drawnRows(page), statementOne)?.firstLine ?? null, {
+        message: "statement 1's folded row draws no first line",
+      })
+      .not.toBeNull();
+    const statementLine = rowOf(await drawnRows(page), statementOne)?.firstLine;
+    await unfoldEveryBranch(page);
     await focusRow(page, preMortem);
     await pressFTo(
       page,
@@ -527,12 +561,11 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       preMortemRow.locator("[data-lens-chain] ol"),
       "Show the whole chain draws more than one chain"
     ).toHaveCount(1);
-    const statementWords = rowOf(await drawnRows(page), statementOne)?.words ?? "";
     for (const entry of await lensChainEntries(preMortemRow)) {
       expect(
-        entry.line !== "" && statementWords.startsWith(entry.line),
+        entry.line,
         `the chain's ${entry.kind} does not name statement 1 by its first line`
-      ).toBe(true);
+      ).toBe(statementLine);
     }
 
     // R8: every word of the page's own is declared, and a kind's words, which the catalogue
@@ -557,7 +590,8 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     expect(text.match(UUID) ?? [], "the page draws a uuid").toEqual([]);
 
     // (7) `?node=` with risk B's id opens on risk B; with a uuid nobody holds, as the issue's
-    // own address opens, whose focus is part I's (its R8).
+    // own address opens: the same rows in the same order, and the same focus, which is part I's
+    // (its R8).
     await gotoIssue(page, `${plain}?node=${encodeURIComponent(ids.riskB)}`);
     await expect
       .poll(() => focusedRowReadId(page), {
@@ -567,6 +601,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     await gotoIssue(page, plain);
     await expectLoadSettled(traffic);
     const plainFocus = await focusedRowReadId(page);
+    const plainRows = (await drawnRows(page)).map((row) => row.id);
     await gotoIssue(page, `${plain}?node=${crypto.randomUUID()}`);
     await expectLoadSettled(traffic);
     await expect(
@@ -577,6 +612,12 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       await focusedRowReadId(page),
       "?node= with a uuid nobody holds does not open as the issue's own address"
     ).toBe(plainFocus);
+    await expect
+      .poll(async () => (await drawnRows(page)).map((row) => row.id), {
+        message:
+          "?node= with a uuid nobody holds does not draw the rows of the issue's own address",
+      })
+      .toEqual(plainRows);
 
     // (8) No view draws a lens, a finding, a risk or a constraint.
     for (const view of VIEWS) {
@@ -610,11 +651,19 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     const ids = lensReadIds(answer, key, lenses);
     const kinds = await lensCatalogue();
     expect(kinds, "the lens catalogue does not hold its 22 kinds").toHaveLength(22);
-    const statementTwo = await drawnId(page, ids.statements[1] ?? "", "statement 2");
     // Statement 2's address, as the coverage read gives it (as `seedLenses` reads statement 1's):
     // the `on` its row sends.
     const statementTwoAddress = (await getIssueCoverage(key)).requirements?.[1]?.ref;
     expect(statementTwoAddress, "the coverage read holds no statement 2").toBeDefined();
+
+    // The first reading of what part W draws: statement 2's row, found by the read id it draws,
+    // offers the Lens act once it holds the focus.
+    const statementTwo = await drawnId(
+      page,
+      ids.statements[1] ?? "",
+      "statement 2",
+      "the focused row offers the Lens act"
+    );
     const row = await focusRow(page, statementTwo);
     await pressFTo(page, lensAct(row), "the focused row offers the Lens act");
 
@@ -705,17 +754,23 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     ).toBe(READER);
     await page.reload();
     await issueRead(page);
-    await heldTreeAnswer(tree, "the tree read after a reload", (held) =>
-      lensIdsIn(held).includes(made)
-    );
-    await unfoldEveryBranch(page);
-    expect(
-      childrenOf(await drawnRows(page), statementTwo)
-        .filter((child) => child.type === "lens")
-        .map((child) => child.id)
-        .at(-1),
-      "after a reload the lens invoked on statement 2 is not its last lens"
-    ).toBe(madeId);
+    // The tree the reload draws arrives after its column: each poll opens every branch a fold
+    // left shut and reads statement 2's lenses as they are drawn then.
+    await expect
+      .poll(
+        async () => {
+          await unfoldEveryBranch(page);
+          return childrenOf(await drawnRows(page), statementTwo)
+            .filter((child) => child.type === "lens")
+            .map((child) => child.id)
+            .at(-1);
+        },
+        {
+          message: "after a reload the lens invoked on statement 2 is not its last lens",
+          timeout: 30_000,
+        }
+      )
+      .toBe(madeId);
 
     // The act is the outline's alone: no row of the four views offers it - statement 2's row of
     // the Spec view, and every row of the other three.
@@ -814,10 +869,12 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
   });
 });
 
-// c-premortem, row 2's Lens act on a finding (R4, R7), owed on GF.
+// c-premortem, row 2's Lens act on a finding (R4, R7), owed on GF: titled so that no check's
+// `-g` matches it, c-premortem's `lenses are drawn under their node|a person invokes a lens`
+// above all, since no project inverts `@owed` and that run does not either (decision 170).
 // SLOW(>=2s): a whole seeded issue with its lenses, the gate's invocation and its tree read,
 // every branch opened and one invocation through the menu.
-test("a person invokes a lens on a finding from its row @owed", async ({ browser }) => {
+test("a finding's own row invokes a lens @owed", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
     const key = whole.key;

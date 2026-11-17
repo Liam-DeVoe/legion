@@ -4,7 +4,7 @@ import { type ReactNode, useState } from "react";
 
 import { ApiError } from "../../../api/client";
 import { pageFailedText, pageQuietText } from "../../../theme/classes";
-import type { TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPE_NAMES } from "../page-words";
 import { filled, type LensChip, type LensFacts, lensChipWords } from "./lens-drafts";
@@ -140,7 +140,9 @@ function ChainEntries({
           const place = lens.lenses?.get(entry.address);
           const placed = place?.kindWords;
           const held = filled(placed) ? placed : entry.kind?.words;
-          const onLine = place?.onLine;
+          // The line of the row the lens stands under, cut as that row draws its one line, so
+          // the chain names the row by the words a reader sees on it.
+          const onLine = filled(place?.onLine) ? drawnLine(firstLineOf(place.onLine)) : undefined;
           return (
             <li
               className="flex min-w-0 flex-wrap items-baseline gap-x-2"
