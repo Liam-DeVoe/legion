@@ -996,8 +996,8 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 
 // Before an owner writes a plan, Legion's part of its prompt tells it where the earlier plans of
 // its project are read and what that read prints, so it plans from how they went. The read is the
-// owner's: no step's agent writes a plan, so no other prompt names it. This shows the text is
-// loaded, never that an owner runs the read.
+// owner's: no step's agent gives Legion a plan (register_plan), so no other prompt names it. This
+// shows the text is loaded, never that an owner runs the read.
 func TestTheOwnersPromptNamesTheReadOfEarlierPlans(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
