@@ -5,7 +5,6 @@ import {
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
   LEGION_PLAN_REASON_MAX,
-  LegionHandoffCompleteRequest,
   LegionInstant,
   type LegionIssue,
   type LegionPhase,
@@ -120,19 +119,17 @@ const PLAN_REASON_REQUIRED = "handoff_complete requires plan_reason";
 /** `handoff_complete`'s `plan_reason`: why the plan earned its rating (`planReason` on the wire). A
  * blank one is refused as missing, blank as the daemon's strings.TrimSpace reads it
  * (`goBlankPattern`) rather than by JavaScript's trim, which the tool's other fields read
- * (requiredString); its bound is the contract's own, at most `LEGION_PLAN_REASON_MAX` characters
- * counted as the daemon counts them. Both are read here so that this tool refuses exactly the
- * reasons the daemon refuses, by the field's name rather than as the request schema's parse
- * failure. */
+ * (requiredString), and that refusal is its only one (`abort`); a reason that is not blank holds
+ * at most `LEGION_PLAN_REASON_MAX` characters, counted in code points as the daemon and the
+ * contract's `planReason` count them, never in a string's UTF-16 `length`. Both are read here so
+ * that this tool refuses exactly the reasons the daemon refuses, by the field's name rather than
+ * as the request schema's parse failure; the daemon's case golden holds the two to each other. */
 const planReason = z
   .string({ error: PLAN_REASON_REQUIRED })
-  .refine((value) => !goBlankPattern.test(value), { error: PLAN_REASON_REQUIRED })
-  .refine(
-    (value) =>
-      goBlankPattern.test(value) ||
-      LegionHandoffCompleteRequest.shape.planReason.safeParse(value).success,
-    { error: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters` }
-  );
+  .refine((value) => !goBlankPattern.test(value), { error: PLAN_REASON_REQUIRED, abort: true })
+  .refine((value) => [...value].length <= LEGION_PLAN_REASON_MAX, {
+    error: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
+  });
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
