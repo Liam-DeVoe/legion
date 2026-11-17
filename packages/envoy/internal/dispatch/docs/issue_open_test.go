@@ -419,6 +419,10 @@ func TestABrowserAppendOnAClosedIssueIsRefusedWithoutItsNotification(t *testing.
 	if failed.Load() {
 		t.Fatal("the refusal failed the room rather than closing it for its issue")
 	}
+	// alice's socket ends as the room closes for its issue, which can be before ygo has taken that
+	// room out of its map: a browser that connects meanwhile joins the closing room and is closed
+	// with it. So the reconnect waits for the room to have gone, and loads a room of its own.
+	waitForNoLiveDocument(t, service, artifactID)
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 }
 

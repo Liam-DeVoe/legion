@@ -758,18 +758,23 @@ func (r *reloadedRoom) awaitFirstClose() {
 	}
 }
 
-// requireNothingCounted requires that no bytes and no load of the room are counted.
+// requireNothingCounted waits, through the shared wait, until no bytes and no load of the room are
+// counted, and fails naming what is still counted if that never comes: a load whose bytes no
+// unload took back stays counted for good. It waits rather than reads once because a room of the
+// document can load afresh after both unloads, with a load of its own to count: the last browser
+// leaving the second room runs the settlement that room owes (OnLastPeer, settleLastPeer), and
+// when ygo has already taken the room out of its map, that settlement's warm-up loads the room
+// again (Server.Apply). That room is retired, and its load ended, by ygo's idle sweep
+// (roomIdleTimeout).
 func (r *reloadedRoom) requireNothingCounted(when string) {
 	r.t.Helper()
-	if got := r.service.residentBytes.Load(); got != 0 {
-		r.t.Errorf("the resident bytes %s = %d, want 0: a load whose bytes no unload took back stays counted for good", when, got)
-	}
-	r.service.roomSlots.mu.Lock()
-	slot := r.service.roomSlots.rooms[r.room]
-	r.service.roomSlots.mu.Unlock()
-	if len(slot.loads) != 0 {
-		r.t.Errorf("the document still counts %d loads %s, want none", len(slot.loads), when)
-	}
+	testwait.Until(r.t, "no resident bytes and no load of the document to be counted "+when, func() (string, bool) {
+		bytes := r.service.residentBytes.Load()
+		r.service.roomSlots.mu.Lock()
+		loads := len(r.service.roomSlots.rooms[r.room].loads)
+		r.service.roomSlots.mu.Unlock()
+		return fmt.Sprintf("%d resident bytes, %d loads", bytes, loads), bytes == 0 && loads == 0
+	})
 }
 
 // A cold socket that offers its read while the room's load is running - after the load has looked

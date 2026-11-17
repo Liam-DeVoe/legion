@@ -45,9 +45,9 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 
 // testServiceDeps are the dependencies every document service of this package's tests is built
 // with, on database. A caller that builds a service with them owns its shutdown:
-// newTestServiceOn registers one, and a caller that shuts its service down by hand (a seeding
-// service a test ends before it swaps the manifest, newAdmissionServer) builds New with these
-// directly.
+// newTestServiceOn builds it through the package's test constructor (newTestServiceWith), and a
+// caller that shuts its service down by hand (a seeding service a test ends before it swaps the
+// manifest, newAdmissionServer) builds New with these directly.
 func testServiceDeps(database *store.Store) Deps {
 	return Deps{
 		Store:     database,
@@ -58,20 +58,33 @@ func testServiceDeps(database *store.Store) Deps {
 	}
 }
 
-// newTestServiceOn builds a document service on database and shuts it down when the test ends.
+// newTestServiceWith is the package's test constructor: it builds a document service from deps
+// and ends it through the test's own t.Cleanup, which shuts the service down. Shutdown's own
+// report that it finished (shutdownServiceHook) is what ends the service for the package's leak
+// check (service_leak_test.go), so a service built here has ended once its test has, before the
+// check runs. A test that builds a service with New directly is outside it, and shuts that
+// service down itself.
+//
 // Where that shutdown runs among the test's other cleanups matters to a test that swaps the
 // schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
 // shutdown has stopped the service's room, settlement and flush goroutines, which read it.
 // Cleanups run last in first out, so such a test registers its restore before it calls this.
-func newTestServiceOn(t *testing.T, database *store.Store) *Service {
+func newTestServiceWith(t *testing.T, deps Deps) *Service {
 	t.Helper()
-	service := New(testServiceDeps(database))
+	service := New(deps)
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	return service
+}
+
+// newTestServiceOn builds a document service on database through the package's test constructor
+// (newTestServiceWith), which shuts it down when the test ends.
+func newTestServiceOn(t *testing.T, database *store.Store) *Service {
+	t.Helper()
+	return newTestServiceWith(t, testServiceDeps(database))
 }
 
 func newTestService(t *testing.T) (*Service, string) {
@@ -6113,15 +6126,15 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	if got, err := service.Text(ctx, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after mid-settle eviction = %q (%v), want the persisted live text", got, err)
 	}
+	// The next write settles on its own. The eviction left the document owing the settlement it
+	// cut short, and this write's reload of the room arms that owed settlement (onLoadDocument), so
+	// a settlement that reads the room before the write lands versions "after" first: the version
+	// that carries the write is the latest to come, whatever its number.
 	editLiveTree(t, service, artifactID, replaceRun("after", "later"))
-	version := waitForDocumentVersion(t, service.store, artifactID, 2)
-	var markdown string
-	if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, version.Number).Scan(&markdown); err != nil {
-		t.Fatal(err)
-	}
-	if markdown != "later\n" {
-		t.Fatalf("version %d markdown = %q, want %q", version.Number, markdown, "later\n")
-	}
+	testwait.Until(t, `the document's latest version to read "later\n"`, func() (string, bool) {
+		markdown := latestVersionMarkdown(t, service, artifactID)
+		return markdown, markdown == "later\n"
+	})
 }
 
 // A settlement whose room a close retires between its warm-up and its read of the room, a close
