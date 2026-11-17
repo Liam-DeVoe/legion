@@ -614,3 +614,55 @@ test("a control of the history that goes away under the focus leaves the focus i
     for (const read of reads) read.mockRestore();
   }
 });
+
+// R3 of dispatch://INFRA-3948: the reader keeps their place in the history. A failed next page
+// is said where Load older stood, and its Retry reads that page: it does Load older's work in
+// Load older's place, at the foot of the list, so once the page lands the focus goes where Load
+// older hands it - to a control the page added - and never to the history's heading at the top,
+// from which the reader's next Tab scrolls Details back to the head of the list. Found by the
+// tester on a running build of 3bd86200 with INFRA-1196's copy: with 81 entries drawn, the next
+// page answered 500 once, and its Retry pressed by keyboard put the focus on the heading
+// "History" once the page landed.
+test("the Retry of a failed next page hands the focus to the page it read, as Load older does", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  let down = true;
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (options?.before === undefined) return [...firstPage];
+      if (down) throw new Error("the next page is down");
+      return [...olderPage];
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    older.focus();
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    retry.focus();
+    down = false;
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
+    );
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "the Retry of the next page went away once it landed and the focus did not go to the page it read"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
