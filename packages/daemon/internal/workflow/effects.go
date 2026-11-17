@@ -883,10 +883,25 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 // refused: no start of such a run names one, and a task that named none would read as an issue
 // with no plan rows.
 func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue) (Standing, error) {
-	at := WorkingCopy(issue, e.cfg.WorkspaceDir)
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
-		return at, err
+	if err != nil {
+		return "", err
+	}
+	var rows []record.PhaseRow
+	if place, ok := w.PlaceOf(issue.Phase); w.Stored && ok && place.Kind == record.PlaceStep {
+		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
+			return "", err
+		}
+	}
+	return standingText(issue, e.cfg.WorkspaceDir, w, rows)
+}
+
+// standingText is standingPart's text for the worker of issue's phase, from the walk w of its
+// run, the directory dir gives its working copy, and its phases rows, which only a step's text reads.
+func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, rows []record.PhaseRow) (Standing, error) {
+	at := WorkingCopy(issue, dir)
+	if !w.Stored {
+		return at, nil
 	}
 	place, ok := w.PlaceOf(issue.Phase)
 	if !ok {
@@ -898,10 +913,6 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	text += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), stepWord(w.Steps[place.Position-1]))
 	text += stepsLine(w.Steps) + " " + taskTextLabel + ": " + strings.TrimSpace(w.Text)
-	rows, err := e.store.Phases(ctx, tx, issue.Key)
-	if err != nil {
-		return "", err
-	}
 	return Standing(text + reportsBefore(rows, w, place.Position)), nil
 }
 

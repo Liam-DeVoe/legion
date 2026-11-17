@@ -361,17 +361,23 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
-// read back and joined in order.
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it (rolePrompt).
 func reviewerPrompt(t *testing.T) string {
+	t.Helper()
+	return rolePrompt(t, claim.RoleReviewer)
+}
+
+// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
+// and joined in order.
+func rolePrompt(t *testing.T, role claim.Role) string {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(claim.RoleReviewer, false)
+	parts, err := composer.Compose(role, false)
 	if err != nil {
-		t.Fatalf("compose the reviewer's prompt: %v", err)
+		t.Fatalf("compose the %s's prompt: %v", role, err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
