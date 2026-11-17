@@ -1,5 +1,10 @@
+import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { runEnvoyChannelServer } from "../src/envoy-channel-server"
 import { exitProcess } from "../src/process-exit"
+
+// Every line this process writes, its MCP stream on stdout and its failures on stderr, passes the
+// scrub of the secrets it holds (`@legion/contracts/held-secrets`).
+scrubProcessStreams()
 
 try {
   await runEnvoyChannelServer()

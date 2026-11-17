@@ -20,6 +20,7 @@ import {
   BrokerTradeFailedError,
   SignInEndedError,
 } from "@legion/broker-client/token-client";
+import { scrub } from "@legion/contracts/held-secrets";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
 import type { Auth, Events, NatsConnection, Status } from "nats";
@@ -102,10 +103,10 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
 export function tradeFailureReason(error: unknown): string {
   if (error instanceof BrokerRefusedError) {
     const code = error.code === "" ? "" : ` ${error.code}`;
-    const said = error.said === "" ? "" : `: ${error.said}`;
+    const said = error.said === "" ? "" : `: ${scrub(error.said)}`;
     return `the secrets broker refused the identity traded: HTTP ${error.status}${code}${said}`;
   }
-  if (error instanceof BrokerTradeFailedError) return error.message;
+  if (error instanceof BrokerTradeFailedError) return scrub(error.message);
   if (error instanceof SignInEndedError)
     return `the issuer no longer honours the sign-in on this machine; run: ${SIGNIN_COMMAND}`;
   return natsFailureReason(error);

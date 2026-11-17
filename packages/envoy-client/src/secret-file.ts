@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { holdSecret } from "@legion/contracts/held-secrets";
 
 /** Whether `value` can go in a header as one bearer: no whitespace and no control character. A
  * multi-line value would otherwise reach a `fetch` error, which quotes the header it refuses. */
@@ -32,5 +33,6 @@ export function readSecretFile(variable: string, filePath: string): string {
   if (!sendable(value)) {
     throw new Error(`${variable} names a file that holds whitespace or a control character`);
   }
-  return value;
+  // Held, so every line this process prints is scrubbed of it (`@legion/contracts/held-secrets`).
+  return holdSecret(value);
 }

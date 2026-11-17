@@ -181,7 +181,7 @@ import {
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
-import { logger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
+import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
 import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
@@ -210,6 +210,7 @@ import {
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
+import { scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
 import {
   type CarriedAnswers,
@@ -670,7 +671,14 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
 const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
   sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
 
-export default function envoyExtension(pi: PiApi): void {
+/** The host's logger, every message and field it is handed passing the scrub of the secrets this
+ *  process holds (`../src/scrubbed-host`). */
+const logger = scrubbedLogger(hostLogger);
+
+export default function envoyExtension(hostApi: PiApi): void {
+  // Every notice, tool answer and tool error this extension gives the host passes the scrub of
+  // the secrets this process holds, the backstop under the rules that name no peer's text.
+  const pi = scrubbedHost(hostApi);
   logger.debug("extension instance loaded", { extension: import.meta.url });
   // The interface the Legion plugin reads (`@legion/pi-shared/interface`). `undefined` when an
   // Envoy entry at another interface version published first: that entry's object stays the one

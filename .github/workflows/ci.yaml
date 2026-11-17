@@ -2324,6 +2324,7 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/log-text.ts'
@@ -2436,6 +2437,7 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/log-text.ts'
@@ -2914,6 +2916,7 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/log-text.ts'
@@ -3005,6 +3008,7 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/log-text.ts'
@@ -3824,6 +3828,9 @@ jobs:
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
               # broker-client's dpop.test.ts:212-215 reads both connection proofs.
               - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
+              # broker-client's refusal-corpus.test.ts reads the broker's refusal texts as its
+              # library writes them.
+              - 'packages/envoy/internal/broker/oauth/testdata/refusal-descriptions.json'
             # The secrets broker's TypeScript client: its own sources and tests, the one
             # first-party package its sources import, the fixtures its tests use, the Bun install
             # and the Bun it runs, and Biome.
@@ -3838,6 +3845,9 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # src/__tests__/dpop.test.ts:212-215 reads both signers' connection proofs.
               - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
+              # src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its
+              # library writes them (internal/broker/oauth's refusal-corpus test writes them).
+              - 'packages/envoy/internal/broker/oauth/testdata/refusal-descriptions.json'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
             # and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every

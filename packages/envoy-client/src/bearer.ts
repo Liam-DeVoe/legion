@@ -1,3 +1,4 @@
+import { holdSecret } from "@legion/contracts/held-secrets";
 import {
   type CommandMode,
   type EnvoyConfigEnvironment,
@@ -96,8 +97,10 @@ export interface RequestCredential {
   secret(): string;
 }
 
-/** A plain bearer: the same `Authorization` header on every request, and no proof. */
+/** A plain bearer: the same `Authorization` header on every request, and no proof. The token is
+ *  held, so every line this process prints is scrubbed of it. */
 export function bearerCredential(token: string): RequestCredential {
+  holdSecret(token);
   return {
     scheme: "Bearer",
     headers: () => ({ Authorization: `Bearer ${token}` }),

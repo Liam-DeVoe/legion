@@ -20,6 +20,7 @@
 // that no longer honours a person's sign-in. So a caller that writes only with what `token()`
 // gave it never writes with no identity, nor with one that has been ended.
 
+import { holdSecret } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -504,6 +505,9 @@ export class BrokerTokenClient {
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const subject = await this.#subject.read(signal);
+    // Held, with the actor's and the minted token, so every line this process prints is scrubbed
+    // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them.
+    holdSecret(subject.token);
     const form: Record<string, string> = {
       subject_token: subject.token,
       subject_token_type: subject.tokenType,
@@ -526,7 +530,7 @@ export class BrokerTokenClient {
           cause: error,
         });
       }
-      form["actor_token"] = actor.token;
+      form["actor_token"] = holdSecret(actor.token);
       // The same token under the type that says what it proves here: not who is asking, but which
       // box the person is asking from.
       form["actor_token_type"] =
@@ -673,7 +677,7 @@ export class BrokerTokenClient {
       }
     }
     return {
-      accessToken: answered.access_token,
+      accessToken: holdSecret(answered.access_token),
       tokenType,
       expiresAt: new Date(this.#now() + seconds * 1000),
       credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",

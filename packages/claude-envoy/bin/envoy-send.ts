@@ -1,8 +1,12 @@
+import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings"
 import { configuredSessionId } from "../src/claude-session"
 import { sendEnvoyMessage } from "../src/envoy-client"
 import { parseSendArguments } from "../src/send-arguments"
+
+// Every line this command writes passes the scrub of the secrets it holds.
+scrubProcessStreams()
 
 try {
   const { targetSession, message } = parseSendArguments(process.argv.slice(2))

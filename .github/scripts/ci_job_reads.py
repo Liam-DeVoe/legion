@@ -2330,6 +2330,7 @@ GATES = [
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-go.json", "packages/broker-client/src/__tests__/dpop.test.ts reads the Go signer's committed connection proof and verifies it with jose"),
         (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-ts.json", "packages/broker-client/src/__tests__/dpop.test.ts reads this signer's committed connection proof and holds it to the signer's claim names"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-descriptions.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its OAuth library writes them, which internal/broker/oauth's refusal-corpus test writes"),
     ) + bun_job("broker-client")),
 
     gate("envoy_client", "envoy-client", reads=reads(
@@ -2353,6 +2354,7 @@ GATES = [
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
         (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-go.json", "packages/broker-client/src/__tests__/dpop.test.ts:212-215 reads the Go signer's committed connection proof by relative path and verifies it with jose, as the Go checker verifies the TypeScript one"),
         (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-ts.json", "packages/broker-client/src/__tests__/dpop.test.ts:212-215 reads the TypeScript signer's committed connection proof, which the Go checker reads too, and holds it to this signer's claim names"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-descriptions.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its OAuth library writes them, which internal/broker/oauth's refusal-corpus test writes"),
     ) + bun_job("envoy-client")),
 
     gate("pi_shared", "pi-shared", reads=reads(

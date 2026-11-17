@@ -1,3 +1,4 @@
+import { scrub } from "@legion/contracts/held-secrets";
 import { errorClass } from "@legion/contracts/log-text";
 
 /**
@@ -23,14 +24,18 @@ function dispatchCode(error: Error): string | undefined {
  * branch on an error's code rather than on its words, and the code was in no line the command
  * printed: a reader had to run the same call through curl to see it (reported by the tree of
  * dispatch://INFRA-1523). A message that already opens with its own code is left as it is, and
- * every other thrown value prints as it always did.
+ * every other thrown value prints as it always did. Every text it answers passes the scrub of the
+ * secrets this process holds (`@legion/contracts/held-secrets`): a server at the wrong URL can
+ * echo the bearer it was sent inside a refusal this prints as guidance.
  */
 export function messageFor(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
+  if (!(error instanceof Error)) return scrub(String(error));
   const code = dispatchCode(error);
-  return code === undefined || error.message.startsWith(code)
-    ? error.message
-    : `${code}: ${error.message}`;
+  return scrub(
+    code === undefined || error.message.startsWith(code)
+      ? error.message
+      : `${code}: ${error.message}`
+  );
 }
 
 /** True when `error` is a Node errno error carrying `code` (ENOENT, EPERM, …). */
@@ -105,7 +110,7 @@ function serverText(code: string, text: string): string {
  *    (`getaddrinfo EAI_AGAIN`, `ERR_SOCKET_BAD_PORT`), else its type, `(message withheld)`.
  */
 export function natsFailureReason(error: unknown): string {
-  if (error instanceof LoggableError) return error.message;
+  if (error instanceof LoggableError) return scrub(error.message);
   if (error instanceof Error && error.name === "NatsError") {
     const { code } = error as { code?: unknown };
     if (typeof code === "string" && code !== "")

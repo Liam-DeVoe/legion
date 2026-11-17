@@ -88,6 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { urlForText } from "@legion/contracts/log-text"
 import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
 import {
@@ -117,6 +118,10 @@ import { z } from "zod"
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
+
+// Every line this hook writes, the context Claude Code hands the model on stdout included, passes
+// the scrub of the secrets it holds (`@legion/contracts/held-secrets`).
+scrubProcessStreams()
 
 const OPEN_ASKS_TIMEOUT_MS = 3_000
 const OpenAsksInput = z.object({

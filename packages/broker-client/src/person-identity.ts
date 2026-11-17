@@ -5,6 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
+import { holdSecret } from "@legion/contracts/held-secrets";
 import { errorClass, urlForText } from "@legion/contracts/log-text";
 import {
   allowInsecureRequests,
@@ -89,6 +90,10 @@ export function personIdentity(
   options: PersonIdentityOptions = {}
 ): TokenSource {
   const { person, refresh_token: refreshToken, client_id: clientId } = record;
+  // Held, so every line this process prints is scrubbed of them: an issuer at the wrong URL can
+  // echo what it was sent (`@legion/contracts/held-secrets`).
+  holdSecret(refreshToken);
+  holdSecret(flow.clientSecret);
   if (clientId !== "" && clientId !== flow.clientId) {
     throw new Error(
       `${person} signed in with another client than this machine now has (${clientId}), so their sign-in cannot be renewed; run: ${SIGNIN_COMMAND}`
