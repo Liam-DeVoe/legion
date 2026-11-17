@@ -154,6 +154,7 @@ export function IssueComponentsLine({
   // (`components_reason_tree`).
   const reason = (
     <MarkdownBody
+      className={page === null ? undefined : value}
       markdown={components.reason ?? ""}
       surface="issue-components-reason"
       tree={issue.components_reason_tree}

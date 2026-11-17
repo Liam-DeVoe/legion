@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
@@ -61,6 +61,7 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -326,6 +327,11 @@ interface Stubs {
   readonly putDocumentRead: Mock<typeof api.putDocumentRead>;
   readonly whoAmI: Mock<typeof api.whoAmI>;
 }
+
+// A document's approval reason comes with its reading (`doc`), which the engine makes.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let stubs: Stubs;
 

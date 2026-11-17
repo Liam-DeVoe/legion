@@ -38,7 +38,6 @@ import {
   borderDefault,
   card,
   cardHoverBorder,
-  focusBorder,
   inlineWarningText,
   linkHoverText,
   linkText,
@@ -186,11 +185,11 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  * the role `main`'s colour has: the card is the page's paper inside its hairline rule; the
  * question is the ink, what a reader acts on the muted grey, what qualifies it the quiet grey,
  * a link the ink, and a question that changed under the reader the page's warning, its waiting
- * orange; the answer box is the page's field, which keeps `main`'s focus rule, the application's
- * one focus indicator (decision 58 of the same artifact); Answer and Ask back instead are
- * filled with the ink, as the page's one filled control is, and the other actions are its
- * header control's rule and muted words. What the card's children draw - the recipients, the
- * thread, the options, the earlier approval - is theirs.
+ * orange; Answer and Ask back instead are filled with the ink, as the page's one filled control
+ * is, and the other actions are its header control's rule and muted words. What the card's
+ * children draw - the answer box, which is the shared field's and draws in the page's colours
+ * there itself (`MentionField`), the recipients, the thread, the options, the earlier
+ * approval - is theirs.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -200,7 +199,6 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  */
 const ON_PAGE = {
   action: `${pageLineBorder} ${pageMutedText}`,
-  field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   frame: `${pageHairBorder} ${pagePaperBg}`,
   ink: pageInkText,
@@ -672,18 +670,14 @@ export function AskCard({
     : ON_PAGE.action;
   const answerField = (
     <>
-      {/* #3125's field, in the page's colours inside `NoTooltips` (part I's `ON_PAGE`): its
-          label's words in the page's muted ink, and the page's box colours after the field's
-          own. */}
       <MentionField
         askAnswer={true}
         body={answerText}
-        className={tooltips ? "font-normal" : `font-normal ${ON_PAGE.field}`}
+        className="font-normal"
         disabled={isSubmitting}
         fieldRef={answerFieldRef}
         issueKey={displayedAsk.issue_key ?? undefined}
         label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        labelClassName={tooltips ? undefined : `block text-sm font-medium ${ON_PAGE.muted}`}
         labelHidden={!reasonRequired}
         onChange={(change) => {
           setAnswerText(change.body);

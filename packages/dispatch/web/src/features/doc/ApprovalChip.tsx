@@ -13,7 +13,6 @@ import {
   backdrop40,
   card,
   dangerText,
-  focusBorder,
   focusVisibleRing,
   pageFailedText,
   pageHairBorder,
@@ -48,11 +47,11 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
  * issue page's (dispatch://INFRA-3935 R6, decision 56 of
  * dispatch://INFRA-1196/artifact/part-decisions-md), by the role `main`'s colour has: a dialog is
  * the page's paper inside its hairline rule over the icon rail's dark, the one page colour dark
- * in both schemes; its heading and a review are the ink, the reviewer's reason and a label the
- * muted grey, Close and a pending read the quiet grey, a refusal the failed red; Approve and the
- * dialog's Request changes are filled with the ink, as the header's one filled control is, and
- * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
- * application's one focus indicator (decision 58 of the same artifact).
+ * in both schemes; its heading and a review are the ink, the reviewer's reason the muted grey,
+ * Close and a pending read the quiet grey, a refusal the failed red; Approve and the dialog's
+ * Request changes are filled with the ink, as the header's one filled control is, and the other
+ * actions are the header's control. The reason box and its label are the shared field's, which
+ * draws them in the page's colours there itself (`MentionField`).
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -68,10 +67,8 @@ const ON_PAGE = {
   failure: pageFailedText,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   heading: pageInkText,
-  label: pageMutedText,
   pending: pageQuietText,
   reason: pageMutedText,
-  reasonBox: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
   review: pageInkText,
 } as const;
 
@@ -257,10 +254,8 @@ function RequestChangesDialog({
           >
             Request changes
           </h2>
-          {/* #3125's field, in the page's colours inside `NoTooltips` (part I's `ON_PAGE`): its
-              label as part I draws it there, and the page's box colours after the field's own. */}
           <MentionField
-            className={page === null ? "text-sm" : `text-sm ${ON_PAGE.reasonBox}`}
+            className="text-sm"
             body={reason}
             disabled={saving}
             fieldRef={(handle) => {
@@ -268,9 +263,6 @@ function RequestChangesDialog({
             }}
             issueKey={issueKey}
             label="Reason"
-            labelClassName={
-              page === null ? undefined : `block text-sm font-medium ${ON_PAGE.label}`
-            }
             onChange={(change) => setReason(change.body)}
             onKeyDown={(event) =>
               submitOnModifiedEnter(event, {

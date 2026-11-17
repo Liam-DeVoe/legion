@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
@@ -46,6 +46,7 @@ import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
@@ -151,6 +152,11 @@ interface Stubs {
   readonly putDocumentRead: Mock<typeof api.putDocumentRead>;
   readonly whoAmI: Mock<typeof api.whoAmI>;
 }
+
+// A document's approval reason comes with its reading (`doc`), which the engine makes.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let stubs: Stubs;
 
@@ -1368,7 +1374,7 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
 // string below is `main`'s class, its theme's constants written out from `main`'s
 // `theme/classes.ts`, for every class the part builds from a template of its own.
 test("the default shapes keep main's class strings", async () => {
-  const want: Record<string, string> = {
+  const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
     "approvalPillClassName awaiting":
@@ -1579,9 +1585,9 @@ test("the default shapes keep main's class strings", async () => {
       "mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500 dark:text-slate-400",
     "AskCard hand-on badge":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
-    "AskCard answer label": "sr-only",
+    "AskCard answer label": null,
     "AskCard answer box":
-      "block w-full rounded-lg px-3 py-2 font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 font-normal",
     "AskCard Answer":
       "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
     "AskCard Ask back":
@@ -1599,7 +1605,7 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard approval document":
       "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
-    "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
+    "AskCard reason label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
   };
 

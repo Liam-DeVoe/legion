@@ -194,6 +194,7 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const reason = approval.reason ?? null;
   const reasonBody = (
     <MarkdownBody
+      className={page === null ? undefined : VALUE_WRAPS}
       markdown={reason ?? ""}
       source={textSourceOf("artifact", entry.document?.id, entry.document?.issue_key)}
       surface="approval-review-reason"
