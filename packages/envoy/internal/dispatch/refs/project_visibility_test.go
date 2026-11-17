@@ -189,6 +189,31 @@ func writeSeedNodes(t *testing.T, tx pgx.Tx, nodes []graphstore.Node, tuples []g
 // which is what a read with no actor was before a reader carried a viewer.
 var serverReader = model.Actor{Viewer: model.ServerViewer}
 
+// planReader is a reader a plan or a timing binds, by the name a failure gives it.
+type planReader struct {
+	name   string
+	reader model.Actor
+}
+
+// planReaders are the readers a plan binds: the server's own, and two that are not, both of a
+// deployment that holds a private project and both seeing project. The server's viewer passes
+// every rule at its `all` flag, so a custom plan bound to it alone folds every project and party
+// arm away and never shows the read a member's statement runs: alice is an open member, whose
+// session and party arms read session_projects, and carol's token lists project, so her arms read
+// the sessions and people of the projects she sees.
+func planReaders(project string) []planReader {
+	alice, carol := "alice@example.com", "carol@example.com"
+	return []planReader{
+		{"the server", serverReader},
+		{"alice, an open member", model.Actor{Kind: "user", ID: alice, Viewer: &model.Viewer{
+			Person: alice, Open: true, Sees: []string{project}, AnyPrivate: true,
+		}}},
+		{"carol's token listing " + project, model.Actor{Kind: "session", Owner: &carol, Viewer: &model.Viewer{
+			Person: carol, Listed: true, Sees: []string{project}, AnyPrivate: true, Lists: []string{project},
+		}}},
+	}
+}
+
 // scopedNode is one node the project clause test reads, and the callers that see it.
 type scopedNode struct {
 	kind, id string
