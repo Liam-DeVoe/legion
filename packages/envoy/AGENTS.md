@@ -2075,8 +2075,8 @@ Creation takes these locks with non-empty `blocked_by` or a `parent`, before all
 creation without either takes no dependency lock, and no creation takes an explicit parent-row lock.
 An issue sits at most `parentDepthCap` (32) links below its root:
 a create under a parent, or a reparent whose subtree's deepest issue would sit deeper, is `409 PARENT_INPUT` (`refuseParentTooDeep`, under the dependency lock, so two writes cannot each pass alone and together pass it), and every recursive issue walk stops at that depth.
-`blocked_by` inputs are limited to `contracts.MaxIssueBlockers` entries before deduplication on both create and PATCH;
-excess entries are `400 BLOCKED_BY_INPUT` naming the limit before any issue-row lock is acquired, and a PATCH naming the issue itself is `400 BLOCKED_BY_INPUT` too.
+`blocked_by` inputs are deduplicated on both create and PATCH before any issue-row lock is acquired;
+a PATCH naming the issue itself is `400 BLOCKED_BY_INPUT`.
 A mention's source is the node whose text holds it, never the issue that text belongs to:
 a citation in an issue's spec is an edge out of the spec document, so `GET /api/v1/references?from=dispatch://KEY/spec` lists it, `?from=dispatch://KEY` lists only the issue's own `child_of`, `blocked_by` and `affects` edges, and the cited node's `?to=` backlink names the spec's innermost block holding the citation (a `block` node whose `document` is the spec), or the spec itself while the block index has not reached it.
 A citation in a comment, an issue message or an ask is named the same way, by the item's block holding it (a `block` node whose `parent` is the item; for an ask the part - its question, an option or the answer - whose own text holds it), or by the item while no block of it holds the citation (an item a build without item blocks wrote, until the reconciliation indexes it).

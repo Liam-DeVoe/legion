@@ -34,9 +34,7 @@ import {
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
-  MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
-  MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
@@ -281,11 +279,6 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 
-// MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
-// MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
-// cannot drift apart.
-const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
-
 // KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
 // KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
 // cannot drift apart.
@@ -400,10 +393,6 @@ const GoingWordsMax = ${GOING_WORDS_MAX}
 // server's windows and the page's account of them cannot drift apart.
 const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
 const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
-
-// MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
-// MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
-const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 
 // MaxIssueAdvances bounds the \`advances\` input of an issue write before deduplication: the most
 // priorities one issue states it advances, its own relations alone. Generated from

@@ -275,60 +275,6 @@ func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
 	}
 }
 
-func TestIssueBlockedByCountLimitOnCreateAndPatch(t *testing.T) {
-	handler := newTestHandler(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "CORE", "name": "Core",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: %d %s", response.Code, response.Body.String())
-	}
-	var blockers []string
-	for index := range 21 {
-		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": "CORE", "title": fmt.Sprintf("Blocker %d", index), "force": true,
-		}, "alice")
-		if response.Code != http.StatusCreated {
-			t.Fatalf("create blocker: %d %s", response.Code, response.Body.String())
-		}
-		blockers = append(blockers, decodeBody[model.Issue](t, response).Key)
-	}
-	atCap := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "CORE", "title": "Dependent at cap", "blocked_by": blockers[:20],
-	}, "alice")
-	if atCap.Code != http.StatusCreated {
-		t.Fatalf("create at cap: %d %s", atCap.Code, atCap.Body.String())
-	}
-	dependent := decodeBody[model.Issue](t, atCap)
-	for _, method := range []string{http.MethodPost, http.MethodPatch} {
-		t.Run(method, func(t *testing.T) {
-			path := "/api/v1/issues"
-			body := map[string]any{"project": "CORE", "title": "Too many blockers", "blocked_by": blockers, "force": true}
-			if method == http.MethodPatch {
-				path += "/" + dependent.Key
-				body = map[string]any{"blocked_by": blockers}
-			}
-			response := dispatchRequest(t, handler, method, path, body, "alice")
-			if response.Code != http.StatusBadRequest {
-				t.Fatalf("over cap: %d %s, want 400", response.Code, response.Body.String())
-			}
-			refusal := decodeBody[struct {
-				Code  string `json:"code"`
-				Error string `json:"error"`
-			}](t, response)
-			if refusal.Code != "BLOCKED_BY_INPUT" || !strings.Contains(refusal.Error, "20") || !strings.Contains(refusal.Error, "blocked_by") {
-				t.Fatalf("over-cap refusal must name blocked_by and its limit: %+v", refusal)
-			}
-		})
-	}
-	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+dependent.Key, nil, "alice")
-	if read.Code != http.StatusOK {
-		t.Fatalf("read after refusal: %d %s", read.Code, read.Body.String())
-	}
-	if got := decodeBody[model.Issue](t, read).BlockedBy; !slices.Equal(got, dependent.BlockedBy) {
-		t.Fatalf("refused replacement changed blockers: %v, want %v", got, dependent.BlockedBy)
-	}
-}
-
 func TestIssueBlockedByIgnoresIndirectRowActivity(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -96,12 +95,10 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 	return managed, nil
 }
 
-func normalizeIssueBlockers(targets []string) ([]string, error) {
-	if len(targets) > contracts.MaxIssueBlockers {
-		return nil, countExceededError("BLOCKED_BY_INPUT", "blocked_by", len(targets), contracts.MaxIssueBlockers)
-	}
+// normalizeIssueBlockers is a write's blocked_by keys sorted, each named once.
+func normalizeIssueBlockers(targets []string) []string {
 	slices.Sort(targets)
-	return slices.Compact(targets), nil
+	return slices.Compact(targets)
 }
 
 // lockProjectIssueDependencies serializes blocker and parent changes before any row or rank

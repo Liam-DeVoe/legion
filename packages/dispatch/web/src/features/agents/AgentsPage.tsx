@@ -106,10 +106,10 @@ import { useAgentPinWrite, usePinnedAgents } from "./pins";
 import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
 import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
 
-/** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
- *  sends in, one at a time. In the compact grid it is one line that scrolls sideways like the
- *  chips: between the mode and Send on a narrow screen, adding no height, and the third and last
- *  row on a short one. A refusal or an exclusion reads as a warning; the mode alone does not. */
+/** The composer's one notice slot: the exclusions or the mode the selection sends in, one at a
+ *  time. In the compact grid it is one line that scrolls sideways like the chips: between the mode
+ *  and Send on a narrow screen, adding no height, and the third and last row on a short one. A
+ *  refusal or an exclusion reads as a warning; the mode alone does not. */
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
 const composerLine = `${composerLineLayout} ${dangerText}`;
@@ -1115,10 +1115,8 @@ function BroadcastComposer({
     ` ${asideOnly.length > 1 ? "do" : "does"} not advertise BTW.`,
   ];
   const text = useAgentText();
-  // The server counts the `session_ids` it is sent - these recipients - against the shared limit
-  // and refuses a send over it; saying so before Send saves the round trip. The notice line is
-  // Send's reason when it refuses for the limit or for nobody to reach; otherwise it still bears
-  // on the send, so Send is described by it.
+  // The notice line is Send's reason when it refuses for nobody to reach; otherwise it still
+  // bears on the send, so Send is described by it.
   const sendState = broadcastSendState(plan, delivery, body);
   // The button carries its refusal as text (its `title`, and its own hidden reason line where no
   // line on screen shows it), so a refusal naming agents names them as `AgentName` does.

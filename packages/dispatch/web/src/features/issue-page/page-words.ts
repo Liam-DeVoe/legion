@@ -44,7 +44,6 @@ import {
   type CheckWhen,
   type DeliveryAttemptState,
   MAX_ISSUE_ADVANCES,
-  MAX_ISSUE_BLOCKERS,
   type ResultCommitStands,
 } from "@legion/contracts";
 
@@ -689,10 +688,10 @@ export const DELIVERY_STATE_WORDS = freeze({
  * (`BlockedByControl.tsx`), one sentence per refusal, in place of the server's message, which
  * names the field by its wire token (`blocked_by issue CORE-9 not found`, R21). Each sentence is
  * cut where the issue it is about goes: that key is the server's detail and the reader's own
- * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is three refusals, told apart by
- * the key it names: no issue, the issue itself, or none at all for a list over the limit; and
- * `DEPENDENCY_CYCLE` is two, the issue the list would make wait on itself, or none for a chain
- * longer than Dispatch follows (`packages/envoy/internal/dispatch/api/issue_parent.go`).
+ * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is two refusals, told apart by
+ * the key it names: no issue, or the issue itself; and `DEPENDENCY_CYCLE` is two, the issue the
+ * list would make wait on itself, or none for a chain longer than Dispatch follows
+ * (`packages/envoy/internal/dispatch/api/issue_parent.go`).
  */
 export const BLOCKED_BY_REFUSALS = freeze({
   cycle: {
@@ -707,7 +706,6 @@ export const BLOCKED_BY_REFUSALS = freeze({
     before:
       "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.",
   },
-  too_many: { after: "", before: `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.` },
 } as const);
 
 /** One refusal of a blocked-by list the page has a sentence for. */
