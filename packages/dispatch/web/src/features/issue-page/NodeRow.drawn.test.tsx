@@ -711,15 +711,18 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   }
 });
 
-/** The names the page's one batched read brought, published as the page publishes them. */
+/** The names the page's one batched read brought, and the references it read as ambiguous,
+ *  published as the page publishes them. */
 function Named({
+  ambiguous,
   children,
   names,
 }: {
+  ambiguous?: ReadonlySet<string>;
   children: ReactNode;
   names: ReadonlyMap<string, string>;
 }): ReactNode {
-  usePublishReferenceNames(names);
+  usePublishReferenceNames(names, ambiguous);
   return children;
 }
 
@@ -809,6 +812,49 @@ test("the read's names are named as chips once per answer, not once per row", as
   } finally {
     view.unmount();
     named.mockRestore();
+  }
+});
+
+// Decisions 62 and 89: a short reference two or more targets answer to names none of them, so
+// the page publishes it as ambiguous, apart from its names, and a node's words draw it as its
+// author wrote it, with no link, never as a target that is gone. A reference the read named
+// nothing for and did not read as ambiguous keeps its fallback: a link, by its short form. Both
+// the words drawn from their reading and the words drawn as stored are read.
+test("an ambiguous short reference in a node's words is drawn as written with no link, and a gone one keeps its link", async () => {
+  const written = "dispatch://CORE-1/spec#b-1a2b3c4d";
+  const gone = "dispatch://CORE-1/spec#b-9f8e7d6c";
+  const text = `It follows ${written} and ${gone}.`;
+  const ambiguous: ReadonlySet<string> = new Set([written]);
+  const names: ReadonlyMap<string, string> = new Map();
+  for (const tree of [displayTree(text), undefined]) {
+    const drawn = tree === undefined ? "as stored" : "from their reading";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ReferenceNamesProvider>
+            <Named ambiguous={ambiguous} names={names}>
+              <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
+            </Named>
+          </ReferenceNamesProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(`a[data-row-reference="${gone}"]`),
+          `the gone reference drawn ${drawn} lost its link`
+        ).not.toBeNull()
+      );
+      expect(
+        view.container.querySelector(`a[data-row-reference="${written}"]`),
+        `the ambiguous reference drawn ${drawn} is a link`
+      ).toBeNull();
+      expect(view.container.textContent).toContain(`It follows ${written} and `);
+    } finally {
+      view.unmount();
+    }
   }
 });
 
