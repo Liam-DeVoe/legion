@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/answer"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/conversation/omp"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
@@ -411,6 +412,35 @@ func TestARestartAnswersAGeneratingQuestionAgainWithItsRecordedCalls(t *testing.
 	}
 	if got := r.only(); got.State != store.QuestionPosted {
 		t.Fatalf("question = %s; want posted", got.State)
+	}
+}
+
+// The gh tool an answer opens runs as the agent with the head its recorded round read: the
+// commit the asking conversation's role's phases row records (IssueFacts.HandoffCommits), which a
+// review the tool submits names in its footer (ghtool.Agent.Head), and never another role's.
+func TestTheGhToolRunsAsTheAgentWithItsRolesRecordedHead(t *testing.T) {
+	const tested, reviewed = "8848896da05779c592221b1199ee55ddb11cc3f3", "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
+	r := newRig(t)
+	var mu sync.Mutex
+	var opened []ghtool.Agent
+	r.cfg.Tools = toolsFunc(func(agent ghtool.Agent) Tool {
+		mu.Lock()
+		defer mu.Unlock()
+		opened = append(opened, agent)
+		return r.tool
+	})
+	r.cfg.Issues = issuesFunc(func(string) IssueFacts {
+		return IssueFacts{Recorded: true, DispatchStatus: "in_progress", Phase: "reviewing",
+			HandoffCommits: map[claim.Role]string{claim.RoleTester: tested, claim.RoleReviewer: reviewed}}
+	})
+	r.restart()
+	r.conversation("ses_tester", testerToken, 0)
+	r.receive(messageHandoff("ses_tester", "m-1", 1, "Which head did you test?"))
+	r.drain()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opened) != 1 || opened[0].Role != claim.RoleTester || opened[0].Session != "ses_tester" || opened[0].Head != tested {
+		t.Fatalf("the gh tool was opened as %+v; want the tester ses_tester once, with the head its phases row records, %s", opened, tested)
 	}
 }
 

@@ -78,18 +78,25 @@ func (w *workflowRuntime) attachAnswers(cfg config.Config, p plan, s *supervisio
 
 // recordFacts reads an agent's issue from the daemon's record for the change note: the status
 // Dispatch showed, the phase, its pull request as the daemon's GitHub reads last observed it, and
-// the repository it works (the record's, or the project's default for an issue it does not record).
+// the repository it works (the record's, or the project's default for an issue it does not
+// record); and, for the gh tool, the commit each role's phases row records it completed its round
+// against, which a review the agent submits names as the head it read (ghtool.Agent.Head). The
+// issue, its pull request and its phases rows are read in one transaction.
 type recordFacts struct{ w *workflowRuntime }
 
 func (r recordFacts) Facts(ctx context.Context, key string) (answerloop.IssueFacts, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
+	var phases []record.PhaseRow
 	if err := pgx.BeginFunc(ctx, r.w.pool, func(tx pgx.Tx) error {
 		var err error
 		if issue, err = r.w.records.Issue(ctx, tx, key); err != nil {
 			return err
 		}
-		pr, err = r.w.records.PullRequest(ctx, tx, key)
+		if pr, err = r.w.records.PullRequest(ctx, tx, key); err != nil {
+			return err
+		}
+		phases, err = r.w.records.Phases(ctx, tx, key)
 		return err
 	}); err != nil {
 		return answerloop.IssueFacts{}, err
@@ -104,6 +111,15 @@ func (r recordFacts) Facts(ctx context.Context, key string) (answerloop.IssueFac
 	}
 	if pr != nil {
 		facts.PullRequest = &answerloop.PullRequestFacts{Number: pr.Number, State: string(pr.State), Head: pr.HeadSHA}
+	}
+	for _, row := range phases {
+		if row.HandoffCommit == "" {
+			continue
+		}
+		if facts.HandoffCommits == nil {
+			facts.HandoffCommits = map[claim.Role]string{}
+		}
+		facts.HandoffCommits[row.Role] = row.HandoffCommit
 	}
 	return facts, nil
 }

@@ -157,7 +157,29 @@ const checkRefusal = "LEAK CHECK: refusing the gh call: one of ours"
 
 const question = "dispatch:m-1"
 
-var implementer = Agent{Issue: "LEG-1", Role: claim.RoleImplementer, Session: "s-1", Phase: "implement", Repository: ghrepo.MustParse("acme/widgets"), AppID: "1001"}
+// roundHead is the head the test agents' recorded round read (Agent.Head), and pushedHead the one
+// a push has since moved the pull request to; both are spelled as GitHub spells a head, 40
+// lowercase hexadecimal characters, the only spelling the review intake reads as one
+// (intake.PullRequestReview.LegionHead).
+const (
+	roundHead  = "8848896da05779c592221b1199ee55ddb11cc3f3"
+	pushedHead = "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
+)
+
+var implementer = Agent{Issue: "LEG-1", Role: claim.RoleImplementer, Session: "s-1", Phase: "implement", Repository: ghrepo.MustParse("acme/widgets"), AppID: "1001", Head: roundHead}
+
+// reviewer is a stopped reviewer of the same issue, the review App's agent, whose recorded round
+// read roundHead.
+var reviewer = Agent{Issue: "LEG-1", Role: claim.RoleReviewer, Session: "s-2", Phase: "review", Repository: ghrepo.MustParse("acme/widgets"), AppID: "1002", Head: roundHead}
+
+// headRead is the tool's read of acme/widgets#5's current head, which a review on it is checked
+// against before it runs (Answer.headRefusal).
+var headRead = []string{"api", "repos/acme/widgets/pulls/5", "--jq", ".head.sha"}
+
+// headAt is the stand-in's answer to headRead: the pull request stands at head.
+func headAt(head string) map[string]string {
+	return map[string]string{strings.Join(headRead, " "): head + "\n"}
+}
 
 var bounds = config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 60000, GHCalls: 100}
 
@@ -272,6 +294,20 @@ func (f *fixture) guardReads() []invocation {
 		}
 	}
 	return reads
+}
+
+// headReads splits the calls the stand-in gh was run for so far, its help reads left out, into
+// the tool's own reads of a pull request's head (Answer.headRefusal), and the rest.
+func (f *fixture) headReads() (reads, calls []invocation) {
+	f.t.Helper()
+	for _, inv := range f.invocations(false) {
+		if len(inv.Argv) == 4 && inv.Argv[0] == "api" && inv.Argv[2] == "--jq" && inv.Argv[3] == ".head.sha" {
+			reads = append(reads, inv)
+		} else {
+			calls = append(calls, inv)
+		}
+	}
+	return reads, calls
 }
 
 // allInvocations is every run of the stand-in gh recorded so far, whatever ran it.
@@ -556,100 +592,122 @@ func TestAllowedFormsRunWithTheRoutedOwnerAndTheScrubbedEnvironment(t *testing.T
 // The tool adds the agent's footer to every comment or review it posts: pr and issue comment's
 // --body in each spelling, a review's --body, a bare --approve, --request-changes or --comment as
 // --body with the footer alone, a closing or reopening --comment, a gh api write's literal body
-// field, and `-f body=<footer>` on a POST creating or submitting a review with none. The review
-// intake still reads the agent's session from it.
+// field, and `-f body=<footer>` on a POST creating or submitting a review with none. A review's
+// footer names the head the agent's recorded round read, once the pull request's head is read to
+// be that one, and a comment's names none. The review intake still reads the agent's session
+// from it, and a review's head.
 func TestTheFooterIsAddedToEveryWriteForm(t *testing.T) {
-	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-	foot := func(seq int) string {
-		return `<!-- legion: {"session":"s-1","phase":"implement","answer":"dispatch:m-1.` + fmt.Sprint(seq) + `"} -->`
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n", Responses: headAt(roundHead)})
+	foot := func(seq int, review bool) string {
+		head := ""
+		if review {
+			head = `"head":"` + roundHead + `",`
+		}
+		return `<!-- legion: {"session":"s-1","phase":"implement",` + head + `"answer":"dispatch:m-1.` + fmt.Sprint(seq) + `"} -->`
 	}
 	repo := []string{"-R", "acme/widgets"}
 	for i, tc := range []struct {
-		argv []string
-		want func(foot string) []string
+		argv   []string
+		review bool
+		want   func(foot string) []string
 	}{
-		{append([]string{"pr", "comment", "5", "--body", "Done."}, repo...), func(s string) []string {
+		{append([]string{"pr", "comment", "5", "--body", "Done."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "comment", "5", "--body", "Done.\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "comment", "5", "-b", "Done."}, repo...), func(s string) []string {
+		{append([]string{"pr", "comment", "5", "-b", "Done."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "comment", "5", "-b", "Done.\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "comment", "5", "--body=Done."}, repo...), func(s string) []string {
+		{append([]string{"pr", "comment", "5", "--body=Done."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "comment", "5", "--body=Done.\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "comment", "5", "-bDone."}, repo...), func(s string) []string {
+		{append([]string{"pr", "comment", "5", "-bDone."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "comment", "5", "-bDone.\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "comment", "5", "--edit-last", "--body", "Edited."}, repo...), func(s string) []string {
+		{append([]string{"pr", "comment", "5", "--edit-last", "--body", "Edited."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "comment", "5", "--edit-last", "--body", "Edited.\n\n" + s}, repo...)
 		}},
-		{append([]string{"issue", "comment", "3", "--body", "Done."}, repo...), func(s string) []string {
+		{append([]string{"issue", "comment", "3", "--body", "Done."}, repo...), false, func(s string) []string {
 			return append([]string{"issue", "comment", "3", "--body", "Done.\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "review", "5", "--approve", "--body", "LGTM"}, repo...), func(s string) []string {
+		{append([]string{"pr", "review", "5", "--approve", "--body", "LGTM"}, repo...), true, func(s string) []string {
 			return append([]string{"pr", "review", "5", "--approve", "--body", "LGTM\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "review", "5", "--approve"}, repo...), func(s string) []string {
+		{append([]string{"pr", "review", "5", "--approve"}, repo...), true, func(s string) []string {
 			return append(append([]string{"pr", "review", "5", "--approve"}, repo...), "--body", s)
 		}},
-		{append([]string{"pr", "review", "5", "--request-changes"}, repo...), func(s string) []string {
+		{append([]string{"pr", "review", "5", "--request-changes"}, repo...), true, func(s string) []string {
 			return append(append([]string{"pr", "review", "5", "--request-changes"}, repo...), "--body", s)
 		}},
-		{append([]string{"pr", "review", "5", "-c"}, repo...), func(s string) []string {
+		{append([]string{"pr", "review", "5", "-c"}, repo...), true, func(s string) []string {
 			return append(append([]string{"pr", "review", "5", "-c"}, repo...), "--body", s)
 		}},
-		{append([]string{"pr", "close", "5", "-c", "Superseded by #6."}, repo...), func(s string) []string {
+		{append([]string{"pr", "close", "5", "-c", "Superseded by #6."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "close", "5", "-c", "Superseded by #6.\n\n" + s}, repo...)
 		}},
-		{append([]string{"pr", "reopen", "5", "--comment", "Back."}, repo...), func(s string) []string {
+		{append([]string{"pr", "reopen", "5", "--comment", "Back."}, repo...), false, func(s string) []string {
 			return append([]string{"pr", "reopen", "5", "--comment", "Back.\n\n" + s}, repo...)
 		}},
-		{[]string{"api", "-X", "POST", "repos/acme/widgets/issues/5/comments", "-f", "body=Done."}, func(s string) []string {
+		{[]string{"api", "-X", "POST", "repos/acme/widgets/issues/5/comments", "-f", "body=Done."}, false, func(s string) []string {
 			return []string{"api", "-X", "POST", "repos/acme/widgets/issues/5/comments", "-f", "body=Done.\n\n" + s}
 		}},
-		{[]string{"api", "repos/acme/widgets/issues/5/comments", "-F", "body=Done."}, func(s string) []string {
+		{[]string{"api", "repos/acme/widgets/issues/5/comments", "-F", "body=Done."}, false, func(s string) []string {
 			return []string{"api", "repos/acme/widgets/issues/5/comments", "-F", "body=Done.\n\n" + s}
 		}},
-		{[]string{"api", "repos/acme/widgets/issues/5/comments", "--raw-field=body=Done."}, func(s string) []string {
+		{[]string{"api", "repos/acme/widgets/issues/5/comments", "--raw-field=body=Done."}, false, func(s string) []string {
 			return []string{"api", "repos/acme/widgets/issues/5/comments", "--raw-field=body=Done.\n\n" + s}
 		}},
-		{[]string{"api", "-X", "PATCH", "repos/acme/widgets/issues/comments/7", "-f", "body=Edited."}, func(s string) []string {
+		{[]string{"api", "-X", "PATCH", "repos/acme/widgets/issues/comments/7", "-f", "body=Edited."}, false, func(s string) []string {
 			return []string{"api", "-X", "PATCH", "repos/acme/widgets/issues/comments/7", "-f", "body=Edited.\n\n" + s}
 		}},
-		{[]string{"api", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE"}, func(s string) []string {
+		{[]string{"api", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE"}, true, func(s string) []string {
 			return []string{"api", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE", "-f", "body=" + s}
 		}},
-		{[]string{"api", "-X", "POST", "/repos/acme/widgets/pulls/5/reviews/9/events", "-f", "event=COMMENT"}, func(s string) []string {
+		{[]string{"api", "-X", "POST", "/repos/acme/widgets/pulls/5/reviews/9/events", "-f", "event=COMMENT"}, true, func(s string) []string {
 			return []string{"api", "-X", "POST", "/repos/acme/widgets/pulls/5/reviews/9/events", "-f", "event=COMMENT", "-f", "body=" + s}
 		}},
 	} {
 		seq := i + 1
 		f.clearInvocations()
 		got := f.run(seq, tc.argv...)
-		want := tc.want(foot(seq))
-		ran := f.invocations(false)
+		want := tc.want(foot(seq, tc.review))
+		reads, ran := f.headReads()
 		if !got.Ran || len(ran) != 1 || !slices.Equal(ran[0].Argv, want) {
 			t.Errorf("gh %q = %+v, ran %+v; want gh run once with %q", tc.argv, got, ran, want)
 			continue
 		}
+		wantReads, wantHead := 0, ""
+		if tc.review {
+			wantReads, wantHead = 1, roundHead
+		}
+		if len(reads) != wantReads {
+			t.Errorf("gh %q read the pull request's head %d times, want %d", tc.argv, len(reads), wantReads)
+		}
 		if env := f.wantEnv("acme"); !slices.Equal(ran[0].Env, env) {
 			t.Errorf("gh %q ran with %q, want %q", tc.argv, ran[0].Env, env)
 		}
-		posted := want[slices.IndexFunc(want, func(arg string) bool { return strings.Contains(arg, "<!-- legion:") })]
-		if session := (intake.PullRequestReview{Body: posted}).LegionSession(); session != "s-1" {
-			t.Errorf("the review intake reads the session %q from %q, want s-1", session, posted)
+		posted := intake.PullRequestReview{Body: want[slices.IndexFunc(want, func(arg string) bool { return strings.Contains(arg, "<!-- legion:") })]}
+		if session := posted.LegionSession(); session != "s-1" {
+			t.Errorf("the review intake reads the session %q from %q, want s-1", session, posted.Body)
+		}
+		if head := posted.LegionHead(); head != wantHead {
+			t.Errorf("the review intake reads the head %q from %q, want %q", head, posted.Body, wantHead)
 		}
 	}
 }
 
 // A body whose text begins with a hyphen — a removed line of a diff quoted back, `-Fixed in
 // abc123` — is text, not an option: the tool reads a write form's options as pflag does and never
-// reads the values they are given, so the call runs with the footer added to the body as given.
-// A browser or file option of its own is still refused, in either spelling, and nothing runs.
+// reads the values they are given, so the call runs with the footer added to the body as given
+// (a review's naming the head its round read, at which the pull request stands). A browser or
+// file option of its own is still refused, in either spelling, and nothing runs.
 func TestABodyBeginningWithAHyphenIsTextAndTheCallRuns(t *testing.T) {
-	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-	foot := func(seq int) string {
-		return `<!-- legion: {"session":"s-1","phase":"implement","answer":"dispatch:m-1.` + fmt.Sprint(seq) + `"} -->`
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n", Responses: headAt(roundHead)})
+	foot := func(seq int, argv []string) string {
+		head := ""
+		if argv[1] == "review" {
+			head = `"head":"` + roundHead + `",`
+		}
+		return `<!-- legion: {"session":"s-1","phase":"implement",` + head + `"answer":"dispatch:m-1.` + fmt.Sprint(seq) + `"} -->`
 	}
 	repo := []string{"-R", "acme/widgets"}
 	leak := "-worker.Stop() is gone, so the leak is fixed"
@@ -686,8 +744,8 @@ func TestABodyBeginningWithAHyphenIsTextAndTheCallRuns(t *testing.T) {
 		seq++
 		f.clearInvocations()
 		got := f.run(seq, tc.argv...)
-		want := tc.want(foot(seq))
-		ran := f.invocations(false)
+		want := tc.want(foot(seq, tc.argv))
+		_, ran := f.headReads()
 		if !got.Ran || len(ran) != 1 || !slices.Equal(ran[0].Argv, want) {
 			t.Errorf("gh %q = %+v, ran %+v; want gh run once with %q", tc.argv, got, ran, want)
 		}
@@ -706,6 +764,250 @@ func TestABodyBeginningWithAHyphenIsTextAndTheCallRuns(t *testing.T) {
 		got := f.run(seq, tc.argv...)
 		if got.Ran || !strings.Contains(got.Output, tc.want) || len(f.invocations(true)) != 0 {
 			t.Errorf("gh %q = %+v, ran %+v; want a refusal containing %q with gh never started", tc.argv, got, f.invocations(true), tc.want)
+		}
+	}
+}
+
+// A review at the head the agent's recorded round read runs once the tool has read that its pull
+// request still stands there, and the body gh is given carries a footer naming that head: the
+// review intake reads it as the head the review read, beside the agent's session, which is what
+// lets a review App's review decide the round (workflow's refusesRound). The footer a call
+// carried before reviews named their head gives the intake no head at all. The head is read
+// first, as a lookup reads, with the routed owner's gh directory and the scrubbed environment, of
+// the pull request each form names: by number and -R, by URL, and by a gh api endpoint.
+func TestAReviewAtTheRecordedHeadRunsWithThatHeadInItsFooter(t *testing.T) {
+	f := newFixture(t, reviewer, behaviour{Stdout: "reviewed\n", Responses: headAt(roundHead)})
+	for i, argv := range [][]string{
+		{"pr", "review", "5", "-R", "acme/widgets", "--approve", "--body", "Approved."},
+		{"pr", "review", "https://github.com/acme/widgets/pull/5", "--request-changes", "--body", "Changes."},
+		{"api", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE", "-f", "commit_id=" + roundHead, "-f", "body=Approved."},
+	} {
+		seq := i + 1
+		f.clearInvocations()
+		got := f.run(seq, argv...)
+		ran := f.invocations(false)
+		if !got.Ran || got.Exit != 0 || got.Output != "reviewed\n" || len(ran) != 2 {
+			t.Errorf("gh %q = %+v, ran %+v; want the head read, then the review", argv, got, ran)
+			continue
+		}
+		if read := ran[0]; !slices.Equal(read.Argv, headRead) || !slices.Equal(read.Env, f.wantEnv("acme")) || read.Cwd != f.answer.cwd {
+			t.Errorf("gh %q first ran %q in %s with %q; want %q with the routed owner's directory, the scrubbed environment and the answer's working directory",
+				argv, read.Argv, read.Cwd, read.Env, headRead)
+		}
+		at := slices.IndexFunc(ran[1].Argv, func(arg string) bool { return strings.Contains(arg, footerMarker) })
+		if at < 0 {
+			t.Errorf("gh %q ran the review with %q, which carries no footer", argv, ran[1].Argv)
+			continue
+		}
+		posted := intake.PullRequestReview{Body: strings.TrimPrefix(ran[1].Argv[at], "body=")}
+		if head, session := posted.LegionHead(), posted.LegionSession(); head != roundHead || session != reviewer.Session {
+			t.Errorf("the review intake reads the head %q and the session %q from the body gh was given, %q; want %s and %s",
+				head, session, posted.Body, roundHead, reviewer.Session)
+		}
+		before := intake.PullRequestReview{Body: "Approved.\n\n" + footer(reviewer, question, seq, "")}
+		if head, session := before.LegionHead(), before.LegionSession(); head != "" || session != reviewer.Session {
+			t.Errorf("the review intake reads the head %q and the session %q from a footer naming no head, %q; want none and %s",
+				head, session, before.Body, reviewer.Session)
+		}
+	}
+}
+
+// A review of a pull request a push has moved past the head the agent's recorded round read is
+// refused before it runs: gh is run for the read of the head and nothing else, the leak guard
+// never runs, and the model reads that the agent has not read the new head, both heads named, and
+// that the round waits for the reviewer itself. The refusal is recorded and logged as every
+// refusal is, and the head read logs one `answers: gh head read` line of its own, never the
+// restart lookup's `answers: gh lookup`. The identical call, once the pull request stands at the
+// recorded head, runs.
+func TestAReviewPastTheRecordedHeadIsRefusedWithOnlyItsHeadRead(t *testing.T) {
+	for _, argv := range [][]string{
+		{"pr", "review", "5", "-R", "acme/widgets", "--approve"},
+		{"api", "-X", "POST", "repos/acme/widgets/pulls/5/reviews/9/events", "-f", "event=APPROVE"},
+	} {
+		f := newFixture(t, reviewer, behaviour{Stdout: "reviewed\n", Responses: headAt(pushedHead)})
+		got := f.run(1, argv...)
+		if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") {
+			t.Errorf("gh %q = %+v; want it refused, gh never run for it", argv, got)
+		}
+		for _, want := range []string{pushedHead, roundHead, "you have not read the new head", "The round waits for the reviewer itself"} {
+			if !strings.Contains(got.Output, want) {
+				t.Errorf("the refusal of gh %q, %q, does not say %q", argv, got.Output, want)
+			}
+		}
+		if ran := f.invocations(false); len(ran) != 1 || !slices.Equal(ran[0].Argv, headRead) {
+			t.Errorf("gh %q ran gh for %+v; want the read of the head alone", argv, ran)
+		}
+		if reads, checked := f.guardReads(), f.checked(); len(reads) != 0 || checked != "" {
+			t.Errorf("the leak guard ran for gh %q (visibility reads %+v, check %q); a review refused before it runs reaches no guard", argv, reads, checked)
+		}
+		row, recorded := f.calls.row(question, 1)
+		if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil || row.FinishedAt == nil {
+			t.Errorf("the refused review is recorded as %+v (%t); want its refusal and no exit", row, recorded)
+		}
+		if lines := f.logLines("answers: gh"); len(lines) != 1 || lines[0]["refused"] != got.Output {
+			t.Errorf("the refused review logged %v; want one `answers: gh` line carrying its refusal", lines)
+		}
+		if lines := f.logLines(headReadLine); len(lines) != 1 || fmt.Sprint(lines[0]["args"]) != fmt.Sprint(headRead) || lines[0]["owner"] != "acme" {
+			t.Errorf("the head read logged %v; want one %q line naming its arguments and the owner acme", lines, headReadLine)
+		}
+		if lines := f.logLines(lookupLine); len(lines) != 0 {
+			t.Errorf("the head read logged %v; a %q line is a restart's lookup alone", lines, lookupLine)
+		}
+
+		setBehaviour(t, f.stand, behaviour{Stdout: "reviewed\n", Responses: headAt(roundHead)})
+		f.clearInvocations()
+		again := f.run(2, argv...)
+		if reads, ran := f.headReads(); !again.Ran || again.Output != "reviewed\n" || len(reads) != 1 || len(ran) != 1 {
+			t.Errorf("gh %q at the recorded head = %+v, read the head %d times and ran %+v; want the review run once", argv, again, len(reads), ran)
+		}
+	}
+}
+
+// A review from an agent whose record names no head its round read is refused before anything
+// runs, gh never started, not for its help nor for the pull request's head: a review naming no
+// head decides nothing, so the model reads that the record names none and that the round waits
+// for the reviewer itself. The refusal is recorded as every refusal is.
+func TestAReviewWithNoRecordedHeadIsRefusedBeforeAnythingRuns(t *testing.T) {
+	unread := reviewer
+	unread.Head = ""
+	f := newFixture(t, unread, behaviour{Stdout: "reviewed\n", Responses: headAt(roundHead)})
+	for i, argv := range [][]string{
+		{"pr", "review", "5", "-R", "acme/widgets", "--approve", "--body", "Approved."},
+		{"pr", "review", "5", "-R", "acme/widgets", "-c"},
+		{"api", "repos/acme/widgets/pulls/5/reviews", "-f", "event=REQUEST_CHANGES", "-f", "body=Changes."},
+		{"api", "-X", "PUT", "repos/acme/widgets/pulls/5/reviews/9", "-f", "body=Approved, with the nit fixed."},
+	} {
+		seq := i + 1
+		f.clearInvocations()
+		got := f.run(seq, argv...)
+		if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: your record names no head your round read") ||
+			!strings.Contains(got.Output, "The round waits for the reviewer itself") {
+			t.Errorf("gh %q = %+v; want it refused for the head the record does not name", argv, got)
+		}
+		if ran := f.invocations(true); len(ran) != 0 {
+			t.Errorf("gh %q started gh: %+v", argv, ran)
+		}
+		row, recorded := f.calls.row(question, seq)
+		if !recorded || row.Result == nil || *row.Result != got.Output || row.Exit != nil {
+			t.Errorf("the refused review is recorded as %+v (%t); want its refusal and no exit", row, recorded)
+		}
+	}
+}
+
+// A gh api review whose commit_id names another commit than the head the agent's recorded round
+// read is refused before anything runs, both commits named, with the pull request standing at
+// the recorded head all the same: GitHub would hold the review to the commit it names. The same
+// review naming the recorded head runs.
+func TestAnAPIReviewNamingAnotherCommitIsRefusedBeforeAnythingRuns(t *testing.T) {
+	f := newFixture(t, reviewer, behaviour{Stdout: "reviewed\n", Responses: headAt(roundHead)})
+	review := func(commit string) []string {
+		return []string{"api", "-X", "POST", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE", "-f", "commit_id=" + commit}
+	}
+	got := f.run(1, review(pushedHead)...)
+	if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !strings.Contains(got.Output, pushedHead) || !strings.Contains(got.Output, roundHead) {
+		t.Errorf("a review naming commit_id %s = %+v; want it refused, both commits named", pushedHead, got)
+	}
+	if ran := f.invocations(true); len(ran) != 0 {
+		t.Errorf("a review naming commit_id %s started gh: %+v", pushedHead, ran)
+	}
+	f.clearInvocations()
+	again := f.run(2, review(roundHead)...)
+	if reads, ran := f.headReads(); !again.Ran || len(reads) != 1 || len(ran) != 1 {
+		t.Errorf("a review naming commit_id %s = %+v, read the head %d times and ran %+v; want it run once", roundHead, again, len(reads), ran)
+	}
+}
+
+// A review whose arguments do not name its pull request by repository and number is refused
+// before anything runs, naming what it lacks: the tool reads the head of the pull request a
+// review is on before it submits it, and from the answer's empty working directory gh resolves
+// neither a repository nor a branch's pull request.
+func TestAReviewNamingNoPullRequestIsRefusedBeforeAnythingRuns(t *testing.T) {
+	f := newFixture(t, reviewer, behaviour{Stdout: "reviewed\n", Responses: headAt(roundHead)})
+	for i, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"pr", "review", "5", "--approve"}, "it names no repository"},
+		{[]string{"pr", "review", "-R", "acme/widgets", "--approve"}, "it names no pull request"},
+		{[]string{"pr", "review", "feature-x", "-R", "acme/widgets", "--approve"}, `its selector "feature-x" is no pull request number`},
+		{[]string{"api", "repos/{owner}/{repo}/pulls/5/reviews", "-f", "event=APPROVE"}, "its endpoint's repository"},
+		{[]string{"api", "repos/acme/widgets/pulls/latest/reviews", "-f", "event=APPROVE"}, `its endpoint's pull request "latest" is no number`},
+		{[]string{"api", "-X", "PUT", "repos/{owner}/{repo}/pulls/5/reviews/9", "-f", "body=Edited."}, "its endpoint's repository"},
+	} {
+		f.clearInvocations()
+		got := f.run(i+1, tc.argv...)
+		if got.Ran || !strings.HasPrefix(got.Output, "refused: "+reviewNamesNoPullRequest) || !strings.Contains(got.Output, tc.want) {
+			t.Errorf("gh %q = %+v; want a refusal saying %q", tc.argv, got, tc.want)
+		}
+		if ran := f.invocations(true); len(ran) != 0 {
+			t.Errorf("gh %q started gh: %+v", tc.argv, ran)
+		}
+	}
+}
+
+// A gh api PUT replacing a submitted review's body is a review too: the review intake reads the
+// last Legion footer of the body the review holds now, so a new body whose footer names no head
+// would strip the head the review's earlier footer named. So the PUT is refused while the pull
+// request stands past the recorded head, gh run for the head read alone, and at the recorded head
+// it runs with a footer naming that head. A review's dismissal is no review: it runs as it did,
+// with no head read, at whichever head the pull request stands.
+func TestAnAPIPutReplacingAReviewsBodyIsAReview(t *testing.T) {
+	f := newFixture(t, reviewer, behaviour{Stdout: "edited\n", Responses: headAt(pushedHead)})
+	argv := []string{"api", "-X", "PUT", "repos/acme/widgets/pulls/5/reviews/9", "-f", "body=Approved, with the nit fixed."}
+	got := f.run(1, argv...)
+	if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !strings.Contains(got.Output, pushedHead) ||
+		!strings.Contains(got.Output, roundHead) || !strings.Contains(got.Output, "you have not read the new head") {
+		t.Errorf("gh %q at a moved head = %+v; want it refused, both heads named", argv, got)
+	}
+	if ran := f.invocations(false); len(ran) != 1 || !slices.Equal(ran[0].Argv, headRead) {
+		t.Errorf("gh %q at a moved head ran gh for %+v; want the read of the head alone", argv, ran)
+	}
+
+	setBehaviour(t, f.stand, behaviour{Stdout: "edited\n", Responses: headAt(roundHead)})
+	f.clearInvocations()
+	again := f.run(2, argv...)
+	ran := f.invocations(false)
+	if !again.Ran || again.Output != "edited\n" || len(ran) != 2 || !slices.Equal(ran[0].Argv, headRead) {
+		t.Fatalf("gh %q at the recorded head = %+v, ran %+v; want the head read, then the PUT", argv, again, ran)
+	}
+	if want := append(slices.Clone(argv[:len(argv)-1]), argv[len(argv)-1]+"\n\n"+footer(reviewer, question, 2, roundHead)); !slices.Equal(ran[1].Argv, want) {
+		t.Errorf("gh %q ran as %q, want %q", argv, ran[1].Argv, want)
+	}
+	posted := intake.PullRequestReview{Body: strings.TrimPrefix(ran[1].Argv[len(ran[1].Argv)-1], "body=")}
+	if head, session := posted.LegionHead(), posted.LegionSession(); head != roundHead || session != reviewer.Session {
+		t.Errorf("the review intake reads the head %q and the session %q from the replaced body %q; want %s and %s",
+			head, session, posted.Body, roundHead, reviewer.Session)
+	}
+
+	setBehaviour(t, f.stand, behaviour{Stdout: "dismissed\n", Responses: headAt(pushedHead)})
+	f.clearInvocations()
+	dismiss := []string{"api", "-X", "PUT", "repos/acme/widgets/pulls/5/reviews/9/dismissals", "-f", "message=Superseded by the next round."}
+	if got := f.run(3, dismiss...); !got.Ran || got.Output != "dismissed\n" {
+		t.Errorf("gh %q = %+v; want it run", dismiss, got)
+	}
+	if reads, ran := f.headReads(); len(reads) != 0 || len(ran) != 1 || !slices.Equal(ran[0].Argv, dismiss) {
+		t.Errorf("gh %q read the head %d times and ran %+v; want it run once as given, no head read", dismiss, len(reads), ran)
+	}
+}
+
+// A comment that is no review runs as it did: gh is run for it alone, with no read of the pull
+// request's head, at whichever head the pull request stands, and its footer names no head,
+// whether or not the agent's record names one.
+func TestACommentRunsWithNoHeadRead(t *testing.T) {
+	unread := reviewer
+	unread.Head = ""
+	for _, agent := range []Agent{reviewer, unread} {
+		f := newFixture(t, agent, behaviour{Stdout: "posted\n", Responses: headAt(pushedHead)})
+		argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+		got := f.run(1, argv...)
+		want := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done.\n\n" + footer(agent, question, 1, "")}
+		reads, ran := f.headReads()
+		if !got.Ran || got.Output != "posted\n" || len(reads) != 0 || len(ran) != 1 || !slices.Equal(ran[0].Argv, want) {
+			t.Errorf("gh %q as an agent with the head %q = %+v, read the head %d times and ran %+v; want it run once as %q, no head read",
+				argv, agent.Head, got, len(reads), ran, want)
+		}
+		if head := (intake.PullRequestReview{Body: want[len(want)-1]}).LegionHead(); head != "" {
+			t.Errorf("a comment's footer names the head %q, want none", head)
 		}
 	}
 }
@@ -949,7 +1251,7 @@ func TestGHPathRunsLegionGhOverTheAnswersBundle(t *testing.T) {
 // unrecorded one and one posting nothing are not looked up.
 func TestLookupFindsTheCommentByItsAnswerKey(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{})
-	foot := func(seq int) string { return footer(implementer, question, seq) }
+	foot := func(seq int) string { return footer(implementer, question, seq, "") }
 	comments := fmt.Sprintf(`[[{"id":11,"html_url":"https://github.com/acme/widgets/pull/5#issuecomment-11","body":%q},{"id":12,"html_url":"https://github.com/acme/widgets/pull/5#issuecomment-12","body":%q}],[{"id":13,"html_url":"x","body":"no footer"}]]`,
 		"Earlier.\n\n"+foot(1), "Done.\n\n"+foot(2))
 	reviews := fmt.Sprintf(`[[{"id":21,"html_url":"https://github.com/acme/widgets/pull/5#pullrequestreview-21","body":%q}]]`, "Earlier review.\n\n"+foot(1))
@@ -1165,7 +1467,7 @@ func TestACallTheLeakGuardClearsRunsAsBefore(t *testing.T) {
 			if len(ran) != 1 {
 				t.Fatalf("gh %q ran gh %d times: %+v", argv, len(ran), ran)
 			}
-			want := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done.\n\n" + footer(implementer, question, 1)}
+			want := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done.\n\n" + footer(implementer, question, 1, "")}
 			if !slices.Equal(ran[0].Argv, want) {
 				t.Errorf("gh ran with %q, want %q", ran[0].Argv, want)
 			}
@@ -1247,7 +1549,7 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 		}
 		// The same call with no files named, which is what a caller that leaves the guard to
 		// read the argv itself hands it: the guard's own table takes the body for a file.
-		run, why := withFooter(argv, commandWords(argv), footer(implementer, question, 1))
+		run, why := withFooter(argv, commandWords(argv), footer(implementer, question, 1, ""))
 		if why != "" {
 			t.Fatalf("the call's footer: %s", why)
 		}

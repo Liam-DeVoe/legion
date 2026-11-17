@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // allowedCommands are the tool's commands by first word, each with the second words it allows:
@@ -214,16 +216,20 @@ func canonicalRefusal(words, command []string) string {
 
 // footer is the Legion footer of a comment or review the agent posts in answer to question with
 // call seq: the agent's session and phase, which the daemon's review intake reads
-// (intake.PullRequestReview.LegionSession), and the answer key, <question>.<seq>, by which a
-// restart finds it (Lookup). json.Marshal escapes `>`, so nothing in it ends the comment early.
-func footer(agent Agent, question string, seq int) string {
+// (intake.PullRequestReview.LegionSession); for a review, head, the head the agent's recorded
+// round read (Agent.Head), which a review App's review decides a round by
+// (intake.PullRequestReview.LegionHead), and "" for a comment, whose footer names none; and the
+// answer key, <question>.<seq>, by which a restart finds it (Lookup). json.Marshal escapes `>`,
+// so nothing in it ends the comment early.
+func footer(agent Agent, question string, seq int, head string) string {
 	encoded, err := json.Marshal(struct {
 		Session string `json:"session"`
 		Phase   string `json:"phase"`
+		Head    string `json:"head,omitempty"`
 		Answer  string `json:"answer"`
-	}{agent.Session, agent.Phase, question + "." + strconv.Itoa(seq)})
+	}{agent.Session, agent.Phase, head, question + "." + strconv.Itoa(seq)})
 	if err != nil {
-		panic(err) // three strings always encode
+		panic(err) // four strings always encode
 	}
 	return footerMarker + " " + string(encoded) + " -->"
 }
@@ -639,9 +645,95 @@ func withFooter(argv, words []string, foot string) ([]string, string) {
 	return run, ""
 }
 
+// pullRequest is the pull request a review is submitted on, as its call names it: its
+// repository, `<owner>/<name>`, and its number.
+type pullRequest struct {
+	repo, number string
+}
+
+// reviewNamesNoPullRequest opens the refusal of a review whose pull request its arguments do not
+// name by repository and number, whose head the tool reads before it runs (Answer.headRefusal).
+const reviewNamesNoPullRequest = "the gh tool reads the head of the pull request a review is on before it submits the review, and this one names no pull request it can read: "
+
+// reviewOf reads argv, whose command is words, for the review it submits: the pull request it is
+// on, whether it submits one at all, and the reason it is refused before anything runs, "" for
+// none. A review is any `pr review` (--approve, --request-changes or --comment, bare or with a
+// body), a gh api POST creating or submitting one (apiReviewCreate), and a gh api PUT replacing a
+// submitted one's body (apiReviewBody), whose last footer is the one the review intake reads; a
+// call asking for help submits nothing, and neither does a form parseArgs cannot read, which
+// withFooter refuses. A review's dismissal and every comment are no review.
+//
+// A review App's review decides a round only when its footer names the pull request's current
+// head (workflow's refusesRound), and the head the footer names is head, the one the agent's
+// recorded round read (Agent.Head). So a review is refused when the record names no head, since
+// it would decide nothing; when its arguments do not name its pull request by repository and
+// number (a URL, or a number or #number with -R), since the tool reads that pull request's head
+// before it runs (Answer.headRefusal); and when it is a gh api review whose commit_id field names
+// another commit than head, the commit GitHub would hold the review to.
+func reviewOf(argv, words []string, head string) (pullRequest, bool, string) {
+	key := writeOf(words)
+	if key != "pr review" && key != "api" {
+		return pullRequest{}, false, ""
+	}
+	parsed, err := parseArgs(argv, writes[key], key)
+	if err != nil || parsed.set("help") {
+		return pullRequest{}, false, ""
+	}
+	var endpoint []string
+	if key == "api" {
+		if len(parsed.positionals) > 1 {
+			switch path := apiPath(parsed.positionals[1]); apiMethod(parsed) {
+			case "POST":
+				endpoint = apiReviewCreate.FindStringSubmatch(path)
+			case "PUT":
+				endpoint = apiReviewBody.FindStringSubmatch(path)
+			}
+		}
+		if endpoint == nil {
+			return pullRequest{}, false, ""
+		}
+	}
+	if head == "" {
+		return pullRequest{}, true, "your record names no head your round read (your role's phases row records no commit it completed against), " +
+			"and a review decides a round only when its footer names the head it read and that head is the pull request's current one, " +
+			"so a review from here would decide nothing and is not submitted. The round waits for the reviewer itself; answer with that."
+	}
+	if key == "pr review" {
+		repo, number, selector, err := namedTarget(parsed)
+		switch {
+		case err != nil:
+			return pullRequest{}, true, reviewNamesNoPullRequest + err.Error()
+		case number == "" && selector == "":
+			return pullRequest{}, true, reviewNamesNoPullRequest + "it names no pull request, and the answer's empty working directory has no branch gh could find one by; name it by its number with -R <owner>/<repo>, or by its URL"
+		case number == "":
+			return pullRequest{}, true, reviewNamesNoPullRequest + fmt.Sprintf("its selector %q is no pull request number, #number or URL; name it by its number with -R <owner>/<repo>, or by its URL", selector)
+		}
+		return pullRequest{repo: repo, number: number}, true, ""
+	}
+	repo, err := ghrepo.Parse("its endpoint's repository", endpoint[1])
+	if err != nil {
+		return pullRequest{}, true, reviewNamesNoPullRequest + err.Error()
+	}
+	if number := endpoint[2]; strings.Trim(number, "0123456789") != "" {
+		return pullRequest{}, true, reviewNamesNoPullRequest + fmt.Sprintf("its endpoint's pull request %q is no number", number)
+	}
+	for _, field := range append(parsed.given("raw-field"), parsed.given("field")...) {
+		if name, value, _ := strings.Cut(field.value, "="); name == "commit_id" && value != head {
+			return pullRequest{}, true, fmt.Sprintf("the review's commit_id %q is not %s, the head your recorded round read: a review from here is of that head alone, so give it as commit_id or give none", value, head)
+		}
+	}
+	return pullRequest{repo: repo.String(), number: endpoint[2]}, true, ""
+}
+
 // apiReviewCreate is a gh api endpoint that creates or submits a pull request review, whose body
-// is optional: a POST to it posts a review with no text unless it is given one.
-var apiReviewCreate = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/[^/]+/reviews(/[^/]+/events)?$`)
+// is optional: a POST to it posts a review with no text unless it is given one. $1 is the pull
+// request's repository, $2 its number.
+var apiReviewCreate = regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/([^/]+)/reviews(?:/[^/]+/events)?$`)
+
+// apiReviewBody is a gh api endpoint that replaces a submitted review's body with a PUT: the body
+// the review intake reads the review's last Legion footer from, so the head its earlier footer
+// named is lost unless the new body names one. $1 is the pull request's repository, $2 its number.
+var apiReviewBody = regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/([^/]+)/reviews/[^/]+$`)
 
 // graphQLMutation finds a mutation operation in a GraphQL document.
 var graphQLMutation = regexp.MustCompile(`\bmutation\b`)

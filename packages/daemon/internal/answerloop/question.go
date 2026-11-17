@@ -92,7 +92,8 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	if err != nil {
 		return fmt.Errorf("read what changed on %s: %w", conv.Issue, err)
 	}
-	agent := ghtool.Agent{Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Phase: facts.Phase, Repository: facts.Repository}
+	agent := ghtool.Agent{Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Phase: facts.Phase, Repository: facts.Repository,
+		Head: facts.HandoffCommits[conv.Role]}
 	if l.cfg.AppID != nil {
 		agent.AppID = l.cfg.AppID(conv.Role)
 	}

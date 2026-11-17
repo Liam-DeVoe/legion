@@ -1537,6 +1537,11 @@ So the tool runs only what is safe there, and decides before anything runs:
   A form whose text the tool cannot read is refused rather than posted without one:
   `--editor`, `gh api --input`, a typed field's `@<path>`, and a GraphQL mutation, which has a REST endpoint to use instead.
   The review intake ignores the footer's `answer` key, and a restart finds a post by it.
+  A review's footer also names the head the agent's recorded round read, `"head":"<40-hex sha>"` beside the session, phase and answer: the commit its role's phases row records it completed against (`handoff_commit`).
+  Before a review runs (every `pr review`, a `gh api` POST creating or submitting one, and a `gh api` PUT replacing a review's body, whose last footer is the one the daemon reads), the tool reads the current head of the pull request the call names (a number with `-R`, a URL, or the `gh api` endpoint) with a read of its own, routed and in the scrubbed environment, and a review naming its pull request none of those ways is refused.
+  It refuses the review, gh never run for it, when that head is not the recorded one, naming both and saying the agent has not read the new head and the round waits for the reviewer itself; when the record names no head; and when a `gh api` review's `commit_id` names another commit.
+  The reason is the daemon's own review rule: a review the review App submits decides a round only when the head its footer names is the pull request's current head (`refusesRound` in `internal/workflow/review.go`), so a review naming no head, or a head a push has since moved past, would decide nothing.
+  A refused review is recorded in `answer_tool_calls` and logged as every refusal is; a comment, and a review's dismissal, run as before, with no head read and no head named.
   A write that posts no comment or review (`pr merge`, `run rerun`, `workflow run`) runs as given.
 
 - **Routing and credentials.**

@@ -57,7 +57,7 @@ func Lookup(ctx context.Context, a *Answer, seq int, bounds config.AnswerBounds)
 	if place.list {
 		argv = append(argv, "--paginate", "--slurp")
 	}
-	out, err := a.read(ctx, argv)
+	out, err := a.read(ctx, lookupLine, argv)
 	if err != nil {
 		return Found{}, fmt.Errorf("gh call %s.%d: read %s: %w", a.question, seq, place.endpoint, err)
 	}
@@ -145,16 +145,36 @@ func (a *Answer) placeOf(ctx context.Context, argv []string) (place, error) {
 // place: its repository and number.
 var githubIssueURL = regexp.MustCompile(`(?i)^https?://(?:www\.)?github\.com/([^/]+/[^/]+)/(?:pull|issues)/([0-9]+)`)
 
-// target is the repository (OWNER/REPO) and number a pr or issue command's arguments name: its
-// selector a number, #N or a URL, its repository the URL's or -R's; a pr command's branch is read
-// from GitHub with `gh pr view`. A command naming no repository ran in the answer's empty working
-// directory, where gh resolves none, so its target cannot be read.
+// target is the repository (OWNER/REPO) and number a pr or issue command's arguments name, as
+// namedTarget reads them, a pr command's branch read from GitHub with `gh pr view`.
 func (a *Answer) target(ctx context.Context, parsed parsedArgs, pr bool) (string, string, error) {
-	selector := ""
+	repo, number, selector, err := namedTarget(parsed)
+	if err != nil || number != "" {
+		return repo, number, err
+	}
+	if !pr || selector == "" {
+		return "", "", fmt.Errorf("its selector %q names no pull request or issue the gh tool can read", selector)
+	}
+	out, err := a.read(ctx, lookupLine, []string{"pr", "view", selector, "-R", repo, "--json", "number", "--jq", ".number"})
+	if err != nil {
+		return "", "", fmt.Errorf("read the pull request of %q in %s: %w", selector, repo, err)
+	}
+	number = strings.TrimSpace(string(out))
+	if number == "" || strings.Trim(number, "0123456789") != "" {
+		return "", "", fmt.Errorf("gh named %q as the pull request of %q in %s", number, selector, repo)
+	}
+	return repo, number, nil
+}
+
+// namedTarget is the repository (OWNER/REPO) and number a pr or issue command's arguments name,
+// and its selector: the selector a number, #N or a URL, the repository the URL's or -R's. A
+// selector that is none of those — a branch, or none at all — names its repository and no
+// number. A command naming no repository runs in the answer's empty working directory, where gh
+// resolves none, so its target cannot be read.
+func namedTarget(parsed parsedArgs) (repo, number, selector string, err error) {
 	if len(parsed.positionals) > 2 {
 		selector = parsed.positionals[2]
 	}
-	repo := ""
 	if given := parsed.given("repo"); len(given) > 0 {
 		value := given[len(given)-1].value
 		for _, prefix := range []string{"https://github.com/", "http://github.com/", "github.com/"} {
@@ -165,41 +185,39 @@ func (a *Answer) target(ctx context.Context, parsed parsedArgs, pr bool) (string
 		}
 		named, err := ghrepo.Parse("its -R", strings.TrimSuffix(value, "/"))
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		repo = named.String()
 	}
 	if m := githubIssueURL.FindStringSubmatch(selector); m != nil {
 		named, err := ghrepo.Parse("its URL's repository", m[1])
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		return named.String(), m[2], nil
+		return named.String(), m[2], selector, nil
 	}
 	if repo == "" {
-		return "", "", errors.New("it names no repository, so it can have posted nowhere gh resolves from the answer's empty working directory")
+		return "", "", "", errors.New("it names no repository, and gh resolves none from the answer's empty working directory")
 	}
-	if number := strings.TrimPrefix(selector, "#"); number != "" && strings.Trim(number, "0123456789") == "" {
-		return repo, number, nil
+	if n := strings.TrimPrefix(selector, "#"); n != "" && strings.Trim(n, "0123456789") == "" {
+		return repo, n, selector, nil
 	}
-	if !pr || selector == "" {
-		return "", "", fmt.Errorf("its selector %q names no pull request or issue the gh tool can read", selector)
-	}
-	out, err := a.read(ctx, []string{"pr", "view", selector, "-R", repo, "--json", "number", "--jq", ".number"})
-	if err != nil {
-		return "", "", fmt.Errorf("read the pull request of %q in %s: %w", selector, repo, err)
-	}
-	number := strings.TrimSpace(string(out))
-	if number == "" || strings.Trim(number, "0123456789") != "" {
-		return "", "", fmt.Errorf("gh named %q as the pull request of %q in %s", number, selector, repo)
-	}
-	return repo, number, nil
+	return repo, "", selector, nil
 }
+
+// The messages of read's log line: lookupLine for a restart's lookup (Lookup, Answer.target), and
+// headReadLine for the head a review is checked against (Answer.headRefusal).
+const (
+	lookupLine   = "answers: gh lookup"
+	headReadLine = "answers: gh head read"
+)
 
 // read runs a read of the daemon's own, argv, as a call runs (routed, the scrubbed environment,
 // the answer's empty working directory), and answers its whole stdout; a gh exiting non-zero is an
-// error naming its stderr. It records nothing: it is no call of the model's. It logs one line.
-func (a *Answer) read(ctx context.Context, argv []string) ([]byte, error) {
+// error naming its stderr. It records nothing: it is no call of the model's, but a restart's
+// lookup or the head a review is checked against (Answer.headRefusal). It logs one line, line its
+// message.
+func (a *Answer) read(ctx context.Context, line string, argv []string) ([]byte, error) {
 	_, owner, dir, err := a.route(ctx, argv)
 	if err != nil {
 		return nil, err
@@ -214,7 +232,7 @@ func (a *Answer) read(ctx context.Context, argv []string) ([]byte, error) {
 	if cmd.ProcessState != nil {
 		exit = cmd.ProcessState.ExitCode()
 	}
-	a.host.Log.Info("answers: gh lookup", "question", a.question, "issue", a.agent.Issue, "role", a.agent.Role,
+	a.host.Log.Info(line, "question", a.question, "issue", a.agent.Issue, "role", a.agent.Role,
 		"app", string(a.agent.App()), "appID", a.agent.AppID, "owner", owner, "args", argv, "exit", exit)
 	if err != nil {
 		return nil, fmt.Errorf("gh %s: %v: %s", strings.Join(argv, " "), err, strings.TrimSpace(stderr.String()))

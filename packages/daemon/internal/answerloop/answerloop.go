@@ -86,13 +86,18 @@ type Gate interface {
 
 // IssueFacts is what has changed on an agent's issue since it stopped, for the change note: the
 // status Dispatch shows, the daemon's phase, the repository the issue works, and its pull request.
-// Recorded is false for an issue the daemon holds no record of.
+// Recorded is false for an issue the daemon holds no record of. HandoffCommits is, by role, the
+// commit each role's phases row records it completed its round against
+// (record.PhaseRow.HandoffCommit), a role whose row records none absent: the head the agent's
+// recorded round read, which the gh tool names in a review's footer and submits a review at only
+// while the pull request stands there (ghtool.Agent.Head).
 type IssueFacts struct {
 	Recorded       bool
 	DispatchStatus string
 	Phase          string
 	Repository     ghrepo.Repository
 	PullRequest    *PullRequestFacts
+	HandoffCommits map[claim.Role]string
 }
 
 // PullRequestFacts is the daemon's latest observation of a pull request: its number, its state

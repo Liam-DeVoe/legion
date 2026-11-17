@@ -134,9 +134,11 @@ func (f *fakeTool) Lookup(_ context.Context, seq int) (ghtool.Found, error) {
 }
 func (f *fakeTool) Close() error { return nil }
 
-type toolsFunc func() Tool
+type toolsFunc func(ghtool.Agent) Tool
 
-func (f toolsFunc) Open(context.Context, ghtool.Agent, string) (Tool, error) { return f(), nil }
+func (f toolsFunc) Open(_ context.Context, agent ghtool.Agent, _ string) (Tool, error) {
+	return f(agent), nil
+}
 
 type issuesFunc func(string) IssueFacts
 
@@ -236,7 +238,7 @@ func newRig(t *testing.T) *rig {
 			Answer: 180 * time.Second, ModelCalls: 8, OutputTokens: 4000, GHCall: 30 * time.Second, GHOutputChars: 60000, GHCalls: 20, Concurrent: 4, DailyUSD: 50,
 		}},
 		Store: st, Dispatch: dispatch.New(r.dispatch.URL, "dispatch-token"), Envoy: notify.New(r.listener.URL, "envoy-token"),
-		Gate: r.gate, Tools: toolsFunc(func() Tool { return r.tool }), Conversations: Harnesses{},
+		Gate: r.gate, Tools: toolsFunc(func(ghtool.Agent) Tool { return r.tool }), Conversations: Harnesses{},
 		Issues: issuesFunc(func(issue string) IssueFacts {
 			return IssueFacts{Recorded: true, DispatchStatus: "done", Phase: "done", PullRequest: &PullRequestFacts{Number: 7, State: "merged", Head: "abc123"}}
 		}),

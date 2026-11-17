@@ -8,8 +8,9 @@
 // write to a public repository is (internal/leakguard, the guard a pane's `legion gh` runs), with
 // the agent's Legion footer on every comment or review it posts, under a scrubbed environment, a
 // time bound and an output bound, and recorded before it runs and finished after
-// (answer_tool_calls). Lookup tells a restarted answer whether a comment or review call whose
-// outcome was never recorded reached GitHub, by its footer.
+// (answer_tool_calls). A review runs only while its pull request's head is the head the agent's
+// recorded round read, which its footer names. Lookup tells a restarted answer whether a comment
+// or review call whose outcome was never recorded reached GitHub, by its footer.
 package ghtool
 
 import (
@@ -37,6 +38,9 @@ import (
 // Agent is the stopped agent a call runs as: its issue, role, session and phase (the footer names
 // the session and phase), the repository its issue targets, whose owner its role's App writes to,
 // and the configured id of that App (config.GitHubApps), which the log line names beside its role.
+// Head is the head its recorded round read: the commit its role's phases row records it completed
+// against (record.PhaseRow.HandoffCommit), "" when the row records none. A review's footer names
+// it, and a review runs only while it is the pull request's current head (Run).
 type Agent struct {
 	Issue      string
 	Role       claim.Role
@@ -44,6 +48,7 @@ type Agent struct {
 	Phase      string
 	Repository ghrepo.Repository
 	AppID      string
+	Head       string
 }
 
 // App is the GitHub App the agent's role acts as: implement for an implementer or a merger, review
@@ -202,15 +207,19 @@ type Result struct {
 
 // Run runs call. It is refused, with gh never started, when its arguments are no JSON array of
 // strings, its seq is past the answer's gh_calls bound, its command is none of the tool's (the
-// allow list), or it posts a comment or review in a form the agent's footer cannot be added to;
-// it is refused after reading gh's help, with the command itself never run, when the owner it
-// targets cannot be read for certain or is none of the bundle's, or gh's help names its command
+// allow list), it submits a review the agent's recorded round cannot decide (reviewOf: the record
+// names no head, the review names no pull request by repository and number, or names another
+// commit_id), or it posts a comment or review in a form the agent's footer cannot be added to; a
+// review is refused after reading its pull request's head, with the review itself never run,
+// when that head is not the one the agent's recorded round read (Answer.headRefusal); a call is
+// refused after reading gh's help, with the command itself never run, when the owner it targets
+// cannot be read for certain or is none of the bundle's, or gh's help names its command
 // otherwise than its words do, and when the leak guard refuses it or could not be made to run
 // (Answer.leakGuard), which is checked last of all, once the call's repository and the files it
 // would send are known and before anything is recorded or started. Every other call runs with
-// the footer added to what it posts, the routed owner's gh directory, the scrubbed environment,
-// the working directory the answer's empty one, the gh_seconds bound and the gh_output_chars
-// bound. Every call is recorded: an allowed one
+// the footer added to what it posts (a review's naming the head its round read), the routed
+// owner's gh directory, the scrubbed environment, the working directory the answer's empty one,
+// the gh_seconds bound and the gh_output_chars bound. Every call is recorded: an allowed one
 // before gh starts and finished after it ends, a refused one with its refusal; one whose start
 // cannot be recorded does not run. Each logs one `answers: gh` line, and a call the guard refused
 // one line of its own before it.
@@ -233,12 +242,25 @@ func Run(ctx context.Context, call Call) Result {
 	if why := refusal(argv, words); why != "" {
 		return a.refuse(ctx, call.Seq, argv, started, why)
 	}
-	run, why := withFooter(argv, words, footer(a.agent, a.question, call.Seq))
+	pr, review, why := reviewOf(argv, words, a.agent.Head)
+	if why != "" {
+		return a.refuse(ctx, call.Seq, argv, started, why)
+	}
+	head := ""
+	if review {
+		head = a.agent.Head
+	}
+	run, why := withFooter(argv, words, footer(a.agent, a.question, call.Seq, head))
 	if why != "" {
 		return a.refuse(ctx, call.Seq, argv, started, why)
 	}
 	ctx, cancel := context.WithTimeout(ctx, call.Bounds.GHCall)
 	defer cancel()
+	if review {
+		if why := a.headRefusal(ctx, pr); why != "" {
+			return a.refuse(ctx, call.Seq, run, started, why)
+		}
+	}
 	target, owner, dir, err := a.route(ctx, run)
 	if err != nil {
 		return a.refuse(ctx, call.Seq, run, started, err.Error())
@@ -267,6 +289,30 @@ func Run(ctx context.Context, call Call) Result {
 	}
 	a.log(call.Seq, run, owner, result)
 	return result
+}
+
+// headRefusal is the reason a review on pr is refused once the pull request's head is read, ""
+// for none: its current head, read from GitHub by the daemon's own read (Answer.read: routed, the
+// scrubbed environment, the answer's empty working directory, one `answers: gh head read` line),
+// is not Agent.Head, the head the agent's recorded round read and the review's footer names, or
+// could not be read. A review App's review decides a round only when the head its footer names is
+// the pull request's current one (workflow's refusesRound), so a review naming the head the round
+// read decides nothing once a push has moved the pull request past it, and naming the new one
+// would say the agent read code it never read: the round waits for the reviewer itself.
+func (a *Answer) headRefusal(ctx context.Context, pr pullRequest) string {
+	out, err := a.read(ctx, headReadLine, []string{"api", "repos/" + pr.repo + "/pulls/" + pr.number, "--jq", ".head.sha"})
+	current := strings.TrimSpace(string(out))
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the gh tool reads the head of the pull request a review is on before it submits the review, and the head of %s#%s could not be read: %v", pr.repo, pr.number, err)
+	case current == "":
+		return fmt.Sprintf("the gh tool reads the head of the pull request a review is on before it submits the review, and gh answered no head for %s#%s", pr.repo, pr.number)
+	case current != a.agent.Head:
+		return fmt.Sprintf("%s#%s stands at %s now, and the head your recorded round read is %s: you have not read the new head, "+
+			"so no review is submitted from here (a review decides a round only when its footer names the pull request's current head, and the head it names is the one you read). "+
+			"The round waits for the reviewer itself to read and review %s; answer with that.", pr.repo, pr.number, current, a.agent.Head, current)
+	}
+	return ""
 }
 
 // decodeArgs reads the model's arguments, a JSON array of strings.

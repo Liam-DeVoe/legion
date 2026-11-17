@@ -636,3 +636,31 @@ func TestQuestionsForControllerListsAPassedQuestionForSevenDays(t *testing.T) {
 		t.Fatalf("questions for the controller seven days after the older was passed = %+v, want the newer alone", got)
 	}
 }
+
+// The facts the answer loop reads of an agent's issue carry, by role, the commit each role's
+// phases row records it completed its round against (record.PhaseRow.HandoffCommit): the head the
+// gh tool names in a stopped agent's review footer (ghtool.Agent.Head). A role whose row records
+// no commit is absent, so its agent's tool holds no head and submits no review.
+func TestRecordFactsCarryEachRolesHandoffCommit(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	const key, reviewed = "LEGION-5", "8848896da05779c592221b1199ee55ddb11cc3f3"
+	putOutboxIssue(t, pool, records, record.Issue{Key: key, Tree: key, Project: "LEGION", Title: "Reviewed", Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Phase: phase.Reviewing, Generation: 1, Status: "in_progress"})
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "legion-5-reviewer", HandoffCommit: reviewed}); err != nil {
+			return err
+		}
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: "legion-5-tester"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := recordFacts{&workflowRuntime{pool: pool, records: records, log: quietLogger()}}.Facts(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[claim.Role]string{claim.RoleReviewer: reviewed}; !facts.Recorded || !reflect.DeepEqual(facts.HandoffCommits, want) {
+		t.Fatalf("the facts of %s = %+v; want it recorded, with the reviewer's handoff commit alone, %v", key, facts, want)
+	}
+}
