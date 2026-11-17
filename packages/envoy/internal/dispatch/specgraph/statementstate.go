@@ -131,7 +131,7 @@ func (j *statementJudge) state(id string) StatementState {
 	} else {
 		st.State, st.Reason, st.Detail = j.byChecks(id)
 	}
-	st.PartlyChecked = st.State == statementMet && j.approved.Nodes[id].PartlyChecked
+	st.PartlyChecked = st.State == statementMet && *j.approved.Nodes[id].PartlyChecked // Input.check refuses one that is not set
 	j.states[id] = st
 	return st
 }

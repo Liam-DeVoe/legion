@@ -1,47 +1,55 @@
 package specgraph
 
 import (
-	"encoding/json/v2"
 	"fmt"
-	"maps"
 	"reflect"
-	"slices"
-	"strconv"
 	"strings"
 )
 
 // A member of an input type of the derivation, a type of a file of a scenario (ReadScenario) or of
 // an Input (Derive, CheckStates), a FixtureHistory or a Unit (WaitCycle), is read as its type marks
 // it with the tag input, since a member that its writer left out is its zero value, and a rule that
-// read that value as a real one would turn a state toward true or hide a failure. Each member has
-// one of four marks, and a test fails for a member with none (TestEachMemberOfAnInputHasAMark):
+// read that value as a real one would turn a state toward true or hide a failure. The reader of a
+// file and the entry of the library read a member by one rule, in the functions that both call
+// (Result.fault, JobRun.fault, subjectFault, ApprovedNode.check, FixtureHistory.check,
+// CommitTies.fault, unitsFault, uncitedFault), or the entry's alone for a member that only an Input
+// holds (Input.check, historyFault), or the reader's alone for one that only a file holds
+// (ApprovedFile.approved, readResults). Each member has one of four marks, and a test fails for a
+// member with none (TestEachMemberOfAnInputHasAMark):
 //
 //   - input:"nonzero": its zero value is no value of the format, so the validation of its type
-//     refuses it, and a file that leaves it out is refused too, as its zero value: the one that the
-//     reader and the entry of the derivation share (Result.fault, JobRun.fault, subjectFault,
-//     ApprovedNode.check, FixtureHistory.check, unitsFault, uncitedFault), the entry's
-//     (Input.check, historyFault), or the reader's, for a member that only a file holds
-//     (ApprovedFile.approved, readResults). A nonzero string has at least one character, and a
-//     nonzero interface is set, as Input.History is. A nonzero map is set, not nil, and each of its
-//     values is nonzero by the same rule, at each depth of a map of maps; an empty map is a value, as
-//     Input.Uncited {} says that CI refused no check, and a rule "" in it is refused. A value of a
-//     struct type is read by the marks of its own members, as a Tie that is not known is a value
-//     (R18). A type's own rule can ask more, as FixtureCommit.Files holds at least one path;
-//   - input:"present: <reason>": its zero value is a value of the format, as the reason says, such
-//     as false for removed, so a file must set it (unsetFault), and to a caller of the library the
-//     zero value is that value;
+//     refuses it, and a file that leaves it out is refused too, as its zero value. A nonzero
+//     string has at least one character, and a nonzero interface is set, as Input.History is. A
+//     nonzero list is set, not nil, and an empty list is a value, as Input.JobRuns [] says that no
+//     job ran. A nonzero map is set, not nil, and each of its values is nonzero by the same rule,
+//     at each depth of a map of maps; an empty map is a value, as Input.Uncited {} says that CI
+//     refused no check, and a rule "" in it is refused. A value of a struct type is read by the
+//     marks of its own members, as a Tie that is not known is a value (R18). A type's own rule can
+//     ask more, as FixtureCommit.Files holds at least one path;
+//   - input:"present: <reason>": the member's type has a value for "not set", a nil pointer or a
+//     nil list, which the validation of its type refuses, from a file that leaves it out (decodeJSON
+//     refuses a null, so nil is only a member left out) and from a caller that does not set it;
+//     set, its zero, such as false for removed, "" for leg or [] for commits, is a value of the
+//     format, as the reason says. So no mark of the library reads the Go zero value of a member that
+//     the caller did not set as a value;
 //   - input:"zero: <reason>": its zero value is a value of the format, as the reason says, and a
-//     file that leaves it out sets that value;
+//     file that leaves it out sets that value, unless a rule of its type refuses that value where
+//     the derivation reads it, as Result.fault refuses a run of a check of the code with no commit;
 //   - input:"one of <member>: <reason>": of it and the other member, exactly one is set, and the
 //     validation refuses neither and both, as the reason says.
 //
+// A member that names something, a commit, a check, a job, a leg, a deploy, a transaction of the
+// graph, a branch or a unit, as a value or as the key of a map, names nothing when it holds no
+// letter and no digit, and is refused by one rule (nameFault, hasWord); a path of the repository,
+// in a tie and in a tree of the history, by the rule of NewTie (isRepoPath).
+//
 // No mark reads a JSON null: decodeJSON refuses a null at each place of each file. The reason of a
 // mark zero is a decision that a review checks, since the reflection tests read only that a member
-// left out reads as its zero value; the sweep of the scenarios is its guard
-// (TestNoInputThatSaysNothingMovesAStateTowardTrue): a member whose zero value, left out, moves a
-// state toward true has a wrong mark, as leg had. The hand-written rows of seq
-// (TestAcceptAFailureWithNoSeqIsNeverHidden, TestAMissedFailingExampleWithNoSeqIsNeverHidden) pin
-// the one that was wrong before.
+// left out reads as its zero value, and that the library takes its zero value; the sweep of the
+// scenarios is its guard (TestNoInputThatSaysNothingMovesAStateTowardTrue): a member whose zero
+// value, left out, moves a state toward true has a wrong mark, as leg had. The hand-written rows of
+// seq (TestAcceptAFailureWithNoSeqIsNeverHidden, TestAMissedFailingExampleWithNoSeqIsNeverHidden)
+// pin the one that was wrong before.
 type memberMark struct {
 	kind  string // "nonzero", "present", "zero" or "one of"
 	other string // the other member of a "one of" mark, by its JSON name
@@ -99,62 +107,23 @@ func inputMembers(t reflect.Type) []inputMember {
 	return members
 }
 
-// unsetFault is the refusal of the first member of a value of v's type that data, a text that
-// decodeJSON took into v in the form form, does not set, of each member that its type marks
-// present: one that data leaves out, which the decode reads as its zero value (decodeJSON refuses a
-// null). The zero value of such a member is a real value of the form, as false is for removed, so
-// only the text tells a member that its writer left out from one that it set. It names the place of
-// the member as decodeJSON names a place, and nil when data sets each.
-func unsetFault(data []byte, v any, form string) error {
-	var text any
-	if err := json.Unmarshal(data, &text); err != nil {
-		return err
-	}
-	if place, unset := unsetPlace(text, reflect.TypeOf(v), ""); unset {
-		return fmt.Errorf("it is not in the form %s: the value at %s is not set", form, quoted(place))
-	}
-	return nil
-}
+// namedMember is one member of an input that names something: the member's name, what it names,
+// and its value.
+type namedMember struct{ member, what, value string }
 
-// unsetPlace is the JSON pointer of the first member marked present that text, a value of type t,
-// does not set, and whether there is one.
-func unsetPlace(text any, t reflect.Type, place string) (string, bool) {
-	switch t.Kind() {
-	case reflect.Pointer:
-		return unsetPlace(text, t.Elem(), place)
-	case reflect.Slice:
-		items, _ := text.([]any)
-		for i, item := range items {
-			if p, unset := unsetPlace(item, t.Elem(), place+"/"+strconv.Itoa(i)); unset {
-				return p, true
-			}
-		}
-	case reflect.Map:
-		members, _ := text.(map[string]any)
-		for _, key := range slices.Sorted(maps.Keys(members)) {
-			if p, unset := unsetPlace(members[key], t.Elem(), place+"/"+pointerToken.Replace(key)); unset {
-				return p, true
-			}
-		}
-	case reflect.Struct:
-		members, isObject := text.(map[string]any)
-		if !isObject || t.PkgPath() != reflect.TypeFor[memberMark]().PkgPath() {
-			return "", false
-		}
-		for _, m := range inputMembers(t) {
-			if m.name == "" {
-				continue
-			}
-			value := members[m.name]
-			if mark, _ := markOf(m.field); value == nil && mark.kind == "present" {
-				return place + "/" + pointerToken.Replace(m.name), true
-			}
-			if p, unset := unsetPlace(value, m.field.Type, place+"/"+pointerToken.Replace(m.name)); unset {
-				return p, true
-			}
+// nameFault is the refusal of the first of members whose value is set and names nothing, and ""
+// when each is "" or a name: a name has a letter or a digit (hasWord), since one of only blanks or
+// format characters names nothing, as Validate reads a missing name (R15). It is the one rule for a
+// name of a commit, a check, a job, a leg, a deploy, a transaction of the graph, a branch or a
+// unit, in a file and in the library alike. Whether "" is a value is the member's mark: the fault
+// of each type refuses "" for a member marked nonzero.
+func nameFault(members ...namedMember) string {
+	for _, m := range members {
+		if m.value != "" && !hasWord(m.value) {
+			return fmt.Sprintf("it sets a %s of no letter and no digit, which names no %s", m.member, m.what)
 		}
 	}
-	return "", false
+	return ""
 }
 
 // pointerToken writes a name as a token of a JSON pointer (RFC 6901 §3).

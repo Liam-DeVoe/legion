@@ -93,6 +93,21 @@ func TestDecodeJSONRefusesNullAtEachPlace(t *testing.T) {
 	}
 }
 
+// nullPlace reads a text again that decodeJSON read whole, so a text that it cannot read is an
+// error, not a text with no null: an error read as "no null" would let a null through.
+func TestNullPlaceGivesAnErrorForATextThatItCannotRead(t *testing.T) {
+	t.Parallel()
+	if place, null, err := nullPlace([]byte(`{"a":[1,`)); err == nil || null {
+		t.Errorf(`nullPlace({"a":[1,) = %q, %t, %v; want an error`, place, null, err)
+	}
+	if place, null, err := nullPlace([]byte(`{"a":[1,null]}`)); err != nil || !null || place != "/a/1" {
+		t.Errorf(`control: nullPlace({"a":[1,null]}) = %q, %t, %v; want "/a/1", true and no error`, place, null, err)
+	}
+	if place, null, err := nullPlace([]byte(`{"a":[1]}`)); err != nil || null {
+		t.Errorf(`control: nullPlace({"a":[1]}) = %q, %t, %v; want no null and no error`, place, null, err)
+	}
+}
+
 // expectOneShortLine checks that a refusal's line is want, under 600 bytes, with no raw control
 // character.
 func expectOneShortLine(t *testing.T, got, want string) {

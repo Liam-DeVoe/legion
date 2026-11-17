@@ -26,11 +26,12 @@ type ApprovedVersion struct {
 // each text that it held, oldest first. The newest version is its current text, unless the
 // approved spec removed the node: a removed node has no current text, and its id is never used
 // for another text (R1). PartlyChecked marks a statement whose checks decide only part of it, as
-// the reviewer of its level judged (R10).
+// the reviewer of its level judged (R10). Removed and PartlyChecked are nil when they are not set,
+// since false is a value of each.
 type ApprovedNode struct {
 	ID            string            `json:"id" input:"nonzero"`
-	Removed       bool              `json:"removed" input:"present: false is a node that the approved spec keeps"`
-	PartlyChecked bool              `json:"partly_checked" input:"present: false is a statement whose checks decide all of it"`
+	Removed       *bool             `json:"removed" input:"present: false is a node that the approved spec keeps"`
+	PartlyChecked *bool             `json:"partly_checked" input:"present: false is a statement whose checks decide all of it"`
 	Versions      []ApprovedVersion `json:"versions" input:"nonzero"`
 }
 
@@ -64,13 +65,12 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // in other letters, a field that one object gives two times, a value of another type than
 // approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
 // after it, and a null at any place, such as null or "nodes": null), a file with no list of nodes
-// ({}), a node with no id, an id on
-// two nodes, a node with no version, version numbers that do not go up from 1, a version with no
-// time or with one older than the one before it, and a block that is not its node's one block as
-// Print writes it, in an error that names the node, by its id as quoted prints a value of the input,
-// and the version; then a member that the form needs and that a node does not set, removed or
-// partly_checked, since each one's zero value, false, is a real value (unsetFault), in an error that
-// names the place of the member. It reads the whole file, with no bound on its size.
+// ({}), and what ApprovedNode.check refuses, in an error that names the node, by its id as quoted
+// prints a value of the input: a node with no id, an id on two nodes, a node that does not set
+// removed or partly_checked, since false is a value of each, a node with no version, version
+// numbers that do not go up from 1, a version with no time or with one older than the one before
+// it, and a block that is not its node's one block as Print writes it, naming the version. It
+// reads the whole file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -80,14 +80,7 @@ func ReadApproved(r io.Reader) (Approved, error) {
 	if err := decodeJSON(data, &file, approvedForm); err != nil {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
 	}
-	a, err := file.approved()
-	if err != nil {
-		return Approved{}, err
-	}
-	if err := unsetFault(data, &file, approvedForm); err != nil {
-		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
-	}
-	return a, nil
+	return file.approved()
 }
 
 // WriteApproved writes a to w as approved.json (ApprovedFile), the nodes in the order of their ids,
@@ -114,7 +107,9 @@ func WriteApproved(w io.Writer, a Approved) error {
 	return err
 }
 
-// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses.
+// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses:
+// of each node in its order, a fault of its id or of its texts (ApprovedNode.textFault), and then
+// of each node, a member that it does not set (ApprovedNode.unsetMemberFault).
 func (f ApprovedFile) approved() (Approved, error) {
 	if f.Nodes == nil {
 		return Approved{}, errors.New(`specgraph: approved spec: it holds no "nodes" list`)
@@ -124,16 +119,32 @@ func (f ApprovedFile) approved() (Approved, error) {
 		if _, twice := a.Nodes[n.ID]; twice {
 			return Approved{}, fmt.Errorf("specgraph: approved spec: node %s is in the approved spec two times", quoted(n.ID))
 		}
-		if err := n.check(); err != nil {
+		if err := n.textFault(); err != nil {
 			return Approved{}, err
 		}
 		a.Nodes[n.ID] = n
 	}
+	for _, n := range f.Nodes {
+		if err := n.unsetMemberFault(); err != nil {
+			return Approved{}, err
+		}
+	}
 	return a, nil
 }
 
-// check is the first fault of n that ReadApproved refuses, or nil.
+// check is the first fault of n that ReadApproved refuses, or nil: a fault of its id or of its
+// texts, and then a member that it does not set.
 func (n ApprovedNode) check() error {
+	if err := n.textFault(); err != nil {
+		return err
+	}
+	return n.unsetMemberFault()
+}
+
+// textFault is the fault of the id or of the texts of n, or nil: no id, no version, version numbers
+// that do not go up from 1, a version with no time or with one older than the one before it, and a
+// block that is not its node's one block as Print writes it.
+func (n ApprovedNode) textFault() error {
 	switch {
 	case n.ID == "":
 		return errors.New("specgraph: approved spec: a node has no id")
@@ -161,6 +172,25 @@ func (n ApprovedNode) check() error {
 	return nil
 }
 
+// unsetMemberFault is the refusal of n that does not set Removed or PartlyChecked, whose false is
+// a value of each (memberMark), or nil.
+func (n ApprovedNode) unsetMemberFault() error {
+	switch {
+	case n.Removed == nil:
+		return fmt.Errorf("specgraph: approved node %s: it sets no removed; a node that the approved spec keeps sets false", quoted(n.ID))
+	case n.PartlyChecked == nil:
+		return fmt.Errorf("specgraph: approved node %s: it sets no partly_checked; a statement whose checks decide all of it sets false", quoted(n.ID))
+	}
+	return nil
+}
+
+// removed is whether the approved spec removed n. A node that does not set Removed, which check
+// refuses, has no current text either: Current and Since leave it out, as they leave out a node
+// with no version.
+func (n ApprovedNode) removed() bool {
+	return n.Removed == nil || *n.Removed
+}
+
 // keyFault is the refusal of n under the key id of an Approved, which is not its own id, or nil:
 // Current reads a node by its key and would leave such a node out, so WriteApproved and the entry
 // of the derivation (Input.check) refuse it.
@@ -174,12 +204,13 @@ func (n ApprovedNode) keyFault(id string) error {
 // Current is the tree of the current text of each node that the approved spec did not remove.
 // Each node is at the position "approved <id> version <n>", line 1. A caller that builds an
 // Approved itself, as the pilot does from the store, can give a block that ReadApproved would
-// refuse: Current leaves that node out and gives each problem of its block.
+// refuse: Current leaves that node out and gives each problem of its block. It leaves out a node
+// with no version or that does not set Removed too, which ApprovedNode.check refuses.
 func (a Approved) Current() (Tree, []Problem) {
 	var tree Tree
 	var problems []Problem
 	for id, n := range a.Nodes {
-		if n.Removed || len(n.Versions) == 0 {
+		if n.removed() || len(n.Versions) == 0 {
 			continue
 		}
 		text, refused := versionText(id, n.Versions[len(n.Versions)-1])
@@ -201,7 +232,7 @@ func (a Approved) Current() (Tree, []Problem) {
 // when the approved spec does not hold id or removed it.
 func (a Approved) Since(id string) time.Time {
 	n, held := a.Nodes[id]
-	if !held || n.Removed || len(n.Versions) == 0 {
+	if !held || n.removed() || len(n.Versions) == 0 {
 		return time.Time{}
 	}
 	return n.Versions[len(n.Versions)-1].At
