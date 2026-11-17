@@ -549,16 +549,21 @@ var indexPasses = map[string]string{
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	"docs/settlement.go#commitVersion":              "the facts the settled version's index pass stated and the event that recorded it",
+	// An issue room's one pass, by a settlement of the room or its reconciliation: what it stated
+	// of each document's blocks, under the event that recorded that document's version.
+	"docs/block_index.go#causeRoomFacts": "the facts the room's index pass stated, by document, and the event that recorded each document's version",
 	// The facts of the documents and versions a write stores (dispatch://INFRA-1253): a later
 	// version's bytes on the node its row names, which reads that row's node column and nothing of
 	// the store; the node of each version every version insert writes, from the row its own insert
-	// returned; and a removal's document and versions stated gone, read off the nodes the store
-	// holds of them so each keeps its supertag and its values, which reads the store to state what
-	// it writes into that same node and mends no projection from it.
+	// returned; a removal's document and versions stated gone, read off the nodes the store holds
+	// of them so each keeps its supertag and its values, which reads the store to state what it
+	// writes into that same node and mends no projection from it; and an issue's tree artifact,
+	// its node and its part_of written from the issue its caller names, before the rows naming it.
 	"api/artifacts.go#statedVersionBytes":          "the upload's own bytes and the node its document's row names",
 	"docs/mutation.go#WriteVersionNode":            "the version row its write inserted and that row's document",
 	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes and the nodes the store holds of it and its versions",
 	"api/artifact_removal.go#removeArtifact":       "the facts removedDocumentNodes stated and the event the removal appended",
+	"api/artifacts.go#createIssueTree":             "the issue its caller names and the slugs its documents hold",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",

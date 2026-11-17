@@ -575,9 +575,10 @@ func requireEveryMovedKind(t *testing.T, rows []graphEdgeRow) {
 
 // requireTheTupleArmRendersTheList fails unless every kind the tuple arm answers is one of
 // refs.TupleKinds, a block's part_of to its document read as the in_document it renders, and
-// every kind of that list but the pointer kinds the fixture writes none of and the kinds in
-// unwritten, which another test's fixture writes, is answered: the arm renders the list the
-// announcement carries and nothing else. The list holds authored_by and part_of for the class
+// every kind of that list but the pointer kinds the fixture writes none of, the kinds in
+// unwritten, which another test's fixture writes, and the build's capabilities, which name no
+// relation (processes.Capabilities), is answered: the arm renders the list the announcement
+// carries and nothing else. The list holds authored_by and part_of for the class
 // `store`, so the tuples of those kinds the fixture holds out of other nodes - a comment's
 // authored_by, a block's part_of its parent - are kept out of the arm by the reading itself,
 // which holds every row outside that class to the previous release's (readEachArm).
@@ -597,7 +598,8 @@ func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow, unwritt
 	}
 	pointers := pmdoc.LinkKinds()
 	for _, kind := range list {
-		if answered[kind] == 0 && !slices.Contains(unwritten, kind) && (!slices.Contains(pointers, kind) || kind == "serves") {
+		if answered[kind] == 0 && !slices.Contains(unwritten, kind) && !slices.Contains(processes.Capabilities, kind) &&
+			(!slices.Contains(pointers, kind) || kind == "serves") {
 			t.Errorf("the tuple arm answers no %s edge, which refs.TupleKinds lists and the fixture writes: %v", kind, answered)
 		}
 	}

@@ -70,12 +70,14 @@ var storeWriteCallSites = []string{
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
 	// proves the step): an upload, a version write's event, an issue's spec, the block-index tick,
-	// a settlement's version and the seed's documents.
+	// a settlement's version, an issue room's pass under each of its documents' events, and the
+	// seed's documents.
 	"api/artifacts.go#commitArtifactVersionEvent",
 	"api/artifacts.go#storeArtifact",
 	"api/issue_create.go#createIssue",
 	"cmd/dispatch-seed/write_docs.go#writeDocument",
 	"docs/block_index.go#indexOwedDocument",
+	"docs/block_index.go#causeRoomFacts",
 	"docs/settlement.go#commitVersion",
 	// The comment path: the comment's node before the comments row that names it, then its
 	// tuples and its cause under the event appended after both, and who wrote it.
@@ -151,8 +153,15 @@ var storeWriteCallSites = []string{
 	// document and of its versions stated gone, after the issue's row and before any row of the
 	// document is deleted, and removeArtifact appends what it stated under the artifact.removed
 	// event, through Caused (api's TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
+	// createIssueTree is an issue's tree artifact (dispatch://INFRA-1253 R5): its node and its
+	// part_of to the issue through WriteUncaused before the artifacts row that names the node and
+	// the issue_trees row, in its caller's transaction, which holds the issue's row and causes what
+	// the write stated under the event it appends - the order of the write it shares with
+	// createIssue's spec (WriteUncaused, then the row), which TestEveryStoreWriteTakesOneLockOrder
+	// proves of WriteUncaused.
 	"api/artifact_removal.go#removeArtifact",
 	"api/artifact_removal.go#removedDocumentNodes",
+	"api/artifacts.go#createIssueTree",
 	"api/artifacts.go#statedVersionBytes",
 	"api/broadcasts.go#writeBroadcast",
 	"api/message_delivery.go#insertSessionReply",

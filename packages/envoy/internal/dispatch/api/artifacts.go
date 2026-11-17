@@ -2422,6 +2422,68 @@ func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifac
 	}
 }
 
+// issueTreeName is the name an issue's tree artifact is created under, from which its slug is
+// taken (nextArtifactSlug): `tree`, or `tree-2` and so on where a document of the issue holds it.
+const issueTreeName = "tree"
+
+// createIssueTree creates, in tx, the tree artifact of the issue key in project
+// (dispatch://INFRA-1253 R5, D3 and D14 of its plan): an artifacts row of kind tree, whose Yjs
+// document is the issue's room, with a slug of its own among the issue's documents
+// (nextArtifactSlug); its node (graphstore.ArtifactNode) with its part_of to the issue
+// (graphstore.ArtifactPartOf), written before the row that names it; and the issue's issue_trees
+// row, which holds the issue to one tree; and the tree's version 1, empty, with its version node,
+// as an empty document's create writes its version 1 (writeDocumentVersion,
+// docs.WriteVersionNode), so a settlement of the room always finds the tree's latest version. It
+// answers the artifact's id and what the node writes stated, which the caller causes under the
+// event it appends (graphstore.Caused). The caller holds the issue's row and creates the tree
+// once: an issue_trees row standing for the issue already is refused by that row's key, and the
+// transaction with it. An issue born converted and an issue the conversion converts take their
+// tree here (createIssue, and the conversion command). Each document_rooms row naming the tree -
+// the conversion's, a document's joining the room later - is written under that same issue row,
+// held to the writing transaction's commit, and announced in it (docs.AnnounceDocumentRooms says
+// why a room's settlement depends on that).
+func (s *server) createIssueTree(ctx context.Context, tx pgx.Tx, key, project string, actor model.Actor, at time.Time) (string, graphstore.Uncaused, error) {
+	slug, err := s.nextArtifactSlug(ctx, tx, artifactTarget{IssueKey: &key}, issueTreeName)
+	if err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("take the issue tree's slug: %w", err)
+	}
+	actorJSON, err := encodeJSON(actor)
+	if err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
+	node := graphstore.ArtifactNode(refKey, project, "", actor, at)
+	node.Changed = true
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node},
+		[]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
+	if err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("write the issue tree's node: %w", err)
+	}
+	var id string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, $3, $4, 'tree', false, $5, $6, $7)
+		returning id::text
+	`, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, refKey).Scan(&id); err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("create the issue tree: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id); err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("record the issue's tree: %w", err)
+	}
+	version, owner, err := writeDocumentVersion(ctx, tx, id, 1, "", []model.Actor{actor}, nil, docs.RenderStamp{})
+	if err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("write the issue tree's first version: %w", err)
+	}
+	if err := recordDocumentTaskProgress(ctx, tx, id, nil, ""); err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	versionNode, err := docs.WriteVersionNode(ctx, tx, owner, version.Number, actor, version.CreatedAt)
+	if err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	return id, graphstore.Joined(written, versionNode), nil
+}
+
 // quiesceDocuments closes every live document on every process, flushing each through the store,
 // and waits for the settlements in flight. Test-only: mounted by routes() only when
 // Deps.TestHooksEnabled is set, so a browser-test harness can truncate its database between

@@ -14,7 +14,15 @@ import (
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
 // and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
-// block's row.
+// block's row, and the document each block of an issue room is in against its issue_room_blocks
+// row (room_block).
+//
+// A row of an issue room is keyed by the room's tree artifact, and the document the block is in
+// is the one its issue_room_blocks row names (refs.BlockDocumentSQL), whose in_document the block
+// states, whose band its rank stands in and under whose top a top-level block hangs; every other
+// row's document is its own artifact. A row of a room any artifact of which owes its block index
+// (roomOwed) is counted owed, on neither side of the block, rank and text kinds, since the
+// reconciliation indexes the room whole (T12a of dispatch://INFRA-1253's plan).
 var blockProjections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
@@ -23,23 +31,26 @@ var blockProjections = []projection{{
 		" the row's document and the block its parent_block_id names, or the document's top where it names none - the" +
 		" issue for a block of an issue's spec, Verification or plan document, the document itself for any other -" +
 		" against the in_document and part_of tuples the node states now, a block with no part_of telling itself from" +
-		" one at its document's top and a part_of to an ask's node read as the ask's block in the node's own document",
+		" one at its document's top and a part_of to an ask's node read as the ask's block in the node's own document;" +
+		" a row of an issue room's tree artifact reads its document from its issue_room_blocks row, and one of a room" +
+		" that owes its block index is owed",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
-		`'`+refs.TupleInDocument+`>artifact:' || a.ref_key`,
-		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then `+refs.DocumentTopSQL("a")+`
+		`'`+refs.TupleInDocument+`>artifact:' || document.ref_key`,
+		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then `+refs.DocumentTopSQL("document")+`
 		      else '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id end`,
 	) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
-		where octet_length(d.node_id) <= ` + addressBound,
+		join artifacts document on document.id = ` + refs.BlockDocumentSQL("d") + `
+		where octet_length(d.node_id) <= ` + addressBound + ` and not (a.kind = 'tree' and ` + roomOwed("d.artifact_id") + `)`,
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + placedLinks(kindIn("t.kind", blockLinkKinds)) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed: typedNodeOwed,
+	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
@@ -92,15 +103,16 @@ var blockProjections = []projection{{
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks",
 	note: "the rank of every block of a document that owes no block index: the row side is each row that names its" +
-		" node, and the digest is the band of the row's document (refs.DocumentBandSQL) against the first character of" +
-		" the rank value its node holds now, so a block with no rank, or with one of another document's band, is a" +
-		" difference; a block of a document still owed its index is on neither side, since the reconciliation" +
-		" writes its rank, and a census of documents that all owe theirs reads none of this kind",
+		" node, and the digest is the band of the row's document (refs.DocumentBandSQL; for a row of an issue room," +
+		" the document its issue_room_blocks row names) against the first character of the rank value its node holds" +
+		" now, so a block with no rank, or with one of another document's band, is a difference; a block of a document" +
+		" still owed its index, or of an issue room any artifact of which is, is on neither side, since the" +
+		" reconciliation writes its rank, and a census of documents that all owe theirs reads none of this kind",
 	rows: `
-		select 'block_rank ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || ` + refs.DocumentBandSQL("a") + `)
+		select 'block_rank ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || ` + refs.DocumentBandSQL("document") + `)
 		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
-		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + documentOwed("d.artifact_id"),
+		join artifacts document on document.id = ` + refs.BlockDocumentSQL("d") + `
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(left(` + currentValue(refs.AttributeRank) + `, 1), ''))
 		from graph_nodes n
@@ -116,8 +128,9 @@ var blockProjections = []projection{{
 		" that names its node, and the digest is the sha256 of the newest text its document_block_texts rows hold, or" +
 		" the row's text_sha256 where none holds one, against the sha256 of the text value its node holds now, so a" +
 		" block with no text, or with another text than the one its rows hold, is a difference, and an erase that" +
-		" rewrites both alike reads none; a block of a document still owed its index is on neither side, since the" +
-		" reconciliation writes its text, and a census of documents that all owe theirs reads none of this kind",
+		" rewrites both alike reads none; a block of a document still owed its index, or of an issue room any" +
+		" artifact of which is, is on neither side, since the reconciliation writes its text, and a census of" +
+		" documents that all owe theirs reads none of this kind",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
 	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
 	// text of: the erase rewrites the quote of an erased block in both a holding block's rows and
@@ -129,13 +142,49 @@ var blockProjections = []projection{{
 		           where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null
 		           order by t.version desc limit 1), d.text_sha256))
 		from document_blocks d
-		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + documentOwed("d.artifact_id"),
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
 	nodes: `
 		select n.id, md5(n.id || '|' || coalesce(encode(sha256(convert_to(` + currentValue(graphstore.AttributeText) + `, 'UTF8')), 'hex'), ''))
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + ` and not ` + blockDocumentOwed("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	emptyAgrees: true,
+}, {
+	name:     "room_block",
+	nodeKind: refs.BlockNodeKind,
+	table:    "issue_room_blocks",
+	note: "the document each block of an issue room is in, held triple by triple: each issue_room_blocks row is the" +
+		" in_document of the block its tree artifact and id name, to the node of the document it names, against every" +
+		" in_document a present block node of a tree artifact states now, so a row whose block states another document," +
+		" or none, and a block of a room no row names, are each a difference; a store that holds no tree reads none",
+	// The rows are issue_room_blocks' alone, each with the node of the document_blocks row it
+	// projects beside, so a row whose block no document_blocks row holds names no node, and a
+	// document_blocks row of a tree no issue_room_blocks row names leaves its block's in_document a
+	// tuple no row projects. The tuple side reads the block nodes whose id starts with a tree
+	// artifact's ref_key, the part of a block node's id before its first '#'.
+	rows: `
+		select 'room_block ' || tree.ref_key || '#' || r.block_id, d.node_kind, d.node_address,
+		       '` + refs.TupleInDocument + `', '` + graphstore.KindArtifact + `', document.ref_key
+		from issue_room_blocks r
+		join artifacts tree on tree.id = r.tree_artifact_id
+		join artifacts document on document.id = r.document_id
+		left join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
+		where octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound,
+	tuples: `
+		select n.kind, n.id, held.kind, held.to_kind, held.to_id
+		from artifacts tree
+		join graph_nodes n on n.kind = '` + refs.BlockNodeKind + `' and split_part(n.id, '#', 1) = tree.ref_key
+		cross join lateral (
+			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+refs.TupleInDocument+`'`) + `
+		) held
+		where tree.kind = 'tree'
+		  and n.state <> '` + graphstore.StateGone + `' and held.asserted`,
+	pastBound: `
+		select count(*) from issue_room_blocks r
+		join artifacts tree on tree.id = r.tree_artifact_id
+		where octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
 	emptyAgrees: true,
 }}
 
@@ -161,13 +210,31 @@ func documentOwed(artifactID string) string {
 		` and (owed.version is null or owed.store_owed_at is not null))`
 }
 
-// blockDocumentOwed is documentOwed of the document of the block node alias, named by the part
-// of its id before the first '#', since a ref_key holds none.
+// blockDocumentOwed is roomOwed of the document of the block node alias, named by the part of its
+// id before the first '#', since a ref_key holds none: for a block of an issue room, its tree
+// artifact's room.
 func blockDocumentOwed(alias string) string {
 	return `exists (
 			select 1 from artifacts document
-			where document.ref_key = split_part(` + alias + `.id, '#', 1) and ` + documentOwed("document.id") + `)`
+			where document.ref_key = split_part(` + alias + `.id, '#', 1) and ` + roomOwed("document.id") + `)`
 }
+
+// roomOwed is documentOwed of the artifact whose id the SQL expression artifactID names, or of
+// any document whose fragment of that artifact's issue room its document_rooms row names: a
+// block of an issue room is indexed by a reconciliation of the whole room on a mark of any of its
+// artifacts (docs' indexOwedRoom), and owes that index while any of them is owed. A document that
+// is its own room has no document_rooms row naming it, and is documentOwed alone.
+func roomOwed(artifactID string) string {
+	return `(` + documentOwed(artifactID) + ` or exists (
+			select 1 from document_rooms held where held.room = ` + artifactID + ` and ` + documentOwed("held.artifact_id") + `))`
+}
+
+// roomNodeOwed is the owed predicate (projection.owed) of a block node of an issue room, one
+// whose id starts with a tree artifact's ref_key, while any artifact of its room owes its block
+// index (roomOwed): the room's reconciliation has yet to state what its rows project.
+var roomNodeOwed = `exists (
+		select 1 from artifacts tree
+		where tree.kind = 'tree' and tree.ref_key = split_part(node.id, '#', 1) and ` + roomOwed("tree.id") + `)`
 
 // blockBackfills are the backfill's passes over the document blocks (backfillPasses): the blocks,
 // then the links out of them, since a link's node is its block's and the pointer pass stamps a

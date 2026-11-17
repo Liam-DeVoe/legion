@@ -41,7 +41,7 @@ func (s *Service) TextWithAnswers(ctx context.Context, artifactID string, withBl
 	if err != nil || !strings.Contains(markdown, "ask{") {
 		return markdown, token, blocks, err
 	}
-	tree, _, err := s.loadTree(ctx, artifactID)
+	tree, err := s.documentTree(ctx, artifactID)
 	if err != nil || tree == nil {
 		return markdown, token, blocks, err
 	}

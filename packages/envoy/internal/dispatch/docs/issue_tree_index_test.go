@@ -531,7 +531,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	}
 	defer staleTx.Rollback(ctx)
 	olderMarkdown, olderBlocks := renderedVersion(t, treeVersion1)
-	_, won, write, err := refs.IndexBlocks(ctx, staleTx, spec, first.Version.Number, first.Version.CreatedAt, olderMarkdown, olderBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the older pass: %v", err)
 	}
@@ -562,7 +562,7 @@ func renderedVersion(t *testing.T, markdown string) (string, []model.ArtifactBlo
 	if err != nil {
 		t.Fatalf("render a version: %v", err)
 	}
-	return rendered, offsetBlocks(offsets)
+	return rendered, offsetBlocks(offsets, nil)
 }
 
 // The reconciliation's pass dates every parent, rank, text and placement it states at its own
@@ -677,7 +677,7 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 			`, document, markdown).Scan(&versionAt); err != nil {
 				return fmt.Errorf("write version 2: %w", err)
 			}
-			_, write, err := service.indexRenderedVersion(ctx, requestTx, document, 2, versionAt, markdown, blocks, nil, nil)
+			_, write, err := service.indexRenderedVersion(ctx, requestTx, document, refs.OneVersion(document, 2, versionAt), markdown, blocks, nil, nil)
 			if err != nil {
 				return fmt.Errorf("index version 2: %w", err)
 			}

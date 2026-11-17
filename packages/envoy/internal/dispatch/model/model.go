@@ -1613,7 +1613,10 @@ type ArtifactHumanEditedEventPayload struct {
 // attributes in the order its type declares them, which is the order its opening line writes
 // them; a block of no declared type carries none. Embedding is where meaning search stands on
 // the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded), which the blocks route
-// sets and nothing that only indexes blocks does.
+// sets and nothing that only indexes blocks does. Document is, for a block of an issue room
+// indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
+// room holds it (dispatch://INFRA-1253 R5), which the block index states as the block's
+// in_document; "" for a block of the indexed document itself. No route answers it.
 type ArtifactBlock struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
@@ -1625,6 +1628,7 @@ type ArtifactBlock struct {
 	Table         *BlockTable           `json:"table,omitempty"`
 	Embedding     string                `json:"embedding,omitempty"`
 	DescendantIDs []string              `json:"-"`
+	Document      string                `json:"-"`
 }
 
 // BlockAttributeValue is one attribute a typed block carries: the name its type declares it

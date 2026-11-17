@@ -307,8 +307,10 @@ func storeKinds() []StoreKind {
 // does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
 // address fits the store's bound, and its aliases as graphstore's aliases states them - the owner a
 // session's credential proved, the session a person's credential proved, and the raw id a person
-// was recorded under where that is not their canonical login.
-var sizingWritesWith = `
+// was recorded under where that is not their canonical login. rooms says the database holds the
+// issue rooms' tables (documentTexts).
+func sizingWritesWith(rooms bool) string {
+	return `
 	with sized_comments as (
 		select (` + authoredLink("c.author") + `) is not null as authored,
 		       coalesce(octet_length(anchor.ref_key) <= ` + addressBound + `, false) as anchored,
@@ -336,7 +338,7 @@ var sizingWritesWith = `
 	sized_texts as (
 		select t.text is not null as written, earlier.held as earlier
 		from artifact_versions v
-		join document_block_texts t on t.artifact_id = v.artifact_id and t.version = v.number
+		join document_block_texts t on ` + documentTexts("t", "v.artifact_id", rooms) + ` and t.version = v.number
 		left join lateral (
 			select p.text is not null as held from document_block_texts p
 			where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
@@ -344,6 +346,7 @@ var sizingWritesWith = `
 		) earlier on true
 		where v.created_at > ` + sizingWindow + `
 	)`
+}
 
 // EventRate is one event type's rate over the sizing window.
 type EventRate struct {
@@ -589,10 +592,16 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 		counts = append(counts, kinds[index].count)
 		targets = append(targets, &kinds[index].Writes)
 	}
-	if err := tx.QueryRow(ctx, sizingWritesWith+"\n\tselect "+strings.Join(counts, ",\n\t\t")).Scan(targets...); err != nil {
+	// The sizing reads a database before this branch's migrations as well, which holds no issue
+	// room's table (documentTexts).
+	var rooms bool
+	if err := tx.QueryRow(ctx, `select to_regclass('issue_room_blocks') is not null`).Scan(&rooms); err != nil {
+		return nil, fmt.Errorf("read whether the database holds issue rooms: %w", err)
+	}
+	if err := tx.QueryRow(ctx, sizingWritesWith(rooms)+"\n\tselect "+strings.Join(counts, ",\n\t\t")).Scan(targets...); err != nil {
 		return nil, fmt.Errorf("read the writes of each kind inside the window: %w", err)
 	}
-	replayed, err := replayParents(ctx, tx)
+	replayed, err := replayParents(ctx, tx, rooms)
 	if err != nil {
 		return nil, err
 	}
@@ -621,7 +630,8 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 // A version's row is dated once, when it is written, and a document's versions are numbered in
 // the order they are written, so the versions inside the window are each document's last ones
 // and the one before the first of them is the one whose next version lies inside it.
-var replayVersionsQuery = `
+func replayVersionsQuery(rooms bool) string {
+	return `
 	with indexed as (
 		select i.artifact_id, i.version, v.created_at > ` + sizingWindow + ` as inside,
 		       coalesce(lead(v.created_at > ` + sizingWindow + `)
@@ -637,7 +647,7 @@ var replayVersionsQuery = `
 	union all
 	select r.artifact_id::text, r.version, 0, null, null, t.block_id, t.text, earlier.text
 	from replayed r
-	join document_block_texts t on t.artifact_id = r.artifact_id and t.version = r.version
+	join document_block_texts t on ` + documentTexts("t", "r.artifact_id", rooms) + ` and t.version = r.version
 	left join lateral (
 		select p.text from document_block_texts p
 		where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
@@ -645,6 +655,21 @@ var replayVersionsQuery = `
 	) earlier on true
 	where r.inside
 	order by 1, 2, 3, 6`
+}
+
+// documentTexts is true of the document_block_texts row aliased texts while it is a text of a
+// block of the document the uuid expression document names: a row under that document, or, where
+// the database holds issue rooms (rooms), for a document of an issue room, a row under the room's
+// tree artifact, whose rows carry each document's own version numbers, of a block that document
+// holds (refs.BlockDocumentSQL). So a version of a room's document is read with its own blocks'
+// texts alone, and its indexed versions are its own (T12a of dispatch://INFRA-1253's plan).
+func documentTexts(texts, document string, rooms bool) string {
+	if !rooms {
+		return texts + `.artifact_id = ` + document
+	}
+	return `(` + texts + `.artifact_id = any(array[` + document + `, coalesce((select moved.room from document_rooms moved
+		where moved.artifact_id = ` + document + `), ` + document + `)]) and ` + refs.BlockDocumentSQL(texts) + ` = ` + document + `)`
+}
 
 // replayedParents is what replayParents read: how many blocks the windowed versions moved to
 // another parent, over how many version rows, and how many of those rows did not parse.
@@ -663,9 +688,10 @@ type replayedParents struct{ moved, read, unreadable int64 }
 // in the version before and its new text in the later one (blockIdentities). Blocks of one
 // document with equal text are matched in document order, so the count is exact except there. A
 // version that does not parse is counted as read and unreadable, and neither it nor the version
-// after it is compared, as the index wrote no blocks for it.
-func replayParents(ctx context.Context, tx pgx.Tx) (replayedParents, error) {
-	rows, err := tx.Query(ctx, replayVersionsQuery)
+// after it is compared, as the index wrote no blocks for it. rooms says the database holds the
+// issue rooms' tables (documentTexts).
+func replayParents(ctx context.Context, tx pgx.Tx, rooms bool) (replayedParents, error) {
+	rows, err := tx.Query(ctx, replayVersionsQuery(rooms))
 	if err != nil {
 		return replayedParents{}, fmt.Errorf("read the indexed versions of the window: %w", err)
 	}

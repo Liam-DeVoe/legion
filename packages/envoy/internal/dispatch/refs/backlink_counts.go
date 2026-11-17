@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
@@ -296,6 +297,11 @@ func blockRefCarries(fromKind, alias string) string {
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk or
 // a constraint. A session's, a page's and a block's placement are part_of tuples no arm renders,
 // and a block's membership of its document stays in_document.
+//
+// The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
+// relation kind spells, is how a reader of the announcements tells a build that serves the issue
+// room of dispatch://INFRA-1253 (decision 7 of its plan). No arm renders a capability, so the
+// view answers nothing under that name.
 func TupleKinds() []string {
 	kinds := append([]string{
 		TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
@@ -304,6 +310,7 @@ func TupleKinds() []string {
 		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
 		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
 	}, pmdoc.LinkKinds()...)
+	kinds = append(kinds, processes.Capabilities...)
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
 }

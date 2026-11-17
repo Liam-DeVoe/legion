@@ -38,7 +38,10 @@ type askBlock struct {
 // it has rendered the reconciled tree: a settlement whose markdown repeats the latest version
 // writes no version and leaves the document at the one it found.
 type settlementReconciliation struct {
-	repairs   []blockRepair
+	repairs []blockRepair
+	// layout is the layout of the room the repairs are written into (writeLive): its fragments
+	// for an issue room, empty for a room that is its own document.
+	layout    roomLayout
 	events    []model.Event
 	retracted []model.Ask
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
@@ -90,21 +93,24 @@ type settlementReconciliation struct {
 // named on that ask.opened, beside what its question and parts moved, as a version event names
 // what its block index moved (refs.CountedChanges, read once for every opened ask), so a page
 // reading backlink counts off the event refreshes them. tree is the tree the settlement settled,
-// rendered as offsets, of version `version` of document artifactID. It runs before the events are
+// rendered as offsets, of the versions versions holds of document artifactID: its one version,
+// or, for an issue room, the latest of each fragment's document, documents naming the document
+// whose fragment holds each block of another than the room's own (roomLayout.blockDocuments), so
+// each tie records its block's own document's version. It runs before the events are
 // appended, since an appended event is never rewritten. A settlement that writes a version needs
 // none of this: that version's block index runs after the rows exist and states the ties with
 // every other link of the document.
-func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
+func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, documents map[string]string, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
 	if len(r.opened) == 0 {
 		return nil
 	}
-	blocks := offsetBlocks(offsets)
-	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, tree, blockPointers(blocks, tree),
+	blocks := offsetBlocks(offsets, documents)
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, versions, blocks, tree, blockPointers(blocks, tree),
 		typedSources(ctx, tx, artifactID, tree, &r.sources))
 	if err != nil {
 		return err
 	}
-	moved, ties, err := refs.IndexOpenedAskTies(ctx, tx, artifactID, version, time.Now().UTC(), facts, slices.Sorted(maps.Keys(r.opened)))
+	moved, ties, err := refs.IndexOpenedAskTies(ctx, tx, artifactID, time.Now().UTC(), facts, slices.Sorted(maps.Keys(r.opened)))
 	if err != nil {
 		return fmt.Errorf("write the ties of the ask blocks settlement opened: %w", err)
 	}
@@ -461,34 +467,43 @@ func (r *settlementReconciliation) repairLive(live *pmdoc.Node) bool {
 	return changed
 }
 
-// writeLive writes the reconciliation's repairs into doc as it stands (rewriteLive, repairLive).
+// writeLive writes the reconciliation's repairs into doc as it stands (rewriteRoom over the room's
+// layout, repairLive).
 func (r *settlementReconciliation) writeLive(doc *crdt.Doc, origin any) error {
-	_, err := rewriteLive(doc, origin, r.repairLive)
+	_, _, err := rewriteRoom(doc, r.layout, origin, r.repairLive)
 	return err
 }
 
 // nameVersion completes the reconciliation at the version the settled document is at, writing
 // the retractions whose reason names it and stamping it into every event that carries one.
+// versionOf is that version for the block of each event and each retraction, by the block's id:
+// the document's for a room that is its own document, and for a block of an issue room the
+// version of the block's own document, its fragment's (settlement.blockVersions), never a number
+// of the tree artifact's history.
 func (r *settlementReconciliation) nameVersion(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID string,
 	owner artifactOwner,
-	version int,
+	versionOf func(blockID string) int,
 ) error {
 	for index, event := range r.events {
 		switch payload := event.Payload.(type) {
 		case model.BlockRepairedEventPayload:
-			payload.Version = version
+			payload.Version = versionOf(payload.BlockID)
 			r.events[index].Payload = payload
 		case model.BlockInvalidEventPayload:
-			payload.Version = version
+			payload.Version = versionOf(payload.BlockID)
 			r.events[index].Payload = payload
 		}
 	}
 	for _, ask := range r.retracted {
 		var held graphstore.Uncaused
-		retracted, err := WriteAskResolution(ctx, tx, ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor, &held)
+		blockID := ""
+		if ask.BlockID != nil {
+			blockID = *ask.BlockID
+		}
+		retracted, err := WriteAskResolution(ctx, tx, ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, versionOf(blockID)), SettlementActor, &held)
 		if err != nil {
 			return fmt.Errorf("retract deleted ask block: %w", err)
 		}

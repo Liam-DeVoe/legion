@@ -139,8 +139,9 @@ func (d indexedDocument) top() (kind, id string) {
 // document's, then the plan's, then any other document's, each in its own document order, and the
 // pass over one document never moves another's ranks: the issue's first child is the spec's first
 // top-level block whatever the other documents hold, which is what makes the spec's memo the
-// issue's first child. RankBandTree is the band of the issue room's own fragment, which no
-// document kind names yet.
+// issue's first child. RankBandTree is the band of the issue room's own fragment: the blocks the
+// issue's tree artifact holds itself. A block of an issue room that another document's fragment
+// holds stands in that document's band (model.ArtifactBlock's Document, blockBands).
 const (
 	RankBandSpec         byte = '1'
 	RankBandTree         byte = '2'
@@ -151,17 +152,18 @@ const (
 
 // DocumentBandSQL is the band of the artifacts row aliased alias as one character of SQL text, the
 // one statement of which document plays which part that the block index ranks by and the census
-// reads the ranks back against: an issue's primary document is its spec; an issue's markdown
-// document whose role is Verification or plan, or that holds no role and carries that role's slug
-// (a row a rolling deploy left with none, or one the issue room's conversion cleared), is that
-// document; and every other document - an upload, a project's document - stands in the last band.
-// It reads the row's kind, so the issue room's tree takes its band by one more arm here.
+// reads the ranks back against: an issue's tree artifact is the issue room's own fragment; an
+// issue's primary document is its spec; an issue's markdown document whose role is Verification or
+// plan, or that holds no role and carries that role's slug (a row a rolling deploy left with none,
+// or one the issue room's conversion cleared), is that document; and every other document - an
+// upload, a project's document - stands in the last band.
 func DocumentBandSQL(alias string) string {
 	a := alias + "."
 	role := func(role, slug string) string {
 		return `(` + a + `role = '` + role + `' or (` + a + `role is null and ` + a + `slug = '` + slug + `'))`
 	}
-	return `(case when ` + a + `issue_key is null or ` + a + `kind <> 'doc' then '` + string(RankBandOther) + `'
+	return `(case when ` + a + `issue_key is not null and ` + a + `kind = 'tree' then '` + string(RankBandTree) + `'
+		when ` + a + `issue_key is null or ` + a + `kind <> 'doc' then '` + string(RankBandOther) + `'
 		when ` + a + `is_primary then '` + string(RankBandSpec) + `'
 		when ` + role(model.ArtifactRoleVerification, model.ArtifactSlugVerification) + ` then '` + string(RankBandVerification) + `'
 		when ` + role(model.ArtifactRolePlan, model.ArtifactSlugPlan) + ` then '` + string(RankBandPlan) + `'
@@ -177,11 +179,28 @@ func DocumentTopSQL(alias string) string {
 		alias + `.issue_key else '` + graphstore.KindArtifact + `:' || ` + alias + `.ref_key end)`
 }
 
+// BlockDocumentSQL is the document the document_blocks row aliased alias is a block of, as SQL
+// text answering a uuid: the document its issue_room_blocks row names, for a block of an issue room
+// (a row keyed by the room's tree artifact, whose fragment's document that row records: T12a of
+// dispatch://INFRA-1253's plan), else the row's own artifact_id. Every reader that takes a row's
+// artifact as the block's document - to find its role, issue, slug or live blocks, or to map the
+// version it records to that document's versions, their times and events, its indexed versions
+// or its keeps - takes it from here, and keys a version by this document and the number: a
+// room's rows carry each document's own version numbers under one key. A block's node address,
+// and every pointer at it, keep the row's own artifact.
+func BlockDocumentSQL(alias string) string {
+	return `coalesce((select room_block.document_id from issue_room_blocks room_block
+		where room_block.tree_artifact_id = ` + alias + `.artifact_id and room_block.block_id = ` + alias + `.block_id), ` +
+		alias + `.artifact_id)`
+}
+
 // indexedVersionRecord reads indexedDocument in one statement, under the owner row the pass's
-// caller already holds. A version no row records - a caller indexing blocks of its own, as the
-// seed does - leaves the writer nobody, the zero actor, exactly as a node of the store written on
-// a credential that names nobody carries.
-func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, version int) (indexedDocument, error) {
+// caller already holds: the document of artifactID, and the writer of version `version` of the
+// document writtenIn, which is artifactID itself but for a pass over an issue room, whose writer
+// is that of the newest version it covers (Versions.Newest). A version no row records - a caller
+// indexing blocks of its own, as the seed does - leaves the writer nobody, the zero actor, exactly
+// as a node of the store written on a credential that names nobody carries.
+func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID, writtenIn string, version int) (indexedDocument, error) {
 	var document indexedDocument
 	var project, session, issue *string
 	var authors []byte
@@ -189,10 +208,10 @@ func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, ver
 	if err := tx.QueryRow(ctx, `
 		select a.ref_key, a.project_key, a.session_id, a.issue_key, v.authors, `+DocumentBandSQL("a")+`, clock_timestamp()
 		from artifacts a
-		left join artifact_versions v on v.artifact_id = a.id and v.number = $2
+		left join artifact_versions v on v.artifact_id = $3::uuid and v.number = $2
 		where a.id = $1::uuid
-	`, artifactID, version).Scan(&document.refKey, &project, &session, &issue, &authors, &band, &document.at); err != nil {
-		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
+	`, artifactID, version, writtenIn).Scan(&document.refKey, &project, &session, &issue, &authors, &band, &document.at); err != nil {
+		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, writtenIn, err)
 	}
 	document.band = band[0]
 	if project != nil {
@@ -420,6 +439,7 @@ func reconcileBlockValues(
 	placement blockPlacement,
 	changed map[string]struct{},
 	stale bool,
+	fragments map[string]fragmentDocument,
 ) ([]graphstore.UncausedTuple, error) {
 	if len(placement.ids) == 0 {
 		return nil, nil
@@ -428,7 +448,7 @@ func reconcileBlockValues(
 	if err != nil {
 		return nil, fmt.Errorf("read the values the blocks of %s hold: %w", document.refKey, err)
 	}
-	ranks := rankBlocks(document.band, len(nodes), placement, held)
+	ranks := rankBlocks(blockBands(document, nodes, fragments), placement, held)
 	var tuples []graphstore.UncausedTuple
 	value := func(id, attribute, to string) {
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
@@ -507,8 +527,8 @@ func heldBlockValues(ctx context.Context, tx pgx.Tx, refKey string, ids []string
 }
 
 // rankBlocks is the rank each block placement placed stands at once the pass has run, beside it
-// in placement's order. held is what the store holds of each (heldBlockValues), and nodes how
-// many unique blocks the version holds, the indexes placement.parents ranges over.
+// in placement's order. held is what the store holds of each (heldBlockValues), and bands the band
+// of each of the version's unique blocks (blockBands), the indexes placement.parents ranges over.
 //
 // The children of one parent are this document's blocks that parent holds, in document order:
 // the blocks of the document's top level, the blocks one block holds, or the readings one answered
@@ -516,8 +536,10 @@ func heldBlockValues(ctx context.Context, tx pgx.Tx, refKey string, ids []string
 // the document's band (rankChildren), so the children another document hangs under the same
 // parent - the issue's other documents' top-level blocks, or the checks and the plan nodes under
 // one requirement - keep the ranks their own documents' passes gave them, and stand before or
-// after these by their bands.
-func rankBlocks(band byte, nodes int, placement blockPlacement, held []heldBlockValue) []string {
+// after these by their bands. An issue room's top level holds several documents' fragments, each
+// a run of children of one band in the room's order, and each run is ranked inside its own band.
+func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue) []string {
+	nodes := len(bands)
 	ranks := make([]string, len(placement.ids))
 	// Each parent's children as a list in document order, threaded through next: a parent is
 	// the index of the block holding the child plus one, 0 for the document's top, or past
@@ -560,12 +582,173 @@ func rankBlocks(band byte, nodes int, placement blockPlacement, held []heldBlock
 			continue
 		}
 		ranker.children = ranker.children[:0]
+		band := byte(0)
 		for child := first[parent]; child >= 0; child = next[child] {
+			if childBand := bands[placement.placed[child]]; childBand != band && len(ranker.children) > 0 {
+				ranker.rank(band, held, ranks)
+				ranker.children = ranker.children[:0]
+			}
+			band = bands[placement.placed[child]]
 			ranker.children = append(ranker.children, child)
 		}
 		ranker.rank(band, held, ranks)
 	}
 	return ranks
+}
+
+// fragmentDocument is what the block index reads of a document whose fragment of an issue room
+// holds a block it indexes under the room's tree artifact (model.ArtifactBlock's Document): the
+// ref_key the block's in_document names, and the band its rank stands in.
+type fragmentDocument struct {
+	refKey string
+	band   byte
+}
+
+// fragmentDocuments reads, in one statement, each document other than artifactID that a block of
+// nodes names as the document whose fragment holds it: none for a document that is its own room,
+// whose blocks name none.
+func fragmentDocuments(ctx context.Context, tx pgx.Tx, artifactID string, nodes []model.ArtifactBlock) (map[string]fragmentDocument, error) {
+	var ids []string
+	for _, block := range nodes {
+		if block.Document != "" && block.Document != artifactID && !slices.Contains(ids, block.Document) {
+			ids = append(ids, block.Document)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		select a.id::text, a.ref_key, `+DocumentBandSQL("a")+`
+		from artifacts a where a.id = any($1::uuid[])
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the documents whose fragments of %s's room hold its blocks: %w", artifactID, err)
+	}
+	defer rows.Close()
+	documents := make(map[string]fragmentDocument, len(ids))
+	for rows.Next() {
+		var id, band string
+		var document fragmentDocument
+		if err := rows.Scan(&id, &document.refKey, &band); err != nil {
+			return nil, fmt.Errorf("read the documents whose fragments of %s's room hold its blocks: %w", artifactID, err)
+		}
+		document.band = band[0]
+		documents[id] = document
+	}
+	return documents, rows.Err()
+}
+
+// inDocument is the ref_key block's in_document names: the document whose fragment holds it where
+// it names one the pass read (fragmentDocuments), else the indexed document's own.
+func (d indexedDocument) inDocument(block model.ArtifactBlock, fragments map[string]fragmentDocument) string {
+	if held, ok := fragments[block.Document]; ok {
+		return held.refKey
+	}
+	return d.refKey
+}
+
+// blockBands is the band each block of nodes stands in: its fragment's document's
+// (fragmentDocuments), else the indexed document's own.
+func blockBands(document indexedDocument, nodes []model.ArtifactBlock, fragments map[string]fragmentDocument) []byte {
+	bands := make([]byte, len(nodes))
+	for index, block := range nodes {
+		bands[index] = document.band
+		if held, ok := fragments[block.Document]; ok {
+			bands[index] = held.band
+		}
+	}
+	return bands
+}
+
+// reconcileRoomBlocks keeps issue_room_blocks, the projection of each in_document of an issue
+// room's blocks (D16 of dispatch://INFRA-1253's plan), level with the version the pass indexes
+// under the issue's tree artifact, artifactID, in the pass's transaction: the row of each block
+// the version dropped goes with its document_blocks row, each block the version holds names its
+// fragment's document (fragmentDocuments), or the tree artifact for a block of the tree's own
+// fragment, and a block whose document moved - a block cut from one fragment and pasted into
+// another - takes one retraction of the in_document it held and one assertion of the new one,
+// dated at the pass's own time, which it answers for the caller to append with the pass's other
+// facts. A block whose row it inserts states its in_document where its document_blocks row is
+// inserted (IndexBlocks). A document that is not an issue's tree writes nothing here.
+func reconcileRoomBlocks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	document indexedDocument,
+	nodes []model.ArtifactBlock,
+	fits []bool,
+	fragments map[string]fragmentDocument,
+	deleted []string,
+) ([]graphstore.UncausedTuple, error) {
+	if document.band != RankBandTree {
+		return nil, nil
+	}
+	if len(deleted) > 0 {
+		if _, err := tx.Exec(ctx, `
+			delete from issue_room_blocks where tree_artifact_id = $1::uuid and block_id = any($2)
+		`, artifactID, deleted); err != nil {
+			return nil, fmt.Errorf("delete the room blocks version of %s no longer holds: %w", artifactID, err)
+		}
+	}
+	ids := make([]string, 0, len(nodes))
+	documents := make([]string, 0, len(nodes))
+	for index, block := range nodes {
+		if !fits[index] {
+			continue
+		}
+		owner := artifactID
+		if _, ok := fragments[block.Document]; ok {
+			owner = block.Document
+		}
+		ids, documents = append(ids, block.ID), append(documents, owner)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	// The statement answers each row whose document it moved, with the document the row held, and
+	// the ref_key of each of the two, so the retraction and the assertion need no second read.
+	rows, err := tx.Query(ctx, `
+		with wanted as (
+			select w.block_id, w.document_id::uuid as document_id
+			from unnest($2::text[], $3::text[]) as w (block_id, document_id)
+		), held as (
+			select r.block_id, r.document_id from issue_room_blocks r
+			where r.tree_artifact_id = $1::uuid and r.block_id = any($2)
+		), written as (
+			insert into issue_room_blocks (tree_artifact_id, block_id, document_id)
+			select $1::uuid, wanted.block_id, wanted.document_id from wanted
+			on conflict (tree_artifact_id, block_id) do update set document_id = excluded.document_id
+			where issue_room_blocks.document_id is distinct from excluded.document_id
+		)
+		select held.block_id, old.ref_key, new.ref_key
+		from held
+		join wanted on wanted.block_id = held.block_id and wanted.document_id <> held.document_id
+		join artifacts old on old.id = held.document_id
+		join artifacts new on new.id = wanted.document_id
+	`, artifactID, ids, documents)
+	if err != nil {
+		return nil, fmt.Errorf("record the documents of the room blocks of %s: %w", artifactID, err)
+	}
+	defer rows.Close()
+	var tuples []graphstore.UncausedTuple
+	for rows.Next() {
+		var id, was, now string
+		if err := rows.Scan(&id, &was, &now); err != nil {
+			return nil, fmt.Errorf("record the documents of the room blocks of %s: %w", artifactID, err)
+		}
+		address := blockNodeAddress(document.refKey, id)
+		for _, membership := range []struct {
+			to       string
+			asserted bool
+		}{{was, false}, {now, true}} {
+			tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,
+				ToKind: graphstore.KindArtifact, ToID: membership.to,
+				At: document.at, Who: document.writer, Asserted: membership.asserted,
+			}})
+		}
+	}
+	return tuples, rows.Err()
 }
 
 // childRanker ranks the children of one parent at a time, holding the slices that work takes

@@ -65,6 +65,15 @@ type TypedFacts struct {
 	// read: the zero facts write every decision and reading as its type's node and no tie.
 	read     bool
 	document indexedDocument
+	// versions is the version of each document the facts were read of (DecisionFacts): the one
+	// document's, or each fragment's document's of an issue room, by id; artifactID is the
+	// document indexed, the room's tree artifact; and documents is, by block id, the document
+	// whose fragment of the room holds each block of another document than artifactID. Each
+	// typed fact of a block carries the version of that block's own document (versionOf), as the
+	// block index's do.
+	versions   Versions
+	artifactID string
+	documents  map[string]string
 	// nodes and fits are the version's blocks as IndexBlocks reads them (uniqueBlocks) and
 	// whether each one's address fits the store's key, which the pass places and pairs above the
 	// deferral bound.
@@ -108,6 +117,20 @@ type TypedFacts struct {
 	// which node it has to write (IndexDecisionNodes).
 	held      map[string]map[string]heldTie
 	heldNodes map[string]heldNode
+}
+
+// versionOf is the version block id's typed facts carry: that of the document whose fragment of
+// an issue room holds it (documents), where versions covers that document, else the indexed
+// document's own, else the newest the facts were read of.
+func (facts TypedFacts) versionOf(id string) Version {
+	if held, ok := facts.versions[facts.documents[id]]; ok {
+		return held
+	}
+	if held, ok := facts.versions[facts.artifactID]; ok {
+		return held
+	}
+	_, newest := facts.versions.Newest(facts.artifactID)
+	return newest
 }
 
 // TypedSources is what the typed-node pass reads of a version from the document service, which
@@ -159,14 +182,17 @@ type heldTie struct {
 	asserted     bool
 }
 
-// DecisionFacts reads version `version` of document artifactID for the typed-node pass, in the
+// DecisionFacts reads the version versions holds of document artifactID - or, for an issue room
+// indexed under its tree artifact artifactID, the version of each fragment's document - for the
+// typed-node pass, in the
 // caller's transaction, which holds the document's owner row: blocks are the version's rendered
 // blocks, tree the tree they were rendered from, pointers the version's `block[]` values
 // (pmdoc.BlockPointers), of which it keeps the decisions' and the ask blocks' shaped, and sources
 // what the document service says of the version's blocks. A version holding no decision, reading
 // or ask block, and one with no tree, reads nothing and answers the zero facts.
 //
-// It reads the version's writer and its document's issue (indexedVersionRecord), the ask row of
+// It reads the writer of the newest of those versions and its document's issue
+// (indexedVersionRecord), the ask row of
 // each ask block, the ask each ask block holding a reading shows (TypedSources.Shown), and, of
 // each decision and reading node, its supertag and state and the newest tuple of each value it
 // holds and of its decided_by and its authored_by.
@@ -185,11 +211,12 @@ type heldTie struct {
 // (TypedSources.Authors), and only that one, so a later write by another writer, the browser's
 // included, moves nothing of it, and a version several people wrote names nobody it cannot tell
 // introduced the block. A reading's authored_by follows the same rule.
-func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version int, blocks []model.ArtifactBlock, tree *pmdoc.Node, pointers []Pointer, sources TypedSources) (TypedFacts, error) {
+func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, versions Versions, blocks []model.ArtifactBlock, tree *pmdoc.Node, pointers []Pointer, sources TypedSources) (TypedFacts, error) {
 	if tree == nil || !HoldsTypedBlocks(blocks) {
 		return TypedFacts{}, nil
 	}
-	document, err := indexedVersionRecord(ctx, tx, artifactID, version)
+	lead, newest := versions.Newest(artifactID)
+	document, err := indexedVersionRecord(ctx, tx, artifactID, lead, newest.Number)
 	if err != nil {
 		return TypedFacts{}, err
 	}
@@ -197,7 +224,13 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 	fits, _ := blockFits(document.refKey, nodes)
 	facts := TypedFacts{
 		read: true, document: document, nodes: nodes, fits: fits,
+		versions: versions, artifactID: artifactID, documents: map[string]string{},
 		supertags: map[string]string{}, askBlocks: map[string]string{},
+	}
+	for _, node := range nodes {
+		if node.Document != "" && node.Document != artifactID {
+			facts.documents[node.ID] = node.Document
+		}
 	}
 	types := make(map[string]string, len(nodes))
 	for _, node := range nodes {
@@ -601,9 +634,11 @@ func (f TypedFacts) typedScope() *pairScope {
 	return &pairScope{kinds: typedKinds, blocks: blocks}
 }
 
-// IndexDecisionNodes is the typed-node pass over version `version` of document artifactID,
-// written at versionAt, in the transaction that accepts the write, which holds the document's
-// owner row: facts are what DecisionFacts read of the version. It answers the targets whose
+// IndexDecisionNodes is the typed-node pass over the versions facts were read of (DecisionFacts)
+// of document artifactID, in the transaction that accepts the write, which holds the document's
+// owner row: each fact of a block is dated at the version of that block's own document
+// (TypedFacts.versionOf), the one version of a document that is its own room, or the version of
+// the document whose fragment of an issue room holds the block. It answers the targets whose
 // counts the ties it reconciled moved, and what it states in the node and tuple store, held for
 // the event that records the version (graphstore.Uncaused), which the caller appends with the
 // block index's.
@@ -631,7 +666,7 @@ func (f TypedFacts) typedScope() *pairScope {
 // held by its own blocks (typedScope), deleting no other row of the document. The block-index
 // reconciliation indexes the document later with the same facts, and its pairs hold these same
 // ties, so it moves none of them (TestTheReconcilerMovesNoRowTheTypedPassWrote).
-func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, facts TypedFacts, indexed bool) ([]Target, graphstore.Uncaused, error) {
+func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts TypedFacts, indexed bool) ([]Target, graphstore.Uncaused, error) {
 	if !facts.read {
 		return nil, graphstore.Uncaused{}, nil
 	}
@@ -655,14 +690,14 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 		// The typed pass moves a node's supertag or state and no block's words, so it marks no
 		// node changed (blockNode): the block index marks each block whose words the version
 		// moved.
-		nodes = append(nodes, blockNode(address, document, versionAt, graphstore.StateLive, facts.supertags[id], false))
+		nodes = append(nodes, blockNode(address, document, facts.versionOf(id).At, graphstore.StateLive, facts.supertags[id], false))
 	}
 	var tuples []graphstore.Tuple
 	// Each author's node and the aliases the server proved of it are stated once however many
 	// blocks name it, since one write of the store takes each node once.
 	authors := map[string]struct{}{}
-	author := func(address string, actor model.Actor) []graphstore.Tuple {
-		authorNodes, stated, named := graphstore.AuthorFacts(BlockNodeKind, address, actor, versionAt, graphstore.NoEvent)
+	author := func(address string, actor model.Actor, at time.Time) []graphstore.Tuple {
+		authorNodes, stated, named := graphstore.AuthorFacts(BlockNodeKind, address, actor, at, graphstore.NoEvent)
 		if !named {
 			return nil
 		}
@@ -678,28 +713,29 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 			continue
 		}
 		address := blockNodeAddress(refKey, decision.id)
+		at := facts.versionOf(decision.id).At
 		if actor, authored := facts.authored[decision.id]; authored {
-			author(address, actor)
+			author(address, actor, at)
 		}
 		held := facts.held[address]
 		for index, kind := range decisionValues {
 			stored, value := held[kind], decision.values[index]
 			switch {
 			case value != nil && (!stored.asserted || stored.toID != *value):
-				tuples = append(tuples, valueTuple(address, kind, *value, versionAt, writer, true))
+				tuples = append(tuples, valueTuple(address, kind, *value, at, writer, true))
 			case value == nil && stored.asserted:
-				tuples = append(tuples, valueTuple(address, kind, stored.toID, versionAt, writer, false))
+				tuples = append(tuples, valueTuple(address, kind, stored.toID, at, writer, false))
 			}
 		}
 	}
 	for _, reading := range facts.readings {
 		if actor, authored := facts.authored[reading]; authored && blockIDFits(refKey, reading) {
-			tuples = append(tuples, author(blockNodeAddress(refKey, reading), actor)...)
+			tuples = append(tuples, author(blockNodeAddress(refKey, reading), actor, facts.versionOf(reading).At)...)
 		}
 	}
 	write, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)
 	if err != nil {
-		return nil, graphstore.Uncaused{}, fmt.Errorf("write the decisions and readings of version %d of %s: %w", version, artifactID, err)
+		return nil, graphstore.Uncaused{}, fmt.Errorf("write the decisions and readings of %s: %w", artifactID, err)
 	}
 	if indexed {
 		return nil, write, nil
@@ -713,7 +749,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 		return nil, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
-	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, false, facts.typedPairs(), facts.typedScope())
+	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, facts.versionOf, writer, false, facts.typedPairs(), facts.typedScope())
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
@@ -727,9 +763,11 @@ func mapHas(set map[string]struct{}, key string) bool {
 	return held
 }
 
-// IndexOpenedAskTies states the shaped ties of blocks, ask blocks of version `version` of document
-// artifactID whose asks the calling transaction opened, which holds the document's owner row:
-// facts are what DecisionFacts read of the version once those asks' rows and nodes exist. An ask
+// IndexOpenedAskTies states the shaped ties of blocks, ask blocks of the versions facts were read
+// of (DecisionFacts) of document artifactID whose asks the calling transaction opened, which holds
+// the document's owner row: facts are what DecisionFacts read once those asks' rows and nodes
+// exist. Each row it writes records the version of its block's own document
+// (TypedFacts.versionOf) and is dated at. An ask
 // block's shaped hangs on the ask's node (TypedFacts.pairs), so a block whose ask no row held when
 // its version was indexed had none of its ties written then; the settlement that opens the asks
 // writes them here, beside their rows, when it writes no version of its own to index (docs'
@@ -739,7 +777,7 @@ func mapHas(set map[string]struct{}, key string) bool {
 // ask.opened that records its ask names: an opened block held no shaped row before, since its
 // pairs had no ask's node to hang on, so each moved target is one its own pairs reach. And it
 // answers what it states, held for those events.
-func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, version int, at time.Time, facts TypedFacts, blocks []string) (map[string][]Target, graphstore.Uncaused, error) {
+func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, at time.Time, facts TypedFacts, blocks []string) (map[string][]Target, graphstore.Uncaused, error) {
 	if !facts.read || len(blocks) == 0 {
 		return nil, graphstore.Uncaused{}, nil
 	}
@@ -759,7 +797,8 @@ func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	if len(scope.blocks) == 0 {
 		return nil, graphstore.Uncaused{}, nil
 	}
-	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, version, at, facts.document.writer, false, pairs, scope)
+	versionOf := func(id string) Version { return Version{Number: facts.versionOf(id).Number, At: at} }
+	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, versionOf, facts.document.writer, false, pairs, scope)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}

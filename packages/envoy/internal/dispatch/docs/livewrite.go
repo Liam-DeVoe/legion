@@ -798,7 +798,8 @@ func (s *Service) docTree(ctx context.Context, artifactID string) (*pmdoc.Node, 
 		return nil, err
 	}
 	if behind {
-		return s.storedWithUpdates(ctx, artifactID, unstored)
+		tree, _, err := s.storedWithUpdates(ctx, artifactID, unstored, []string{fragmentName})
+		return tree, err
 	}
 	return tree, nil
 }

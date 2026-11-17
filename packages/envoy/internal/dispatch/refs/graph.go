@@ -134,8 +134,19 @@ func blockHolds(alias, fromKind, table, column string) string {
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
 // numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
 // block has no row, so the edges at it drop out of every list until a version holds its id again.
+// A document's blocks are its own rows, or, for a document of an issue room and for the room's tree
+// artifact, the rows of the room's tree whose issue_room_blocks row names the document
+// (BlockDocumentSQL), read by the tree's key; a converted document's own rows are none of them.
 func documentBlockIDs(param string) string {
-	return `(select d.node_id from document_blocks d join artifacts a on a.id = d.artifact_id where a.ref_key = ` + param + `)`
+	return `(select d.node_id from artifacts a join document_blocks d on d.artifact_id = a.id
+		where a.ref_key = ` + param + ` and a.kind <> 'tree'
+		  and not exists (select 1 from document_rooms moved where moved.artifact_id = a.id)
+		union all
+		select d.node_id from artifacts a
+		join issue_room_blocks r on r.tree_artifact_id = coalesce(
+			(select moved.room from document_rooms moved where moved.artifact_id = a.id), a.id) and r.document_id = a.id
+		join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
+		where a.ref_key = ` + param + `)`
 }
 
 // itemBlockIDs is the node id of every current block of the item of kind whose uuid is the
@@ -718,14 +729,19 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // has no row and resolves to nothing, so every edge at it is omitted until a version holds its
 // id again. A block is made by the authors of the version that first held it, when Dispatch knows
 // that version (blockFirstVersion); its last change is its changed version, by that version's
-// authors. It belongs to its document at its changed version.
+// authors. It belongs to its document at its changed version. A block of an issue room, whose row
+// is keyed by the issue's tree artifact, belongs to its own document (BlockDocumentSQL): that
+// document is its parent, names its reference and holds its changed version, while its node's
+// address stays the tree's.
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
 		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+storedNode("block", "d.node_id")+`
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
+		from document_blocks d
+		cross join lateral (select `+BlockDocumentSQL("d")+` as id) owner
+		join artifacts a on a.id = owner.id
+		left join artifact_versions changed on changed.artifact_id = owner.id and changed.number = d.changed_version
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
 		where `+held+` and `+VisibleKind("block", "d.node_id", "$2"), args...)
 	if err != nil {

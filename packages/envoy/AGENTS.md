@@ -458,6 +458,10 @@ An append queued behind that commit finds a consumed credit and writes nothing t
 Each author is therefore in exactly one of F, R, or a committed version's list.
 A later edit gets a new credit and remains pending for the next version, even when the earlier edit's version is still committing.
 A settlement that writes no version leaves R intact.
+In an issue room, whose settlement writes a version of each document whose fragment changed, a browser update's credit also names the documents whose fragments the update changed (`noteChangedFragments`, `inflightCredit.documents`).
+Its append writes its R rows under each of those documents rather than under the tree artifact that stored the update, a row for the tree's own fragment under the tree (`pendingAuthorsIn`), so a row's `artifact_id` is the document it credits.
+The room's settlement reads R for every document of the room (`readRoomPendingAuthors`), lists on each document's version that document's R rows and in-flight credits alone (`roomCredit`), and deletes only the rows of the documents it versions;
+a document it writes no version of keeps its rows for its next version.
 An upload whose replacement changed the document lists its uploader, deletes only the R rows whose writing update its room's instance held (each row records that update's version, `written_through`;
 the instance holds every update through the head it loaded and each it took since, `roomHold`), and consumes only the F credits that existed at its last room read (`liveWrite.forkSeq`);
 a row another task's room stored, and a later credit, remain pending.
@@ -947,7 +951,7 @@ its connected browsers, writer slot, settlement timer, pending authors) only whi
 `unusedLocked` is the one list of those holders.
 Every lookup takes a state through `lockState` or `lockExistingState`, which never hand out a forgotten state, and ends with `unlockState`, which forgets a state that holds nothing once its room has gone, so whatever ends last - ygo's `OnUnloadDocument` when the room goes, or a holder's own end - releases it.
 The `doc_settlements_pending` row (migration 0063) says only that a settlement is owed and records its latest edit source;
-migration `0084`'s `doc_pending_authors` rows hold the authors.
+migration `0084`'s `doc_pending_authors` rows hold the authors, each under the document it credits: an issue room's update writes one row for each document whose fragment it changed.
 A browser update credits only the peers connected for that update, never the room's accumulated state, in the room-local F record.
 Its append moves an unconsumed credit to R under the document lock; a joined write records its own authors in R when its content commits.
 A version reads R under that lock and F from its own room, deletes the R rows it listed and consumes its local F only after its commit.

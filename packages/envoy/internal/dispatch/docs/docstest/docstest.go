@@ -330,7 +330,9 @@ func (p *Peer) CloseCode() int {
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
 // update and hands on every auth answer, until the connection closes, handing answers the content
-// of each sync step 2 once it is applied and awareness each awareness update once it is kept.
+// of each sync step 2 once it is applied and awareness each awareness update once it is kept. A
+// frame naming another document than the one the peer asked for is passed over, as a browser's
+// provider routes every frame by its document's name and drops one no provider of its asked for.
 func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 	for {
 		_, message, err := p.connection.ReadMessage()
@@ -341,8 +343,12 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 			return
 		}
 		decoder := encoding.NewDecoder(message)
-		if _, err := decoder.ReadVarString(); err != nil {
+		name, err := decoder.ReadVarString()
+		if err != nil {
 			return
+		}
+		if name != p.artifactID {
+			continue
 		}
 		kind, err := decoder.ReadVarUint()
 		if err != nil {

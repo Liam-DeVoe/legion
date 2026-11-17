@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -43,10 +45,14 @@ const (
 // reports a stop short. The stages hand each other everything here; what one stage alone uses
 // stays a local of that stage.
 type settlement struct {
-	service    *Service
-	room       string
-	state      *roomState
-	doc        *crdt.Doc
+	service *Service
+	room    string
+	state   *roomState
+	doc     *crdt.Doc
+	// layout is the room's layout as the instance it settles loaded it (layoutOf): the fragments
+	// an issue room's tree is read, repaired and rendered over, each block of its version indexed as
+	// its fragment's document's (commitVersion). Empty for a room that is its own document.
+	layout     roomLayout
 	generation uint64
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room (settleRoomWithin).
@@ -96,10 +102,13 @@ type settlement struct {
 	carried map[string]model.Actor
 	// reconciled is the tree the ask blocks are reconciled on, the stamp's when it stamped ids;
 	// versioned is the one the version is rendered from, read again after the repairs when the
-	// settlement wrote any.
-	reconciled     *pmdoc.Node
-	versioned      *pmdoc.Node
-	reconciliation settlementReconciliation
+	// settlement wrote any. Each count is how many top-level blocks each fragment of an issue room
+	// holds of its tree (settlementRead.counts).
+	reconciled       *pmdoc.Node
+	reconciledCounts []int
+	versioned        *pmdoc.Node
+	versionedCounts  []int
+	reconciliation   settlementReconciliation
 	// snapshotCursor is the head the version records (doc_update_version), through which every one
 	// of the room's updates it holds is stored.
 	snapshotCursor int64
@@ -165,6 +174,16 @@ func skipUnreadableSettlement(room string, err error) bool {
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	// A room entry point that takes a document's id resolves it first: a document converted into
+	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
+	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
+	// stood (dispatch://INFRA-1253 R5).
+	if resolved, err := roomOf(parent, s.store.Pool, room); err == nil && resolved != room {
+		if !s.shuttingDown(room) {
+			s.scheduleSettle(resolved)
+		}
+		return settleOutcome{}
+	}
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless parent has ended or Shutdown refused the write. The
@@ -297,7 +316,7 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 	if doc == nil {
 		return settleDone, st.stoppedShort(fmt.Errorf("hold the room to settle: %w", errRoomReplaced))
 	}
-	st.doc = doc
+	st.doc, st.layout = doc, s.layoutOf(doc)
 	// The settlement waits for none of the room's updates to reach its persistence: it stores
 	// every update of the room through the point it reads the room at itself, under the document's
 	// advisory lock (readSettlementTree), and an update the room commits after that point is no
@@ -309,15 +328,39 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 }
 
 // readLocked is what the settlement reads once its transaction holds the document's owner row: the
-// latest version, the document's cursor lock, the catch-up that brings the room's instance to the
-// document's durable head, the tree it reconciles and the rendering of that tree, and whom its
-// version credits.
+// layout of an issue room, read again, the latest version, the document's cursor lock, the
+// catch-up that brings the room's instance to the document's durable head, the tree it reconciles
+// and the rendering of that tree, and whom its version credits.
 //
 // It is given both of the settlement's contexts: ctx carries this settlement's ledger, cursor and
 // transaction, and is what every read here runs under; parent is the lifetime the reload of a room
 // whose stored history was replaced is given, once this transaction has been rolled back.
 func (st *settlement) readLocked(ctx context.Context, parent context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx := st.service, st.room, st.state, st.tx
+	// An issue room is settled over the fragments its instance loaded (layout), and those are the
+	// room's only while no document has joined it since: the join's transaction takes the issue's
+	// row before it writes its document_rooms row, so the room's documents read here, under that
+	// row, stand until this settlement commits. A join whose notice did not reach this process
+	// (AnnounceDocumentRooms) leaves the instance on fragments that are not the room's, and a
+	// settlement over them would read no edit of the joined fragment and its pass would remove the
+	// joined document's blocks. So such a room writes nothing: the transaction rolls back and the
+	// room is closed for a load that reads the room's layout, as a room on a replaced history is
+	// (reloadReplacedRoom). A room that is its own document holds no layout and reads none.
+	if st.owner.Kind == "tree" {
+		layout, err := readRoomLayout(ctx, tx, room)
+		if err != nil {
+			return settleDone, st.stoppedShort(err)
+		}
+		if !slices.Equal(layout, st.layout) {
+			_ = tx.Rollback(ctx)
+			refusal := fmt.Errorf("%w: room %s holds the fragments of %v, and its documents are now %v", errRoomLayoutMoved, room, st.layout, layout)
+			if parent.Err() != nil {
+				return settleDone, st.stoppedShort(refusal)
+			}
+			s.reloadReplacedRoom(parent, room, state, st.generation, st.doc, refusal)
+			return settleDone, settleOutcome{next: settleReloaded}
+		}
+	}
 	latest, err := latestVersion(ctx, tx, room)
 	if err != nil {
 		return settleDone, st.stoppedShort(err)
@@ -429,7 +472,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// pending-settlement row, which each append writes (updateOwedStatement), in every transaction
 	// (lockProjectCopies). Its version's authors are taken again once it has stored the room's
 	// updates it holds (settlementCredit).
-	credit, err := settlementCredit(ctx, tx, state, room, first)
+	credit, err := settlementCredit(ctx, tx, state, room, st.layout, first)
 	if err != nil {
 		return settleDone, st.stoppedShort(err)
 	}
@@ -547,11 +590,11 @@ func (st *settlement) commitFailed(advanced bool, err error) settleOutcome {
 // nothing after it; any other goes on holding the ask blocks' sources read under that state.
 func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state := st.service, st.room, st.state
-	st.reconciled = st.read
+	st.reconciled, st.reconciledCounts = st.read, st.first.counts
 	if pmdoc.BlockIDRepairCount(st.read) > 0 {
 		slot, update, err := s.applySuppressed(ctx, room, st.doc, func(doc *crdt.Doc, origin any) error {
 			var stampErr error
-			st.reconciled, _, st.renamed, stampErr = stampBlockIDs(doc, origin)
+			st.reconciled, st.reconciledCounts, _, st.renamed, stampErr = stampBlockIDs(doc, st.layout, origin)
 			return stampErr
 		})
 		st.keep(slot, update)
@@ -661,6 +704,7 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 			reconciliation.events[index].Actor = SettlementActor
 		}
 	}
+	reconciliation.layout = st.layout
 	st.reconciliation = reconciliation
 	if s.afterSettleReconcile != nil {
 		s.afterSettleReconcile(st.room)
@@ -700,7 +744,7 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		}
 	}
 
-	st.versioned = st.reconciled
+	st.versioned, st.versionedCounts = st.reconciled, st.reconciledCounts
 	versionRead := st.first
 	if len(st.slots) > 0 {
 		update, err := mergeUpdates(st.updates)
@@ -721,11 +765,11 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		if err := ledger.flushThrough(ctx, tx, room, versionRead.point); err != nil {
 			return settleDone, st.abandon(fmt.Errorf("store the room's updates through the settlement's version read: %w", err))
 		}
-		st.versioned = versionRead.tree
+		st.versioned, st.versionedCounts = versionRead.tree, versionRead.counts
 	}
 	// The version's authors, taken once the room's updates it holds are stored, and the head it
 	// records (doc_update_version), through which every one of them is stored.
-	credit, err := settlementCredit(ctx, tx, st.state, room, versionRead)
+	credit, err := settlementCredit(ctx, tx, st.state, room, st.layout, versionRead)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -845,7 +889,19 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
 	settledVersion := st.latest.Number
-	if versioning {
+	// An issue room versions each of its documents on its own (roomFragments): a version of each
+	// document whose fragment reads differently from that document's latest version, the tree
+	// artifact's own fragment among them, settledVersion being the tree's.
+	var fragments []roomFragment
+	if len(st.layout) > 0 {
+		if fragments, err = st.roomFragments(ctx, contentChanged); err != nil {
+			return settleDone, st.abandon(err)
+		}
+		versioning = slices.ContainsFunc(fragments, func(fragment roomFragment) bool { return fragment.changed })
+		if fragments[0].changed {
+			settledVersion = fragments[0].latest.number + 1
+		}
+	} else if versioning {
 		settledVersion++
 	}
 	// Every update this settlement read is settled once it commits, so the row that left the
@@ -876,13 +932,35 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := clearSettlementPending(ctx, tx, room, kept); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
+	// The version a repair, an invalid block or a retraction names is the one its block's document
+	// stands at once this settlement commits: the document's own, or, in an issue room, the
+	// version of the document whose fragment holds the block (blockVersions).
+	versionOf := func(string) int { return settledVersion }
+	if len(st.layout) > 0 {
+		if versionOf, err = st.blockVersions(ctx, fragments); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
+	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, versionOf); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The cause of the copies' copied_from (claimCopies): the version this settlement writes, or
 	// none for a settlement that writes no version.
 	copiesCause := graphstore.NoEvent
-	if versioning {
+	if versioning && len(st.layout) > 0 {
+		var keptEditor *model.Actor
+		if st.credit.kept {
+			keptEditor = &st.credit.actor
+		}
+		cause, writeErr := st.commitRoomVersions(ctx, fragments, markdown, offsets, keptEditor)
+		if writeErr != nil {
+			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(room, writeErr) {
+				return settleDone, settleOutcome{}
+			}
+			return settleDone, st.abandon(writeErr)
+		}
+		copiesCause = cause
+	} else if versioning {
 		var keptEditor *model.Actor
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
@@ -956,7 +1034,17 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// in that version's index, and one that writes none writes them here, beside the row, before
 	// the ask.opened that names the targets they moved is appended.
 	if !versioning {
-		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
+		// An issue room's ties record each block's own document's latest version.
+		versions, documents := refs.OneVersion(room, settledVersion, st.latest.CreatedAt), map[string]string(nil)
+		if len(st.layout) > 0 {
+			versions, documents = refs.Versions{}, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)
+			for _, fragment := range fragments {
+				if fragment.latest.number > 0 {
+					versions[fragment.document] = refs.Version{Number: fragment.latest.number, At: fragment.latest.at}
+				}
+			}
+		}
+		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, versions, documents, st.versioned, offsets); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
@@ -1027,4 +1115,280 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.versioned)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// roomVersion is the latest markdown version a document of an issue room holds, as
+// readRoomVersions reads it: its number, 0 for a document that holds none, its markdown and its
+// row's created_at, with the document's name, which its version event carries.
+type roomVersion struct {
+	number   int
+	markdown string
+	at       time.Time
+	name     string
+}
+
+// readRoomVersions reads, in one statement through q, the latest markdown version of each of
+// documents, beside it: the documents of an issue room, its tree artifact first
+// (roomLayout.documents). Each document of a room keeps its own history (D6 of
+// dispatch://INFRA-1253's plan), and a block of the room records a version of its own document.
+func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roomVersion, error) {
+	rows, err := q.Query(ctx, `
+		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name
+		from unnest($1::uuid[]) with ordinality as d (id, position)
+		join artifacts a on a.id = d.id
+		left join lateral (
+			select number, markdown, created_at from artifact_versions
+			where artifact_id = d.id and markdown is not null
+			order by number desc limit 1
+		) v on true
+		order by d.position`, documents)
+	if err != nil {
+		return nil, fmt.Errorf("read the latest versions of the room's documents: %w", err)
+	}
+	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (roomVersion, error) {
+		var version roomVersion
+		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name)
+		return version, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the latest versions of the room's documents: %w", err)
+	}
+	if len(versions) != len(documents) {
+		return nil, fmt.Errorf("read the latest versions of the room's documents: %d of %d documents stand", len(versions), len(documents))
+	}
+	return versions, nil
+}
+
+// roomFragment is one fragment of an issue room as its settlement versions it (roomFragments):
+// the document whose fragment it is, the tree artifact for its own, the part of the room's tree
+// that fragment holds and its rendering, that document's latest version, and whether the
+// settlement writes a version of it.
+type roomFragment struct {
+	document string
+	tree     *pmdoc.Node
+	markdown string
+	offsets  []pmdoc.BlockOffset
+	latest   roomVersion
+	changed  bool
+}
+
+// roomFragments parts the room's tree this settlement versions (versioned, over the room's
+// layout) into its fragments, each rendered as a version of its own document, and marks changed
+// each whose rendering differs from that document's latest version where the room's content
+// changed since the tree artifact's latest version (contentChanged): a settlement of an issue
+// room writes one version of each document whose fragment it changed, and no version of the room
+// as a whole (T12a of dispatch://INFRA-1253's plan).
+func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([]roomFragment, error) {
+	documents := st.layout.documents(st.room)
+	parts := st.layout.parts(st.versioned, st.versionedCounts)
+	if parts == nil {
+		return nil, fmt.Errorf("%w: the settled tree of room %s does not part into its %d fragments", ErrDocSchema, st.room, len(documents))
+	}
+	latest, err := readRoomVersions(ctx, st.tx, documents)
+	if err != nil {
+		return nil, err
+	}
+	fragments := make([]roomFragment, len(documents))
+	for index, document := range documents {
+		markdown, offsets, err := renderFragment(parts[index])
+		if err != nil {
+			return nil, err
+		}
+		fragments[index] = roomFragment{
+			document: document, tree: parts[index], markdown: markdown, offsets: offsets, latest: latest[index],
+			changed: contentChanged && (latest[index].number == 0 || markdown != latest[index].markdown),
+		}
+	}
+	return fragments, nil
+}
+
+// blockVersions is, by a block's id, the version of the block's own document an issue room's
+// settlement leaves it at (fragments): the version the settlement writes of a document whose
+// fragment changed, else that document's latest. A block the settled tree holds is its fragment's
+// document's (roomLayout.blockDocuments), the tree artifact's for one of the room's own fragment; a
+// block the tree no longer holds - an ask block whose retraction names the version it left in - is
+// the document its issue_room_blocks row names, read in one statement while the room's index still
+// holds that row, since this settlement's pass deletes it.
+func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragment) (func(blockID string) int, error) {
+	numbers := make(map[string]int, len(fragments))
+	for _, fragment := range fragments {
+		numbers[fragment.document] = fragment.latest.number
+		if fragment.changed {
+			numbers[fragment.document]++
+		}
+	}
+	documents := st.layout.blockDocuments(st.room, st.versioned, st.versionedCounts)
+	var left []string
+	for _, ask := range st.reconciliation.retracted {
+		if ask.BlockID == nil {
+			continue
+		}
+		if _, held := documents[*ask.BlockID]; !held {
+			left = append(left, *ask.BlockID)
+		}
+	}
+	if len(left) > 0 {
+		rows, err := st.tx.Query(ctx, `
+			select block_id, document_id::text from issue_room_blocks
+			where tree_artifact_id = $1::uuid and block_id = any($2::text[])`, st.room, left)
+		if err != nil {
+			return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
+		}
+		defer rows.Close()
+		if documents == nil {
+			documents = make(map[string]string, len(left))
+		}
+		for rows.Next() {
+			var block, document string
+			if err := rows.Scan(&block, &document); err != nil {
+				return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
+			}
+			documents[block] = document
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
+		}
+	}
+	return func(blockID string) int {
+		if document, held := documents[blockID]; held {
+			return numbers[document]
+		}
+		return numbers[st.room]
+	}, nil
+}
+
+// commitRoomVersions writes, in the settlement's transaction, one version of each document of the
+// issue room whose fragment changed (fragments), each through writeVersionTx with the version's
+// own approval move and carry, anchors and edit notice, then indexes the room once under its tree
+// artifact (indexRoom): the room's joined rendering, markdown with offsets, at the version of
+// each fragment's document - the one just written, or its latest - so each block records its own
+// document's version and the pass clears the mark the version trigger set on each version it
+// writes (refs.IndexBlocks' fence). Each version's node follows the pass's block nodes, and each
+// version's artifact.version event names its own document and causes what the pass stated of
+// that document's blocks, with the version's node, stamping the links its blocks inserted at that
+// version (stampVersionEvent); a document of the room this settlement writes no version of has
+// its facts caused by the event that recorded its latest version, and so has the tree artifact,
+// whose own fragment and references belong to no other document (causeRoomFacts). It answers the
+// last event it appended, the cause of what the settlement goes on to state of the copies.
+//
+// Each version lists the authors of the updates that changed its own document's fragment, which
+// the room's credit holds by document (settlementVersionCredit.documents), and names its actor and
+// the latest editor its edit notice names by that list (documentActor, documentLatest): nobody is
+// credited with a document whose fragment no update of theirs changed. Its commit deletes the
+// pending authors it lists; those of a document it writes no version of stay for that document's
+// next version.
+func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, markdown string, offsets []pmdoc.BlockOffset, keptEditor *model.Actor) (int64, error) {
+	s, room, tx, ledger := st.service, st.room, st.tx, st.ledger
+	versions := refs.Versions{}
+	type written struct {
+		fragment roomFragment
+		result   versionWriteResult
+		actor    model.Actor
+	}
+	var writes []written
+	listed := make(map[string][]model.Actor, len(fragments))
+	for _, fragment := range fragments {
+		if !fragment.changed {
+			if fragment.latest.number > 0 {
+				versions[fragment.document] = refs.Version{Number: fragment.latest.number, At: fragment.latest.at}
+			}
+			continue
+		}
+		actor := st.credit.documentActor(fragment.document)
+		result, err := s.writeVersionTx(ctx, tx, fragment.document,
+			renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, actor, &versionWrite{
+				authors:          st.credit.documents[fragment.document],
+				docUpdateVersion: &st.snapshotCursor,
+				closedIssue:      st.issueClosed,
+				settlement:       true,
+				keptEditor:       keptEditor,
+				roomIndexed:      true,
+			})
+		if err != nil {
+			return graphstore.NoEvent, err
+		}
+		versions[fragment.document] = refs.Version{Number: result.version.Number, At: result.version.CreatedAt}
+		writes = append(writes, written{fragment: fragment, result: result, actor: actor})
+		listed[fragment.document] = st.credit.listed[fragment.document]
+	}
+	index, err := s.indexRoom(ctx, tx, room, versions, markdown, offsetBlocks(offsets, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+		st.versioned, &st.reconciliation.sources)
+	if err != nil {
+		return graphstore.NoEvent, err
+	}
+	for _, write := range writes {
+		node, err := WriteVersionNode(ctx, tx, write.result.owner, write.result.version.Number, write.actor, write.result.version.CreatedAt)
+		if err != nil {
+			return graphstore.NoEvent, err
+		}
+		index.facts[write.fragment.document] = graphstore.Joined(index.facts[write.fragment.document], node)
+	}
+	// Each version lists the pending authors this settlement read of its document, so its commit
+	// deletes them.
+	if err := deleteRoomPendingAuthors(ctx, tx, listed); err != nil {
+		return graphstore.NoEvent, err
+	}
+	if s.afterSettleVersionWrite != nil {
+		if err := s.afterSettleVersionWrite(room); err != nil {
+			return graphstore.NoEvent, err
+		}
+	}
+	// Each version opens or moves its own document's edit notice, as a document's settlement does
+	// (commitVersion), and a closed issue's deletes it.
+	for _, write := range writes {
+		document := write.fragment.document
+		if st.issueClosed {
+			if _, err := tx.Exec(ctx, dropEditNotice, document); err != nil {
+				return graphstore.NoEvent, fmt.Errorf("delete the closed issue's document's edit notice: %w", err)
+			}
+		} else if err := s.recordEditNotice(ctx, tx, document, write.result.version.Number, st.credit.documents[document], st.credit.documentLatest(document)); err != nil {
+			return graphstore.NoEvent, err
+		}
+	}
+	st.published = append(st.published, ledger.events...)
+	// The room's references and its blocks' links name what the pass moved, and the last event
+	// carries them, as a document's one event does.
+	events := make(map[string]int64, len(versions))
+	last := graphstore.NoEvent
+	for position, write := range writes {
+		moved := model.ReferenceChanges{}
+		if position == len(writes)-1 {
+			moved = index.changes
+		}
+		document := write.fragment.document
+		event := model.Event{
+			IssueKey: st.owner.IssueKey,
+			Type:     "artifact.version",
+			Actor:    write.actor,
+			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved),
+		}
+		if st.owner.IssueKey == nil {
+			event.ArtifactID = &document
+		}
+		appended, err := s.events.Append(ctx, tx, event)
+		if err != nil {
+			return graphstore.NoEvent, err
+		}
+		st.published = append(st.published, appended)
+		events[document], last = appended.ID, appended.ID
+	}
+	for document, version := range versions {
+		if _, written := events[document]; written {
+			continue
+		}
+		if events[document], err = versionEventID(ctx, tx, st.owner, document, version.Number); err != nil {
+			return graphstore.NoEvent, err
+		}
+	}
+	for _, document := range slices.Sorted(maps.Keys(versions)) {
+		if err := stampVersionEvent(ctx, tx, room, document, versions[document].Number, versions[document].At, events[document]); err != nil {
+			return graphstore.NoEvent, err
+		}
+	}
+	// What the pass stated waits for those events: each document's part is caused by its own
+	// (graphstore.Caused).
+	if err := causeRoomFacts(ctx, tx, room, index.facts, events); err != nil {
+		return graphstore.NoEvent, err
+	}
+	return last, nil
 }

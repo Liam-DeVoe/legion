@@ -65,9 +65,54 @@ const BlockRefKindsSQL = `select 'mentions'
 		union select attribute.attributes->>'name' from graph_nodes attribute
 		where attribute.kind = 'attribute' and attribute.attributes->>'kind' = '` + string(pmdoc.BlockAttributeBlockList) + `'`
 
-// IndexBlocks records version `version` (written at versionAt) of document artifactID's blocks as
-// graph nodes, and each mention written inside a block as an edge out of the innermost block
-// holding its start, in the caller's transaction, which holds the document's owner row. blocks
+// Version is one version of a document a block index pass covers: its number and the created_at
+// of its row.
+type Version struct {
+	Number int
+	At     time.Time
+}
+
+// Versions is the version of each document one block index pass covers, by the document's
+// artifact id (IndexBlocks). A pass over a document that is its own room covers one version of
+// that document (OneVersion). A pass over an issue room, which indexes the room's blocks under its
+// tree artifact, covers a version of each document whose fragment of the room holds its blocks -
+// the version the room's settlement wrote of that document, or the newest it holds - and one of
+// the tree artifact itself for the blocks of its own fragment (T12a of dispatch://INFRA-1253's
+// plan): a block of the room records a version of its own document, never a number of the tree
+// artifact's history, so two documents of one room can each hold a block at the same number.
+type Versions map[string]Version
+
+// OneVersion is the Versions of a pass over version number of document artifactID alone, written
+// at at.
+func OneVersion(artifactID string, number int, at time.Time) Versions {
+	return Versions{artifactID: {Number: number, At: at}}
+}
+
+// Newest is the document and the version of v written last: the version a pass over v states the
+// facts that name no document of their own in the name of and at the time of (IndexBlocks), and
+// whose first author is the pass's writer (indexedVersionRecord). Of versions written at one time,
+// artifactID's own comes first, then the document of the lowest id, so the choice does not
+// depend on the map's order. An empty v answers artifactID at no version.
+func (v Versions) Newest(artifactID string) (string, Version) {
+	before := func(document, lead string) bool {
+		return document == artifactID || lead != artifactID && document < lead
+	}
+	lead, version, found := artifactID, Version{}, false
+	for document, candidate := range v {
+		if !found || candidate.At.After(version.At) || candidate.At.Equal(version.At) && before(document, lead) {
+			lead, version, found = document, candidate, true
+		}
+	}
+	return lead, version
+}
+
+// IndexBlocks records the versions of versions of document artifactID's blocks as graph nodes,
+// and each mention written inside a block as an edge out of the innermost block holding its
+// start, in the caller's transaction, which holds the document's owner row. versions is the one
+// version a pass over a document indexes (OneVersion), or, for an issue room indexed under its
+// tree artifact artifactID, the version of each document whose fragment holds its blocks
+// (Versions): each block records the version of its own document, the document
+// model.ArtifactBlock's Document names, or artifactID's own for a block of no other. blocks
 // are the version's rendered blocks in document order, each parent before its children; the first
 // holder of a repeated id is the node. located must be Mentions of the document's text, the one
 // reading of it a version's index takes, so a mention's offset places it in the block holding it
@@ -98,14 +143,15 @@ const BlockRefKindsSQL = `select 'mentions'
 // excerpt a document's mention has shown since migration 0092.
 //
 // A pair (block, kind, target) that survives keeps its created version, time and source event,
-// and takes the to_types this version gives it. A new pair takes this version and versionAt, and
-// the source event Stamp gives it. On the document's first indexing (no block rows yet), a new
-// pair dates instead from the document's own refs row for that target, when one exists. The
-// version is recorded as indexed, and as the version the document's blocks stand at
-// (document_block_versions), a mark that only ever moves forward: the second result is false
-// where this pass lost that race to one holding the same version or a higher one, and such a
-// pass writes nothing at all - no projection row and no tuple - since what it would state is
-// what the winning version already stated. It returns the targets of the pairs
+// and takes the to_types this version gives it. A new pair takes its block's version and that
+// version's time, and the source event Stamp gives it. On the document's first indexing (no block
+// rows yet), a new pair dates instead from the document's own refs row for that target, when one
+// exists. Each version is recorded as indexed under its own document (document_indexed_versions),
+// and as the version that document's blocks stand at (document_block_versions), a mark that only
+// ever moves forward: the second result is false where this pass lost that race to one holding
+// the same versions or higher ones (standsAtVersions), and such a pass writes nothing at all - no
+// projection row and no tuple - since what it would state is what the winning pass already
+// stated. It returns the targets of the pairs
 // it inserted or deleted, or whose to_types it changed, whose counts moved: a node is counted
 // once for each block citing it. It also returns what else a Referenced by panel or a link
 // shows that the version moved: the target of each pair it kept in a block whose text it
@@ -143,7 +189,8 @@ const BlockRefKindsSQL = `select 'mentions'
 // (IndexDecisionNodes), and the two write one set of rows for one version.
 //
 // Where another release indexed the document after the store last stated its blocks
-// (standsAtVersion's stale), the rows the pass compares the render with are that release's, and
+// (standsAtVersion's stale, read of artifactID's own row), the rows the pass compares the render
+// with are that release's, and
 // they no longer name everything the store holds: the release before this one deletes the rows of
 // the blocks and the links its version drops and states no node gone and retracts no tuple. The
 // pass then also reads the store's own statement of the document (heldDocumentBlocks) and states,
@@ -160,8 +207,7 @@ func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID string,
-	version int,
-	versionAt time.Time,
+	versions Versions,
 	markdown string,
 	blocks []model.ArtifactBlock,
 	located []text.Located,
@@ -170,11 +216,15 @@ func IndexBlocks(
 ) ([]Target, bool, graphstore.Uncaused, error) {
 	// The fence is the pass's first write, so a pass that loses it has written nothing to undo
 	// and waits at that one row rather than at a projection row further in.
-	won, stale, indexedBefore, err := standsAtVersion(ctx, tx, artifactID, version)
+	won, stale, indexedBefore, err := standsAtVersions(ctx, tx, artifactID, versions)
 	if err != nil || !won {
 		return nil, won, graphstore.Uncaused{}, err
 	}
-	document, err := indexedVersionRecord(ctx, tx, artifactID, version)
+	// The version the facts that name no block of their own are stated in the name of: the one
+	// version of a document, or the newest of an issue room's.
+	lead, newest := versions.Newest(artifactID)
+	version, versionAt := newest.Number, newest.At
+	document, err := indexedVersionRecord(ctx, tx, artifactID, lead, version)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
@@ -194,6 +244,45 @@ func IndexBlocks(
 		slog.Warn("dispatch: block addresses past the bound are no nodes of the store; their rows carry no node address and the pass states no fact about them",
 			"artifact", artifactID, "version", version, "blocks", unaddressable, "ref_key_bytes", len(refKey), "bound_bytes", MaxBlockNodeBytes)
 	}
+	// The documents whose fragments of an issue room hold this version's blocks, where the
+	// document indexed is an issue's tree artifact: each block's in_document names its fragment's
+	// document, and its rank stands in that document's band (dispatch://INFRA-1253 R5).
+	fragments, err := fragmentDocuments(ctx, tx, artifactID, nodes)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	var holders map[string]model.ArtifactBlock
+	if len(fragments) > 0 {
+		holders = make(map[string]model.ArtifactBlock, len(nodes))
+		for _, block := range nodes {
+			holders[block.ID] = block
+		}
+	}
+	// The document each block is a block of - the one whose fragment of an issue room holds it,
+	// which the pass read (fragmentDocuments), or the one its row held for a block the version
+	// dropped, and artifactID itself for a block of no other - and the version it records, that
+	// document's.
+	documentOf := func(id string) string {
+		if held, ok := stored[id]; ok && held.document != "" {
+			return held.document
+		}
+		if block, ok := holders[id]; ok {
+			if _, known := fragments[block.Document]; known {
+				return block.Document
+			}
+		}
+		return artifactID
+	}
+	versionIn := func(document string) Version {
+		if held, ok := versions[document]; ok {
+			return held
+		}
+		if held, ok := versions[artifactID]; ok {
+			return held
+		}
+		return newest
+	}
+	versionOf := func(id string) Version { return versionIn(documentOf(id)) }
 
 	// The blocks whose text this version changed (new, changed or restored), and those it deleted.
 	var ids, types, sums, excerpts []string
@@ -214,7 +303,10 @@ func IndexBlocks(
 		if held && !previous.named {
 			nodeless = append(nodeless, nodelessBlock{id: block.ID, typ: block.Type, joined: previous.joined})
 		}
-		if held && previous.sum == string(sum[:]) {
+		// A block of an issue room cut from one fragment and pasted with the same text into another
+		// moved into another document, whose version it records from here on (documentOf): its
+		// row and its text are written again at that document's version, as a changed block's are.
+		if held && previous.sum == string(sum[:]) && previous.document == documentOf(block.ID) {
 			continue
 		}
 		ids, types, sums = append(ids, block.ID), append(types, block.Type), append(sums, string(sum[:]))
@@ -271,7 +363,7 @@ func IndexBlocks(
 		if !blockIDFits(refKey, id) {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateLive, typed.supertag(id, types[index]), true))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionOf(id).At, graphstore.StateLive, typed.supertag(id, types[index]), true))
 	}
 	// A block the version no longer holds has its node stated gone, whatever state it held: a
 	// restating write that says gone is written gone, and keeps only the visibility. The tuple
@@ -293,7 +385,7 @@ func IndexBlocks(
 			supertag = BlockSupertag
 		}
 		gone = append(gone, blockNodeAddress(refKey, id))
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionAt, graphstore.StateGone, supertag, true))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), document, versionOf(id).At, graphstore.StateGone, supertag, true))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
@@ -317,11 +409,11 @@ func IndexBlocks(
 		// A block whose row only learns its node here is no block this version changed: it is
 		// not marked (blockNode).
 		if _, stated := changed[block.id]; !stated {
-			blockNodes = append(blockNodes, blockNode(address, document, versionAt, graphstore.StateLive, typed.supertag(block.id, block.typ), false))
+			blockNodes = append(blockNodes, blockNode(address, document, versionOf(block.id).At, graphstore.StateLive, typed.supertag(block.id, block.typ), false))
 		}
 		memberships = append(memberships, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: TupleInDocument,
-			ToKind: "artifact", ToID: refKey,
+			ToKind: "artifact", ToID: document.inDocument(holders[block.id], fragments),
 			At: block.joined, Who: writer, Asserted: true,
 		}})
 	}
@@ -351,7 +443,7 @@ func IndexBlocks(
 	}
 	var textVersions []int32
 	if len(ids) > 0 {
-		since, sinceAt, err := textSince(ctx, tx, artifactID, version, versionAt, indexedBefore, texts[:len(ids)])
+		since, sinceAt, err := textSinceIn(ctx, tx, versions, indexedBefore, ids, texts[:len(ids)], documentOf, versionIn)
 		if err != nil {
 			return nil, false, graphstore.Uncaused{}, err
 		}
@@ -386,17 +478,18 @@ func IndexBlocks(
 			}
 			write.Tuples = append(write.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: TupleInDocument,
-				ToKind: "artifact", ToID: refKey,
+				ToKind: "artifact", ToID: document.inDocument(holders[id], fragments),
 				At: joined, Who: writer, Asserted: true,
 			}})
 		}
 	}
 	if len(textIDs) > 0 {
-		// A deleted block's row is recorded at this version, and a changed one's at the version
-		// its text stands since (textSince), so the text a reader reads at an indexed version is
-		// the latest row at or before it, as ever, and the row a block's changed_version names.
-		for range len(textIDs) - len(textVersions) {
-			textVersions = append(textVersions, int32(version))
+		// A deleted block's row is recorded at the version of its document this pass covers, and
+		// a changed one's at the version its text stands since (textSince), so the text a reader
+		// reads at an indexed version is the latest row at or before it, as ever, and the row a
+		// block's changed_version names.
+		for index := len(textVersions); index < len(textIDs); index++ {
+			textVersions = append(textVersions, int32(versionOf(textIDs[index]).Number))
 		}
 		if _, err := tx.Exec(ctx, `
 			insert into document_block_texts (artifact_id, block_id, version, text)
@@ -406,19 +499,26 @@ func IndexBlocks(
 			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
+	// An issue room's blocks name their documents in issue_room_blocks, beside their
+	// document_blocks rows under the tree artifact, in this transaction (D16).
+	moves, err := reconcileRoomBlocks(ctx, tx, artifactID, document, nodes, fits, fragments, deleted)
+	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	write.Tuples = append(write.Tuples, moves...)
 	placement, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, nodes, fits, typed.askParents, nil)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
-	values, err := reconcileBlockValues(ctx, tx, document, markdown, nodes, placement, changed, stale)
+	values, err := reconcileBlockValues(ctx, tx, document, markdown, nodes, placement, changed, stale, fragments)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, values...)
 
 	pairs := typed.pairs(blockPairs(nodes, located, typed.withTies(pointers)))
-	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, firstIndexing, pairs, nil)
+	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, versionOf, writer, firstIndexing, pairs, nil)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
@@ -443,11 +543,18 @@ func IndexBlocks(
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	moved = append(moved, cited...)
+	// Each version is recorded indexed under its own document, which that table keys by.
+	documents := slices.Sorted(maps.Keys(versions))
+	numbers := make([]int32, len(documents))
+	for index, indexed := range documents {
+		numbers[index] = int32(versions[indexed].Number)
+	}
 	if _, err := tx.Exec(ctx, `
-		insert into document_indexed_versions (artifact_id, version) values ($1, $2)
+		insert into document_indexed_versions (artifact_id, version)
+		select i.artifact_id, i.version from unnest($1::uuid[], $2::int[]) as i (artifact_id, version)
 		on conflict (artifact_id, version) do nothing
-	`, artifactID, version); err != nil {
-		return nil, false, graphstore.Uncaused{}, fmt.Errorf("record version %d of %s indexed: %w", version, artifactID, err)
+	`, documents, numbers); err != nil {
+		return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the versions of %s indexed: %w", artifactID, err)
 	}
 	return moved, true, write, nil
 }
@@ -594,6 +701,117 @@ func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version 
 		return false, false, 0, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
 	}
 	return true, stale, indexedBefore, nil
+}
+
+// standsAtVersions is standsAtVersion over every document versions names, the fence of one pass
+// over an issue room (IndexBlocks): the pass wins where any of those documents' rows stands behind
+// the version it covers of that document - a row owed (its version null), one at an earlier
+// version, one at that version holding the backfill's mark, or no row at all - and then sets every
+// row to the version it covers, clears each one's backfill mark and owes it its windows, as the
+// fence of one document does, never moving a row back. So the trigger's mark on each version a
+// room's settlement writes, and the mark of any document of the room the reconciliation found
+// owed, are cleared by the one pass that indexes them all, in its own transaction. stale is read
+// of artifactID's own row, the key every row of the room is written under, and indexedBefore is
+// each document's latest version indexed before the one the pass covers. A pass over one document
+// is standsAtVersion's.
+func standsAtVersions(ctx context.Context, tx pgx.Tx, artifactID string, versions Versions) (won, stale bool, indexedBefore map[string]int, err error) {
+	if own, ok := versions[artifactID]; ok && len(versions) == 1 {
+		won, stale, before, err := standsAtVersion(ctx, tx, artifactID, own.Number)
+		return won, stale, map[string]int{artifactID: before}, err
+	}
+	documents := slices.Sorted(maps.Keys(versions))
+	numbers := make([]int32, len(documents))
+	for index, document := range documents {
+		numbers[index] = int32(versions[document].Number)
+	}
+	rows, err := tx.Query(ctx, `
+		with wanted as (
+			select w.artifact_id, w.version from unnest($2::uuid[], $3::int[]) as w (artifact_id, version)
+		), before as (
+			select (select store_version from document_block_versions where artifact_id = $1)
+			       is distinct from
+			       (select max(version) from document_indexed_versions where artifact_id = $1) as stale,
+			       exists (
+			           select 1 from wanted w
+			           left join document_block_versions b on b.artifact_id = w.artifact_id
+			           where b.artifact_id is null or b.version is null or b.version < w.version
+			              or b.version = w.version and b.store_owed_at is not null) as behind
+		), stood as (
+			insert into document_block_versions (artifact_id, version, store_version, windows_owed_at)
+			select w.artifact_id, w.version, w.version, now() from wanted w where (select behind from before)
+			on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
+				store_owed_at = null,
+				windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
+			where document_block_versions.version is null or document_block_versions.version <= excluded.version
+		)
+		select (select behind from before), (select stale from before), w.artifact_id::text,
+		       coalesce((select max(i.version) from document_indexed_versions i
+		                 where i.artifact_id = w.artifact_id and i.version < w.version), 0)
+		from wanted w
+	`, artifactID, documents, numbers)
+	if err != nil {
+		return false, false, nil, fmt.Errorf("record the blocks of %s indexed at the versions of its documents: %w", artifactID, err)
+	}
+	defer rows.Close()
+	indexedBefore = make(map[string]int, len(documents))
+	for rows.Next() {
+		var document string
+		var before int
+		if err := rows.Scan(&won, &stale, &document, &before); err != nil {
+			return false, false, nil, fmt.Errorf("record the blocks of %s indexed at the versions of its documents: %w", artifactID, err)
+		}
+		indexedBefore[document] = before
+	}
+	if err := rows.Err(); err != nil {
+		return false, false, nil, fmt.Errorf("record the blocks of %s indexed at the versions of its documents: %w", artifactID, err)
+	}
+	return won, stale, indexedBefore, nil
+}
+
+// textSinceIn is textSince over blocks of several documents: ids are the blocks whose text the
+// pass records, beside bodies, each read against the versions of its own document (documentOf)
+// that the pass covers and no pass indexed before (indexedBefore). A block of a document versions
+// covers no version of takes the version versionIn answers for it, whose history it does not read.
+func textSinceIn(
+	ctx context.Context,
+	tx pgx.Tx,
+	versions Versions,
+	indexedBefore map[string]int,
+	ids []string,
+	bodies []*string,
+	documentOf func(string) string,
+	versionIn func(string) Version,
+) ([]int32, []time.Time, error) {
+	since := make([]int32, len(ids))
+	at := make([]time.Time, len(ids))
+	grouped := map[string][]int{}
+	for index, id := range ids {
+		document := documentOf(id)
+		grouped[document] = append(grouped[document], index)
+	}
+	for _, document := range slices.Sorted(maps.Keys(grouped)) {
+		indexes := grouped[document]
+		version, covered := versions[document]
+		if !covered {
+			version = versionIn(document)
+			for _, index := range indexes {
+				since[index], at[index] = int32(version.Number), version.At
+			}
+			continue
+		}
+		held := make([]*string, len(indexes))
+		for position, index := range indexes {
+			held[position] = bodies[index]
+		}
+		documentSince, documentAt, err := textSince(ctx, tx, document, version.Number, version.At, indexedBefore[document], held)
+		if err != nil {
+			return nil, nil, err
+		}
+		for position, index := range indexes {
+			since[index], at[index] = documentSince[position], documentAt[position]
+		}
+	}
+	return since, at, nil
 }
 
 // textSince is, for each block whose text this pass records (bodies, its text in this version),
@@ -1028,11 +1246,13 @@ func BlockTextSum(body string) string {
 
 // storedBlock is what the document's index already holds of one block: the sha256 of its text,
 // when its document_blocks row was written, which is the time a membership of the document is
-// dated from (TupleInDocument), and whether that row names the block's node.
+// dated from (TupleInDocument), whether that row names the block's node, and the document the
+// block is a block of (BlockDocumentSQL), whose version a block the version drops records.
 type storedBlock struct {
-	sum    string
-	joined time.Time
-	named  bool
+	sum      string
+	joined   time.Time
+	named    bool
+	document string
 }
 
 // nodelessBlock is one block of the version whose document_blocks row names no node: its id, its
@@ -1077,11 +1297,16 @@ func heldSupertags(ctx context.Context, tx pgx.Tx, refKey string, ids []string) 
 // It reads the node columns and the row's created_at beside the digest, in the one read of the
 // document's rows this pass takes, because the pass writes a node and a membership for every
 // row that names none (IndexBlocks) and a second read of the same rows would cost a scan of
-// the document for every version.
+// the document for every version. The document of each block is BlockDocumentSQL's, read as a
+// join on the room's rows (none for a document that is its own room) rather than a probe a row.
 func storedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blocks int) (map[string]storedBlock, error) {
 	rows, err := tx.Query(ctx, `
-		select block_id, text_sha256, created_at, node_kind is not null and node_address is not null
-		from document_blocks where artifact_id = $1
+		select d.block_id, d.text_sha256, d.created_at, d.node_kind is not null and d.node_address is not null,
+		       coalesce(r.document_id, d.artifact_id)::text
+		from document_blocks d
+		left join (select block_id, document_id from issue_room_blocks where tree_artifact_id = $1) r
+		       on r.block_id = d.block_id
+		where d.artifact_id = $1
 	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks of %s: %w", artifactID, err)
@@ -1091,7 +1316,7 @@ func storedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blocks int)
 	for rows.Next() {
 		var id string
 		var held storedBlock
-		if err := rows.Scan(&id, &held.sum, &held.joined, &held.named); err != nil {
+		if err := rows.Scan(&id, &held.sum, &held.joined, &held.named, &held.document); err != nil {
 			return nil, fmt.Errorf("scan a block of %s: %w", artifactID, err)
 		}
 		stored[id] = held
@@ -1227,12 +1452,17 @@ func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair,
 // its blocks, which is the typed-node pass's reconcile of its own ties above the deferral bound
 // (IndexDecisionNodes). Every other row of the document is left as it stands, whatever pairs
 // holds, so a pass that read only those ties deletes nothing it did not read.
+//
+// versionOf is the version each pair's block records, by the block's id: a pair inserted takes
+// it as its created_version and its time as its created_at, and a pair dropped is retracted at
+// that time. It is the one version a pass over a document indexes, and for an issue room the
+// version of the block's own document (IndexBlocks), so a reader keying a pair's version by the
+// block's document (BlockDocumentSQL) finds that document's.
 func replaceBlockRefs(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID, refKey string,
-	version int,
-	versionAt time.Time,
+	versionOf func(blockID string) Version,
 	writer model.Actor,
 	firstIndexing bool,
 	pairs []blockPair,
@@ -1248,6 +1478,8 @@ func replaceBlockRefs(
 	// The node a pair names of its own, null for the block's.
 	nodeKinds := make([]*string, len(pairs))
 	nodeAddresses := make([]*string, len(pairs))
+	createdVersions := make([]int32, len(pairs))
+	createdAts := make([]time.Time, len(pairs))
 	for i, pair := range pairs {
 		blockIDs[i], kinds[i], toKinds[i], toIDs[i] = pair.blockID, pair.kind, pair.target.Kind, pair.target.ID
 		if len(pair.toTypes) > 0 {
@@ -1257,6 +1489,8 @@ func replaceBlockRefs(
 		if pair.nodeKind != "" {
 			nodeKinds[i], nodeAddresses[i] = &pairs[i].nodeKind, &pairs[i].nodeAddress
 		}
+		version := versionOf(pair.blockID)
+		createdVersions[i], createdAts[i] = int32(version.Number), version.At
 	}
 	var scopeKinds, scopeBlocks []string
 	if scope != nil {
@@ -1271,7 +1505,7 @@ func replaceBlockRefs(
 		returning r.block_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, true, r.node_kind, r.node_address
 	`, artifactID, blockIDs, kinds, toKinds, toIDs, scopeKinds, scopeBlocks))
 	if err != nil {
-		return nil, nil, fmt.Errorf("delete the block mentions version %d of %s dropped: %w", version, artifactID, err)
+		return nil, nil, fmt.Errorf("delete the block mentions the version of %s dropped: %w", artifactID, err)
 	}
 	moved := make([]Target, 0, len(dropped))
 	var tuples []graphstore.UncausedTuple
@@ -1287,11 +1521,11 @@ func replaceBlockRefs(
 			continue
 		}
 		// The row is gone, so no source_seq is ever written for it and the retraction carries
-		// none: its time is this version's, the moment the pair stopped being held.
+		// none: its time is the version's of the block, the moment the pair stopped being held.
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: fromKind, FromID: address, Kind: row.kind,
 			ToKind: row.toKind, ToID: row.toID,
-			At: versionAt, Who: writer, Asserted: false,
+			At: versionOf(row.blockID).At, Who: writer, Asserted: false,
 		}})
 	}
 	if len(pairs) == 0 {
@@ -1308,20 +1542,20 @@ func replaceBlockRefs(
 		       case when octet_length(p.to_id) > $11 then null
 		            when p.node_kind is not null then p.node_address
 		            when octet_length(a.ref_key || '#' || p.block_id) <= $11 then a.ref_key || '#' || p.block_id end,
-		       p.to_kind, p.to_id, p.kind, string_to_array(p.to_types, ' '), $6,
-		       coalesce(case when $8 then r.created_at end, $7), case when $8 then r.source_seq end
-		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $9::text[], $12::text[], $13::text[])
-		     as p (block_id, kind, to_kind, to_id, to_types, node_kind, node_address)
+		       p.to_kind, p.to_id, p.kind, string_to_array(p.to_types, ' '), p.created_version,
+		       coalesce(case when $8 then r.created_at end, p.created_at), case when $8 then r.source_seq end
+		from unnest($2::text[], $3::text[], $4::text[], $5::text[], $9::text[], $12::text[], $13::text[], $6::int[], $7::timestamptz[])
+		     as p (block_id, kind, to_kind, to_id, to_types, node_kind, node_address, created_version, created_at)
 		cross join (select ref_key from artifacts where id = $1::uuid) a
 		left join refs r on r.from_kind = 'artifact' and r.from_id = $1::uuid::text
 		                and r.to_kind = p.to_kind and r.to_id = p.to_id
 		on conflict (artifact_id, block_id, to_kind, to_id, kind) do update set to_types = excluded.to_types
 		where block_refs.to_types is distinct from excluded.to_types
 		returning block_id, kind, to_kind, to_id, created_at, source_seq, xmax = 0, node_kind, node_address
-	`, artifactID, blockIDs, kinds, toKinds, toIDs, version, versionAt, firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes,
+	`, artifactID, blockIDs, kinds, toKinds, toIDs, createdVersions, createdAts, firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes,
 		nodeKinds, nodeAddresses))
 	if err != nil {
-		return nil, nil, fmt.Errorf("record the block mentions of version %d of %s: %w", version, artifactID, err)
+		return nil, nil, fmt.Errorf("record the block mentions of the version of %s: %w", artifactID, err)
 	}
 	for _, row := range written {
 		moved = append(moved, Target{Kind: row.toKind, ID: row.toID})
