@@ -645,7 +645,7 @@ func (s *checkCase) addNodes(nodes ...specNode) {
 func (s *checkCase) addCheck(c Check, before ...specNode) {
 	s.t.Helper()
 	s.addNodes(append(before, c)...)
-	s.Ties[c.ID] = s.Ties[s.check]
+	s.tieLikeC(c.ID)
 	run := Result{Check: c.ID, Kind: ResultRun, Outcome: OutcomePass, Commit: "c1", Job: c.Test.Job, Attempt: 1, At: checkStateRun}
 	fault := run
 	fault.Kind, fault.Outcome, fault.At = ResultFailingExample, OutcomeFail, checkStateRun.Add(5*time.Minute)
