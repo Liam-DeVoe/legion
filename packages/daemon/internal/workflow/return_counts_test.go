@@ -27,23 +27,6 @@ const countedClaim = "implement-claim"
 var countedReturns = record.ReturnCounts{Pass: 5, Rounds: 3, CapTold: 3,
 	BackwardMoves: map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}}
 
-// seedTestedPlan writes the plan key's owner gave for its run generation: version 2, one task a
-// whose steps are `implementer tester reviewer`, waiting at no act.
-func seedTestedPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) {
-	t.Helper()
-	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-		GivenBy: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), GivenAt: stepClock}
-	task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-	steps := []record.PlanStep{
-		{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
-		{Issue: key, Generation: generation, Task: "a", Position: 2, Role: "tester", Type: "test"},
-		{Issue: key, Generation: generation, Task: "a", Position: 3, Role: "reviewer", Type: "review"},
-	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
-	})
-}
-
 // testsFail sends the work of key, in implementing, to its tester and back failed, times times.
 func testsFail(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, times int) {
 	t.Helper()
@@ -128,7 +111,7 @@ func TestAnIssueWithPlanRowsCountsOnItsTask(t *testing.T) {
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: countedClaim})
-	seedTestedPlan(t, pool, root.Key, root.Generation)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	testsFail(t, pool, engine, root.Key, 2)
 	reviewsReject(t, pool, engine, root.Key, 3)
@@ -176,7 +159,7 @@ func TestAnIssueWithNoPlanRowsCountsAsToday(t *testing.T) {
 		root := stepRoot(t, pool, phase.Implementing)
 		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: countedClaim})
 		testsFail(t, pool, engine, root.Key, 2)
-		seedTestedPlan(t, pool, root.Key, root.Generation)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
 		reviewsReject(t, pool, engine, root.Key, 3)
 		if got := implementerCounts(t, pool, engine, root.Key); sameReturnCounts(got, countedReturns) {
 			t.Fatalf("the implementer's phases row of %s counts %+v, every return: the check cannot see the returns its plan rows count", root.Key, got)
