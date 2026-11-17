@@ -348,8 +348,7 @@ export const DECISIONS_WORDS = freeze({
   declined: "declined to answer",
   /** The link from an entry to the node that holds it, in the conversation. */
   in_conversation: "in the conversation",
-  /** Before the spec's statements that an entry's links tie it to (the picture's "informs R4
-   *  R21"). */
+  /** Before the spec's statements that an entry's links tie it to, as the picture draws it. */
   informs: "informs",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
@@ -601,10 +600,10 @@ export const STATE_LINES = freeze({
   closed: "This issue is closed.",
   /** What Details says of a GitHub link whose issue or pull request Dispatch cannot read, since
    *  it holds no GitHub token for the link's repository, which today's pages say in the link's
-   *  tooltip (`features/issue/GitHubLink.tsx`, dispatch://INFRA-1196 R19). It is that tooltip's
-   *  sentence without "GitHub", whose capital inside the word reads as a code name to this
-   *  list's rule on internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own
-   *  address, drawn before it, already says where the link points. */
+   *  tooltip (`features/issue/GitHubLink.tsx`). It is that tooltip's sentence without
+   *  "GitHub", whose capital inside the word reads as a code name to this list's rule on
+   *  internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own address, drawn
+   *  before it, already says where the link points. */
   github_unreadable: "Details are unavailable for this repository.",
   /** What the list of who worked the issue says where Legion's record of its agents could not
    *  be read, above the agents it lists without it (`IssueCollaboratorList.tsx`): the
@@ -616,7 +615,7 @@ export const STATE_LINES = freeze({
   subscribers_unreadable: "Subscribed agents unavailable — Envoy listener unreachable.",
   /** How a subscribed agent stands whose subscription is wider than this issue, which Details
    *  draws where today's pages draw "via" and its topic with the reason as a tooltip
-   *  (`features/issue/SubscribedAgents.tsx`, dispatch://INFRA-1196 R19). */
+   *  (`features/issue/SubscribedAgents.tsx`). */
   subscription_wider:
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
 } as const);
@@ -793,8 +792,7 @@ export const CONTROL_LABELS = freeze({
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
   /** The labels control's word where the issue has no label yet, as `add_priority` is the
-   *  priority's: the property's own name would draw "Labels" twice in its row of Details
-   *  (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+   *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
   /** The control that places an issue under a priority, where the issue advances none: the
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
@@ -821,13 +819,12 @@ export const CONTROL_LABELS = freeze({
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
    *  `actionsOn`): each name begins with its control's own words and says its document,
    *  "Approve the spec", "Approve v5 of the spec", "Request changes to the verification"
-   *  (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+   *  (WCAG 2.5.3). */
   approval_document_criteria: "the verification",
   approval_document_decisions: "the decisions",
   approval_document_spec: "the spec",
   /** What a stale approval chip says of the document's latest version inside `NoTooltips`,
-   *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`,
-   *  dispatch://INFRA-1196 R19, R22). */
+   *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`). */
   approval_latest: "latest",
   /** The words between Request changes, or a stale approval's Approve, and the document it
    *  reviews, in those names: "Request changes to the spec", "Approve v5 of the spec". */
