@@ -44,6 +44,8 @@
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
+import { once } from "node:events";
+
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
@@ -269,13 +271,9 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
     // for no longer than the settle window above: nothing on the page changes when one of them
     // answers, so there is no state to make a web-first assertion against, and the request's own
     // events are what says it is over.
-    const windowClosed = Promise.withResolvers<void>();
-    AbortSignal.timeout(ANSWER_SETTLE_MS).addEventListener("abort", () => windowClosed.resolve(), {
-      once: true,
-    });
     await Promise.race([
       Promise.all(measured.map((read) => ended.get(read))),
-      windowClosed.promise,
+      once(AbortSignal.timeout(ANSWER_SETTLE_MS), "abort"),
     ]);
     return { landing, reads: measured, waves: wavesOf(measured) };
   } finally {
@@ -383,8 +381,8 @@ function landingsOf(world: World): Landing[] {
 // cold parse of the dashboard bundle it cannot cache, and the landing's own reads, four times
 // over. The cost is the measurement: a warm context would answer reads from its query cache and
 // count waves that a person opening the page never pays.
-// No `@pr` tag: the pull-request lane's real-stack budget is full, and this change moves no row
-// of that lane to make room for one of its own. It runs on the full lane at the merge queue.
+// No `@pr` tag: the pull-request lane's real-stack budget is full. It runs on the full lane at the
+// merge queue.
 test("a cold landing draws each page from at most two waves of reads", async ({ browser }) => {
   const world = await seedWorld();
 

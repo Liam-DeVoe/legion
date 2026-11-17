@@ -82,25 +82,31 @@ export function tabReloads(page: Page): Promise<number[] | null> {
 }
 
 /** What one document load of the tab did with the chunk failures reported to it. */
-export interface FailureHandling {
+interface FailureHandling {
   /** How many of this load's `vite:preloadError` dispatches have run to their end: the bundle's
    *  recovery has judged each of them. */
-  readonly preloadErrors: number;
+  preloadErrors: number;
   /** How many `error` events of this load's scripts and links every listener of the window has
    *  seen: `web/index.html`'s inline script has judged each of them. */
-  readonly assetErrors: number;
+  assetErrors: number;
   /** Whether this load began a reload. */
-  readonly reloaded: boolean;
+  reloaded: boolean;
 }
 
 /** Where the page keeps that record: the tab's session storage, which outlives the reload a
  *  failure may begin, so the load that began it can still be read once the next one is up. */
 const FAILURE_HANDLING_KEY = "e2e.failure-handling";
 
+/** How often the waits below look again. Each waits on a fact that turns true within a frame or a
+ *  round trip of the page, and Playwright's default ladder would not look again until 350 ms and
+ *  then 850 ms, so a row would wait up to half a second past it; the suite's short ladder, as in
+ *  `block-references.e2e.ts`. */
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
+
 /**
  * Records what each document load of the tab does with a chunk failure, from before any script
  * of the page runs, and returns a wait for the `load`th load (from 1) to have judged one, which
- * answers every load's record as it stood then.
+ * answers whether each load up to then began a reload.
  *
  * A chunk the bundle imports fails twice. Vite asks for it through a
  * `<link rel="modulepreload">` beside the import, so its download fails as that link's `error`
@@ -115,17 +121,15 @@ const FAILURE_HANDLING_KEY = "e2e.failure-handling";
  */
 export async function recordFailureHandling(
   page: Page
-): Promise<(load: number) => Promise<FailureHandling[]>> {
+): Promise<(load: number) => Promise<boolean[]>> {
   await page.addInitScript((key) => {
     const navigation = window.navigation;
     // A frame inside the page shares the tab's session storage and is no load of the tab. An
     // engine without the Navigation API keeps no record at all, so the wait below fails rather
     // than reading a reload it could not see as none.
     if (window !== window.top || navigation === undefined) return;
-    const loads: { assetErrors: number; preloadErrors: number; reloaded: boolean }[] = JSON.parse(
-      window.sessionStorage.getItem(key) ?? "[]"
-    );
-    const load = { assetErrors: 0, preloadErrors: 0, reloaded: false };
+    const loads: FailureHandling[] = JSON.parse(window.sessionStorage.getItem(key) ?? "[]");
+    const load: FailureHandling = { assetErrors: 0, preloadErrors: 0, reloaded: false };
     loads.push(load);
     const keep = () => window.sessionStorage.setItem(key, JSON.stringify(loads));
     keep();
@@ -175,11 +179,12 @@ export async function recordFailureHandling(
           return record !== undefined && record.assetErrors > 0 && record.preloadErrors > 0;
         },
         {
+          ...PROBE,
           message: `both judges of a chunk failure judged one in load ${load} of the tab`,
         }
       )
       .toBe(true);
-    return loads;
+    return loads.map((one) => one.reloaded);
   };
 }
 
@@ -280,6 +285,7 @@ function shellLoad(page: Page) {
     // where they are read.
     await expect
       .poll(() => lazyComponentsRendered(page, chunks), {
+        ...PROBE,
         message: "the margin and the reference-preview layer rendered",
       })
       .toBe(true);

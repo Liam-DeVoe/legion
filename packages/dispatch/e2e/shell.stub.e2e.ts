@@ -222,7 +222,7 @@ test("a chunk the shell only prefetched reloads nothing when it fails @pr", asyn
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const judged = await recordFailureHandling(page);
+  const reloadsOnceJudged = await recordFailureHandling(page);
   const load = await shellLoads(page);
   const failed = await failAssetWhen(page, /\/assets\/SearchPalette-[^/]+\.js$/u, () =>
     load().settled()
@@ -233,7 +233,7 @@ test("a chunk the shell only prefetched reloads nothing when it fails @pr", asyn
   await expect.poll(failed).toBeGreaterThan(0);
   // Both judges have seen the failure - the inline script its preload link's `error` event, the
   // bundle its import's - and a reload either began would have begun inside that event.
-  expect((await judged(1)).map((one) => one.reloaded)).toEqual([false]);
+  expect(await reloadsOnceJudged(1)).toEqual([false]);
   expect(counts).toEqual({ documents: 1, entryRequests: 1 });
   expect(await tabReloads(page)).toBeNull();
 });
@@ -249,7 +249,7 @@ test("a module preload that fails for a chunk the shell only prefetched is left 
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const judged = await recordFailureHandling(page);
+  const reloadsOnceJudged = await recordFailureHandling(page);
   const load = await shellLoads(page);
   const failed = await failAssetWhen(page, /\/assets\/ShortcutHelp-[^/]+\.js$/u, () =>
     load().settled()
@@ -261,7 +261,7 @@ test("a module preload that fails for a chunk the shell only prefetched is left 
   // Both judges have seen the failure - the inline script the link's own `error` event, the
   // bundle the bar's import that failed with it - and a reload either began would have begun
   // inside that event.
-  expect((await judged(1)).map((one) => one.reloaded)).toEqual([false]);
+  expect(await reloadsOnceJudged(1)).toEqual([false]);
   expect(counts).toEqual({ documents: 1, entryRequests: 1 });
   expect(await tabReloads(page)).toBeNull();
 });
@@ -278,7 +278,7 @@ test("a route chunk nothing prefetched reloads for its failure while another chu
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const judged = await recordFailureHandling(page);
+  const reloadsOnceJudged = await recordFailureHandling(page);
   const load = await shellLoads(page);
   await holdAsset(page, /\/assets\/inbox-chunk-[^/]+\.js$/u);
   await failAssetWhen(page, /\/assets\/BroadcastsPage-[^/]+\.js$/u, async () => {
@@ -291,7 +291,7 @@ test("a route chunk nothing prefetched reloads for its failure while another chu
   // The fourth load's failure has passed both judges with the tab's three reloads spent, so a
   // fifth load would have begun inside it; each load before it began one. Read before the
   // boundary, which a fifth load would take off the page before it could be read.
-  expect((await judged(4)).map((one) => one.reloaded)).toEqual([true, true, true, false]);
+  expect(await reloadsOnceJudged(4)).toEqual([true, true, true, false]);
   await expect(page.getByTestId("error-boundary")).toContainText(
     "Failed to fetch dynamically imported module"
   );
@@ -308,7 +308,7 @@ test("a bar whose prefetch failed reloads for its chunk when the reader opens it
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const judged = await recordFailureHandling(page);
+  const reloadsOnceJudged = await recordFailureHandling(page);
   const load = await shellLoads(page);
   await holdAsset(page, /\/assets\/inbox-chunk-[^/]+\.js$/u);
   const failed = await failAssetWhen(page, /\/assets\/SearchPalette-[^/]+\.js$/u, async () => {
@@ -321,7 +321,7 @@ test("a bar whose prefetch failed reloads for its chunk when the reader opens it
   await expect.poll(failed).toBeGreaterThan(0);
   // Both judges have seen the prefetch's failure, and a reload either began would have begun
   // inside that event.
-  expect((await judged(1)).map((one) => one.reloaded)).toEqual([false]);
+  expect(await reloadsOnceJudged(1)).toEqual([false]);
   expect(counts.documents).toBe(1);
 
   await page.keyboard.press("ControlOrMeta+k");
