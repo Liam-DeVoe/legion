@@ -790,7 +790,7 @@ RULES = {
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:39,48,74 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
-         "internal/textcheck/claims_doc_test.go:125 reads the committed copy it holds the guide's list to (extractLines, called with it at :58 and :78)")),
+         "internal/textcheck/claims_doc_test.go:131 reads the committed copy it holds the guide's list to (extractLines, called with it at :58 and :78)")),
     f"{ENVOY}/internal/textcheck/environment_reads_test.go": [
         Read(path, "internal/textcheck/environment_reads_test.go:117 environmentReads walks it (:36), testdata and "
                    "node_modules passed over (:41-42), and :49 parses each .go file but the test files (:46)")

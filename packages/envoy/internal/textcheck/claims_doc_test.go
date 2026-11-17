@@ -51,7 +51,7 @@ func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 		// what this check exists to stop.
 		t.Fatalf("read docs/kubernetes.md: %v", err)
 	}
-	documented, err := claimListNames(doctext.VisibleMarkdown(string(doc)))
+	documented, err := guideClaimList(string(doc))
 	if err != nil {
 		t.Fatalf("docs/kubernetes.md %v", err)
 	}
@@ -81,9 +81,15 @@ func TestAClaimListInsideAnHTMLCommentIsNotTheGuidesList(t *testing.T) {
 		t.Fatalf("the guide with its claim list inside a comment, read raw, no longer matches the extract "+
 			"(%v, %v): this case no longer plants the fault it guards against", raw, err)
 	}
-	if seen, err := claimListNames(doctext.VisibleMarkdown(hidden)); err == nil && slices.Equal(seen, extracted) {
+	if seen, err := guideClaimList(hidden); err == nil && slices.Equal(seen, extracted) {
 		t.Fatalf("a claim list inside an HTML comment still reads as the guide's list: %v", seen)
 	}
+}
+
+// guideClaimList is the claim list of doc, the guide's text, read as its page shows it: the one
+// read both tests above make of the guide.
+func guideClaimList(doc string) ([]string, error) {
+	return claimListNames(doctext.VisibleMarkdown(doc))
 }
 
 // commentOutClaimList is doc with the claim list under claimsDocHeading wrapped in an HTML

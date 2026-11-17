@@ -174,9 +174,6 @@ func commentRanges(source []byte) [][2]int {
 	var hidden [][2]int
 	open := -1 // the source offset an open comment runs on from, or -1 when none is open
 	for _, p := range pieces {
-		if len(p.bytes) == 0 {
-			continue
-		}
 		from := 0
 		if open >= 0 {
 			end, closed := openCommentEnd(p.bytes)
@@ -213,10 +210,12 @@ func rawHTML(source []byte) []piece {
 				p.offsets = append(p.offsets, at)
 			}
 		}
+		if len(p.bytes) == 0 {
+			return
+		}
 		pieces = append(pieces, p)
 	}
 	root := markdown.Parser().Parse(text.NewReader(source))
-	// The walk returns no error of its own: the function below returns none.
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -242,7 +241,6 @@ func rawHTML(source []byte) []piece {
 				raw = append(raw, segment.Value(source)...)
 			}
 			if !cmarkGFMComment(raw) {
-				// GitHub writes it as text: it hides nothing and ends no open comment.
 				return ast.WalkContinue, nil
 			}
 			read(segments, false)
@@ -250,16 +248,9 @@ func rawHTML(source []byte) []piece {
 		return ast.WalkContinue, nil
 	})
 	slices.SortStableFunc(pieces, func(a, b piece) int {
-		return cmp.Compare(first(a.offsets), first(b.offsets))
+		return cmp.Compare(a.offsets[0], b.offsets[0])
 	})
 	return pieces
-}
-
-func first(offsets []int) int {
-	if len(offsets) == 0 {
-		return -1
-	}
-	return offsets[0]
 }
 
 // htmlComments are the source ranges of the comment and DOCTYPE tokens golang.org/x/net/html's
