@@ -143,8 +143,8 @@ func ReplaceDocumentCounted(
 // an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
 // edge.
 //
-// It settles what the source owes the re-index queue (settleOwed): this text has now been read
-// with the whole grammar, so a write this build makes costs the drain nothing and only an older
+// It settles what the source owes the re-index queues (settleOwed): this text has now been read
+// with the whole grammar, so a write this build makes costs the drains nothing and only an older
 // build's write stays owed.
 func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, error) {
 	kinds, ids := refTargets(found)
@@ -179,20 +179,27 @@ func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found 
 	return changed, nil
 }
 
-// settleOwed deletes the row one source owes the re-index queue (refs_grammar_owed), in the write's
-// own transaction, which holds that source's row: every write of the text was committed before
-// this transaction read it, so whatever enqueued_at the row holds, the text this write indexed is
-// the text the row is owed for. It is the queue's four source kinds that are settled this way -
-// artifact, ask, comment and message, which are the from_kind of every refs row too, so one delete
-// serves them all. The fifth kind, `scope`, names a document whose sources are owed a re-index,
-// not a source whose refs this writes, and only the scope drain settles it. A from_id that is no
-// uuid (a test's synthetic source) owes nothing, since the queue keys its id as one.
+// settleOwed deletes the rows one source owes the re-index queues - refs_grammar_owed and
+// refs_forms_owed - in the write's own transaction, which holds that source's row: every write of
+// the text was committed before this transaction read it, so whatever enqueued_at a row holds, the
+// text this write indexed is the text the row is owed for. It is the queues' four source kinds
+// that are settled this way - artifact, ask, comment and message, which are the from_kind of every
+// refs row too, so one statement serves them all. The fifth kind of the whole grammar's queue,
+// `scope`, names a document whose sources are owed a re-index, not a source whose refs this
+// writes, and only the scope drain settles it. A from_id that is no uuid (a test's synthetic
+// source) owes nothing, since the queues key their id as one.
+//
+// A build older than a queue's table settles nothing of it, so a text it indexes stays owed in
+// that table until a build that reads its grammar indexes it (RefsFormsOwed).
 func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string) error {
 	id, ok := canonicalUUID(fromID)
 	if !ok {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`, fromKind, id); err != nil {
+	if _, err := tx.Exec(ctx, `
+		with grammar as (delete from refs_grammar_owed where kind = $1 and id = $2::uuid)
+		delete from refs_forms_owed where kind = $1 and id = $2::uuid
+	`, fromKind, id); err != nil {
 		return fmt.Errorf("settle the index owed by %s %s: %w", fromKind, fromID, err)
 	}
 	return nil
