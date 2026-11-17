@@ -314,11 +314,17 @@ grep -qxF "census: project incomplete ask $ask: missing" "$work/census" ||
 pass "$section" "the census names ask $ask"
 
 # The backfill writes the ask's node again, so the database is left as complete as the run found
-# it, and a later census over it reads zeros with no backfill of its own.
+# it, and a later census over it reads no project finding with no backfill of its own. The census's
+# exit is not read: on a database with no role, page, person or block reference the store census
+# refuses those kinds for having no row to check, which says nothing of the projects.
 envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
   fail "$section" "backfill-graph-store writes the ask's node again" "$(tail -n 5 "$work/backfill")"
-envoy-dispatch census --store >"$work/census" 2>&1 ||
-  fail "$section" "the census after the backfill reads no finding" "$(grep -E '^census: (project|store REFUSED)' "$work/census" | head -n 8)"
-line="$(census_line ask)"
-[[ "$line" =~ missing=0\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads zeros again" "${line:-no line for ask}"
-pass "$section" "the backfill wrote the ask's node again and the census reads zeros: ${line#census: project }"
+envoy-dispatch census --store >"$work/census" 2>&1 || true
+! grep -q '^census: project incomplete' "$work/census" ||
+  fail "$section" "the census after the backfill names no incomplete row" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+for kind in issue artifact ask message comment block; do
+  line="$(census_line "$kind")"
+  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+    fail "$section" "the $kind census reads zeros again" "${line:-no line for $kind}"
+done
+pass "$section" "the backfill wrote the ask's node again and every project-owned kind reads zeros"
