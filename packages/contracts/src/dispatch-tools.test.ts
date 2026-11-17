@@ -438,22 +438,20 @@ describe("dispatchToolSpecs", () => {
     for (const project of [undefined, "", "AB", "K8S", "LEGION", "LEGSMOKE", "ABCDEFGHIJ"]) {
       expect(schema.safeParse({ query: "ok", project }).success).toBe(true);
     }
-    for (const project of [
-      "A",
-      "ABCDEFGHIJK",
-      "1ABC",
-      "legion",
-      " LEGION",
-      "LEGION\n",
-      "LEGION\nX",
-      "LEGION-1",
-      "中".repeat(100),
-    ]) {
-      const refused = schema.safeParse({ query: "ok", project });
-      expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
-        `project is not a project key: ${PROJECT_KEY_RULE}`,
-      ]);
-    }
+    expectNotAProjectKey(
+      schema,
+      [
+        "A",
+        "ABCDEFGHIJK",
+        "1ABC",
+        "legion",
+        " LEGION",
+        "LEGION\n",
+        "LEGION\nX",
+        "LEGION-1",
+        "中".repeat(100),
+      ].map((project) => ({ query: "ok", project }))
+    );
   });
 
   test("dispatch_project's description gives the project-key rule", () => {
