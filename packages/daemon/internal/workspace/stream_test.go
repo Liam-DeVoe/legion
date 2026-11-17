@@ -28,6 +28,20 @@ func (w *fakeWindows) window(time.Duration) <-chan time.Time {
 	return opened
 }
 
+// opened waits until the watch has opened its first window. The watch takes the count it measures
+// that window from before it asks for the window, so a stream that delivers before then delivers
+// bytes the window never counts: on a loaded runner the watch's goroutine starts after the first
+// read, and the first window judged a stream that had delivered a whole window's worth to have
+// delivered nothing.
+func (w *fakeWindows) opened(t *testing.T) {
+	t.Helper()
+	select {
+	case w.pending = <-w.asked:
+	case <-time.After(testTimeout):
+		t.Fatal("the low-speed watch opened no window")
+	}
+}
+
 // waiting is the window the watch waits on now, failing the test when it asked for none.
 func (w *fakeWindows) waiting(t *testing.T) chan time.Time {
 	t.Helper()
@@ -75,6 +89,7 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: bytes.NewReader(bytes.Repeat([]byte{'p'}, windows*chunk)), window: windowsOf.window}
 	go stream.watchStall(ctx, cancel)
+	windowsOf.opened(t)
 
 	buffer := make([]byte, chunk)
 	for window := range windows {
@@ -109,6 +124,7 @@ func TestTheCachesStreamEndsWhenItFallsBelowTheLowSpeedBound(t *testing.T) {
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: &stoppedSender{ctx: ctx, left: sent}, window: windowsOf.window}
 	go stream.watchStall(ctx, cancel)
+	windowsOf.opened(t)
 
 	if _, err := io.ReadFull(stream, make([]byte, sent)); err != nil {
 		t.Fatalf("the stream's first %d bytes: %v", sent, err)
