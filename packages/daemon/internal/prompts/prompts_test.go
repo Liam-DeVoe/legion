@@ -873,3 +873,105 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 		})
 	}
 }
+
+// An agent that wants a pod of its own for a task writes one line of a fixed form in its session,
+// and Legion starts no pod for it: the line is a wish that a later read of the stored sessions
+// counts. Legion's own part of every prompt gives the form, architect-common.md for an owner and
+// worker-common.md for the agent of a step, so each composition an issue's agents start with holds
+// the line whole, the form and the sentence that says Legion starts no pod for it. This shows the
+// text is loaded, never that an agent writes the line.
+func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const line = "If a task of this issue needs a pod of its own, write one line in your reply that starts with SEPARATE-POD, then the issue key, the task id and the reason: SEPARATE-POD <ISSUE> <task> <reason>. Legion starts no pod for this line, and the work goes on in this issue's pod."
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		isRoot bool
+	}{
+		{"root architect", claim.RoleArchitect, true},
+		{"sub-architect", claim.RoleArchitect, false},
+		{"planner", claim.RolePlanner, false},
+		{"implementer", claim.RoleImplementer, false},
+		{"tester", claim.RoleTester, false},
+		{"reviewer", claim.RoleReviewer, false},
+		{"merger", claim.RoleMerger, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
+			for _, phrase := range []string{"SEPARATE-POD <ISSUE> <task> <reason>", "Legion starts no pod for this line", line} {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+				}
+			}
+		})
+	}
+}
+
+// The owner of an issue picks which of Legion's step roles its one task runs. Its prompt therefore
+// lists each role with the type of its step, the owner's own acceptance step, the two operations
+// that give and stop a plan, the notices that a stopped task, a parent held before its retro and a
+// plan of an earlier owner send it, and the three sentences that say when a plan must be given and
+// how a plan replaces the default steps once the work started. Both architect compositions share
+// that part, so both are read. This shows the text is loaded, never that an owner follows it.
+func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		isRoot bool
+	}{{"root architect", true}, {"sub-architect", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, tc.isRoot))
+			for _, phrase := range []string{
+				"planner (planning)",
+				"implementer (implementation)",
+				"tester (testing)",
+				"reviewer (review)",
+				"acceptance:owner",
+				"register_plan",
+				"stop_task",
+				"task-stopped",
+				"retro-held",
+				"plan-not-taken",
+				"stop_task on the task default",
+				"before release_children",
+				"Give each issue its plan before its work starts. For the root, call register_plan before register_gate: the gate's opening starts the root's first step. For a child, call register_plan before release_children releases it: Legion keeps the plan and starts the child's first step from it.",
+				"An issue whose work started before you gave it a plan runs the task default, the project's default steps. To give it a plan, call stop_task on the task default, then register_plan with a version whose one task replaces it: Legion starts that task at its first step.",
+				"A task you stop stays held until you give a later version of the plan that changes it, and Legion then starts it at its first step. retry_or_escalate refuses that hold, and refuses an issue held before its retro for the issues beneath it.",
+			} {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+				}
+			}
+		})
+	}
+}
+
+// An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
+// task's `Steps:` line names rather than a tester's and a reviewer's cycles. A task with no review
+// step on a base whose rules require an approving review leaves a merge only a person or the owner
+// can unblock, and Legion posts no approval of its own, so the merger waits and tells the task's
+// owner which review is missing. This shows the text is loaded, never that a merger follows it.
+func TestTheMergerWaitsForAMissingReview(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
+	for _, phrase := range []string{
+		"Verify that each step your task's Steps line names completed, and that the retro completed.",
+		"If your task's Steps line names no reviewer step and the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that the task's steps have no review step. Only the owner or a person can give that review or change the plan.",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed merger prompt omits %q", phrase)
+		}
+	}
+	if retired := "Verify tester and reviewer cycles completed"; strings.Contains(text, retired) {
+		t.Errorf("the composed merger prompt still says %q", retired)
+	}
+}
