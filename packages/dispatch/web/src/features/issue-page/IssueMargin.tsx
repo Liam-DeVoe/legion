@@ -37,7 +37,7 @@ import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { BlockedByControl, IssueLine } from "./BlockedByControl";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
@@ -200,6 +200,10 @@ export function IssueMarginPanel({
     if (left === null || editingField !== null || !focusOnDocument()) return;
     (left === "parent" ? parentControl : routeControl).current?.focus();
   }, [editingField]);
+  // The failure of Details' last field save, which the route's row says when it is a route's,
+  // and the row's own control, which takes the focus of that line's Retry as the line goes.
+  const fieldFailure = useSaidFailure(writes.updateIssue);
+  const routeRetryLeft = useFocusHandOff(routeControl);
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // What Details reads beyond the issue - the titles of the issues around this one, and its
   // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
@@ -440,16 +444,20 @@ export function IssueMarginPanel({
               the issue closed), and the drafts send none of it again (`useIssueDrafts`). The save
               is Details' own write (the details slot's `useIssueHeaderWrites`), and inline, so
               the write store leaves its refusal to this row, and the header, which says the
-              page's other refusals, never sees it. The line is drawn only while that save stands
-              refused, never while it is out, and the drafts send nothing while one is out
-              (`useSubmitGuard`), so its Retry is never disabled and needs no hold of its own. */}
-          {writes.updateIssue.isError &&
-          writes.updateIssue.variables?.route !== undefined &&
+              page's other refusals, never sees it. The line stays while the save its Retry sent
+              again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
+              too; its Retry is never disabled, since the drafts send nothing while a save is out
+              (`useSubmitGuard`). Once the route lands the line goes, and the row's control takes
+              the focus Retry held (`useFocusHandOff`). */}
+          {fieldFailure !== null &&
+          fieldFailure.variables?.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
             <DetailsErrorLine
-              error={writes.updateIssue.error}
-              message={apiErrorMessage(writes.updateIssue.error, "Could not update this issue.")}
+              error={fieldFailure.error}
+              failure={fieldFailure.count}
+              message={apiErrorMessage(fieldFailure.error, "Could not update this issue.")}
               onRetry={isClosed ? undefined : writes.drafts.retry}
+              retryRef={routeRetryLeft}
             />
           ) : null}
         </Row>

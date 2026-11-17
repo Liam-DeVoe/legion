@@ -2422,6 +2422,94 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
   }
 });
 
+// The refusal's line was drawn only while the route's save stood refused, so a press of its Retry
+// took the line, and the Retry with it, away while the save it sent again was out: the focus of a
+// reader who pressed Retry by keyboard went to the page's body, and stayed there when Dispatch
+// refused the route again and the line came back. The line stays, with its Retry holding the
+// focus, until the save is answered; a second refusal is drawn afresh with Dispatch's new reason;
+// and once the route lands and the line goes, the focus goes to the row's own control rather than
+// to the page.
+test("the refused route's Retry keeps the focus while the save is out and refused again, and hands it to the row's control once the route lands", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+  );
+  const { unmount } = renderDetails();
+  const stopBlurring = blurWhenDisabled();
+  const retryOfRoute = () =>
+    within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry });
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+    const refused = within(rowAt("route")).getByRole("alert");
+    const retry = retryOfRoute();
+    if (retry === null) throw new Error("the refused route offers no Retry");
+
+    const retried = Promise.withResolvers<Issue>();
+    patchIssue.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(
+      retryOfRoute(),
+      "the line and its Retry went while the route they sent again is out"
+    ).toBe(retry);
+    expect(
+      document.activeElement,
+      "Retry lost the focus while the route it sent again is out"
+    ).toBe(retry);
+    await user.keyboard("{Enter}");
+    expect(patchIssue, "a press of Retry while its save is out sent another").toHaveBeenCalledTimes(
+      2
+    );
+
+    const reason = "no session holds role:legion-controller-core";
+    await act(async () =>
+      retried.reject(new ApiError(400, { code: "ROUTE_INVALID", error: reason }))
+    );
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert")?.textContent,
+        "the row does not say why Dispatch refused the route again"
+      ).toBe(reason)
+    );
+    expect(
+      within(rowAt("route")).getByRole("alert"),
+      "the second refusal was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(refused);
+    expect(retryOfRoute(), "the line came back with another Retry").toBe(retry);
+    expect(
+      document.activeElement,
+      "Retry lost the focus when Dispatch refused the route again"
+    ).toBe(retry);
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert"),
+        "the refusal is still said after the route landed"
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      document.activeElement,
+      "the route landed, and the focus fell to the page rather than to the row's control"
+    ).toBe(within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` }));
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
 // A refused route stays the draft until the reader leaves the editor, which puts the saved route
 // back: the refusal is said while the draft still holds the route Dispatch refused, and not once
 // it no longer does, when its Retry would send nothing.
