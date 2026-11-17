@@ -25,6 +25,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
+import { withoutEllipsis } from "../../components/tooltips";
 import * as theme from "../../theme/classes";
 import {
   calloutWarningBg,
@@ -49,7 +50,7 @@ import { AssigneeControl } from "../issue/AssigneeControl";
 import { ClaimChip } from "../issue/ClaimChip";
 import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
@@ -1402,10 +1403,15 @@ const componentsWithPicker: Mount = {
     );
   },
   // The picker's name is `main`'s outside `NoTooltips` and begins with the words its trigger
-  // draws inside (`componentsControlName`; dispatch://INFRA-3935 R8, decision 114 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md), and either ends with the issue's key.
+  // draws inside, then B's joining word (`componentsControlName`; dispatch://INFRA-3935 R8,
+  // decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md), and either ends with the
+  // issue's key.
   settle: async (view) => {
-    await within(view.container).findByRole("button", { name: /\bcomponents of CORE-2$/u });
+    const names = [
+      "Edit components of CORE-2",
+      `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-2`,
+    ];
+    await within(view.container).findByRole("button", { name: (name) => names.includes(name) });
   },
 };
 
@@ -1422,7 +1428,11 @@ const componentPickerSaving: Mount = {
         onSave={() => undefined}
         saving
         selected={[]}
-        triggerAriaLabel="Saving components of CORE-1"
+        triggerAriaLabel={componentsControlName("CORE-1", {
+          components: { inherited_from: null, mode: "inherit" },
+          saving: true,
+          words: { ANSWER_LINES, CONTROL_LABELS },
+        })}
       >
         Set components
       </ComponentPicker>
@@ -2066,16 +2076,13 @@ const HOLDS_ITS_LINE = [
   "whitespace-pre",
 ];
 
-/** What lets a value break inside a word: `[overflow-wrap:anywhere]` and its equivalents. */
-const BREAKS_ANYWHERE = [
-  "[overflow-wrap:anywhere]",
-  "break-all",
-  "break-words",
-  "wrap-anywhere",
-  "wrap-break-word",
-];
+/** What lets a value break inside a word: `[overflow-wrap:anywhere]`, the one spelling the shared
+ *  controls use for it inside `NoTooltips`. Unlike `break-words` (`overflow-wrap: break-word`),
+ *  it also lets the value's min-content width shrink below its longest word. */
+const BREAKS_ANYWHERE = "[overflow-wrap:anywhere]";
 
-/** What keeps a value within its line's width. */
+/** What keeps a value within its line's width: `max-w-full`, or `min-w-0`, which a flex item
+ *  needs to shrink below its text. */
 const STAYS_IN_ITS_LINE = ["max-w-full", "min-w-0"];
 
 /**
@@ -2131,15 +2138,15 @@ function holdsItsLine(element: Element): string[] {
     : held;
 }
 
-/** Why `value` cannot wrap inside its row: it breaks nowhere inside a word, it has no bound on
- *  its width, or it, an element of its text inside it, or an element around it up to `root`
- *  holds its line or its width. */
+/** Why `value` cannot wrap inside its row: it does not break anywhere (`BREAKS_ANYWHERE`), it
+ *  has no bound on its width (`STAYS_IN_ITS_LINE`), or it, an element of its text inside it, or
+ *  an element around it up to `root` holds its line or its width (`HOLDS_ITS_LINE`). */
 function wrapOffences(mountName: string, value: Element, root: Element): string[] {
   const named = `${mountName}: ${described(value)}`;
   const offences: string[] = [];
   const own = classOf(value);
-  if (!own.some((token) => BREAKS_ANYWHERE.includes(token))) {
-    offences.push(`${named} breaks nowhere inside a word`);
+  if (!own.includes(BREAKS_ANYWHERE)) {
+    offences.push(`${named} does not break anywhere (${BREAKS_ANYWHERE})`);
   }
   if (!own.some((token) => STAYS_IN_ITS_LINE.includes(token))) {
     offences.push(`${named} carries neither max-w-full nor min-w-0`);
@@ -2939,18 +2946,26 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
     ]);
-    // The control of an issue with no label is named by the words it draws, then the issue's
-    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one that saves by the words it draws then, their
-    // ellipsis dropped, and here no key is given (R8, decision 114 of
-    // dispatch://INFRA-1196/artifact/part-decisions-md).
-    expect(
-      within(view.container)
-        .getAllByRole("button", { name: /labels?\b/iu })
-        .map((control) => [control.getAttribute("aria-label"), control.textContent])
-    ).toEqual([
-      [`${CONTROL_LABELS.add_label} to CORE-1`, CONTROL_LABELS.add_label],
-      ["Saving labels", ANSWER_LINES.saving_labels],
+    // The control of an issue with no label is named by the words it draws, then B's joining
+    // word and the issue's key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one that saves by the
+    // words it draws then, their ellipsis dropped, and here no key is given (R8, decision 114 of
+    // dispatch://INFRA-1196/artifact/part-decisions-md). Each name is built from B's words.
+    const named = [
+      `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`,
+      withoutEllipsis(ANSWER_LINES.saving_labels),
+    ].map((name) => within(view.container).getByRole("button", { name }));
+    expect(named.map((control) => control.textContent)).toEqual([
+      CONTROL_LABELS.add_label,
+      ANSWER_LINES.saving_labels,
     ]);
+    // Each name begins with the words its control draws, their ellipsis dropped.
+    for (const control of named) {
+      const drawn = withoutEllipsis((control.textContent ?? "").trim());
+      expect({
+        drawn,
+        nameBeginsWithWords: control.getAttribute("aria-label")?.startsWith(drawn),
+      }).toEqual({ drawn, nameBeginsWithWords: true });
+    }
   });
 
   await readDrawn(
@@ -3176,7 +3191,9 @@ test("inside NoTooltips the components picker's trigger draws in B's page colour
   const triggers = (view: RenderResult, surface: Surface) =>
     [
       "Edit components of CORE-1",
-      surface === "inside" ? "Set components of CORE-2" : "Edit components of CORE-2",
+      surface === "inside"
+        ? `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-2`
+        : "Edit components of CORE-2",
     ].map((name) => within(view.container).getByRole("button", { name }));
   const mainsColours = tokens(secondaryButtonCompact).filter(
     (token) => colourOf(splitToken(token).utility) !== undefined
@@ -3466,9 +3483,15 @@ test("inside NoTooltips every value a shared control draws can wrap", async () =
 test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHECKS", () => {
   const unregistered: string[] = [];
   const unread: string[] = [];
+  const empty: string[] = [];
   for (const path of ON_PAGE_FILES) {
     const file = parsedSource(path);
     const pairs = onPagePairs(file);
+    const table = tableEntries("ON_PAGE", file, 0);
+    // A file whose table or whose reads of it the walk does not find under the name `ON_PAGE`
+    // yields no pair to check, and would pass with nothing read.
+    if (table.size === 0) empty.push(`${path}: no ON_PAGE table`);
+    if (pairs.length === 0) empty.push(`${path}: no element reads an ON_PAGE entry`);
     for (const { entries, ground, line, state, text } of pairs) {
       if (registeredAsText(text, ground)) continue;
       unregistered.push(
@@ -3478,11 +3501,12 @@ test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHE
     // Each entry that draws a text colour is read by an element the walk found, so no pair of
     // the table goes unread.
     const drawn = new Set(pairs.flatMap((pair) => pair.entries));
-    for (const [entry, strings] of tableEntries("ON_PAGE", file, 0)) {
+    for (const [entry, strings] of table) {
       const draws = strings.some((className) => (pageLook(className)?.text.size ?? 0) > 0);
       if (draws && !drawn.has(entry)) unread.push(`${path}: ON_PAGE.${entry}`);
     }
   }
+  expect(empty).toEqual([]);
   expect(unread).toEqual([]);
   expect([...new Set(unregistered)]).toEqual([]);
 });

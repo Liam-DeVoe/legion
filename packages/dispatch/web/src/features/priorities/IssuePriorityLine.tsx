@@ -169,10 +169,12 @@ export function IssuePriorityLine({
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
   // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details (R4) and in the
-  // header alike: a priority's title and a refusal's reason are values, which keep `max-w-full`
-  // and break rather than push the line past its row (dispatch://INFRA-3935 R4 and R6, decision
-  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as
-  // on `main`.
+  // header alike: a priority's title and a refusal's reason are values, which break anywhere and
+  // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
+  // after it, the reason with `max-w-full` - rather than push the line past its row
+  // (dispatch://INFRA-3935 R4 and R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as on
+  // `main`.
   const wraps = page !== null;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
@@ -202,7 +204,7 @@ export function IssuePriorityLine({
             {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
                 widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${wraps ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              className={`dispatch-inline-link ${wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}
@@ -306,7 +308,11 @@ export function IssuePriorityLine({
           // words its name begins with, because that panel raises no tooltip that could say it
           // instead (dispatch://INFRA-1196 R19).
           aria-label={addPriorityControlName(issue.key)}
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink`}`}
+          // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
+          // are (`badgeSelectPageRailWrapper`'s `md:min-h-7`, the labels' and the components'
+          // triggers' `sm:min-h-7`); below 1280 px `styles.css` gives each of them a 44 px floor
+          // all the same (dispatch://INFRA-3935 R4). Outside it the class is `main`'s (R1).
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
           disabled={busy}
           onClick={() => setAdding(true)}
           ref={addControl}

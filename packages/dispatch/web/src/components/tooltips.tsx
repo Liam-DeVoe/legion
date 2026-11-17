@@ -38,6 +38,8 @@ export interface PageWords {
     | "components_not_attached"
     | "components_retired"
     | "components_set"
+    | "control_name_of"
+    | "control_name_to"
     | "external_link_unsafe"
     | "github_checks"
     | "no_repository"
@@ -66,9 +68,12 @@ export interface PageWords {
 
 /** A word of the page's list as a control's accessible name says it: a name is said rather than
  *  read, so the ellipsis that shows a write under way ("Saving labels…") is no word of it, and
- *  one `…`, or three dots, at the end goes ("Saving labels"). The shared controls name a busy
- *  control by the words it draws this way (`labelsControlName`, `componentsControlName`;
- *  dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+ *  one `…`, or three dots, at the end goes ("Saving labels"). Inside `NoTooltips` the shared
+ *  controls name a busy control by the words it draws this way, then `CONTROL_LABELS`'
+ *  `control_name_of` and the issue's key: `labelsControlName` and `componentsControlName`, each
+ *  given the control's state inside `NoTooltips`, whether a save is in flight among it, or `null`
+ *  outside it for `main`'s name (dispatch://INFRA-3935 R8, decision 114 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md). */
 export function withoutEllipsis(words: string): string {
   return words.replace(/\s*(?:…|\.{3})$/u, "");
 }
