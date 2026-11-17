@@ -53,8 +53,11 @@ func Masked(err error, text string) error {
 // Masked, File, Error, Cause or Named made. Those hold another server's answer, or one whose text
 // they have already withheld, and keep it reachable so errors.As still classifies the failure; a
 // printer that took that answer's words for the broker's would print the very text they withheld.
-// A printer of the broker's own refusals - its code and its error_description, which print whole
-// (trustedAnswer) - reads the answer through this function, never through errors.As.
+// A printer of the broker's own refusals outside this package, such as the helper's
+// oauthBrokerError, reads the answer through this function, never through errors.As. Error and
+// Cause, whose trusted answers print whole (trustedAnswer), keep the same rule by another road:
+// printable checks nothing under an error those makers returned, so no answer beneath one is ever
+// the broker's to them.
 func BrokerAnswer(err error) (*oauth2.RetrieveError, bool) {
 	switch e := err.(type) {
 	case nil, *classified, *called:

@@ -388,6 +388,10 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // beside an address that is not clean, and are empty beside a clean one. requestReach.settle
 // reads its status, so a 4xx refusal is reported as one and not as an unknown outcome. It reads
 // the broker's own answer (redact.BrokerAnswer), never errors.As: Class and Masked hold others'.
+// The redactor printed the answer whole exactly when its Cause, which is what it prints of the
+// failure without a call's operation and URL, is the answer's own text. That holds under a
+// caller's %w too, whose words it drops while it still prints the answer, which is why this asks
+// the text and not whether Error answered err itself.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
 	re, ok := redact.BrokerAnswer(err)
@@ -401,7 +405,7 @@ func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	if code, message, ok := strings.Cut(re.ErrorDescription, ": "); ok && re.ErrorCode == "invalid_request" {
 		be.Code, be.Message = code, message
 	}
-	if shown != err {
+	if addr.Cause(err).Error() != re.Error() {
 		if be.Status == 0 {
 			return shown
 		}
