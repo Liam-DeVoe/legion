@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -70,7 +71,9 @@ import (
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these and
 // is applied last: it is now the last word of outbox_kind_check, and it names every kind the
-// merge-queue list names and its own.
+// merge-queue list names, the two reach notice kinds of the unreachable claims' 20261116082000
+// and its own. That list of 20261116082000 names the role-holders publication too, so a database
+// that recorded 20261116165926 before it keeps its pending publications when it applies it.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -78,7 +81,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116165926,
+	20261114061900, 20261116012459, 20261116082000, 20261116092312, 20261116164153, 20261116165926,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -88,7 +91,8 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the role-holders
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the unreachable claims'
+// 20261116012459, 20261116082000, 20261116092312 and 20261116164153, and the role-holders
 // publication's 20261116165926, which is why the loop below holds the list rather than counting
 // it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
@@ -207,4 +211,102 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if merged != 0 {
 		t.Fatalf("merge-lane rows after the upgrade = %d, want 20261029120800 to have deleted every one", merged)
 	}
+}
+
+// migrationsMainLacks are the versions this branch adds that a database at main's newest
+// migration, the role-holders publication (20261116165926), has not recorded: the unreachable
+// claims' four, each of which stands below that version. Every embedded version above main's
+// newest has to be named here too, as thisBranchsMigrations does for the older main, so the test
+// below holds the list against the embedded set.
+var migrationsMainLacks = []int{20261116012459, 20261116082000, 20261116092312, 20261116164153}
+
+// mainsRoleHoldersKindCheck is the constraint main's own 20261116165926 wrote, which is what a
+// database at main's newest migration carries. The embedded copy of that migration is the merged
+// one, which names the two reach notice kinds as well, so main's own text is written here and put
+// back over the database the test below upgrades, as mainsKindCheck is for 20261110235320.
+const mainsRoleHoldersKindCheck = `alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in (
+  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
+  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
+  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
+  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish'))`
+
+// A daemon of this release is deployed over a database main migrated through its role-holders
+// publication (20261116165926), and that database's outbox can hold a role_holders_publish row
+// main's daemon queued: one per issue, queued at each ready and each end of a claim, and run again
+// on its backoff while Dispatch lacks the route. The upgrade applies the four versions of
+// migrationsMainLacks, each below main's newest, so on that database 20261116082000 rewrites
+// outbox_kind_check last, and its list has to name role_holders_publish: a list that leaves the
+// kind out is refused over the pending row (SQLSTATE 23514), which fails Migrate and leaves the
+// daemon unable to boot. The negative control is the list without the kind, which this branch
+// carried before it merged main's publication: with it the Migrate below fails.
+func TestADatabaseAtMainsRoleHoldersPublicationUpgradesWithItsPendingPublication(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	ours := map[int]bool{}
+	for _, version := range migrationsMainLacks {
+		ours[version] = true
+	}
+	embedded := map[int]bool{}
+	for _, migration := range all {
+		embedded[migration.Version] = true
+		if migration.Version > roleHoldersPublishVersion && !ours[migration.Version] {
+			t.Fatalf("%s is above main's newest version %d and migrationsMainLacks does not name it: add it, or this test upgrades a database no deployment has",
+				migration.Name, roleHoldersPublishVersion)
+		}
+		if ours[migration.Version] {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s as main's own run did: %v", migration.Name, err)
+		}
+	}
+	for _, version := range migrationsMainLacks {
+		if !embedded[version] {
+			t.Fatalf("migrationsMainLacks names %d, which is not embedded, so the upgrade would apply none of it", version)
+		}
+	}
+	if _, err := store.pool.Exec(ctx, mainsRoleHoldersKindCheck); err != nil {
+		t.Fatalf("put main's own kind constraint back: %v", err)
+	}
+
+	queue := func(kind, issue string) error {
+		_, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, $2, '{}', 0, now(), '')`, kind, issue)
+		return err
+	}
+	if err := queue("role_holders_publish", "LEGION-208"); err != nil {
+		t.Fatalf("queue the role-holders publication main's daemon writes: %v", err)
+	}
+	// The constraint put back is main's: it refuses the reach notices, which main's daemon never
+	// writes, so the database is the one a deployment running main has.
+	if err := queue("reach_notice", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing a reach_notice row on main's constraint = %v, want the kind constraint to refuse it", err)
+	}
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("upgrade the database at main's role-holders publication: %v", err)
+	}
+
+	var pending int
+	if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'role_holders_publish'`).Scan(&pending); err != nil {
+		t.Fatalf("count the role-holders publications the upgrade left: %v", err)
+	}
+	if pending != 1 {
+		t.Fatalf("role-holders publications after the upgrade = %d, want the pending one kept", pending)
+	}
+	for _, kind := range []string{"reach_notice", "reach_controller_notice"} {
+		if err := queue(kind, "LEGION-208"); err != nil {
+			t.Fatalf("queue a %s row after the upgrade: %v", kind, err)
+		}
+	}
+	if err := queue("role_holders_publish", "LEGION-209"); err != nil {
+		t.Fatalf("queue the role-holders publication of another issue after the upgrade: %v", err)
+	}
+	t.Logf("after the upgrade the outbox keeps the pending publication and takes reach_notice, reach_controller_notice and role_holders_publish")
 }

@@ -217,6 +217,9 @@ func populatedState(t *testing.T) State {
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
 	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// When LEGION-207's implementer's session last registered with Envoy, more than 20 minutes
+	// before the read, which its claim's unreachable mark counts from.
+	unreachableSince := time.Date(2026, 9, 22, 8, 51, 40, 0, time.UTC)
 	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
 	// started it and waits for no other (record.KeepsSlot), and LEGION-211's tree has not been
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
@@ -677,7 +680,12 @@ func populatedState(t *testing.T) State {
 				// tree would read an absent `holdReason` by, the suppression being the linger's.
 				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
+					// Its implementer's session has not registered with Envoy for more than 20
+					// minutes, so the daemon marks it unreachable with the moment the count ran
+					// from and the last registration it read, and the claim keeps its state (R5).
+					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working",
+						Unreachable: &UnreachableView{Since: unreachableSince, LastSeen: &unreachableSince}},
+						HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",

@@ -169,7 +169,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 		settled: make(chan struct{}),
 	}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger(), nil)
 
 	stop("ses_dead")
 
@@ -376,7 +376,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 		arrived: arrived,
 	}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger(), nil)
 
 	returned := make(chan struct{})
 	go func() {
@@ -399,7 +399,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(context.Background(), "", "", quietLogger()); stop != nil {
+	if stop := cleanSessionStop(context.Background(), "", "", quietLogger(), nil); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
 }

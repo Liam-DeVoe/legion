@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 151,
-    "caller": 151
+    "daemon": 159,
+    "caller": 159
   },
   "admission": {
     "cap": 5,
@@ -76,7 +76,11 @@
           "claim": {
             "session": "ses_implementer_207",
             "state": "working",
-            "pluginContract": 0
+            "pluginContract": 0,
+            "unreachable": {
+              "since": "2026-09-22T08:51:40Z",
+              "lastSeen": "2026-09-22T08:51:40Z"
+            }
           },
           "handoffCommit": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
           "pass": 1,

@@ -17,9 +17,9 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - A direct Dispatch message that settles scope, priority or an owner is a directive: after you answer it, run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`), because the plan must record the rule.
 - Handle one wake per turn, then end the turn. Never poll or wait for an event, because the daemon wakes you again (`tick` at least every `controller_wake_interval_seconds`).
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
-- Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
-- Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
-- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
+- Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for a session whose `last_seen` is 20 minutes old or less, take nothing from it, and never report it as gone, because it is working and keeps its claims. Past 20 minutes the daemon marks the claim that session holds as unreachable, and relaunching that claim on its same session is yours to decide ([Claims Envoy cannot reach](#claims-envoy-cannot-reach)).
+- Keep no notes between turns. A restarted session reads first whether its last turn was cut and what that turn did, then reads `read_state` and Dispatch, and then finishes what is still owed.
+- Reach the daemon only through the `legion` tool: `read_state`, `set_status` to `todo`, `backlog` or `icebox`, and `relaunch` for a claim Envoy cannot reach. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
 - Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
 - Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
@@ -79,6 +79,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
+| An unreachable claim's notice (`unreachable-claims`, `relaunch-ready`, `relaunch-guard-held`, `relaunch-not-back`, `unreachable-exit`, `envoy-no-live-session`, `worker-locked-out`) | [Claims Envoy cannot reach](#claims-envoy-cannot-reach), and `skill://legion-controller/references/wakes.md#claims-envoy-cannot-reach` |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
@@ -97,6 +98,19 @@ when the holder lets go. `dispatch read` each root in `admission.trees` whose `p
 `admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the
 claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
 
+## Claims Envoy cannot reach
+
+A claim is unreachable when the session that holds it last registered with Envoy more than 20 minutes ago.
+The daemon reads that list once a minute, `read_state` gives the claim an `unreachable` field with the time of that last registration, and the claim keeps the state it had, so every other rule reads it as before.
+Start no replacement for a session whose `last_seen` is 20 minutes old or less, because a loaded box stalls a session for up to 1,148 s and that session is working.
+
+Relaunch each claim the daemon's `unreachable-claims` notice names.
+`relaunch` stops that claim's process through its launcher and starts it again on the same session, which keeps its context, its workspace and the task it owes, so it is neither a fresh session nor a replacement of the session; the resumed session is told that its turn was cut.
+The daemon relaunches no workflow claim by itself, and its own controller claim is the one it relaunches (`skill://legion-controller/references/session.md`).
+
+Some of these claims are a person's work and not yours to retry, and the daemon names each of them in a notice of its own: ask the person with a `dispatch ask` on the report issue that names the claim, its issue and the refusal, since they can have the pod replaced or the old process ended on its node.
+Such a case stops nothing else: relaunch every other unreachable claim, the other claims of that same pod included, and relaunch again a claim the guard refused once the daemon's `relaunch-ready` notice says the guard would let it through.
+Which claims are a person's, what `relaunch` refuses and what each notice carries: `skill://legion-controller/references/wakes.md#claims-envoy-cannot-reach`.
 ## Issues handed to Legion
 
 The daemon works only issues carrying the Dispatch label `legion` (any case). Work reaches Legion

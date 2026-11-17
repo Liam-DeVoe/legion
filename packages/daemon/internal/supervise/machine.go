@@ -483,6 +483,17 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+	// Reach is the daemon's record of whether Envoy can reach this claim's session (R5): the mark
+	// of a claim out of reach and what the daemon has told and done about it. It is written by the
+	// store's PutClaimReach and read back with the claim, as Step is: no write a machine makes
+	// carries it, a launch's included, since a relaunch keeps the session the record speaks of. The
+	// one exception is the claim's last relaunch on its same session — its moment,
+	// Reach.LastRelaunch, and the generation its launch left the claim at,
+	// Reach.LastRelaunchGeneration — which only the relaunch sets (relaunchUnreachable) and which
+	// the machine's own write carries, the moment with its launch at the latest and the generation
+	// with the write after it, so that record is durable with the launch. The mark changes no
+	// state, so every rule that reads the state reads it as before.
+	Reach Reach
 }
 
 // EntryHandshake is the handshake between the daemon and a claim's worker over one phase entry:
@@ -840,6 +851,12 @@ type Deps struct {
 	// no hello's key (helloKey). It reads the pod token the shim's hello carried, so it does
 	// nothing without Secrets.
 	Registrar Registrar
+	// LockedOut is whether the worker stream is refusing the claim's current process because an
+	// older generation's connection is still bound (stream.Listener.LockedOut, R3): the
+	// registration deadline is held while it is, since the lock-out is not that process's fault
+	// (registrationDeadline). nil is a stream that reports none, and the deadline runs as it
+	// always has.
+	LockedOut func(claim.Token) bool
 	// Identity is the git identity a role's commits carry on issue: its App's bot, minted for the
 	// owner of the repository the issue works. A phase task hands it to the agent's working copy
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
@@ -1165,6 +1182,11 @@ type Machine struct {
 	// that arrived after the sweep read the claims is already in this machine's inbox, ahead of
 	// the backstop's own event, so a turn whose agent moved in that window is left alone.
 	steppedAt time.Time
+	// relaunchCause is the cause of the relaunch of a claim Envoy cannot reach while that
+	// relaunch's own launch lets the process go (relaunchUnreachable), and "" otherwise: the
+	// let-go records it whatever the process ended (recordEnd), since the relaunch records its own
+	// cause on the claim, where any other let-go that ended nothing worth telling records none.
+	relaunchCause string
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
@@ -1440,7 +1462,8 @@ type armed struct {
 // daemon read back at boot. A restored claim that was booting, or registered and not yet ready, is
 // watched again from now, and a restored delivery that may already have been sent is sent again
 // only after asking the agent — except the one a restored claim's open update round holds, which
-// no daemon has sent. ctx bounds the machine's own work — its timers and its sends.
+// no daemon has sent. ctx bounds the machine's own work — its timers and its sends — and its end
+// takes every timer the machine holds with it (halt).
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -1457,6 +1480,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		stale:  map[string]bool{},
 	}
 	m.idle = sync.NewCond(&m.mu)
+	context.AfterFunc(ctx, m.halt)
 	switch c.State {
 	case StateLaunching, StateShimConnected:
 		m.armBoot()
@@ -1502,12 +1526,21 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
 // process to stop (holdSuspendUntilReady).
+//
+// A timer that fires once the machine's own context has ended decides nothing, and arms nothing
+// again (halt).
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	if _, suspending := ev.(RequestSuspend); suspending {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	if timer, fired := ev.(Timer); fired && m.ctx.Err() != nil {
+		m.log.Info("supervise: a timer fired after the machine's context ended; it decides nothing",
+			"timer", string(timer.Kind))
+		m.disarmAll()
+		return nil
+	}
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
@@ -1978,8 +2011,8 @@ func (m *Machine) stoppingProcess() func() {
 // three. The sections that defer it are Handle, which every event and every timer of this package
 // comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold, PodUpdateAsked), StartedBy,
 // ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
-// compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
-// added later has to keep, rather than this list of the sections there are now.
+// halt, compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a
+// section added later has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()
@@ -2132,6 +2165,11 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 			m.dropStale("StreamHello", "process", fmt.Sprint(ev.Generation), "none")
 			return false, nil
 		}
+	case StreamClosed:
+		if ev.Generation != 0 && ev.Generation != m.claim.Generation {
+			m.dropStale("StreamClosed", "generation", fmt.Sprint(ev.Generation), fmt.Sprint(m.claim.Generation))
+			return false, nil
+		}
 	case StreamTurnStart:
 		if ev.DeliveryID != "" && (pending == nil || pending.ID != ev.DeliveryID) {
 			m.dropStale("StreamTurnStart", "delivery", ev.DeliveryID, pendingID(pending))
@@ -2143,9 +2181,13 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 		// still outstanding is the one exception: the wait for its turn took the task back under a
 		// new id, or a later send's busy answer did, and the turn the prompt ran is the task's all
 		// the same, since a session's next turn after an admission is that prompt's
-		// (Machine.outstanding).
+		// (Machine.outstanding). A result that ran no turn, or whose turn ended in a provider error,
+		// still takes back what that delivery's confirmation told (untellUnread).
 		if pending == nil || (pending.ID != ev.DeliveryID && !m.outstandingPrompt(ev.DeliveryID)) {
 			m.dropStale("StreamPromptResult", "delivery", ev.DeliveryID, pendingID(pending))
+			if !ev.AgentInvoked || ev.Error != "" {
+				return false, m.untellUnread(ctx, ev.DeliveryID)
+			}
 			return false, nil
 		}
 	case StreamLateRefusal:
@@ -2153,17 +2195,21 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 		// pending id, or a prompt of the pending task still outstanding, does when its connection
 		// sent that prompt, or when it takes back a task a turn not its own confirmed
 		// (takesBackConfirmed): a replayed refusal answers an earlier send, and the pending id may be
-		// the one its connection re-sent.
+		// the one its connection re-sent. One naming a delivery the claim no longer holds still
+		// takes back what that delivery's confirmation told (untellUnread).
 		named := pending != nil && pending.MarkedBy == ev.DeliveryID
 		pendingNamed := pending != nil && (pending.ID == ev.DeliveryID || m.outstandingPrompt(ev.DeliveryID)) && !ev.Replayed
 		if pending == nil || !(named || pendingNamed || m.takesBackConfirmed(ev)) {
 			m.dropStale("StreamLateRefusal", "delivery", ev.DeliveryID, pendingID(pending))
+			if ev.DeliveryID != pendingID(pending) && !m.outstandingPrompt(ev.DeliveryID) {
+				return false, m.untellUnread(ctx, ev.DeliveryID)
+			}
 			return false, nil
 		}
 	case PromptAcked:
-		return m.fenceOutcome(ctx, "PromptAcked", ev.Generation, ev.DeliveryID)
+		return m.fenceOutcome(ctx, "PromptAcked", ev.Generation, ev.DeliveryID, false)
 	case PromptRefused:
-		return m.fenceOutcome(ctx, "PromptRefused", ev.Generation, ev.DeliveryID)
+		return m.fenceOutcome(ctx, "PromptRefused", ev.Generation, ev.DeliveryID, true)
 	case Timer:
 		a, ok := m.timers[ev.Kind]
 		if !ok || a.seq != ev.Seq || ev.Generation != m.claim.Generation || a.deliveryID != ev.DeliveryID ||
@@ -2226,7 +2272,11 @@ func timesADelivery(kind TimerKind) bool {
 // acknowledgement adds no prompt to the ones the task waits on a result for (Machine.outstanding),
 // and the same answer recorded the claim working (recordBusyTurn), so nothing goes from here into
 // the turn it named: the task waits for that turn's end.
-func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
+//
+// failed is whether the outcome is the send's failure (PromptRefused). The failure of the
+// machine's own send of a delivery the claim no longer holds takes back what that delivery's
+// confirmation told (untellUnread) before anything is sent.
+func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string, failed bool) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
 	if own {
 		m.send = nil
@@ -2236,7 +2286,11 @@ func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uin
 	}
 	if own {
 		m.helloDuringSend = false
-		return false, m.sendPending(ctx)
+		var untold error
+		if failed {
+			untold = m.untellUnread(ctx, deliveryID)
+		}
+		return false, errors.Join(untold, m.sendPending(ctx))
 	}
 	if generation != m.claim.Generation {
 		m.dropStale(event, "generation", fmt.Sprint(generation), fmt.Sprint(m.claim.Generation))
@@ -3299,6 +3353,26 @@ func (m *Machine) disarmAll() {
 	}
 }
 
+// halt disarms every timer the machine holds, at the end of its context: the daemon's stop, which
+// cancels the context of every machine once it has fed them their last event (the daemon's halt).
+// Nothing the machine times may decide anything after that. A decision made on that context fails,
+// and a failed decision can arm its own retry: on the rig the registration deadline of a claim met
+// mid-launch probed its process, failed its lifecycle recheck on the ended context, and armed
+// itself again at the probe interval, for as long as the process lived after the daemon had
+// stopped, and that machine charged a death to a process the next boot's own relaunch had
+// replaced. context.AfterFunc runs halt on a goroutine of its own, and the lock waits out the
+// decision in flight, so what that decision arms goes too.
+//
+// A timer armed after halt has run still fires, and decides nothing (Handle). Two decisions can
+// arm one then: one an API route asked for, which runs on the drain's context rather than the
+// machine's (the daemon's endDrain), and the outcome of a send still in flight, which the stop
+// waits for (Wait).
+func (m *Machine) halt() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.disarmAll()
+}
+
 // forgetSend drops everything the machine knew about talking to the agent it had: a new process,
 // or none, has no memory of the old one's prompts.
 func (m *Machine) forgetSend() {
@@ -3610,6 +3684,8 @@ func claimOf(ev Event) claim.Token {
 	case RequestTurnOutcome:
 		return ev.Claim
 	case RequestCompact:
+		return ev.Claim
+	case RequestRelaunch:
 		return ev.Claim
 	case CompactEnded:
 		return ev.Claim

@@ -158,50 +158,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return fail("ensure its sandbox", err)
 	}
 	pod := r.storedPod(s.Name)
-	_, initExit := failedInit(pod)
-	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
-	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
+	live := notLive(s, pod) == ""
 	installing := l.spec.Plugins != nil
 	migrate := supersededDisk(s, l)
-	covered := roundCovers(l.kind)
-	// A live pod no round covers is this launch's to replace for every kind of drift: every facet
-	// of the pod itself but the account comes through movedInPod, the account is read here as
-	// accountDrifted, and the shape its template was built from is read here too, unless this
-	// launch is installing a stale-plugin pair into it (roundCovers, shapeDrift).
-	//
-	// A pod running as a ServiceAccount other than the configured one is this launch's to
-	// replace only where no round covers that pod (accountDrift, roundCovers), and then whatever
-	// the launch is installing: no round will ever come for such a pod, the account is fixed for
-	// the pod's life, and until the pod is created afresh its agents go on holding the identity
-	// the old account grants. A pod a round covers is kept for the account as for its other
-	// drift, and that round, which has every worker in it push its work first, is what replaces
-	// it.
-	replace := !live || (accountDrifted && !covered) || migrate ||
-		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
-	if !replace {
-		bound, err := r.launcherBound(bounded, s, pod, &l)
-		if err != nil {
-			return fail("read its pod's launcher bindings", err)
-		}
-		replace = !bound
+	why, err := r.replacement(bounded, s, pod, &l)
+	if err != nil {
+		return fail("read its pod's launcher bindings", err)
 	}
-	if !replace {
-		// The pod is kept, so this role is started as that pod was built rather than as the
-		// configuration now reads (keptBy): a drifted pod the update round has not replaced yet
-		// carries neither an enrollment nor an overlay the configuration gained after it was
-		// created, and a start naming either would refuse to run, never register, and so never
-		// answer the round that is to replace it (INFRA-484). Where the stored template says
-		// nothing the daemon can read, it cannot tell what the pod carries, and the launch
-		// replaces the pod where it stands, which is what every launch into a drifted pod did
-		// before the round existed.
-		kept, readable := r.keptBy(s, l)
-		if !readable {
-			replace = true
-		} else {
-			l.kept = &kept
-		}
-	}
+	replace := why != ""
 	if installing && replace {
 		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
 		// installed into it.
@@ -297,6 +261,89 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	r.nameSession(loc, l)
 	r.join(loc)
 	return loc, nil
+}
+
+// notLive is why the Sandbox read as s runs no live pod, its stored pod being pod — the Sandbox
+// Suspended, no pod of its own, its pod ended, or an init container of it failed — and "" where
+// it runs one. Only a live pod has a role running in it that replacing the pod ends, so only a
+// live pod's replacement names it on the Sandbox (suspendDisplacing).
+func notLive(s *sandbox, pod *corev1.Pod) string {
+	failed, initExit := failedInit(pod)
+	switch {
+	case s.mode() == modeSuspended:
+		return "its Sandbox is suspended"
+	case !ownedBy(pod, s.UID):
+		return "its Sandbox holds no pod"
+	case terminal(pod):
+		return fmt.Sprintf("its pod %s has ended (%s)", pod.UID, pod.Status.Phase)
+	case initExit != nil:
+		return fmt.Sprintf("its pod %s's init container %s exited %d", pod.UID, failed, initExit.ExitCode)
+	}
+	return ""
+}
+
+// replacement is why a launch of l into the Sandbox read as s, whose stored pod is pod, replaces
+// that pod rather than starting l's role in it, and "" where it keeps it: relaunch's one decision,
+// which a relaunch of a claim on its same session also asks before it stops anything
+// (RelaunchRefusal), so the check and the launch never disagree about a pod. Where it keeps the
+// pod it records on l what the pod was built with (keptBy, l.kept) and the default owner its
+// launchers' Secrets record (launcherBound, l.gitHubDefault). The launcher Secrets are read only
+// once nothing the stores hold has answered, since each is an API request; an error is such a read
+// that failed, which proves nothing about the pod.
+//
+// A live pod no round covers is the launch's to replace for every kind of drift: every facet of
+// the pod itself but the account comes through movedInPod, the account is read here, and the shape
+// its template was built from is read here too, unless the launch is installing a stale-plugin
+// pair into it (roundCovers, shapeDrift).
+//
+// A pod running as a ServiceAccount other than the configured one is the launch's to replace only
+// where no round covers that pod (accountDrift, roundCovers), and then whatever the launch is
+// installing: no round will ever come for such a pod, the account is fixed for the pod's life, and
+// until the pod is created afresh its agents go on holding the identity the old account grants. A
+// pod a round covers is kept for the account as for its other drift, and that round, which has
+// every worker in it push its work first, is what replaces it.
+//
+// A pod kept has its role started as it was built rather than as the configuration now reads
+// (keptBy): a drifted pod the update round has not replaced yet carries neither an enrollment nor
+// an overlay the configuration gained after it was created, and a start naming either would refuse
+// to run, never register, and so never answer the round that is to replace it. Where the stored
+// template says nothing the daemon can read, it cannot tell what the pod carries, and the launch
+// replaces the pod where it stands, which is what every launch into a drifted pod did before the
+// round existed.
+func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (string, error) {
+	if why := notLive(s, pod); why != "" {
+		return why, nil
+	}
+	covered := roundCovers(l.kind)
+	if runs, drifted := accountDrift(pod, r.pod.ServiceAccount); drifted && !covered {
+		return fmt.Sprintf("its pod runs as ServiceAccount %s, now %s", runs, serviceAccountOr(r.pod.ServiceAccount)), nil
+	}
+	if supersededDisk(s, *l) {
+		return "its Sandbox owns the volume claim template of the release before the pod-owned disk", nil
+	}
+	for _, role := range l.roles {
+		if moved := r.movedInPod(pod, role); len(moved) > 0 {
+			return fmt.Sprintf("its pod holds, for %s, %s", role, describeMoved(moved)), nil
+		}
+	}
+	if l.spec.Plugins == nil && !covered {
+		if drifted := r.shapeDrift(s, l.shapeKey()); len(drifted) > 0 {
+			return "its pod was built from " + strings.Join(drifted, "; "), nil
+		}
+	}
+	bound, err := r.launcherBound(ctx, s, pod, l)
+	if err != nil {
+		return "", err
+	}
+	if !bound {
+		return "a launcher Secret of its roles does not bind its pod " + string(pod.UID), nil
+	}
+	kept, readable := r.keptBy(s, *l)
+	if !readable {
+		return "its stored pod template holds nothing this daemon can read for " + string(l.spec.Role), nil
+	}
+	l.kept = &kept
+	return "", nil
 }
 
 // keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in

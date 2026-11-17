@@ -256,7 +256,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
 	// restarted under a working claim reads the one the daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
-	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
+	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) && (cause != m.relaunchCause || cause == noEnd) {
 		return
 	}
 	ended.At = m.deps.Clock.Now()

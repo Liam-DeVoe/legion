@@ -8,7 +8,7 @@ import {
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   findHandoffReport,
   type JjRunner,
@@ -101,6 +101,7 @@ function recordingDaemon(options: {
     "issueStatus",
     "freshSession",
     "compact",
+    "relaunch",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -238,6 +239,21 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "Each refusal says what the claim does now and which operation reaches each state. It " +
   "names no moment to come back at: ask again later, and read the claim's state in " +
   "read_state. " +
+  "relaunch (claim) starts again, on the session it recorded, a claim that Envoy cannot reach, as the daemon starts " +
+  "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
+  "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
+  "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
+  "empty. The daemon refuses it, stopping nothing, for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
+  "between states (CLAIM_UNSETTLED), for the project's controller, which the daemon relaunches itself " +
+  "(CLAIM_IS_CONTROLLER), and for a claim whose worker stream showed a step in the last 20 minutes, which is in " +
+  "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
+  "wait, or whose last activity report since its launch is missing or shows a background job or a " +
+  "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
+  "it through. The refusals coded LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
+  "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +
+  "(the old process outlived its stop), POD_UNREACHABLE (every claim of a pod of two or more claims is " +
+  "unreachable) and RELAUNCHED_RECENTLY (the claim was relaunched in the last 6 hours) are cases for a person: " +
+  "ask one with a dispatch ask. " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
 
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,
@@ -295,6 +311,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "set_status",
         "fresh_session",
         "compact",
+        "relaunch",
       ],
     },
     issue: { type: "string" },
@@ -343,6 +360,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     role: {
       type: "string",
       enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
+    },
+    claim: {
+      type: "string",
+      description:
+        "relaunch's claim: the token of a claim Envoy cannot reach, as the daemon's notice of it names it",
     },
   },
   required: ["op"],
@@ -1817,6 +1839,167 @@ test("the controller reads the state without a grant and sets an issue's status 
   });
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});
+
+// R5: the controller relaunches a claim Envoy cannot reach on its same session. It names the claim
+// by its token, as the daemon's notice of the claim does, mints its grant as set_status does, and
+// hands on the daemon's answer; a refusal reaches it with the code it decides on, since five of
+// them are a person's case and the rest are not. A call that names no claim, or names it by issue
+// and role as the two other recoveries do, is refused before any grant, and no claim's session has
+// the operation.
+test("relaunch posts the claim's token under the controller's grant, and hands on the daemon's refusal", async () => {
+  const token = "legion-acme-acme-209-implementer";
+  const minted: string[] = [];
+  const { calls, daemon } = recordingDaemon({});
+  const run = (parameters: Record<string, unknown>) =>
+    controllerTool(daemon, minted).execute(
+      "",
+      parameters,
+      undefined,
+      undefined,
+      context("ses_controller")
+    );
+
+  await expect(run({ op: "relaunch", claim: token })).resolves.toEqual({
+    content: [{ type: "text", text: "{}" }],
+    details: {},
+  });
+  expect(minted).toEqual(["ses_controller"]);
+  expect(calls).toEqual([["relaunch", { grantId: "controller-grant-1", claim: token }]]);
+
+  const refusals = [
+    [{ op: "relaunch" }, "relaunch requires claim"],
+    [{ op: "relaunch", claim: " " }, "relaunch requires claim"],
+    [
+      { op: "relaunch", issue: "ACME-209", role: "implementer" },
+      'relaunch does not accept field "issue"; relaunch does not accept field "role"; it takes claim',
+    ],
+    [
+      { op: "fresh_session", issue: "ACME-209", role: "implementer", claim: token },
+      'fresh_session does not accept field "claim"; it takes issue, role',
+    ],
+  ] as const;
+  for (const [parameters, message] of refusals) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
+  expect(calls).toHaveLength(1);
+  expect(minted).toEqual(["ses_controller"]);
+
+  for (const session of [claimSession("architect"), claimSession("implementer")]) {
+    const result = await createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", { op: "relaunch", claim: token }, undefined, undefined, context());
+    expect(result.content).toEqual([
+      { type: "text", text: `relaunch is not available to a ${session.kind} session` },
+    ]);
+  }
+  expect(calls).toHaveLength(1);
+
+  const refused = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/relaunch",
+    409,
+    "LAUNCHER_NOT_CONNECTED",
+    "the role's launcher is not connected"
+  );
+  const refusing = recordingDaemon({ answers: { relaunch: refused } });
+  const answer = await controllerTool(refusing.daemon, []).execute(
+    "",
+    { op: "relaunch", claim: token },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  expect(answer.isError).toBe(true);
+  expect(answer.content).toEqual([
+    {
+      type: "text",
+      text: "POST /legion/v1/claims/relaunch failed with 409 LAUNCHER_NOT_CONNECTED: the role's launcher is not connected",
+    },
+  ]);
+});
+
+// R5: `read_state` shows a claim Envoy cannot reach as unreachable, with the time the daemon
+// found it so. The summary is what read_state answers with no field, so it carries the mark on
+// the claim's own line, with the token relaunch takes; and the controller's own mark, which
+// stands on no issue, on a line of its own. A reachable claim's line is as it was.
+test("read_state's summary marks each claim Envoy cannot reach, and the controller", async () => {
+  const claim = (session: string, unreachable?: Record<string, string>) => ({
+    session,
+    state: "working",
+    locator: {
+      runtime: "sandbox",
+      claim: `legion-acme-acme-209-${session}`,
+      incarnation: "uid-209/1",
+      sandbox: {
+        namespace: "legion",
+        name: "acme-209",
+        podUid: "uid-209",
+        container: "roles",
+        generation: 1,
+      },
+    },
+    pluginContract: 159,
+    lastTurnStart: "2026-11-12T15:45:39Z",
+    ...(unreachable === undefined ? {} : { unreachable }),
+  });
+  const state = legionState({
+    controllerLocator: {
+      runtime: "kubernetes",
+      external: true,
+      sessionId: "ses_controller",
+      registeredAt: "2026-11-12T10:00:00Z",
+      pluginContract: 159,
+      unreachable: { since: "2026-11-12T18:20:00Z", lastSeen: "2026-11-12T17:59:00Z" },
+    },
+    issues: {
+      "ACME-209": {
+        key: "ACME-209",
+        generation: 1,
+        phase: "implementing",
+        status: "in_progress",
+        repo: "acme/widgets",
+        defaultBranch: "main",
+        architect: claim("architect"),
+        workers: {
+          implementer: {
+            claim: claim("implementer", {
+              since: "2026-11-12T16:11:01Z",
+              lastSeen: "2026-11-12T15:51:01Z",
+            }),
+            pass: 1,
+            rounds: 0,
+          },
+        },
+      },
+    },
+  });
+  const { daemon } = recordingDaemon({ state });
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  const lines = (block !== undefined && block.type === "text" ? block.text : "").split("\n");
+
+  expect(lines).toContain("controller unreachable 2026-11-12T18:20:00Z");
+  expect(lines).toContain("  architect working 2026-11-12T15:45:39Z -");
+  expect(lines).toContain(
+    "  implementer working 2026-11-12T15:45:39Z - unreachable 2026-11-12T16:11:01Z claim legion-acme-acme-209-implementer"
+  );
 });
 
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {

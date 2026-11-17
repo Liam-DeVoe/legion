@@ -2109,4 +2109,40 @@ package api
 // #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
-const DaemonAPIVersion = 151
+//
+// 159: a claim Envoy cannot reach, and its relaunch on its same session.
+// Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
+// locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
+// last registration with Envoy is more than 20 minutes old, counted from the latest of that
+// registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
+// read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
+// the key is absent while it is reachable, and absent from every view the route serves a caller
+// below 159 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
+// knows no such key. The `legion` tool's controller gains `relaunch`, which posts
+// `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
+// token as the notices name it) and is answered `api.RelaunchResponse`, `{}`, or a refusal coded
+// CLAIM_REACHABLE, CLAIM_UNSETTLED, CLAIM_IS_CONTROLLER, RELAUNCH_GUARD, RELAUNCHED_RECENTLY,
+// POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED, RELAUNCH_REPLACES_POD or PROCESS_OUTLIVED_STOP;
+// `packages/contracts/src/legion-claim-recovery.ts` mirrors both shapes. The controller's plugin
+// starts to post `POST /legion/v1/claims/activity` as a worker's does, under the registration a
+// daemon-launched controller holds, which the relaunch guard reads. Every plugin session, a
+// worker's and that controller's, posts the same report again every 5 minutes while a turn is
+// open, whatever it says, and the guard refuses a claim in a turn whose last report of that turn
+// is less than 20 minutes old; the body is the one it already posted, so a plugin before it sends
+// none of them and its claim is judged by the rules before it.
+// (This change took 157 at its forward merge over main's 146, read just before
+// 2026-11-17T10:29Z: of the remote branches committed to since 2026-11-10, the heads above 146
+// declare 147 to 156, among them two merge-queue groups at 151, so 157 was the lowest number no
+// head declared at that reading. It took 159 at the forward merge of 2026-11-17 that brought main
+// in at f3dc51da8bcd, which landed cybermonklabs/legion#4106 at 151, the entry right above and the
+// number the base then carried. A reading of `const DaemonAPIVersion` at each of the 1,292 remote
+// branches committed to since 2026-11-10, made between 2026-11-17T16:05:31Z and 16:07:13Z, gave
+// above the base's 151: 152, 153 and 154 at one head each, 155 at twelve, 156 at seven, 157 at
+// four heads of other changes and 158 at one; one head, a branch of images, holds no daemon. The
+// 13 open pull requests whose heads stood on no such branch, read by 16:10:08Z, declared 155 or
+// below. A second reading of the 1,294 such branches between 16:33:02Z and 16:40:03Z gave the
+// same but for 158, then at two heads, and the 9 open pull requests on no such branch, read by
+// 16:40:20Z, declared 151 or below. So 157 was no longer free, and this change took 159, the
+// lowest number above every head's. That is a reading and never the rule: read the base's own
+// number and every open pull request again at the next merge, as the solution named above says.)
+const DaemonAPIVersion = 159

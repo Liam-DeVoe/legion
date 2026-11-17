@@ -2,13 +2,15 @@ import { z } from "zod";
 import { LEGION_ROLES } from "./legion-roles";
 
 /**
- * The two claim recoveries the controller asks for, `fresh_session` and `compact`: the body they
- * share, and the answer each gives through the controller's door and the operator's alike.
+ * The claim recoveries the controller asks for: `fresh_session` and `compact`, the body they
+ * share and the answer each gives through the controller's door and the operator's alike, and
+ * `relaunch`, the controller's alone, of a claim Envoy cannot reach (R5).
  *
- * Go owns all three shapes, `packages/daemon/internal/api/freshsession.go` (`ClaimRequest`,
- * `FreshSessionResponse`) and `compact.go` (`CompactResponse`), and the fixtures pin them as they
- * pin the rest of the API (`legion-api.test.ts`). Importers read them through
- * `@legion/contracts/legion-api`, which re-exports all three; this module has no export entry of
+ * Go owns every shape, `packages/daemon/internal/api/freshsession.go` (`ClaimRequest`,
+ * `FreshSessionResponse`), `compact.go` (`CompactResponse`) and the relaunch route's
+ * `RelaunchRequest` and `RelaunchResponse` in `packages/daemon/internal/api`, and the fixtures pin
+ * them as they pin the rest of the API (`legion-api.test.ts`). Importers read them through
+ * `@legion/contracts/legion-api`, which re-exports them all; this module has no export entry of
  * its own (`package.json`).
  */
 
@@ -98,3 +100,30 @@ export const LegionCompactResponse = z.object({
   compacted: z.boolean(),
   reason: z.string().optional(),
 });
+
+/** `api.RelaunchRequest`, the controller's `relaunch` of a claim Envoy cannot reach: the claim
+ * named by its token, as `legion claims list` and the daemon's notices of an unreachable claim
+ * name it (their `claim` field), under the caller's controller grant. The daemon starts that
+ * claim's process again on the session the claim recorded, as it does after a death, and
+ * charges it nothing; the resumed session reads what its cut turn did.
+ *
+ * The daemon refuses with nothing stopped a claim it can reach (`CLAIM_REACHABLE`), one between
+ * states (`CLAIM_UNSETTLED`), the project's own controller, which the daemon relaunches itself
+ * (`CLAIM_IS_CONTROLLER`), one whose worker stream showed a step in the last 20 minutes, which
+ * is in a turn whose session sent an activity report in that turn in the last 20 minutes, whose
+ * open call is not a `wait`, or whose last activity report since its launch is missing or shows
+ * background work (`RELAUNCH_GUARD`), one it relaunched in the last 6 hours
+ * (`RELAUNCHED_RECENTLY`), one whose pod holds two or more claims none of which is reachable
+ * (`POD_UNREACHABLE`), one whose launcher is not connected (`LAUNCHER_NOT_CONNECTED`), and one
+ * whose launch would replace the pod and end every other role in it (`RELAUNCH_REPLACES_POD`);
+ * it refuses with nothing more done a claim whose process outlived its stop
+ * (`PROCESS_OUTLIVED_STOP`). Every refusal but the first three and the guard's is a case for a
+ * person. A token that names no claim the daemon holds is `NO_CLAIM`. */
+export const LegionRelaunchRequest = z.strictObject({
+  grantId: nonEmptyString,
+  claim: nonEmptyString,
+});
+
+/** `api.RelaunchResponse`, the answer to a relaunch that ran: empty, since what the relaunch did
+ * is the claim's to show, in `read_state`, once its new process registers. */
+export const LegionRelaunchResponse = z.object({});

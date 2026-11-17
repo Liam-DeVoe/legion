@@ -305,8 +305,14 @@ export interface PhaseOpRuntime {
    * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * record's head is not that pushed commit. `signal` is the `handoff_complete` attempt's, which
+   * stops the read's jj and ends its Dispatch request once that attempt is given up on
+   * (`HandoffReportInput.signal`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    signal?: AbortSignal
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
    * throw leaves the head out of the signal, which is still sent, and the throw's message goes
@@ -321,17 +327,23 @@ export interface PhaseOpRuntime {
 }
 
 /** A grant for one write of the claim's session, minted on `/grants`' session form with the
- * claim's secret: every write of the `legion` tool posts a fresh one with its request. */
+ * claim's secret: every write of the `legion` tool posts a fresh one with its request. `signal`
+ * is the attempt's, for a write that waits out a daemon restart (`retryWhileDaemonRestarts`), so
+ * an attempt given up on mints nothing. */
 export async function mintClaimGrant(
   daemon: LegionDaemonClient,
-  claim: ClaimCapability
+  claim: ClaimCapability,
+  signal?: AbortSignal
 ): Promise<string> {
-  const { grantId } = await daemon.grant({
-    sessionId: claim.sessionID,
-    secret: claim.secret,
-    tree: claim.tree,
-    issue: claim.issue,
-  });
+  const { grantId } = await daemon.grant(
+    {
+      sessionId: claim.sessionID,
+      secret: claim.secret,
+      tree: claim.tree,
+      issue: claim.issue,
+    },
+    signal === undefined ? undefined : { signal }
+  );
   return grantId;
 }
 
@@ -414,10 +426,12 @@ export async function executePhaseOp(
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
       // attempt from a refused one (the daemon records both under the completion's key), so its
-      // refusal is passed on, marked as possibly following an applied attempt.
+      // refusal is passed on, marked as possibly following an applied attempt. Each attempt's
+      // requests carry its own signal, so an attempt given up on reads, mints and posts nothing
+      // more, whatever its open request answers later.
       return retryWhileDaemonRestarts(
         "handoff_complete",
-        () => completeHandoff(runtime, args),
+        (attempt) => completeHandoff(runtime, args, attempt),
         runtime.restart
       );
     }
@@ -603,12 +617,16 @@ async function releaseRecords(
   };
 }
 
-/** One attempt of `handoff_complete` (`executePhaseOp`'s doc comment). */
+/** One attempt of `handoff_complete` (`executePhaseOp`'s doc comment). `attempt` is the
+ * attempt's own signal, which each of its steps carries: the state read, the report read in the
+ * pane (its jj and its Dispatch request), the grant mint and the post. */
 async function completeHandoff(
   runtime: PhaseOpRuntime,
-  args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
+  args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>,
+  attempt: AbortSignal
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
+  const request = { signal: attempt };
   // The record is read before anything is minted: it says what this call has to carry. An issue
   // no role works (`done`) has no handoff for anyone to write, so no record or commit is looked
   // up, and the call carries what a check report carries; it is posted all the same where the
@@ -623,7 +641,7 @@ async function completeHandoff(
   // path.
   // The report's own refusals apply while the record shows the check it is of: the state carries
   // that object only while the check is open. A refusal here posts nothing and mints nothing.
-  const record = recordFrom(await daemon.state(), claim.issue);
+  const record = recordFrom(await daemon.state(request), claim.issue);
   if (record.phase === "done") {
     const check = record.check;
     if (check !== undefined) {
@@ -658,12 +676,15 @@ async function completeHandoff(
         );
       }
     }
-    return daemon.handoffComplete({
-      grantId: await mintClaimGrant(daemon, claim),
-      summary: args.summary,
-      verdict: args.verdict ?? "",
-      ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
-    });
+    return daemon.handoffComplete(
+      {
+        grantId: await mintClaimGrant(daemon, claim, attempt),
+        summary: args.summary,
+        verdict: args.verdict ?? "",
+        ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
+      },
+      request
+    );
   }
   if (args.verdict === "pending") {
     throw new Error(
@@ -679,11 +700,14 @@ async function completeHandoff(
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
   // record's, the role the claim's.
-  const report = await runtime.handoffReport(record.phase, claim.role);
-  return daemon.handoffComplete({
-    grantId: await mintClaimGrant(daemon, claim),
-    summary: args.summary,
-    verdict: args.verdict ?? "",
-    ...report,
-  });
+  const report = await runtime.handoffReport(record.phase, claim.role, attempt);
+  return daemon.handoffComplete(
+    {
+      grantId: await mintClaimGrant(daemon, claim, attempt),
+      summary: args.summary,
+      verdict: args.verdict ?? "",
+      ...report,
+    },
+    request
+  );
 }

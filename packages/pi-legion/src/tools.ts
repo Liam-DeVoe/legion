@@ -68,7 +68,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact"],
+  controller: ["read_state", "set_status", "fresh_session", "compact", "relaunch"],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -84,6 +84,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
+  relaunch: ["claim"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -101,10 +102,12 @@ type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
 const SUMMARY_LEGEND =
   "legion state summary. Lines: project; admission cap; active/waiting/blocked; " +
+  "controller unreachable <since> while Envoy cannot reach the controller; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
-  "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
+  "<last turn start> <last turn end> [unreachable <since> claim <token>] lines, - for a value " +
+  "the daemon has none for. " +
   "read_state with issue, issues, phase or settings returns the full records it names.";
 
 /**
@@ -132,6 +135,10 @@ function stateSummary(state: LegionState): string {
   for (const blocked of admission.blocked) {
     lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy.join(" ")}`);
   }
+  // The daemon relaunches its own controller once in 6 hours; a mark still standing after that is
+  // a person's case, and the controller holds no issue line to carry it on.
+  const controllerMark = state.controllerLocator?.unreachable;
+  if (controllerMark !== undefined) lines.push(`controller unreachable ${controllerMark.since}`);
   for (const capability of state.capabilities) {
     // A row that is not `present` is one someone acts on, so it keeps the fact its check found
     // and the legion.yaml line that would record a decision; no filter answers for capabilities.
@@ -163,9 +170,15 @@ function stateSummary(state: LegionState): string {
     }
     for (const [role, claim] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
-      // it last did anything, and a dash is a turn the daemon recorded none of.
+      // it last did anything, and a dash is a turn the daemon recorded none of. A claim Envoy
+      // cannot reach carries when the daemon found it so and the token `relaunch` takes, which
+      // is its locator's, a dash where the claim records no process at this read.
+      const mark =
+        claim.unreachable === undefined
+          ? ""
+          : ` unreachable ${claim.unreachable.since} claim ${claim.locator?.claim ?? "-"}`;
       lines.push(
-        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${mark}`
       );
     }
   }
@@ -255,6 +268,14 @@ function toolSchema(pi: PiApi): unknown {
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    // A claim's token, which relaunch names its claim by: the daemon's notice of an unreachable
+    // claim names it so, where the two other recoveries take an issue and a role.
+    claim: z
+      .string()
+      .describe(
+        "relaunch's claim: the token of a claim Envoy cannot reach, as the daemon's notice of it names it"
+      )
+      .optional(),
   });
 }
 
@@ -312,8 +333,13 @@ export function createLegionTool(deps: {
    * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * is not pushed, or its record's head is not that pushed commit. `signal` is the
+   * `handoff_complete` attempt's, which stops the read once that attempt is given up on. */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    signal?: AbortSignal
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
@@ -321,8 +347,9 @@ export function createLegionTool(deps: {
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
    * when none matches, or when it names two documents. */
   readonly resolveDocument: (issue: string, reference: string) => Promise<string>;
-  /** The clock `handoff_complete` and `sign_off` wait out a daemon restart on; a test's own. */
-  readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep">;
+  /** The clock `handoff_complete`, `sign_off` and `register_gate` wait out a daemon restart on,
+   * and how one attempt's limit is timed; a test's own. */
+  readonly restartClock?: Pick<DaemonRestartRetry, "now" | "sleep" | "attemptLimit">;
 }): RegisteredTool {
   const {
     pi,
@@ -413,18 +440,36 @@ export function createLegionTool(deps: {
         "and for role controller. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
-        "read_state. ",
+        "read_state. " +
+        "relaunch (claim) starts again, on the session it recorded, a claim that Envoy cannot reach, as the daemon starts " +
+        "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
+        "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
+        "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
+        "empty. The daemon refuses it, stopping nothing, for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
+        "between states (CLAIM_UNSETTLED), for the project's controller, which the daemon relaunches itself " +
+        "(CLAIM_IS_CONTROLLER), and for a claim whose worker stream showed a step in the last 20 minutes, which is in " +
+        "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
+        "wait, or whose last activity report since its launch is missing or shows a background job or a " +
+        "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
+        "it through. The refusals coded LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
+        "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +
+        "(the old process outlived its stop), POD_UNREACHABLE (every claim of a pod of two or more claims is " +
+        "unreachable) and RELAUNCHED_RECENTLY (the claim was relaunched in the last 6 hours) are cases for a person: " +
+        "ask one with a dispatch ask. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
-    execute: async (_id, parameters, signal, onUpdate, context) => {
+    execute: async (toolCallId, parameters, signal, onUpdate, context) => {
       // The three writes the daemon applies at most once however often they arrive
-      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort.
-      // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
-      // RPC event stream; the model sees only the final result.
+      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort,
+      // which also ends the attempt in flight. The retry notice goes out once as a partial
+      // result, which Oh My Pi shows in its TUI and RPC event stream; the model sees only the
+      // final result. The call's time on the daemon, from its first request, is recorded under
+      // this call's id, so the stall watch takes it off this call's clock and no other's.
       const restart: DaemonRestartRetry = {
         ...restartClock,
         ...(signal === undefined ? {} : { signal }),
+        ...(toolCallId === "" ? {} : { toolCallId }),
         onRetrying: (message) => {
           if (typeof onUpdate === "function") {
             onUpdate({ content: [{ type: "text", text: message }], details: {} });
@@ -459,7 +504,15 @@ export function createLegionTool(deps: {
         const client = daemon();
         if (active.kind === "controller") {
           if (operation === "read_state") return readState(await client.state(), parameters);
-          // The controller's three writes: each validated whole before its grant is minted.
+          // The controller's four writes: each validated whole before its grant is minted.
+          if (operation === "relaunch") {
+            // Posted once, never through `retryWhileDaemonRestarts`: a relaunch whose answer was
+            // lost may have stopped and started the claim, and the daemon refuses a second one
+            // within 6 hours as a person's case, so a repeat would turn one relaunch into that.
+            const claim = requiredString(parameters, operation, "claim");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.relaunch({ grantId, claim }));
+          }
           const issue = requiredString(parameters, operation, "issue");
           if (operation === "fresh_session" || operation === "compact") {
             const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
@@ -519,17 +572,21 @@ export function createLegionTool(deps: {
             const step = named.data;
             // The fact is keyed by the gate's issue, generation, step, document, version and
             // Dispatch sequence; a repeat after the sequence moved is a re-registration the gate
-            // absorbs.
+            // absorbs. The grant and the registration carry the attempt's signal, so an attempt
+            // given up on registers nothing.
             await retryWhileDaemonRestarts(
               "register_gate",
-              async () =>
-                client.gateRegister({
-                  grantId: await mintClaimGrant(client, active),
-                  issue,
-                  artifactId,
-                  version,
-                  ...(step === undefined ? {} : { step }),
-                }),
+              async (attempt) =>
+                client.gateRegister(
+                  {
+                    grantId: await mintClaimGrant(client, active, attempt),
+                    issue,
+                    artifactId,
+                    version,
+                    ...(step === undefined ? {} : { step }),
+                  },
+                  { signal: attempt }
+                ),
               restart
             );
             return jsonSuccess({});
@@ -565,10 +622,16 @@ export function createLegionTool(deps: {
           }
           case "sign_off": {
             // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // The grant and the sign-off carry the attempt's signal, so an attempt given up on
+            // signs off nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              async (attempt) =>
+                client.signOff(
+                  { grantId: await mintClaimGrant(client, active, attempt), issue },
+                  { signal: attempt }
+                ),
               restart
             );
             return jsonSuccess({});

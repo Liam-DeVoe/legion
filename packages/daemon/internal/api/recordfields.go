@@ -146,6 +146,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "ActivityBackground", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityKinds", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "Reach", Column: ColumnAgents, Keys: []string{"unreachable"},
+		Reason: "the mark of a claim whose session Envoy has not heard from for 20 minutes, which keeps its state and is the case for the controller's relaunch (R5)"},
 	{Field: "LastTurnStart", Column: ColumnAgents, Keys: []string{"lastTurnStart"},
 		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
 	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},

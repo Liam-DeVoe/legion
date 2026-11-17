@@ -1973,7 +1973,8 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
+That migration writes the whole list, and its version stands above `20261114031356` and `20261116082000_reach_notice_kinds`, so it writes the list last on a database that applies them together, a fresh one among them.
+A database that recorded it before the release that reports claims out of reach applies that release's `20261116082000` last instead, and that list names `role_holders_publish` too ([Rolling back the release that reports claims out of reach](#rolling-back-the-release-that-reports-claims-out-of-reach)).
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
@@ -2015,6 +2016,32 @@ While no Dispatch release reads `issue_role_holders` to record a result, the rol
 After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+#### Rolling back the release that reports claims out of reach
+
+This release's four migrations add the daemon's record of which claims Envoy cannot reach, and of what it told and did about them.
+`20261116012459_claim_reach_and_prior_boot_tokens` adds the columns `claims.reach` and `claims.relaunched_at`, the table `claim_boot_tokens` and the trigger `claims_archive_boot_token`.
+`20261116082000_reach_notice_kinds` adds the outbox kinds `reach_notice` and `reach_controller_notice` to the outbox's kind check (`outbox_kind_check`).
+Its list names `role_holders_publish` too, and the list of `20261116165926_role_holders_publish` names both reach kinds, so the check admits every kind whichever of the two a database applies last: a database that recorded `20261116165926` before this release applies `20261116082000` last, over the role-holders publications its outbox holds.
+`20261116092312_reach_records_kept_with_their_acts` adds the columns `outbox.held_at` and `claims.relaunch_generation` and the table `reach_project_notices`.
+`20261116164153_outbox_copy_stored_for_its_session` adds the columns `outbox.stored_for` and `outbox.stored_generation`: the session the listener stored a role message's or hook prompt's publish for (a 504 `receipt_timeout` naming that holder), which reads it from its own consumer, so the row finishes with no new publish once a newer process of the claim says ready on that session.
+A rollback needs no SQL statement.
+
+- **The columns and the tables stay as they stand.**
+  An earlier release names none of `claims.reach`, `claims.relaunched_at`, `claims.relaunch_generation`, `outbox.held_at`, `outbox.stored_for`, `outbox.stored_generation`, `claim_boot_tokens` or `reach_project_notices` in any statement.
+  So its upserts and its outbox retries leave each column as it stands, it writes no row of either table, and a daemon rolled forward again reads all of it back.
+
+- **A rolled-back daemon's launches are archived too.**
+  The trigger `claims_archive_boot_token` keeps, in `claim_boot_tokens`, the boot token hash that a write of `claims.boot_token_hash` replaces, in the statement that replaces it, whatever binary makes that write.
+  So the launches the earlier release makes during the rollback are archived as this release's are, and at the roll forward the worker stream tells the shim of each of those launches to stop instead of reading its token as one no launch minted.
+
+- **The new notices wait for the roll forward.**
+  The eight notices this release adds wait in rows of kind `reach_notice` and `reach_controller_notice`, and an earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and the row holds back no other row.
+  At the roll forward each is delivered once; `scripts/e2e/rollback-notices.sh` is the proof.
+
+- **A held role message is not held by the earlier release.**
+  An earlier release reads no `held_at`: it publishes a role message or a hook prompt that this release held as soon as a session holds its role, and finishes it undelivered while no session does.
+  Nor does it read `stored_for`: it publishes such a row again under the same key, and the listener keeps answering 504 `receipt_timeout` for the copy the stream already holds, so the row runs on its backoff until the roll forward finishes it.
 
 #### Rolling back the release whose update round ends at its bound
 

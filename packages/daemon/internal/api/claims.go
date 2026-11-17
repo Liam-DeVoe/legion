@@ -41,6 +41,11 @@ type Supervisor interface {
 	// operator answer about one claim reads it here (operatorAnswer), as the listing of them all
 	// reads it with the claims. A claim the store no longer holds has the zero record.
 	Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error)
+	// Reach is one claim's reach record as the store holds it: the daemon's mark of a claim Envoy
+	// cannot reach, which the reach keeper writes through a narrow call of its own and never into
+	// a machine's claim, so every operator answer reads it here, as it reads the step. A claim the
+	// store no longer holds has the zero record.
+	Reach(ctx context.Context, token claim.Token) (supervise.Reach, error)
 }
 
 // register is the agent's first call: its pane's boot token, and the session it became. The token
@@ -358,8 +363,9 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 	return caller.ClaimToken, m, true
 }
 
-// activity is a live role's session reporting what it is doing, after each of its turns and
-// whenever the report's content changes (INFRA-945), so the idle rule can decide whether the
+// activity is a live role's session reporting what it is doing, after each of its turns, whenever
+// the report's content changes and, on Oh My Pi, every 5 minutes while a turn is open (R5's turn
+// heartbeat, which supervise.RelaunchGuard reads), so the idle rule can decide whether the
 // session's pod may be released. It decides nothing about the claim, so it posts no request to
 // the claim's machine: the report is written onto the claim's row alone
 // (store.Store.PutClaimActivity, reached through Options.ClaimActivity), where a machine's own

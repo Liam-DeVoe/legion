@@ -223,6 +223,71 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
   });
 });
 
+// An attempt the retry gave up on at its limit must mint nothing and post nothing afterwards,
+// even over a transport that does not end a request on the attempt's abort and hands its answer
+// on late: each step of the attempt reads the attempt's signal first, so the late state answer
+// goes no further. The next attempt is the one that completes.
+test("a handoff_complete attempt given up at its limit mints and posts nothing when its state read answers late, over a transport that ignores the abort", async () => {
+  const routes: string[] = [];
+  const lookups: string[] = [];
+  const asked = Promise.withResolvers<void>();
+  const late = Promise.withResolvers<Response>();
+  const answers: Record<string, Record<string, unknown>> = {
+    "/legion/v1/state": daemonFixture("state.json"),
+    "/legion/v1/grants": daemonFixture("grant.json"),
+    "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+  };
+  // The first state read is answered only when the case says so, whatever its signal does.
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    routes.push(route);
+    if (routes.length === 1) {
+      asked.resolve();
+      return late.promise;
+    }
+    return Response.json(answers[route] ?? {});
+  }) as typeof fetch;
+  let attempts = 0;
+  const ops: PhaseOpRuntime = {
+    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    claim: implementer,
+    handoffReport: async (phase, role) => {
+      lookups.push(`${phase} ${role}`);
+      return REPORT;
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+    restart: {
+      now: () => 0,
+      sleep: async () => undefined,
+      // The first attempt's limit runs out once its state read is open.
+      attemptLimit: () => {
+        attempts += 1;
+        return attempts === 1 ? asked.promise : Promise.withResolvers<void>().promise;
+      },
+    },
+  };
+
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  late.resolve(Response.json(answers["/legion/v1/state"]));
+  // Everything the abandoned attempt would do next is in memory here (its answer, the lookup,
+  // the client), so one turn of the event loop is all it needs to send a request.
+  const turn = Promise.withResolvers<void>();
+  setImmediate(turn.resolve);
+  await turn.promise;
+
+  expect(routes).toEqual([
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(lookups).toEqual(["implementing implementer"]);
+});
+
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
 // refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
 // (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names

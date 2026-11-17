@@ -189,6 +189,44 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // not come before the roles are relaunched into the pod that replaced this one.
 var ErrPodGone = errors.New("the pod the locator records is not there")
 
+// The three reasons a relaunch of an unreachable claim refuses (R5), which a runtime answers
+// through InPlaceRelauncher and the daemon's `relaunch` names to its caller as a case for a person.
+// ErrLauncherNotConnected and ErrRelaunchReplacesPod are answered before anything is stopped: a
+// start through a launcher that does not connect waits out the launch bound and is charged, and a
+// launch that replaces the pod ends every other role running in it, so neither may follow a stop
+// the relaunch made. ErrProcessOutlivedStop is answered after the stop, which did not end the
+// process: starting the next one beside it would leave two processes writing one session.
+var (
+	ErrLauncherNotConnected = errors.New("the role's launcher is not connected")
+	ErrRelaunchReplacesPod  = errors.New("the launch would replace the pod, which ends every other role running in it")
+	ErrProcessOutlivedStop  = errors.New("the process outlived its stop")
+)
+
+// InPlaceRelauncher is a runtime whose processes share a place they are started into through a
+// launcher of their own — the Sandbox runtime's issue pod and the project controller's pod — so
+// a relaunch of one process can be refused before it stops anything, and its stop can be told from
+// a stop the process outlived (R5). A runtime whose processes share nothing (tmux) implements
+// nothing here: the relaunch stops the process with Suspend and refuses where that stop answers an
+// error.
+//
+// mayReplacePod is whether the relaunch may replace the process's pod, which only the daemon's
+// own relaunch of its controller may: no other role runs in that pod, so a launcher that is not
+// connected or a launch that needs a new pod is answered by replacing it rather than refused.
+type InPlaceRelauncher interface {
+	// RelaunchRefusal is why a relaunch of loc's process, started as its claim's next launch
+	// would start it, cannot stop it and start the next one through the same launcher in the
+	// same pod: ErrLauncherNotConnected or ErrRelaunchReplacesPod, wrapped with what the runtime
+	// read, and nil where it can. It stops, starts and writes nothing. Any other error is a
+	// runtime that could not be asked, which refuses the relaunch as surely and says so.
+	RelaunchRefusal(ctx context.Context, loc Locator, mayReplacePod bool) error
+	// StopForRelaunch stops loc's process for its relaunch: through its launcher, which answers
+	// once the process has ended, or, where mayReplacePod and the launcher is not connected, by
+	// ending its pod. ErrProcessOutlivedStop, wrapped with the launcher's or the cluster's own
+	// answer, is a stop that did not end the process in its grace; nothing more is done then,
+	// and the caller starts nothing.
+	StopForRelaunch(ctx context.Context, loc Locator, mayReplacePod bool) error
+}
+
 // IssuePodReader reads which pod an issue's Sandbox holds now, asked by the issue alone: the uid
 // of that pod, "" where the runtime holds no Sandbox of the issue or the Sandbox holds no pod, and
 // read false where the runtime cannot say at all. It exists beside PodDrift because it needs no

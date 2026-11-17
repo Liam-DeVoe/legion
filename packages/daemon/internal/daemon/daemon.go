@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -1288,6 +1289,11 @@ type supervision struct {
 	// the same claim carries the record its owner wants.
 	backstopMu   sync.Mutex
 	backstopOwed map[claim.Token]stallNoticeOwed
+	// reach is the daemon's reading of which claims Envoy cannot reach, and what it tells and does
+	// about them (R5): swept with the orphan sweep, asked by the `relaunch` route, and holding the
+	// one R6 writer the worker stream writes its lock-out line through as well, so one case opens
+	// one line. Never nil once openSupervision returns.
+	reach *reachKeeper
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1428,8 +1434,21 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
+	// One writer of R6's lines for the daemon: the worker stream's lock-out and the reach keeper's
+	// cases go through it, so one case writes one line.
+	alerts := fleetalert.New(log, cfg.Project)
+	// The lock-out's notice is the controller's, which the workflow's admission queues, and the
+	// workflow attaches after this listener is up; the report waits LockOutReportAfter after a
+	// first refused hello, by which time supervision is built (reportLockOut).
+	var reporting atomic.Pointer[supervision]
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log,
+			Alerts: alerts,
+			ReportLockOut: func(out stream.LockOut) {
+				if s := reporting.Load(); s != nil {
+					s.reportLockOut(out)
+				}
+			}})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1461,10 +1480,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
-		Identity:                adoptIdentity(p.identity, p.repository),
-		IssueInTurn:             sup.claimInTurn,
-		Secrets:                 p.secretsEnroller,
-		Registrar:               p.secretsRegistrar,
+		Identity:    adoptIdentity(p.identity, p.repository),
+		IssueInTurn: sup.claimInTurn,
+		Secrets:     p.secretsEnroller,
+		Registrar:   p.secretsRegistrar,
+		LockedOut: func(token claim.Token) bool {
+			_, locked := listener.LockedOut(token)
+			return locked
+		},
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -1474,9 +1497,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
-		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
-		Clock:                   p.clock,
-		Log:                     log,
+		// SessionGone is set once the reach keeper exists, below: the clean stop hands it the
+		// registration it deletes.
+		Clock: p.clock,
+		Log:   log,
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
@@ -1514,6 +1538,19 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// after their deps: the one callback whose receiver is supervision itself, set here before
 	// any machine exists, as the workflow sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	supervisionOf.reach = newReachKeeper(reachKeeperOptions{
+		log: log, project: cfg.Project, boot: p.clock.Now(), now: p.clock.Now,
+		daemonController: cfg.ControllerLaunch == config.ControllerLaunchDaemon,
+		list:             listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
+		put:              st.PutClaimReach,
+		alerts:           alerts,
+	})
+	supervisionOf.reach.relaunchController = supervisionOf.relaunchOwnController
+	supervisionOf.reach.step = st.ClaimStep
+	supervisionOf.reach.notices = st
+	supervisionOf.reach.lockedOut = listener.LockedOut
+	sup.deps.SessionGone = cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log, supervisionOf.reach.registrationRead)
+	reporting.Store(supervisionOf)
 	return supervisionOf, nil
 }
 
@@ -1549,22 +1586,25 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own at the
 // gone horizon. With no listener configured nothing is told.
-func cleanSessionStop(supervising context.Context, envoyURL, token string, log *slog.Logger) func(string) {
+func cleanSessionStop(supervising context.Context, envoyURL, token string, log *slog.Logger, seen func(string, time.Time)) func(string) {
 	if envoyURL == "" {
 		return nil
 	}
-	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
+	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log, seen: seen}
 	return func(session string) {
 		goneAt := time.Now()
 		go stop.send(supervising, session, goneAt)
 	}
 }
 
-// sessionStop is one role's clean stop in flight: the listener client it goes to, and the log
-// that says what became of it.
+// sessionStop is one role's clean stop in flight: the listener client it goes to, the log that
+// says what became of it, and seen, which is told the session's last registration the read
+// answered (reachKeeper.registrationRead), nil for none: the delete takes that registration out
+// of Envoy's list, which is otherwise the only place the daemon reads it from.
 type sessionStop struct {
 	sessions *notify.HTTPPublisher
 	log      *slog.Logger
+	seen     func(session string, lastSeen time.Time)
 }
 
 // send is the goroutine cleanSessionStop starts, with goneAt the moment the probe judged the
@@ -1601,6 +1641,11 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 	if !registration.Registered {
 		s.log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped", "session", session)
 		return
+	}
+	// The delete takes this registration out of Envoy's list, so its moment is handed on first: the
+	// 20 minutes before a claim is marked unreachable count from it (reachKeeper.registrationRead).
+	if s.seen != nil && registration.LastSeen > 0 {
+		s.seen(session, time.UnixMilli(registration.LastSeen))
 	}
 	stopped, err := s.sessions.DeleteSession(ctx, session, notify.DeleteConditions{
 		ClientInstanceID:   registration.ClientInstanceID,
@@ -2183,6 +2228,8 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
+		// Once a minute, as the requirement asks, over the claims this tick already read (R5).
+		s.reach.sweep(ctx, claims)
 	}
 }
 
@@ -2247,6 +2294,9 @@ func (s *supervision) stop() {
 		s.supervisor.stop()
 		s.supervisor.wait()
 		s.wg.Wait()
+		if s.reach != nil {
+			s.reach.wait()
+		}
 	})
 }
 
@@ -2382,6 +2432,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
+		Relaunch:           s.relaunch,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -2747,6 +2798,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		return api.State{}, nil, err
 	}
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
+	markControllerLocator(state.ControllerLocator, s.projectToken, claims)
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}

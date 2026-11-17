@@ -199,6 +199,11 @@ stamps.
   wait ran out, which takes a call into a process that does not answer; `deciding` names each claim
   whose decision was still running, with its event. The daemon stopped anyway, and the next boot
   takes those claims up.
+- **`supervise: a timer fired after the machine's context ended; it decides nothing`** at Info,
+  with the `timer`, is a claim's timer that a decision armed while the daemon stopped: a request an
+  API route decided during the drain, or the outcome of a send that was still in flight. The stop
+  disarms every timer of every claim, and a timer armed after that does nothing when it fires. The
+  next boot arms again what the claim's state needs. Nothing to do.
 
 ## The controller
 
@@ -1312,8 +1317,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
   or the process ended in a turn that confirmed the task before the prompt's result came (while
   its send was in flight or it waited on its result), since only that result says the turn was
-  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
-  do.
+  the prompt's. The same holds for a prompt that came to nothing after the claim stopped holding
+  its delivery (a newer task took the delivery's place, or the turn that confirmed it ended): its
+  send came back failed (a refusal, or no answer within `worker_rpc_timeout_seconds`), or Oh My Pi
+  answered it late with a refusal, a result that ran no turn, or a result of a turn that ended in
+  a provider error. The record is untold again, and the next prompt carries the sentence, or a
+  delivery of the daemon's own where the claim holds no task. Nothing to do.
 - **`supervise: the claim abandons its session, so the record of what the old session's process
   ended is not told to the fresh agent; the abandoned session's sentence says that work is
   gone`** at Info is a fresh session: the claim's first task names the session it left behind,

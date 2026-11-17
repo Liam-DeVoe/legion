@@ -1191,6 +1191,12 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	// The reach keeper's notices are the controller's and the architects', which only the workflow
+	// can write (R5).
+	if supervision.reach != nil {
+		supervision.reach.tell = w.tellControllerQueued
+		supervision.reach.enqueue = w.enqueueReachNotice
+	}
 	w.attachIdleRelease(supervision)
 }
 

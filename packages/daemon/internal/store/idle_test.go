@@ -542,6 +542,30 @@ func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 	}
 }
 
+// An architect's notice holds its issue's pod whichever kind it is queued as: the notice of a claim
+// out of reach is queued under a kind of its own, which the release before this change never runs
+// (record.OutboxKindReachNotice), and it speaks to the architect's session as every other notice
+// does, so a release must not stop the architect before it reads the row.
+func TestAnArchitectsNoticeOfAClaimOutOfReachWaitsForARoleOfThePod(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	if view := idleViewOf(t, st, rootIssue); view.Waiting {
+		t.Fatalf("view = %+v before any row is queued, want nothing waiting", view)
+	}
+	row, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.ClaimUnreachableNotice, Role: claim.RoleImplementer,
+		Claim: "legion-legion-legion-208-implementer", Reason: "its session has not registered with Envoy for 20 minutes"}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, row) }); err != nil {
+		t.Fatalf("queue the architect's %s row: %v", row.Kind, err)
+	}
+	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+		t.Fatalf("the view reads nothing waiting, though the architect's %s notice is queued as %s", record.ClaimUnreachableNotice, row.Kind)
+	}
+}
+
 // waitingOnTheSerializer is whether a backend of this test's database other than the reader waits
 // on an advisory lock: the shared serializer (treelifecycle.Serialize) is the only one the store
 // takes by that name outside a migration, so a waiter here is a transaction held at its head.

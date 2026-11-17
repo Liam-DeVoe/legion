@@ -94,7 +94,7 @@ func TestPromptReturnsATransportErrorWhenTheConnectionClosesFirst(t *testing.T) 
 		t.Fatalf("Prompt = %v, want ErrClosed", err)
 	}
 	// And after the close, at once, with nothing written.
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	if err := conn.Prompt(context.Background(), "delivery-2", "again"); !isClosed(err) {
@@ -323,7 +323,7 @@ func TestEventsCarryTheTurnInWireOrderAndNoAck(t *testing.T) {
 		ToolStep{Claim: testClaim, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: conn.Sequence()},
 		TurnEnd{Claim: testClaim},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	}
 	var got []Event
 	for range want {
@@ -351,7 +351,7 @@ func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.
 	if got := h.next(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %#v, want %#v", got, want)
 	}
-	if got := h.next(); got != (Closed{Claim: testClaim}) {
+	if got := h.next(); got != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event after the unmodelled frame = %#v, want the close: that frame is no event", got)
 	}
 	if rest := h.stop(); len(rest) != 0 {
@@ -369,7 +369,7 @@ func TestAWorkersExtensionErrorIsLogged(t *testing.T) {
 	p.expect(shimwire.TypeHelloAck)
 	p.send(shimwire.Raw{Type: "extension_error", JSON: json.RawMessage(`{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start","error":"LEGION_DAEMON_URL is required for Legion"}`)})
 	p.conn.Close()
-	for _, want := range []Event{Hello{Claim: testClaim, Generation: testGeneration}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{Hello{Claim: testClaim, Generation: testGeneration}, Closed{Claim: testClaim, Generation: testGeneration}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event = %#v, want %#v", got, want)
 		}
@@ -504,7 +504,7 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 	want := []Event{
 		TurnStart{Claim: testClaim},
 		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", ConnSequence: conn.Sequence()},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	}
 	var got []Event
 	for range want {
@@ -568,7 +568,7 @@ func TestARefusalForNoAcknowledgedPromptEmitsNothingAndLogsOnce(t *testing.T) {
 			p, id := test.drive(h, h.connect(testToken))
 			p.send(refusal(id))
 			p.conn.Close()
-			if event := h.next(); event != (Closed{Claim: testClaim}) {
+			if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 				t.Fatalf("event = %#v, want only Closed", event)
 			}
 			logs := h.logs.Lines()
@@ -593,7 +593,7 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	}
 	first := h.conn()
 	p.conn.Close()
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	replacement := h.connect(testToken)
@@ -602,7 +602,7 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	replacement.conn.Close()
 	want := []Event{
 		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Replayed: true, ConnSequence: replaced.Sequence()},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	}
 	var got []Event
 	for range want {
@@ -793,7 +793,7 @@ func TestShutdownWritesTheFrame(t *testing.T) {
 	}
 	p.expect(shimwire.TypeShutdown)
 	p.conn.Close()
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	if err := conn.Shutdown(context.Background()); !isClosed(err) {

@@ -78,7 +78,7 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 A session's state comes from the registry's record of it, never from its presence in a list, a process list, a tmux pane or a transcript's modification time. `envoy_sessions` and a lookup of one session carry each session's `state` and `last_seen`.
 
 - `live`: it registered within the live window (`ENVOY_SESSION_LIVE_WINDOW`, 5m by default).
-- `unresponsive`: it last registered longer ago than the live window but inside the gone horizon (`ENVOY_SESSION_GONE_HORIZON`, 1h by default). **It is not dead.** Start no replacement for it, take no role claim and no issue claim from it, and never report it as gone. A message you send it is stored and reaches it when it answers again.
+- `unresponsive`: it last registered longer ago than the live window but inside the gone horizon (`ENVOY_SESSION_GONE_HORIZON`, 1h by default). **It is not dead.** Start no replacement for it and take no role claim and no issue claim from it while its `last_seen` is 20 minutes old or less, and never report it as gone. A message you send it is stored and reaches it when it answers again. Past 20 minutes a Legion claim that session holds is unreachable, which its project's controller relaunches on that same session: the claim's process starts again, and nothing replaces the session (`skill://envoy/references/legion.md`).
 - `gone`: it last registered before the gone horizon, or the registry holds no record of it.
 - Take an issue claim from a session only when it reads `gone`, or its `last_seen` is more than 20 minutes old. A role claim is released only by the role-claim reaper, once the holder is `gone`: no lookup, publish or delivery failure releases one, in the listener or in Dispatch's outbox, which share that one resolution.
 - A send refused because the target is not live names the target's `state` and `last_seen`. Read those two fields before you decide anything about that session: a refusal on an `unresponsive` target means "it has not answered yet", not "it ended".
@@ -139,7 +139,7 @@ Every topic starts with `notifications.`.
   That holds when nobody claims the role, and when its holder is not `live`: the answer then also names the holder, its `holder_state` (`unresponsive` or `gone`) and its `last_seen`.
   The next session to hold the role live before `kept_until` is handed the message once, and that can be the same holder when it answers again.
   If no session takes it by then, Envoy drops it, and when your publish named your session, sends your session a message that names it, unless it dropped it more than an hour late.
-  An `unresponsive` holder is not dead, so start no replacement for it and take nothing from it.
+  An `unresponsive` holder is not dead, so start no replacement for it while its `last_seen` is 20 minutes old or less, and take nothing from it; where that holder is the session of a Legion claim and has not registered for more than 20 minutes, the claim is relaunched on that same session by its project's controller, which replaces no session.
   A forward the stream did not store for a live holder within about 4 seconds errs, and you see that error after about 8 seconds, because the client tries once more.
   Neither a kept answer nor an error releases the role's claim: a holder whose `holder_state` is `unresponsive` keeps its role.
   `envoy_role_get(role=...)` finds the holder first.

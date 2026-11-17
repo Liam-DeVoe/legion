@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -551,9 +552,24 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 	return r.retryAt(ctx, row, nextAt, cause)
 }
 
-// retryAt returns row to the outbox, due again at nextAt, with cause as its last error.
+// retryAt returns row to the outbox, due again at nextAt, with cause as its last error. A try that
+// held the row (errHeld) marks it held in the same transaction, so the hold is a fact of the row's
+// own record from then on (record.OutboxRow.HeldAt, holdEnded), whatever a later try fails of. A
+// try whose publish the listener stored for a session (storedCopy) records that session in the
+// same transaction (record.OutboxRow.StoredFor, storedForItsSession).
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if errors.Is(cause, errHeld) {
+			if err := r.records.HoldOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
+				return err
+			}
+		}
+		var stored storedCopy
+		if errors.As(cause, &stored) {
+			if err := r.records.StoreOutboxCopy(ctx, tx, row.ID, row.LeaseToken, stored.holder, stored.generation); err != nil {
+				return err
+			}
+		}
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
 	}); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", row.ID, err)
@@ -1500,17 +1516,38 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // delivery (record.RoleMessage). A role with no live holder is told nothing and the row is done:
 // the message reports a moment - a head's checks as they settled - that has passed by the time
 // anyone claims the role, and every recipient reads the pull request on GitHub for itself, so
-// waiting would retry forever for a message that is stale when it lands. A holder that refuses
+// waiting would retry forever for a message that is stale when it lands. The one exception is a
+// claim that still keeps the session it recorded (heldForItsSession): Envoy cannot reach that
+// session, and the controller may relaunch it onto the same session, which reads the message with
+// its time, so the row waits for it until its role is held again, the claim ends or its phase moves
+// on (R5), whichever comes first: a row a try held asks first whether the claim ended or the phase
+// moved on since, and publishes only once neither has (holdEnded). A holder that refuses
 // the message's delivery mode (notify.ErrRefusedByHolder), and the listener's own NATS grant
 // denying the forward (notify.ErrPublishDenied), end the row the same way, since both refuse
 // every attempt until a session or an operator changes them; a holder that did not confirm in
-// time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is. So is a
-// holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
-// the listener's live window but still holds the role, so the message is kept for it rather than
+// time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is, except
+// that a publish answered receipt_timeout was stored by the listener for the holder it names,
+// which reads it from its own consumer: once a newer process of the claim says ready on that
+// session, the row finishes with no new publish (storedForItsSession). So is a holder the
+// listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past the
+// listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392).
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
+	}
+	token := claim.Token(payload.Role)
+	moved := func(issue record.Issue) bool {
+		// The architect holds its role through every phase of its issue; a worker's message is
+		// of its own phase, and the phase moved on once its role works it no longer.
+		role := r.supervisedClaim(token).Role
+		return role != claim.RoleArchitect && phase.RoleFor(issue.Phase) != role
+	}
+	if ended, err := r.holdEnded(ctx, row, token, "role message", moved); err != nil || ended {
+		return err
+	}
+	if r.storedForItsSession(row, token, "role message") {
+		return nil
 	}
 	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
@@ -1524,6 +1561,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	var denied notify.ErrPublishDenied
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
+		if err := r.heldForItsSession(ctx, row, token, "role message", moved); err != nil {
+			return err
+		}
 		r.log.Info("outbox role message finished undelivered: its role has no live holder",
 			"row", row.ID, "issue", row.Issue, "role", payload.Role)
 		return nil
@@ -1537,7 +1577,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
+		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, r.storedAnswer(token, err))
 	}
 	return nil
 }
@@ -1601,13 +1641,21 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 // prompt nobody is there to read is worth nothing later either. An unheld topic is besides the
 // ordinary state for a role an issue has never had — the deployment's default hook writes a row
 // for the reviewer, and the work of an issue may never have reached one — and a role that never
-// claims its topic would hold the row for ever.
+// claims its topic would hold the row for ever. The one exception is a claim that still keeps the
+// session it recorded (heldForItsSession): the row waits for it until its role is held again, the
+// claim ends, or the issue leaves the phase the move back opened, the round the words were written
+// for (R5), whichever comes first: a row a try held asks first whether the claim ended or the issue
+// left that phase since, and publishes, or wakes a released pod for it, only once neither has
+// (holdEnded).
 //
 // The three answers of the confirmed publish route are different failures and keep the ordinary
 // retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take the prompt on the
 // next attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can
 // be replaced by another session on the role, and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied) goes through once an operator changes that grant.
+// (notify.ErrPublishDenied) goes through once an operator changes that grant. A publish answered
+// receipt_timeout was stored by the listener for the holder it names, as a role message's is, and
+// finishes with no new publish once a newer process of the claim says ready on that session
+// (storedForItsSession).
 func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload record.HookPrompt) error {
 	if r.notices == nil {
 		return errors.New("hook prompt executor has no Envoy publisher")
@@ -1615,6 +1663,13 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	token, err := roleToken(r.project, row, payload.Role)
 	if err != nil {
 		return err
+	}
+	moved := func(issue record.Issue) bool { return issue.Phase != payload.To }
+	if ended, err := r.holdEnded(ctx, row, token, "hook prompt", moved); err != nil || ended {
+		return err
+	}
+	if r.storedForItsSession(row, token, "hook prompt") {
+		return nil
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
@@ -1625,12 +1680,140 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	} else if woken {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
-		"outbox hook prompt finished undelivered: no live session holds the role",
-		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
-		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
+	err = r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue), payload.Message(row.Issue), record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		if held := r.heldForItsSession(ctx, row, token, "hook prompt", moved); held != nil {
+			return held
+		}
+		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role",
+			"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, r.storedAnswer(token, err))
 	}
 	return nil
+}
+
+// heldForItsSession is the wait that holds a role message or a hook prompt whose role Envoy has
+// no holder for, while the claim of that role still keeps the session it recorded
+// (keepsItsSession). The daemon still runs that claim, and the controller may relaunch it onto the
+// same session (R5), which reads the message with its time, so it is held until a session holds the
+// role again, the claim ends, or its phase moves on — moved, asked of the issue as its record
+// stands now. nil is a message to finish undelivered as before: no such claim, a claim that ended,
+// or a phase moved on. An issue the record cannot read is an error, and the row keeps its retry.
+//
+// The wait wraps errHeld, which the retry that returns the row to the outbox reads and marks the
+// row held by (retryAt), so its next tries know it was held (holdEnded).
+func (r *outbox) heldForItsSession(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool) error {
+	if r.supervisor == nil {
+		return nil
+	}
+	held := r.supervisedClaim(token)
+	if !keepsItsSession(held) {
+		return nil
+	}
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return fmt.Errorf("read %s to judge whether its %s for %s is held: %w", row.Issue, what, token, err)
+	}
+	if moved(issue) {
+		r.log.Info("outbox "+what+" held for a claim Envoy cannot reach is finished undelivered: its phase moved on",
+			"row", row.ID, "issue", row.Issue, "claim", token, "phase", issue.Phase)
+		return nil
+	}
+	return wait.Errorf("%s's %s for %s waits for a session to hold its role: the claim keeps its session %s while Envoy has no holder for it: %w",
+		row.Issue, what, token, held.Session, errHeld)
+}
+
+// errHeld is what the wait of a row held for a claim that keeps its session wraps
+// (heldForItsSession): the retry after that try marks the row held (retryAt).
+var errHeld = errors.New("the row is held for its claim")
+
+// storedCopy is a role message's or hook prompt's publish the listener answered 504
+// receipt_timeout naming holder: it stored the forward in the stream for that session, which reads
+// it from its own consumer whenever it runs again (notify.ReasonReceiptTimeout). generation is the
+// claim's process then. The retry after that try records both (retryAt, StoreOutboxCopy).
+type storedCopy struct {
+	holder     string
+	generation uint64
+	err        error
+}
+
+func (e storedCopy) Error() string { return e.err.Error() }
+func (e storedCopy) Unwrap() error { return e.err }
+
+// storedAnswer is err as a storedCopy where it is the listener's 504 receipt_timeout naming a
+// holder, and err as it is otherwise: a forward the stream did not store (delivery_failed), a
+// listener that did not answer, and every other failure name no stored copy.
+func (r *outbox) storedAnswer(token claim.Token, err error) error {
+	var notDelivered notify.ErrNotDelivered
+	if !errors.As(err, &notDelivered) || notDelivered.Reason != notify.ReasonReceiptTimeout || notDelivered.Holder == "" {
+		return err
+	}
+	var generation uint64
+	if r.supervisor != nil {
+		generation = r.supervisedClaim(token).Generation
+	}
+	return storedCopy{holder: notDelivered.Holder, generation: generation, err: err}
+}
+
+// storedForItsSession is whether a role message or hook prompt row that the listener stored for a
+// session (record.OutboxRow.StoredFor) is now that session's to read with no new publish: a newer
+// process of the claim than the one the copy was stored under says ready on that same session, so
+// the session holds its role again and reads the stored copy from its own consumer (R5). A publish
+// under the same key would be dropped by the stream as the copy it holds, and the listener would
+// answer receipt_timeout for ever. A row stored for no session, a claim on another session, and a
+// process that has not said ready since are published as before. A process of the same generation
+// that comes back is not told apart from one still away, so its row keeps the ordinary retry.
+func (r *outbox) storedForItsSession(row record.OutboxRow, token claim.Token, what string) bool {
+	if row.StoredFor == "" || r.supervisor == nil {
+		return false
+	}
+	held := r.supervisedClaim(token)
+	if held.Session != row.StoredFor || held.Generation <= row.StoredGeneration || !supervise.SaidReady(held.State) || !holdsRole(held) {
+		return false
+	}
+	r.log.Info("outbox "+what+" finished: the listener stored it for the session that holds its role again",
+		"row", row.ID, "issue", row.Issue, "claim", token, "session", held.Session,
+		"storedUnder", row.StoredGeneration, "generation", held.Generation)
+	return true
+}
+
+// holdEnded is whether a row a try held (record.OutboxRow.HeldAt) has had its hold ended since by
+// the claim's end or its phase moving on (moved), asked before the row's next publish: a hold ends
+// at the first of its three ends, so a holder that comes back after the claim ended or the phase
+// moved on is too late, and the row finishes undelivered rather than reach it. The mark is the
+// row's own record, which no later try clears, so a try between that failed for another reason —
+// a read the database did not answer — leaves the next try asking all the same. A row no try held
+// answers false and is published as before, whatever its phase. An issue the record cannot read
+// is an error, and the row keeps its retry and its mark.
+func (r *outbox) holdEnded(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool) (bool, error) {
+	if r.supervisor == nil || row.HeldAt.IsZero() {
+		return false, nil
+	}
+	if !keepsItsSession(r.supervisedClaim(token)) {
+		r.log.Info("outbox "+what+" held for a claim Envoy cannot reach is finished undelivered: its claim ended",
+			"row", row.ID, "issue", row.Issue, "claim", token)
+		return true, nil
+	}
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return false, fmt.Errorf("read %s to judge whether the hold over its %s for %s ended: %w", row.Issue, what, token, err)
+	}
+	if moved(issue) {
+		r.log.Info("outbox "+what+" held for a claim Envoy cannot reach is finished undelivered: its phase moved on",
+			"row", row.ID, "issue", row.Issue, "claim", token, "phase", issue.Phase)
+		return true, nil
+	}
+	return false, nil
+}
+
+// keepsItsSession is whether held, a claim's published view, still keeps the session it
+// recorded: it runs, or is launching, connected or registered on a relaunch, on that session
+// (runsOnSession), and has not been told to stop for good (holdsRole).
+func keepsItsSession(held supervise.ClaimView) bool {
+	return held.Session != "" && runsOnSession(held.State) && holdsRole(held)
 }
 
 // updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the

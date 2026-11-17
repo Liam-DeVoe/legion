@@ -448,3 +448,74 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
 	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, strings.TrimSpace(string(body)))
 }
+
+// ListedSession is one row of Envoy's session list as the daemon reads it (sessionInfo in
+// packages/envoy/cmd/listener/api.go): the session, the state its last registration puts it in —
+// `live`, or `unresponsive` for one past the listener's live window and not gone — and that
+// registration, read from `last_seen` in unix milliseconds. The row's other members are not read.
+type ListedSession struct {
+	Session  string
+	State    string
+	LastSeen time.Time
+}
+
+// StateLive is the state the listener names a session inside its live window by.
+const StateLive = "live"
+
+// Live is whether the listener names the session live.
+func (s ListedSession) Live() bool { return s.State == StateLive }
+
+// sessionListBodyLimit bounds the body ListSessions reads. Envoy's session list holds every
+// session of the fleet, about 1,100 in its cache (`session_cache_size` on its /healthz), each row
+// with its topics and roles, so a row is a few hundred bytes to a few KiB; 64 MiB is far past the
+// largest list the listener writes and still a body the daemon can refuse to grow without end.
+const sessionListBodyLimit = 64 << 20
+
+// ListSessions reads Envoy's whole session list with its unresponsive sessions included (GET
+// /v1/sessions?include=unresponsive), which is how the daemon tells a claim whose session has not
+// registered for 20 minutes (R5): one request a minute for every claim, as the controller probe
+// reads one, since the listener sends no event when a session's state changes. A session the
+// listener's bucket no longer holds — past its gone horizon — is in no row, so the caller keeps its
+// own record of each session's last registration.
+//
+// Any answer but a 200 with a list is an error naming the list, never an empty list: an empty
+// list is Envoy hearing nobody, which the caller reads as a fact of its own, and the listener's
+// 503 while its copy is refilling (writeListRefilling) is a read that did not answer.
+func (p *HTTPPublisher) ListSessions(ctx context.Context) ([]ListedSession, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/sessions?include=unresponsive", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build the session list read: %w", err)
+	}
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("read Envoy's session list: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+		return nil, fmt.Errorf("read Envoy's session list: listener returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, sessionListBodyLimit))
+	if err != nil {
+		return nil, fmt.Errorf("read Envoy's session list: %w", err)
+	}
+	var rows []struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+		LastSeen  int64  `json:"last_seen"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("read Envoy's session list: %w", err)
+	}
+	sessions := make([]ListedSession, 0, len(rows))
+	for _, row := range rows {
+		if row.SessionID == "" {
+			continue
+		}
+		sessions = append(sessions, ListedSession{Session: row.SessionID, State: row.State, LastSeen: time.UnixMilli(row.LastSeen)})
+	}
+	return sessions, nil
+}

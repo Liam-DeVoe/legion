@@ -336,6 +336,29 @@ A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
 process and removes the directory when `testbuild.Main` ends the run.
 
+A test that needs the Envoy listener itself, rather than the stand-in the daemon's live proofs
+read their own publishes back from, takes it from `packages/daemon/internal/testenvoy`'s `Start`,
+naming the binary it runs: `Start` runs it as its own process against a NATS server the test
+names, as the NATS user whose seed file the test names (`NATSSeedFile`) or as none, holds the
+loopback port open until the listener binds it, and returns once `/healthz` says healthy.
+The three session windows a check may move are its options
+(`ENVOY_SESSION_LIVE_WINDOW`, `ENVOY_SESSION_GONE_HORIZON` and `ENVOY_SESSION_MAX_AGE`), so a
+check that must watch a session read `unresponsive` in seconds says so rather than waiting out
+production's five minutes.
+The helper's own tests run this checkout's listener (`EnvoyBinary(t, "./cmd/listener")`).
+The checks of this change run the listener production pins instead
+(`testenvoy.PinnedBinary`): `pinned.go` records the image the deployment repository's
+`envoy-cluster/Pulumi.prod.yaml` pins, the commit its revision label names and the build, and
+refuses a binary whose Go build information names another commit or a modified tree.
+`scripts/e2e/lib/live-rig.sh` builds that binary from a detached worktree of that commit and names
+it in `LEGION_E2E_ENVOY_LISTENER`.
+Those checks run the pinned listener because a fix in the session's plugin has to work with the
+listener production runs, and because the daemon reads that listener's own session list to say
+which of its claims are out of reach.
+They run on the rig that `packages/daemon/internal/daemon/RIG.md` describes: that listener, a
+real nats-server with the grants production renders, and the whole daemon with real Oh My Pi
+workers.
+
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.

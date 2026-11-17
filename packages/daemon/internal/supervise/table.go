@@ -106,7 +106,14 @@ type StreamPromptResult struct {
 }
 
 // StreamClosed is the claim's connection closing. It says nothing about the process by itself.
-type StreamClosed struct{ Claim claim.Token }
+// Generation is the launch the connection's hello was resolved to, and 0 where the stream does
+// not know it: the close of a connection of a generation the claim has left — an older process
+// whose newer one is bound, or waits to bind (R3) — is no close of the claim's, and the machine
+// drops it (fence).
+type StreamClosed struct {
+	Claim      claim.Token
+	Generation uint64
+}
 
 // StreamLateRefusal is Oh My Pi refusing a prompt after it acknowledged it: a failed response for
 // the same request, following the successful one.
@@ -621,6 +628,7 @@ func (RequestDeliver) isEvent()       {}
 func (RequestExit) isEvent()          {}
 func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
+func (RequestRelaunch) isEvent()      {}
 func (CompactEnded) isEvent()         {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
@@ -666,6 +674,7 @@ const (
 	onExit          eventKind = "request_exit"
 	onTurnOutcome   eventKind = "request_turn_outcome"
 	onCompact       eventKind = "request_compact"
+	onRelaunch      eventKind = "request_relaunch"
 
 	onCompactEnded eventKind = "compact_ended"
 
@@ -749,6 +758,8 @@ func kindOf(ev Event) eventKind {
 		return onTurnOutcome
 	case RequestCompact:
 		return onCompact
+	case RequestRelaunch:
+		return onRelaunch
 	case CompactEnded:
 		return onCompactEnded
 	}
@@ -784,6 +795,8 @@ func requestName(ev Event) (string, bool) {
 		return "turn outcome", true
 	case RequestCompact:
 		return "compact", true
+	case RequestRelaunch:
+		return "relaunch", true
 	case PodUpdateSignalled:
 		return "ready_for_update", true
 	}
@@ -994,6 +1007,17 @@ func fillTable(t *builder) {
 	t.ignore(onStallBackstop, "the claim is in no turn, so its record names no turn to end",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
 	t.ignore(onStallBackstop, noProcess, gone...)
+
+	// The relaunch of a claim Envoy cannot reach, on its same session (relaunchUnreachable): a row
+	// of the three states a settled agent stands in, a turn included. A held suspension ends in a
+	// suspension rather than a relaunch (endHeld), and a launch the runtime refuses until the
+	// budget runs out fails the claim, which is why suspended and failed are among the
+	// destinations. A claim still coming up has no settled agent to cut off, and a gone one no
+	// process at all.
+	t.row(onRelaunch, "Envoy cannot reach the session: stop the process and resume the same session, charging nothing",
+		relaunchClaim, []ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.ignore(onRelaunch, "the claim has no settled agent to relaunch yet", unready...)
+	t.ignore(onRelaunch, noProcess, gone...)
 
 	// The update round over the process holding this claim: opened and kept open by the daemon's
 	// sweep, and ended once the replacement it waited for has been made. inRound is every state a
@@ -2098,7 +2122,9 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // all the same, and that prompt's start confirms the task and its result settles it.
 //
 // A result for a delivery the claim no longer holds — retired, or taken back under a new id with
-// no prompt of it outstanding — is fenced out before this runs (fence).
+// no prompt of it outstanding — is fenced out before this runs (fence); one that ran no turn, or
+// whose turn ended in a provider error, takes back what that delivery's confirmation told there
+// (untellUnread).
 //
 // A turn that ended in a provider error does not retire its task (providerErrored): the work is
 // still owed, and the daemon owes the worker another prompt of it rather than an idle claim
@@ -2262,6 +2288,17 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By == SuspendedByOperator {
 		return m.suspendHeld(ctx)
+	}
+	// A newer process the worker stream refuses because an older generation's connection is
+	// still bound is no process that failed to register: the lock-out is not its fault, so the
+	// deadline is held, charging nothing and launching no newer generation over it, and armed
+	// again whole, so the process has its full deadline once the older connection closes (R3,
+	// Deps.LockedOut).
+	if m.deps.LockedOut != nil && m.deps.LockedOut(m.claim.Token) {
+		m.log.Info("supervise: the worker stream refuses this launch while an older generation's connection is bound; its registration deadline is held, charging nothing",
+			"generation", m.claim.Generation)
+		m.armRegistration()
+		return nil
 	}
 	never := "never registered"
 	if m.claim.State == StateRegistered {

@@ -1335,10 +1335,13 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // carries the sentence again: told twice, never not at all. So it goes where a let-go cuts off a
 // turn that confirmed the task while the send of its prompt was still in flight or a prompt of the
 // task still waited on its result: that turn may have been another input's, so the let-go takes
-// the telling back (untellInFlight). Both records are the claim's fields, so they go in the same
-// write as the confirmation, and a restart reads both or neither. The one record told anywhere
-// else is the old session's record of a let-go, which the abandonment of that session ends by no
-// delivery (forgetSession, where that rule is written).
+// the telling back (untellInFlight). For the same reason a prompt that comes to nothing takes it
+// back once the claim no longer holds its delivery — a newer task took its place, or the turn's
+// end retired it — whether its send failed or Oh My Pi answered it with no turn (untellUnread).
+// Both records are the claim's fields, so they go in the same write as the confirmation, and a
+// restart reads both or neither. The one record told anywhere else is the old session's record of
+// a let-go, which the abandonment of that session ends by no delivery (forgetSession, where that
+// rule is written).
 func (m *Machine) confirm(ctx context.Context) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
@@ -1788,6 +1791,9 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 //     prompt was in flight or a prompt of the task still waited on its result. Of its two callers,
 //     interrupted writes the claim with the delivery (putClaimAndDelivery) when this reports true,
 //     and recordEnd writes nothing, since the let-go's own write carries the claim.
+//   - untellUnread, a prompt of a delivery the claim no longer holds that came to nothing after a
+//     turn confirmed that delivery: its send failed, or Oh My Pi answered it with no turn run. It
+//     writes the claim (persist) when this reports true.
 func (m *Machine) moveTelling(from, to string) bool {
 	moved := false
 	if a := &m.claim.Abandoned; a.Told && a.ToldBy == from {
@@ -1848,4 +1854,36 @@ func (m *Machine) untellInFlight() bool {
 		return false
 	}
 	return m.moveTelling(m.claim.Pending.ID, "")
+}
+
+// untellUnread takes back what the confirmation of delivery id told, where a prompt of id came to
+// nothing after the claim stopped holding id: a newer task took the place of the confirmed
+// delivery (queue), or the turn that confirmed it ended and retired it (settle). Two answers say
+// so. The machine's own send of id can come back failed — a refusal, or no answer within the RPC
+// timeout (fenceOutcome) — and the turn then confirmed it while that send was in flight
+// (beginTurn). Or Oh My Pi, which had acknowledged the prompt, answers it late: a refusal, a
+// result that says it ran no turn, or a result whose turn ended in a provider error (fence). Each
+// is what takes the telling back from a delivery the claim still holds (refused, lateRefused,
+// promptResulted, providerErrored): the turn that confirmed the delivery may have been another
+// input's, as untellInFlight states, or the model call that would have read the prompt failed.
+// Once the claim stops holding the delivery, the fence drops every answer that names it, so
+// nothing else takes the telling back. The rig showed one such order: the relaunch's delivery was
+// confirmed, replaced by a newer task and its send timed out; Oh My Pi's busy answer, after the
+// timeout, reached no request the connection still waited on, the prompt's result named a
+// delivery the claim no longer held, and no later prompt carried the relaunch's sentence.
+//
+// So the record goes back to untold (moveTelling), and the next prompt carries its sentence again:
+// the task the claim holds, or, where it holds none, the daemon's own delivery of the record
+// (queueRelaunch), as a drop that leaves the claim holding nothing queues it (relaunchAfterDrop).
+// Where the prompt did reach the agent, the agent is told twice, which is the accepted cost: told
+// twice, never not at all. The untelling stands in memory whether or not its write lands, since
+// untold is the safe way round, and a write the store did not take is owed (persist).
+func (m *Machine) untellUnread(ctx context.Context, id string) error {
+	if !m.moveTelling(id, "") {
+		return nil
+	}
+	if err := m.persist(ctx); err != nil {
+		return err
+	}
+	return m.queueRelaunch(ctx)
 }

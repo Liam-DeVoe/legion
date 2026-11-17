@@ -267,6 +267,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// Relaunch is the controller's `relaunch` of a claim Envoy cannot reach, on its same session
+	// (R5): the daemon's reach keeper checks the mark, the 6-hour limit and the claim's pod, and
+	// then asks the machine (internal/daemon's supervision.relaunch). Nil answers the route 500 and
+	// changes nothing.
+	Relaunch func(ctx context.Context, m *supervise.Machine) error
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -365,6 +370,7 @@ type server struct {
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	relaunch           func(ctx context.Context, m *supervise.Machine) error
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -433,6 +439,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		relaunch:           opts.Relaunch,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -491,6 +498,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/issues/status", s.issueStatus)
 	mux.HandleFunc("POST /legion/v1/claims/fresh-session", s.claimFreshSession)
 	mux.HandleFunc("POST /legion/v1/claims/compact", s.claimCompact)
+	mux.HandleFunc("POST /legion/v1/claims/relaunch", s.claimRelaunch)
 	mux.HandleFunc("POST /legion/v1/gates/register", s.gateRegister)
 	mux.HandleFunc("POST /legion/v1/waves/release", s.waveRelease)
 	mux.HandleFunc("POST /legion/v1/phase/backward", s.phaseBackward)
@@ -946,6 +954,52 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{unreachableContract, carriesUnreachable, withoutUnreachable, "the claim views' and the controller's unreachable"},
+}
+
+// unreachableContract is the daemon contract that added `unreachable` to every claim view and to
+// the controller's locator (version.go's 159, R5): a plugin before it reads both with a schema that
+// knows no such key, so a caller from a pod below it is served the state without the mark
+// (withoutUnreachable).
+const unreachableContract = 159
+
+// carriesUnreachable is whether any claim view of state, or the controller's locator, carries the
+// mark. It is written only where a claim is marked, so it is asked of the state rather than
+// answered true.
+func carriesUnreachable(state State) bool {
+	if state.ControllerLocator != nil && state.ControllerLocator.Unreachable != nil {
+		return true
+	}
+	return anyClaimView(state, func(view ClaimView) bool { return view.Unreachable != nil })
+}
+
+// withoutUnreachable is state with no claim view and no controller locator carrying the mark. The
+// issue maps and the locator are copied, so the state the source answered is left as it was.
+func withoutUnreachable(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if issue.Architect != nil {
+			architect := *issue.Architect
+			architect.Unreachable = nil
+			issue.Architect = &architect
+		}
+		if issue.Workers != nil {
+			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+			for role, worker := range issue.Workers {
+				worker.Claim.Unreachable = nil
+				workers[role] = worker
+			}
+			issue.Workers = workers
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	if state.ControllerLocator != nil {
+		locator := *state.ControllerLocator
+		locator.Unreachable = nil
+		state.ControllerLocator = &locator
+	}
+	return state
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
