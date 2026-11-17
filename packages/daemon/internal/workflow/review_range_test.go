@@ -246,7 +246,7 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 // reviewedPartOf is the part of a later round's task that names head as the commit the
 // reviewer's own last deciding review read.
 func reviewedPartOf(head string) string {
-	return " Last reviewed commit: " + head + "."
+	return " " + ReviewedCommitLabel + ": " + head + "."
 }
 
 // readsReviewingTask fails the test unless task is the reviewing task of the round whose tester
@@ -343,7 +343,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
 	readsReviewingTask(t, "round 1", first.EntryTask, 1)
-	if strings.Contains(first.EntryTask, "Last reviewed commit") {
+	if strings.Contains(first.EntryTask, ReviewedCommitLabel) {
 		t.Fatalf("round 1's task = %q, want no reviewed commit: no review came before it", first.EntryTask)
 	}
 
@@ -365,12 +365,12 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 		if row.EntryTask == "" || !strings.Contains(row.EntryTask, " Phase: ") {
 			t.Fatalf("the %s's row holds the task %q, want the task round 2 started it with", role, row.EntryTask)
 		}
-		if strings.Contains(row.EntryTask, "Last reviewed commit") {
+		if strings.Contains(row.EntryTask, ReviewedCommitLabel) {
 			t.Fatalf("the %s's task = %q, want no reviewed commit: only the reviewer is told one", role, row.EntryTask)
 		}
 	}
 	for _, start := range superviseRowsOf(t, pool, "LEGION-208", "start") {
-		if start.Role != claim.RoleReviewer && strings.Contains(start.Task, "Last reviewed commit") {
+		if start.Role != claim.RoleReviewer && strings.Contains(start.Task, ReviewedCommitLabel) {
 			t.Fatalf("the %s's start carries %q, want no reviewed commit", start.Role, start.Task)
 		}
 	}
@@ -645,7 +645,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			t.Fatalf("the rerun's reviewer is on entry %d, want one above %d: its first round started", after.Entry, before.Entry)
 		}
 		readsReviewingTask(t, "the rerun's first round", after.EntryTask, 9)
-		if strings.Contains(after.EntryTask, "Last reviewed commit") {
+		if strings.Contains(after.EntryTask, ReviewedCommitLabel) {
 			t.Fatalf("the rerun's first review task = %q, want no reviewed commit: the rerun cleared the generation", after.EntryTask)
 		}
 	})
@@ -667,7 +667,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			t.Fatalf("the adopted reviewer is on entry %d, want one above %d: its first round started", after.Entry, before.Entry)
 		}
 		readsReviewingTask(t, "the adoption's first round", after.EntryTask, 9)
-		if strings.Contains(after.EntryTask, "Last reviewed commit") {
+		if strings.Contains(after.EntryTask, ReviewedCommitLabel) {
 			t.Fatalf("the adoption's first review task = %q, want no reviewed commit: the adoption cleared the generation", after.EntryTask)
 		}
 	})
@@ -700,7 +700,7 @@ func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 				t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 			}
 			readsReviewingTask(t, "round 2", second.EntryTask, 2)
-			named := strings.Contains(second.EntryTask, "Last reviewed commit")
+			named := strings.Contains(second.EntryTask, ReviewedCommitLabel)
 			if tc.removed && named {
 				t.Fatalf("round 2's task = %q, want no reviewed commit: the record of round 1's review was removed", second.EntryTask)
 			}

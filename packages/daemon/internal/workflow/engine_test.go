@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -403,6 +404,45 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 		if !strings.Contains(prompt.String(), want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}
+	}
+}
+
+// The reviewer is told the commit its later round reads from by the label its task carries
+// (reviewedCommit.part), and its prompt and the merge gate of skill://legion-worker, which the
+// prompt sends it to, name that field, so a rename of the label in the writer alone, in the
+// reviewer's prompt alone or in the merge gate alone fails here.
+func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
+	field := ReviewedCommitLabel + ": <sha>"
+	if got := reviewedCommit("<sha>").part(); !strings.HasPrefix(got, " "+field) {
+		t.Fatalf("a task names its reviewed commit as %q, want it to start with %q", got, " "+field)
+	}
+	want := "`" + field
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	parts, err := composer.Compose(claim.RoleReviewer, false)
+	if err != nil {
+		t.Fatalf("compose the reviewer's prompt: %v", err)
+	}
+	var prompt strings.Builder
+	for _, path := range parts.RolePromptPaths {
+		part, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read role prompt part %s: %v", path, err)
+		}
+		prompt.Write(part)
+	}
+	if !strings.Contains(prompt.String(), want) {
+		t.Errorf("the reviewer's prompt does not say %q", want)
+	}
+	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
+	body, err := os.ReadFile(mergeGate)
+	if err != nil {
+		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
+	}
+	if !strings.Contains(string(body), want) {
+		t.Errorf("%s does not say %q", mergeGate, want)
 	}
 }
 

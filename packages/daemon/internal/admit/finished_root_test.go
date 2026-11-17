@@ -280,7 +280,7 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
 				}
 				starts := roleStarts(t, pool, child, claim.RoleReviewer)
-				if want := " Last reviewed commit: " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
+				if want := " " + workflow.ReviewedCommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
 					t.Fatalf("the promoted reviewer's starts = %+v, want one whose task names %q", starts, want)
 				}
 			}

@@ -42,11 +42,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
-
-// lastReviewed is the part of a task that names the commit the reviewer's last deciding review read
-// (workflow's reviewedPart), without the commit.
-const lastReviewed = "Last reviewed commit"
 
 // reviewRangeLive is one run of the proof: the handoff records rig booted over the real Dispatch,
 // the GitHub stand-in, the two issues the steps walk through two review rounds, and the counters
@@ -117,10 +114,10 @@ func (r *reviewRangeLive) newIssue(name, title string, number int) *reviewRangeI
 // the reviewer with names no reviewed commit.
 func (r *reviewRangeLive) roundOneNamesNoCommit() {
 	task := r.roundOne(r.walked)
-	if strings.Contains(task, lastReviewed) {
-		r.t.Fatalf("the reviewer's task of round 1 = %q, want no %q in it: no review of this generation has read a commit yet", task, lastReviewed)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the reviewer's task of round 1 = %q, want no %q in it: no review of this generation has read a commit yet", task, workflow.ReviewedCommitLabel)
 	}
-	r.note("the task names no %q", lastReviewed)
+	r.note("the task names no %q", workflow.ReviewedCommitLabel)
 }
 
 // Check round-2-names-the-commit-of-round-1. The reviewer requests changes at the walked issue's
@@ -130,7 +127,7 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 	issue := r.walked
 	r.requestChanges(issue)
 	task := r.roundTwo(issue)
-	want := " " + lastReviewed + ": " + issue.first + "."
+	want := " " + workflow.ReviewedCommitLabel + ": " + issue.first + "."
 	if !strings.Contains(task, want) {
 		r.t.Fatalf("the reviewer's task of round 2 = %q, want it to hold %q, the head its review of round 1 read", task, want)
 	}
@@ -146,8 +143,8 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	issue := r.control
 	task := r.roundOne(issue)
-	if strings.Contains(task, lastReviewed) {
-		r.t.Fatalf("the control's reviewer task of round 1 = %q, want no %q in it", task, lastReviewed)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the control's reviewer task of round 1 = %q, want no %q in it", task, workflow.ReviewedCommitLabel)
 	}
 	r.requestChanges(issue)
 	if got := r.reviewedHead(issue.key); got != issue.first {
@@ -162,10 +159,10 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	}
 	r.note("cleared phases.reviewed_head of %s's reviewer; it now reads \"\"", issue.key)
 	task = r.roundTwo(issue)
-	if strings.Contains(task, lastReviewed) {
-		r.t.Fatalf("the control's reviewer task of round 2 = %q, want no %q in it: its record holds no reviewed commit", task, lastReviewed)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the control's reviewer task of round 2 = %q, want no %q in it: its record holds no reviewed commit", task, workflow.ReviewedCommitLabel)
 	}
-	r.note("the task names no %q", lastReviewed)
+	r.note("the task names no %q", workflow.ReviewedCommitLabel)
 }
 
 // roundOne walks issue's first review round: the seeded tester, which the boot relaunched, is

@@ -306,6 +306,12 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // ties to it.
 const testerVerdictLabel = "Tester's verdict"
 
+// ReviewedCommitLabel labels the commit a later review round's task names (reviewedCommit.part),
+// the head the reviewer's own last deciding review read. The reviewer's prompt and the merge gate
+// of skill://legion-worker name it to the reviewer, which a test ties to it, and the tests of the
+// packages that read a reviewer's task name it by this constant rather than type it again.
+const ReviewedCommitLabel = "Last reviewed commit"
+
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
 // worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
@@ -801,13 +807,13 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 // constant, such as the "" of a start that names no commit.
 type reviewedCommit string
 
-// part is the part of a start's task that names c, " Last reviewed commit: <sha>.", and "" for no
-// commit: the one place the sentence is written.
+// part is the part of a start's task that names c, " Last reviewed commit: <sha>."
+// (ReviewedCommitLabel), and "" for no commit: the one place the sentence is written.
 func (c reviewedCommit) part() string {
 	if c == "" {
 		return ""
 	}
-	return " Last reviewed commit: " + string(c) + "."
+	return " " + ReviewedCommitLabel + ": " + string(c) + "."
 }
 
 // reviewedPart is the commit a start's task names as the one the reviewer's own newest deciding
