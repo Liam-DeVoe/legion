@@ -233,8 +233,8 @@ export function DecisionsFilterBody({
   // whole list, since the foot's rows stand outside the tree element. The latest `takeFocus`
   // takes it, so a render that makes a new one while a press is held does not drop its end.
   // This is a copy of part I's press logic in `IssueTree.tsx`, with that file's private
-  // `PRESS_ENDS` (below), which decision 94 allows only until part I exports the hook for a
-  // press's focus and its `PRESS_ENDS`: once both are under this part's base, this file
+  // `PRESS_ENDS` (below), which decisions 94 and 141 allow only until part I exports the hook
+  // for a press's focus and its `PRESS_ENDS`: once both are under this part's base, this file
   // imports them and deletes its copy.
   const press = useRef<{
     ending?: number;
@@ -698,11 +698,11 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
 }
 
 /** What ends a press in the list, as it ends one in the outline: a copy of `IssueTree.tsx`'s
- *  own `PRESS_ENDS`, which that file keeps to itself until part I exports it (decision 94). Its
- *  mouseup, which the click follows in the same task; the drag a press on a picture or a link
- *  starts instead, which sends no mouseup; a pointer the browser cancelled; and a key, since a
- *  press released outside the window sends no mouseup, and a key's move must never wait on a
- *  press that is over. */
+ *  own `PRESS_ENDS`, which that file keeps to itself until part I exports it (decisions 94 and
+ *  141). Its mouseup, which the click follows in the same task; the drag a press on a picture
+ *  or a link starts instead, which sends no mouseup; a pointer the browser cancelled; and a
+ *  key, since a press released outside the window sends no mouseup, and a key's move must
+ *  never wait on a press that is over. */
 const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
 /** The entry that stood after `id` in `part` as `before` drew the list, else the one before
