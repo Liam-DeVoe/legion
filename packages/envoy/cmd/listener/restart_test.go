@@ -62,17 +62,21 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 		stopped := len(listener.Output.String())
 		server.Stop(t)
 		server.Start(t)
-		listenerLineAfter(t, listener, stopped, registryReconnected, "restart "+strconv.Itoa(restart)+": the registry's connection to reconnect")
+		reconnected := listenerLineAfter(t, listener, stopped, registryReconnected, "restart "+strconv.Itoa(restart)+": the registry's connection to reconnect")
 		reconnectedAt := time.Now()
 
 		// Every watcher a watch installs reads the whole bucket again, and nothing empties the
 		// cache first (kvwatch.Cache): the reconnect hook's Rewatch does not resume after the last
-		// revision applied, so its warm-up is a completed read holding every interest written so
-		// far. The copy keeps its rows through that read and removes only what a completed read
-		// found no evidence of (kvwatch.Copy, packages/envoy/AGENTS.md, "KV cache watchers"), so
-		// GET /v1/interests/, which answers from the copy, lists every one of them throughout: a
-		// re-read that emptied the cache and refilled it would drop one. The write below waits for
-		// the warm-up line, so it cannot land inside the read and be counted in it.
+		// revision applied, so the read it begins is a read holding every interest written so far.
+		// The copy keeps its rows through that read and removes only what a completed read found no
+		// evidence of (kvwatch.Copy, packages/envoy/AGENTS.md, "KV cache watchers"), so GET
+		// /v1/interests/, which answers from the copy, lists every one of them throughout: a
+		// re-read that emptied the cache and refilled it would drop one. The read checked is the
+		// first that completed after this restart's reconnect, whatever came before it: kvwatch logs
+		// a warm-up line for every read, so a scan that timed out and its re-read, or a read the
+		// listener's self-health rebuild began, each add one, and a count of lines would take one
+		// of those for the reconnect's. The write below waits for that read, so it cannot land
+		// inside it and be counted in it.
 		kept := func() {
 			for round := range restart {
 				if id := writerSession(round); !listsInterest(t, listener.port, id) {
@@ -80,9 +84,9 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 				}
 			}
 		}
-		warmUp := interestWarmUp(t, listener, restart+1, kept)
-		if warmUp["outcome"] != "completed" || warmUp["entries"] != float64(restart) || warmUp["delete_markers"] != float64(0) {
-			t.Fatalf("restart %d: the interest cache's warm-up after the reconnect = %v, want a completed read of the whole bucket, its %d interests and no delete markers", restart, warmUp, restart)
+		warmUp := interestReadAfter(t, listener, reconnected, kept, "restart "+strconv.Itoa(restart))
+		if warmUp["entries"] != float64(restart) || warmUp["delete_markers"] != float64(0) {
+			t.Fatalf("restart %d: the first read of the interest cache that completed after the reconnect = %v, want a read of the whole bucket, its %d interests and no delete markers", restart, warmUp, restart)
 		}
 		kept()
 
@@ -142,29 +146,43 @@ func listenerLineAfter(t *testing.T, p *listenerProcess, from int, text, what st
 	return 0
 }
 
-// interestWarmUp waits for the listener's nth interest registry warm-up line (1 is its start's)
-// and returns it, running while on every pass of the wait, which is how a caller checks what the
-// cache answers while the read it waits for runs.
-func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[string]any {
+// interestReadAfter waits for the first read of the interest registry's cache that completed and
+// whose warm-up line the listener logged at or past offset from, running while on every pass of
+// the wait, which is how a caller checks what the cache answers while the read it waits for runs,
+// and returns that line. A warm-up line of a scan that timed out is passed over: that read
+// completes nothing and the watcher reads the bucket again (kvwatch.Watcher.endScan). The wait is
+// the listener's own (listenerWait): it fails at once when the listener exits, and otherwise only
+// at the test binary's deadline, failing as the wait of what.
+func interestReadAfter(t *testing.T, p *listenerProcess, from int, while func(), what string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	var read map[string]any
+	exited := false
+	wait := listenerWait(t)
+	testwait.Holds(wait, 100*time.Millisecond, func() bool {
 		while()
-		var lines []map[string]any
-		for line := range strings.SplitSeq(p.Output.String(), "\n") {
+		select {
+		case <-p.Exited:
+			exited = true
+		default:
+		}
+		// Read after the exit check, so the output of a listener that has exited is whole.
+		for line := range strings.SplitSeq(p.Output.String()[from:], "\n") {
 			var record map[string]any
-			if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == "interest registry cache warm-up" {
-				lines = append(lines, record)
+			if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == "interest registry cache warm-up" && record["outcome"] == "completed" {
+				read = record
+				return true
 			}
 		}
-		if len(lines) >= n {
-			return lines[n-1]
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no interest registry warm-up line %d within 10s:\n%s", n, p.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
+		return exited
+	})
+	if read != nil {
+		return read
 	}
+	if exited {
+		t.Fatalf("%s: the listener exited with %s before a read of the interest registry completed after the reconnect:\n%s", what, p.Cmd.ProcessState, p.Output.String())
+	}
+	t.Fatalf("%s: no read of the interest registry completed after the reconnect in the %v the test binary's deadline left:\n%s", what, wait.Round(time.Millisecond), p.Output.String())
+	return nil
 }
 
 // listsInterest reports whether the listener's GET /v1/interests/, which answers from its cache,
