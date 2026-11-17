@@ -237,6 +237,51 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a result that names two subjects", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","graph_tx":"tx1"}]`),
 			"results.json", "result 1: it names the subjects commit and graph_tx; a result reads one subject"},
+		// A member that a result does not set would be its zero value, and the derivation would read
+		// that value as a real one: a failure with no at as older than every approval, one with no
+		// subject, no job or no test_commit as one that counts nowhere, and of two results at one at and
+		// one seq the one listed first as the later. Each hides a failure (R7: "A pass and a failure on
+		// one such subject and one procedure make the state unknown"), so the reader refuses it.
+		{"a result with no at", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","seq":5}]`),
+			"results.json", "result 1: it sets no at"},
+		{"a run of a check of the code with no commit", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","job":"go-checks","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			"results.json", "result 1: it sets no commit, the subject that a check of the code reads"},
+		{"a failing example of a check of the code with no commit", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"failing_example","outcome":"pass","job":"go-checks","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			"results.json", "result 1: it sets no commit, the subject that a check of the code reads"},
+		{"a run of a check of production with no deploy", "carry",
+			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"run","outcome":"fail","at":"2026-11-12T12:00:00Z","seq":4}]`),
+			"results.json", "result 1: it sets no deploy, the subject that a check of production reads"},
+		{"a run of a program check with no job", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			"results.json", "result 1: it sets no job, and only the reports of the job of its check count"},
+		{"two results of a check at one at and one seq", "carry", write("results.json", `[`+
+			`{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","job":"go-checks","at":"2026-11-12T10:00:00Z","seq":1},`+
+			`{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":"go-checks","at":"2026-11-12T10:00:00Z","seq":1}]`),
+			"results.json", "result 2: it has the at and the seq of result 1, so neither of the two is the later"},
+		// A job run with no job or no commit is a run of no job, or at no commit, and one with no ended
+		// one that did not end: each hides a leg that ended with no result (R9: "When a check has no
+		// result that counts after a run of its job ends, it reads unknown").
+		{"a job run with no ended", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":"c1"}]`),
+			"jobs.json", "job run 1: it sets no ended"},
+		{"a job run with no job", "carry", write("jobs.json", `[{"leg":"","commit":"c1","ended":true}]`),
+			"jobs.json", "job run 1: it sets no job"},
+		{"a job run with no commit", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","ended":true}]`),
+			"jobs.json", "job run 1: it sets no commit"},
+		// A commit of the history with no files would read as an empty tree, and two such trees as
+		// one, so a result would carry between them (R8).
+		{"a commit of the history with no files", "carry", write("history.json", `{"commits":[{"id":"m1"}]}`),
+			"history.json", `specgraph: history: commit "m1": it sets no files`},
+		// A unit with no serves, needs or waits_on would read as one with none, which hides a cycle of
+		// waits (R29).
+		{"a unit with no serves", "wait-cycle", write("units.json", `[{"id":"u-a","needs":[],"waits_on":[]}]`),
+			"units.json", "unit 1: it sets no serves"},
+		{"a unit with no needs", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"waits_on":[]}]`),
+			"units.json", "unit 1: it sets no needs"},
+		{"a unit with no waits_on", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[]}]`),
+			"units.json", "unit 1: it sets no waits_on"},
 		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
 			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
 		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),
