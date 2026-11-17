@@ -199,6 +199,69 @@ func TestAnEndAfterAnEndKeepsTheFirst(t *testing.T) {
 	}
 }
 
+// A write that names another value for a field the node holds leaves the held value, whichever of
+// the start and the end came first, and appends no tuple for it: the first value of each field
+// stands, in the write's answer and in the issue's read.
+func TestAHeldFieldKeepsItsFirstValue(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	first := func(id string) StepWrite {
+		write := implementer(id)
+		write.Session, write.Model = new("ses-first"), new("anthropic/claude-opus-5")
+		return write
+	}
+	for name, row := range map[string]struct {
+		other func(*StepWrite)
+		held  func(Step) any
+		want  any
+	}{
+		AttributeAgent:      {func(write *StepWrite) { write.Agent = new("legion-leg-leg-1-other") }, func(step Step) any { return step.Agent }, "legion-leg-leg-1-implementer"},
+		AttributeRole:       {func(write *StepWrite) { write.Role = new("tester") }, func(step Step) any { return step.Role }, "implementer"},
+		AttributeType:       {func(write *StepWrite) { write.Type = new("testing") }, func(step Step) any { return step.Type }, "implementation"},
+		AttributeTask:       {func(write *StepWrite) { write.Task = new("docs") }, func(step Step) any { return step.Task }, "default"},
+		AttributeStep:       {func(write *StepWrite) { write.Place = new(3) }, func(step Step) any { return step.Place }, 2},
+		AttributeGeneration: {func(write *StepWrite) { write.Generation = new(int64(2)) }, func(step Step) any { return step.Generation }, int64(1)},
+		AttributeSession:    {func(write *StepWrite) { write.Session = new("ses-second") }, func(step Step) any { return step.Session }, "ses-first"},
+		AttributeModel:      {func(write *StepWrite) { write.Model = new("openai/gpt-5") }, func(step Step) any { return step.Model }, "anthropic/claude-opus-5"},
+	} {
+		for order, writes := range map[string]func(id string) (StepWrite, StepWrite){
+			"start first": func(id string) (StepWrite, StepWrite) {
+				second := endOf(first(id), ResultPassed, minute(1))
+				row.other(&second)
+				return startOf(first(id), minute(0)), second
+			},
+			"end first": func(id string) (StepWrite, StepWrite) {
+				second := startOf(first(id), minute(0))
+				row.other(&second)
+				return endOf(first(id), ResultPassed, minute(1)), second
+			},
+		} {
+			t.Run(name+"/"+order, func(t *testing.T) {
+				id := uuid.NewString()
+				written, again := writes(id)
+				put(t, pool, written, minute(0))
+				answered := put(t, pool, again, minute(1))
+				var read *Step
+				for _, step := range issueSteps(t, pool, "LEG-1") {
+					if step.ID == id {
+						read = &step.Step
+					}
+				}
+				if read == nil {
+					t.Fatalf("LEG-1 does not list the run %s", id)
+				}
+				for what, step := range map[string]Step{"the second write's answer": answered, "the read": *read} {
+					if got := row.held(step); got != row.want {
+						t.Errorf("%s holds %s %v, want the first write's %v", what, name, got, row.want)
+					}
+				}
+				if count := valueTuples(t, pool, id, name); count != 1 {
+					t.Errorf("the log holds %d %s tuples of the run, want the first write's one", count, name)
+				}
+			})
+		}
+	}
+}
+
 // A write that makes a node names the step's whole identity: its task, kind, place, role and
 // generation. One that leaves any of them out is refused ErrStepInput and writes nothing; the
 // same write with all of them makes the node, which is the control.
@@ -647,4 +710,17 @@ func tableShape(t *testing.T, pool *store.Pool, table string) shape {
 			order by indexname
 		`),
 	}
+}
+
+// valueTuples counts the value tuples the log holds of one attribute of one step.
+func valueTuples(t *testing.T, pool *store.Pool, id, attribute string) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+		select count(*) from workflow_tuples
+		where from_kind = 'step' and from_id = $1 and kind = $2 and to_kind = 'value'
+	`, id, attribute).Scan(&count); err != nil {
+		t.Fatalf("count the %s tuples of step %s: %v", attribute, id, err)
+	}
+	return count
 }
