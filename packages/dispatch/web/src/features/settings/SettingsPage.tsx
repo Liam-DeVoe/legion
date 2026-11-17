@@ -83,9 +83,15 @@ export function SettingsPage(): ReactNode {
   // Whether this Dispatch has a secrets broker, without which Live grants and Sign-ins have
   // nothing to list: the credential list answers `null` where it has none. A restricted member
   // may not read that list, so their page asks the grants list instead, which they may read and
-  // which answers 404 FEATURE_OFF where there is no broker.
-  const credentialsAvailable = useQuery({ ...credentialPendingQuery(), enabled: !restricted });
-  const grants = useQuery({ ...credentialGrantsQuery(), enabled: restricted });
+  // which answers 404 FEATURE_OFF where there is no broker. The server reads its broker setting
+  // once, at boot, so neither answer of no broker is asked again until the event feed starts after
+  // a gap (`reaskHeldCredentialList`): the credential list's own gate holds a `null`, and the
+  // grants list's gate here holds a FEATURE_OFF.
+  const credentialsAvailable = useQuery(credentialPendingQuery(restricted));
+  const grants = useQuery({
+    ...credentialGrantsQuery(),
+    enabled: restricted ? (query) => !isCredentialFeatureOff(query.state.error) : false,
+  });
   const brokered = restricted
     ? !grants.isPending && !isCredentialFeatureOff(grants.error)
     : !credentialsAvailable.isPending && credentialsAvailable.data !== null;

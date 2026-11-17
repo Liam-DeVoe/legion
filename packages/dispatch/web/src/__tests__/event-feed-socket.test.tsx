@@ -10,11 +10,12 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
 import { liveSocketFor } from "../api/live-socket";
 import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
+import { credentialGrantsQuery } from "../features/credentials/grants";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { realClock, tick } from "./fake-clock";
 import {
@@ -435,6 +436,43 @@ test("the credential list held null is asked again after a gap", async () => {
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2));
   } finally {
     hook?.unmount();
+    getCredentialPending.mockRestore();
+    realClock();
+  }
+});
+
+// A restricted member's Settings learns there is no broker from the grants list's 404 FEATURE_OFF,
+// which it does not ask again on a refresh (`SettingsPage`): the gap is the moment to.
+test("the grants list held at FEATURE_OFF is asked again after a gap, and a list held is not", async () => {
+  jest.useFakeTimers();
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockRejectedValue(
+    new ApiError(404, { code: "FEATURE_OFF", error: "this Dispatch has no secrets broker" })
+  );
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+  const queryClient = newClient();
+  let hook: { unmount: () => void } | undefined;
+  try {
+    await queryClient.prefetchQuery(credentialGrantsQuery());
+    await queryClient.prefetchQuery(credentialPendingQuery());
+    hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    openFeed();
+
+    rotate();
+    await advance(150);
+    expect(getCredentialGrants).toHaveBeenCalledTimes(1);
+
+    const before = sockets.sockets.length;
+    act(() => sockets.latest().restart());
+    await waitFor(() => expect(sockets.sockets).toHaveLength(before + 1));
+    openFeed("0", true);
+    await waitFor(() => expect(getCredentialGrants).toHaveBeenCalledTimes(2));
+    // A credential list that answered a list is no answer of no broker, and is not asked.
+    expect(getCredentialPending).toHaveBeenCalledTimes(1);
+  } finally {
+    hook?.unmount();
+    getCredentialGrants.mockRestore();
     getCredentialPending.mockRestore();
     realClock();
   }

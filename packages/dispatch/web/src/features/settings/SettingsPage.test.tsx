@@ -7,20 +7,23 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AuthenticatedUser } from "../../api/types";
+import { credentialGrantsQuery } from "../credentials/grants";
+import { credentialPendingQuery } from "../credentials/pending";
 import { SettingsPage } from "./SettingsPage";
 
 /** The page, signed in as `user` through the identity the shell already read, or with no
- *  identity read yet when none is given. */
-function renderPage(user?: AuthenticatedUser) {
+ *  identity read yet when none is given; it answers the page's query client. */
+function renderPage(user?: AuthenticatedUser): QueryClient {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (user !== undefined) queryClient.setQueryData(whoAmIQuery().queryKey, user);
-  return render(
+  render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <SettingsPage />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return queryClient;
 }
 
 /** Every query `SettingsPage` and its child sections issue besides the credential pending and
@@ -48,6 +51,32 @@ test("hides the Live grants section on a Dispatch with no secrets broker", async
 
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByText("Live grants")).not.toBeInTheDocument());
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// The server reads its broker setting once, at boot, so a credential list answered `null` (no
+// secrets broker) is asked again only after a page load or a gap in the event feed
+// (`reaskHeldCredentialList`). Settings asks the list to learn whether to draw the broker
+// sections; a refresh of the list, the one every query takes when the feed refreshes them all,
+// asks nothing more.
+test("a full member's Settings asks a Dispatch with no broker for the credential list once", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+
+  try {
+    const queryClient = renderPage({ event_head: "0", kind: "user", login: "alice" });
+
+    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Architecture sources")).toBeDefined();
+    await queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey });
+    expect(getCredentialPending).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Live grants")).not.toBeInTheDocument();
   } finally {
     cleanup();
     getCredentialPending.mockRestore();
@@ -373,6 +402,38 @@ test("a restricted member's Settings on a Dispatch with no broker draws neither 
     await waitFor(() => expect(screen.queryByText("Live grants")).not.toBeInTheDocument());
     expect(screen.queryByText("Sign-ins")).not.toBeInTheDocument();
     expect(screen.queryByText("Couldn't load live grants.")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// The grants list answers 404 FEATURE_OFF where there is no broker, which the server reads once,
+// at boot, as it does for the credential list: a restricted member's Settings asks it once per
+// page load and once per gap in the event feed (`reaskHeldCredentialList`), as a full member's
+// asks the credential list. A refresh of it asks nothing more.
+test("a restricted member's Settings asks a Dispatch with no broker for the grants list once", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockRejectedValue(
+    new ApiError(404, { code: "FEATURE_OFF", error: "this Dispatch has no secrets broker" })
+  );
+
+  try {
+    const queryClient = renderPage({
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+
+    await waitFor(() => expect(getCredentialGrants).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Architecture sources")).toBeDefined();
+    await queryClient.invalidateQueries({ queryKey: credentialGrantsQuery().queryKey });
+    expect(getCredentialGrants).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Live grants")).not.toBeInTheDocument();
   } finally {
     cleanup();
     getCredentialGrants.mockRestore();
