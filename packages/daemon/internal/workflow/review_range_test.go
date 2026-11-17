@@ -84,6 +84,36 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 	}
 }
 
+// anEarlierReviewRead seeds LEGION-208's reviewer row with headEarlier as the commit an earlier
+// deciding review read, so a review that then records nothing still reads headEarlier and cannot
+// pass for one that recorded the head its own footer names.
+func anEarlierReviewRead(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	row := reviewerRow(t, pool)
+	row.ReviewedHead = headEarlier
+	seedPhase(t, pool, row)
+}
+
+// decidedAtHeadOne fails the test unless the reviewer's row reads headOne, the head its deciding
+// review of state named in its footer, as the commit that review read; and, after a request for
+// changes, unless the task of the reviewer's next round names headOne and not the headEarlier
+// anEarlierReviewRead seeded.
+func decidedAtHeadOne(t *testing.T, pool *pgxpool.Pool, engine *Engine, state string) {
+	t.Helper()
+	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
+		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s, the head its %s review's footer names", got, headOne, state)
+	}
+	if state != "changes_requested" {
+		return
+	}
+	backToReviewing(t, applyFacts(t, pool, engine), 2)
+	task := reviewerRow(t, pool).EntryTask
+	readsReviewingTask(t, "round 2", task, 2)
+	if !strings.Contains(task, reviewedPartOf(headOne)) || strings.Contains(task, headEarlier) {
+		t.Fatalf("round 2's task = %q, want it to name %s, the commit round 1's review read, and not %s", task, headOne, headEarlier)
+	}
+}
+
 // undecidingReview is a review that decides no round: a comment, a review refused for the head
 // its footer names, or a review of an issue outside reviewing.
 type undecidingReview struct {
