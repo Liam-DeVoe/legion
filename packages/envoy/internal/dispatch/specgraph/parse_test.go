@@ -1,9 +1,14 @@
 package specgraph
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -263,6 +268,146 @@ func TestParseReadsATimeLimit(t *testing.T) {
 	if got := tree.Checks[0].TimeLimit; got != 36*time.Hour {
 		t.Errorf("TimeLimit %v, want 36h", got)
 	}
+}
+
+// parseRule is one kind of problem of Parse, by the text that parse.go writes for its Detail (a
+// constant, or the format of fmt.Sprintf), and a file that gives it.
+type parseRule struct{ detail, file string }
+
+// Each kind of problem of Parse is in one of two columns: it can lose a node of the files or change
+// one, so a comparison of the tree misses that text, or it leaves each node as the files write it.
+// LosesNode gives each the answer of its column, for a file that gives it. The test reads parse.go
+// for the Detail of each problem that it writes, so a new kind of problem fails the test until it
+// is in a column, and a problem that parse.go writes without the reader's problem method fails it
+// too.
+func TestEachProblemOfParseSaysWhetherItLosesANode(t *testing.T) {
+	t.Parallel()
+	check := func(attributes, body string) string {
+		return ":::check{#a-restart-keeps-the-claim serves=\"a-claim-survives-a-restart\" subject=\"code\" procedure=\"program\"" + attributes + "}\n" + body + ":::\n"
+	}
+	losesOrChanges := []parseRule{
+		{detailTextOutsideBlock, "A line outside a block.\n"},
+		{detailUnclosedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n"},
+		{detailNestedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n:::term{#bill name=\"bill\"}\nA bill is a request for money.\n:::\n:::\n"},
+		{detailBadBlockLine, ":::\n"},
+		{`unknown-block: %q is not requirement, check, component or term`, ":::note{#a-note}\nA note.\n:::\n"},
+		{`unknown-attribute: %s takes no attribute %q`, ":::term{#order name=\"order\" colour=\"red\"}\nAn order is a request.\n:::\n"},
+		{`bad-component: kind is "interface" or absent, not %q`, ":::component{#orders name=\"Orders\" kind=\"service\"}\nIt keeps the orders.\n:::\n"},
+		{`bad-time-limit: %q is not a positive Go duration`, check(` time_limit="soon"`, "Claim: The daemon reads the claim after it starts again.\n")},
+		{detailBadField, check("", "Procedure: The program starts the daemon again.\nClaim: The daemon reads the claim after it starts again.\n")},
+	}
+	keepsNodes := []parseRule{
+		{detailBadEncoding, ":::term{#cafe name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n"},
+		{detailHeadingNamesCode, "# Orders and I/O\n"},
+		{detailClaimOneLine, check("", "Claim: The daemon reads the claim\nafter it starts again.\n")},
+		{detailClaimOneSentence, check("", "Claim: The daemon starts again. It reads the claim.\n")},
+	}
+
+	written := problemDetails(t)
+	column := map[string]bool{}
+	for losesNode, rules := range map[bool][]parseRule{true: losesOrChanges, false: keepsNodes} {
+		for _, rule := range rules {
+			if _, twice := column[rule.detail]; twice {
+				t.Errorf("%q is in both columns", rule.detail)
+			}
+			column[rule.detail] = losesNode
+			if !slices.Contains(written, rule.detail) {
+				t.Errorf("%q is in a column, and parse.go writes no such problem", rule.detail)
+			}
+			start, _, _ := strings.Cut(rule.detail, "%")
+			_, problems := Parse(map[string][]byte{"spec.md": []byte(rule.file)})
+			given := 0
+			for _, p := range problems {
+				if strings.HasPrefix(p.Detail, start) {
+					given++
+					if LosesNode(p) != losesNode {
+						t.Errorf("LosesNode(%+v) = %t, want %t", p, !losesNode, losesNode)
+					}
+				}
+			}
+			if given == 0 {
+				t.Errorf("Parse(%q) gives no problem %q, only %+v", rule.file, rule.detail, problems)
+			}
+		}
+	}
+	for _, detail := range written {
+		if _, ok := column[detail]; !ok {
+			t.Errorf("parse.go writes the problem %q, which is in neither column: say whether it can lose a node or change one", detail)
+		}
+	}
+}
+
+// problemDetails is the Detail of each problem that parse.go writes with the reader's problem
+// method: the value of a constant, a string, the string before a +, or the format of fmt.Sprintf.
+// It fails the test for a Detail that it cannot read so, and for a Problem that parse.go makes
+// outside that method.
+func problemDetails(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "parse.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	constants := map[string]string{}
+	for _, decl := range file.Decls {
+		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
+			for _, spec := range gen.Specs {
+				value := spec.(*ast.ValueSpec)
+				for i, name := range value.Names {
+					if lit, ok := value.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						constants[name.Name], _ = strconv.Unquote(lit.Value)
+					}
+				}
+			}
+		}
+	}
+	var text func(e ast.Expr) (string, bool)
+	text = func(e ast.Expr) (string, bool) {
+		switch e := e.(type) {
+		case *ast.BasicLit:
+			s, err := strconv.Unquote(e.Value)
+			return s, e.Kind == token.STRING && err == nil
+		case *ast.Ident:
+			s, ok := constants[e.Name]
+			return s, ok
+		case *ast.BinaryExpr:
+			return text(e.X)
+		case *ast.CallExpr:
+			if fun, ok := e.Fun.(*ast.SelectorExpr); ok && fun.Sel.Name == "Sprintf" && len(e.Args) > 0 {
+				return text(e.Args[0])
+			}
+		}
+		return "", false
+	}
+	var details []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		ast.Inspect(fn, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "problem" && len(n.Args) == 3 {
+					detail, ok := text(n.Args[2])
+					if !ok {
+						t.Errorf("%s: cannot read the Detail of this problem", fset.Position(n.Pos()))
+					}
+					details = append(details, detail)
+				}
+			case *ast.CompositeLit:
+				if name, ok := n.Type.(*ast.Ident); ok && name.Name == "Problem" && fn.Name.Name != "problem" {
+					t.Errorf("%s: %s makes a Problem outside the reader's problem method", fset.Position(n.Pos()), fn.Name.Name)
+				}
+			}
+			return true
+		})
+	}
+	if len(details) == 0 {
+		t.Fatal("UNKNOWN: parse.go holds no call of the reader's problem method, so no kind of problem was read")
+	}
+	slices.Sort(details)
+	return slices.Compact(details)
 }
 
 // readFiles reads every file directly in dir, by name, as the parser takes them.

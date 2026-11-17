@@ -21,6 +21,8 @@ func (v *ids) Set(id string) error { *v = append(*v, id); return nil }
 // The blocks do not pass through runnerlog.Say: a change copies them into the files byte for byte
 // (R2: "A change copies that output into the files, and no agent types it"). Each is its node's
 // block as the approved spec holds it, which ReadApproved has checked is the block Print writes.
+// So the output of print must not reach a CI log: a line of a block that starts with "::" would be
+// a workflow command there.
 func runPrint(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("print", flag.ContinueOnError)
 	approvedFlag := flags.String("approved", "", "the approved spec, in the form of approved.json")
