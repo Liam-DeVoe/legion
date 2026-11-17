@@ -216,17 +216,16 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 					count int
 					agent string
 					at    time.Time
-					end   bool
 					run   StepRun
 				}{
-					{"LEGION-1", 3, "legion-legion-legion-1-tester", at, false, RunOpen},
-					{"LEGION-2", 5, "legion-legion-legion-2-tester", at.Add(time.Hour), true, RunEnded},
-					{"LEGION-3", 2, "legion-legion-legion-3-tester", at.Add(2 * time.Hour), false, RunUncounted},
+					{"LEGION-1", 3, "legion-legion-legion-1-tester", at, RunOpen},
+					{"LEGION-2", 5, "legion-legion-legion-2-tester", at.Add(time.Hour), RunEnded},
+					{"LEGION-3", 2, "legion-legion-legion-3-tester", at.Add(2 * time.Hour), RunUncounted},
 				} {
 					for range seed.count {
 						raise(t, tx, seed.key, testing3, seed.agent, seed.at)
 					}
-					if seed.end {
+					if seed.run == RunEnded {
 						if _, mark, err := store.EndStepStart(t.Context(), tx, seed.key, testing3); err != nil || mark != EndedNow {
 							t.Fatalf("end the run of %s = %d, %v", seed.key, mark, err)
 						}
