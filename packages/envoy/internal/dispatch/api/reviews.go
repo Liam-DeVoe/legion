@@ -594,6 +594,15 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A request opened on a project document, or on an issue nobody holds, waits on the project's
+	// default, which the one writer of its thread reads to deliver it (inboxwrite.Record): the
+	// project's row is held `for share` from here, after the owner row and before the open request
+	// is read and locked (docs.OpenApprovalAskForDocuments) and anything is written, so a move of
+	// the default either committed already or waits for this request (inboxwrite.HoldDefault).
+	if err := inboxwrite.HoldDefault(r.Context(), tx, owner.IssueKey, owner.ArtifactID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if documentPlays(artifact, model.ArtifactRolePlan) {
 		writeError(w, "PLAN_APPROVED_BY_REVIEW", http.StatusConflict,
 			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)")

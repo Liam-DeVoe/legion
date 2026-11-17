@@ -91,6 +91,14 @@ const (
 	// thread (inboxwrite.Record) takes after the write's event: every row of the thread in one
 	// pass, then the rows of the people the write reached, then the writer's own.
 	threadStep
+	// projectStep is the row of the project whose default assignee a write reads to deliver an
+	// ask, `for share` (inboxwrite.HoldDefault): after the owner row, before every node, event,
+	// tuple, asks row and thread row of the write.
+	projectStep
+	// askStep is an asks row a write that decides who an ask waits on locks `for no key update`
+	// (lockAskForTransition, inboxwrite.MoveWaiting): after the owner row and the project row,
+	// before every node and tuple of the write.
+	askStep
 )
 
 // The lock modes a step shows in pg_locks: `for update`, `for no key update` and a foreign key's
@@ -154,6 +162,9 @@ type storeWriterRun struct {
 	made graphstore.Node
 	// answered is the comment a reply answers, and empty for every other path.
 	answered string
+	// ask is the ask a write deciding who it waits on takes the row of, and empty for every
+	// other path.
+	ask string
 	// write runs the path on the rig's one connection, to its commit, and answers how it ended.
 	write func() error
 }
@@ -652,7 +663,10 @@ func (s *statementStarts) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQue
 // naming it, and the event before every step appending tuples that carry it. The fourth, several
 // nodes of one write in ascending (kind, id), is graphstore's own (writeNodes, WriteArms), and
 // every node step here writes one node. A user_threads row of the write's thread comes after the
-// event, as the one writer of a thread runs after it (inboxwrite.Record).
+// event, as the one writer of a thread runs after it (inboxwrite.Record). The project row a write
+// reads the default assignee of comes after its owner row, and before every node, event, tuple,
+// asks row and thread row; and an asks row a write deciding who an ask waits on locks comes before
+// every node and tuple (inboxwrite.HoldDefault, inboxwrite.MoveWaiting).
 func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
@@ -681,6 +695,14 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 		}
 		if step.order == threadStep && (event < 0 || event > index) {
 			t.Errorf("%s takes %s, a row of its thread, before it appends its event: the one writer of a thread runs after the event", writer.name, step.name)
+		}
+		for _, earlier := range writer.steps[:index] {
+			switch {
+			case step.order == projectStep && earlier.order != ownerStep && earlier.order != projectionStep:
+				t.Errorf("%s takes %s, the project row it reads the default of, after %s: the project row comes after the owner row and before every node, event, tuple, asks row and thread row", writer.name, step.name, earlier.name)
+			case step.order == askStep && (earlier.order == nodeStep || earlier.order == tupleStep || earlier.order == threadStep):
+				t.Errorf("%s takes %s, an asks row, after %s: an asks row comes before every node and tuple", writer.name, step.name, earlier.name)
+			}
 		}
 	}
 }

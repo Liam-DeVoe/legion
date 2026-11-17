@@ -32,8 +32,8 @@ const (
 	// row of the thread sees the row move.
 	Replies Arm = iota + 1
 	// Opens is an ask's create: the asker takes part in the thread the ask opens and keeps a row
-	// of it, read through the ask, and nobody else is told of it here (the person it waits on is
-	// the assignee arm's).
+	// of it, read through the ask, and the person the ask waits on is reached by it and takes part
+	// in it (the assignee arm, waitingOnTuples); nobody else is told of it.
 	Opens
 	// TakesPart is a write that takes part and delivers nothing: a decline, which closes an ask
 	// with no answer and moves no row of anybody's.
@@ -61,6 +61,12 @@ type Write struct {
 	// no row, while its participation and its deliveries are tuples all the same.
 	IssueKey, ArtifactID *string
 	Project              string
+	// Starter is, for a session's reply under a direct conversation, the person who started it:
+	// who wrote its root, a message on no issue a person sent to a session (R2's
+	// direct-conversation arm, which user_threads_message never reached, returning on a message
+	// on no issue). The reply reaches them whether or not their participates_in stands. "" for
+	// any other write.
+	Starter string
 	// ask is the answered ask as its answer writer read it before the update that writes the
 	// answer (ReadAsk), whose catch-up Record appends first.
 	ask *Ask
@@ -136,7 +142,9 @@ func (w Write) keptLogin() (string, bool) {
 //     owedBy): the participation and the citations of the ask's create where the ask's marker
 //     is null, and the participation of an older build's answer the ask holds;
 //  1. participates_in from A to T, whether A is a person or a session and whether or not T's
-//     owner resolves to a project;
+//     owner resolves to a project; and, for an ask's create, the assignee arm: participates_in
+//     from the person the ask waits on to it and delivered_to from it to them (waitingOnTuples),
+//     which raises no version (P13);
 //  2. for a reply, every user_threads row of T, `for no key update` in ascending login order, in
 //     one pass (lockThread) - which takes the rows of the catch-up's persons with them, since
 //     each is a row of T - and the live participant set, read in the same statement: the current
@@ -146,7 +154,8 @@ func (w Write) keptLogin() (string, bool) {
 //     passing; no column of a marked row is read to decide anything;
 //  3. for a reply, through graphstore.ToPerson, one delivered_to from the write's node to each
 //     person in that set but A, so a person never draws their own write (outbox's
-//     recipientFilter.keep), beside every delivered_to the catch-up owes;
+//     recipientFilter.keep), beside every delivered_to the catch-up owes and, for a session's
+//     reply under a direct conversation, the one to the person who started it (w.Starter);
 //  4. for a reply, the move of each row of T a person of that set but A holds: replied_at,
 //     last_reply_id, version + 1 and dismissed_at cleared, and, for each person of that set but A
 //     whose dismissed tuple into T stands, the retraction of that tuple;
@@ -192,21 +201,30 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		}
 	}
 
-	// 1. A takes part in T.
+	// 1. A takes part in T. An ask's create also reaches the person the ask waits on, who takes
+	// part in it too, in the same call.
+	var people []graphstore.Tuple
 	if named {
-		taking := []graphstore.Tuple{{
+		taking := graphstore.Tuple{
 			FromKind: authorKind, FromID: authorID, Kind: graphstore.TupleParticipatesIn,
 			ToKind: thread.kind, ToID: thread.id,
 			At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
-		}}
-		if person != "" {
-			err = graphstore.ToPerson(ctx, tx, taking)
-		} else {
-			err = graphstore.Write(ctx, tx, nil, taking)
 		}
-		if err != nil {
+		if person != "" {
+			people = append(people, taking)
+		} else if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{taking}); err != nil {
 			return fmt.Errorf("record that %s/%s takes part in %s/%s: %w", authorKind, authorID, thread.kind, thread.id, err)
 		}
+	}
+	if w.Arm == Opens {
+		waiting, err := waitingOn(ctx, tx, w.NodeID)
+		if err != nil {
+			return err
+		}
+		people = append(people, waitingOnTuples(w.NodeID, waiting, person, w.At, w.Who, event)...)
+	}
+	if err := graphstore.ToPerson(ctx, tx, people); err != nil {
+		return fmt.Errorf("record who takes part in %s/%s by %s/%s: %w", thread.kind, thread.id, w.NodeKind, w.NodeID, err)
 	}
 	if w.Arm == TakesPart {
 		return nil
@@ -233,24 +251,34 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		}
 
 		// 3. The write reaches every other participant: each whose participates_in stands, and
-		// each who holds a row of T the marker test passes.
+		// each who holds a row of T the marker test passes; and a session's reply reaches the
+		// person who started its direct conversation, whether or not they still take part.
 		deliveries := owed.deliveries
 		var moved, dismissed []string
+		starterDelivered := false
+		delivered := func(login string) {
+			deliveries = append(deliveries, graphstore.Tuple{
+				FromKind: w.NodeKind, FromID: w.NodeID, Kind: graphstore.TupleDeliveredTo,
+				ToKind: graphstore.KindPerson, ToID: login,
+				At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
+			})
+		}
+		starter := model.CanonicalLogin(w.Starter)
 		for _, member := range members {
 			if member.login == person || !(member.takesPart || (member.row && !member.marked)) {
 				continue
 			}
-			deliveries = append(deliveries, graphstore.Tuple{
-				FromKind: w.NodeKind, FromID: w.NodeID, Kind: graphstore.TupleDeliveredTo,
-				ToKind: graphstore.KindPerson, ToID: member.login,
-				At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
-			})
+			delivered(member.login)
+			starterDelivered = starterDelivered || model.CanonicalLogin(member.login) == starter
 			if member.row {
 				moved = append(moved, member.login)
 			}
 			if member.dismissed {
 				dismissed = append(dismissed, member.login)
 			}
+		}
+		if starter != "" && starter != person && !starterDelivered {
+			delivered(starter)
 		}
 		if err := graphstore.ToPerson(ctx, tx, deliveries); err != nil {
 			return fmt.Errorf("deliver %s/%s to the participants of %s/%s: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)

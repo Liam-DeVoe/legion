@@ -235,6 +235,14 @@ var storeWriteCallSites = []string{
 	// TestEveryObjectNodeWriterTakesTheStoreLockOrder hold the comment, reply, ask and message
 	// paths to its user_threads step.
 	"inboxwrite/record.go#Record",
+	// The move of the person open asks wait on (dispatch://INFRA-1152 R2, inboxwrite.MoveWaiting),
+	// which patchIssue's assignee, putAskAskedOf, putProjectDefaultAssignee and the reopen's
+	// restore of withdrawn asks run after their event: the asks rows it moves locked `for no key
+	// update` in ascending id, after the owner row and the project row its caller took, then one
+	// read of those asks and of whom each one's delivery stands to, then one ToPerson call, which
+	// writes the person nodes `do nothing` before the tuples, in ascending (kind, id). api's
+	// TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder holds the three moves to those steps.
+	"inboxwrite/waiting.go#MoveWaiting",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

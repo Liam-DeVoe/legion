@@ -671,6 +671,29 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
+	// A block no ask row of this document names opens an ask, which on a project document, or on
+	// an issue nobody holds, waits on its project's default, read to deliver it when its thread is
+	// recorded (recordThreads, inboxwrite.Record). The project's row is held `for share` before
+	// the document's asks rows are locked below and before anything is written, so a move of the
+	// default - which holds that row first and then the asks rows it moves - either committed
+	// already or waits for this settlement (inboxwrite.HoldDefault). Which blocks are new is read
+	// with no lock: the owner row this settlement holds stops every other writer of this
+	// document's asks.
+	if !issueClosed && len(blocks) > 0 {
+		opens, err := opensAskBlock(ctx, tx, artifactID, blocks)
+		if err != nil {
+			return settlementReconciliation{}, err
+		}
+		if opens {
+			var document *string
+			if owner.IssueKey == nil {
+				document = &artifactID
+			}
+			if err := inboxwrite.HoldDefault(ctx, tx, owner.IssueKey, document); err != nil {
+				return settlementReconciliation{}, err
+			}
+		}
+	}
 	rows, err := loadAskBlocks(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
@@ -1296,15 +1319,42 @@ func parseAskBlockLeniently(node *pmdoc.Node) (askBlock, error) {
 	return askBlock{node: node, id: blockID, question: question, options: options, multiple: multiple, urgency: urgency}, nil
 }
 
+// opensAskBlock is whether one of blocks, the readable ask blocks of document artifactID, has no
+// ask row naming it, so a settlement of that document may open an ask (reconcileAskBlocks). A copy
+// of another document's ask has no row here either and opens none, so the answer may say yes where
+// the settlement then opens nothing; it never says no where the settlement opens one. It reads with
+// no lock.
+func opensAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, blocks []askBlock) (bool, error) {
+	ids := make([]string, len(blocks))
+	for index, block := range blocks {
+		ids[index] = block.id
+	}
+	var opens bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select 1 from unnest($2::text[]) as named (id)
+			where not exists (select 1 from asks a where a.block_artifact_id = $1 and a.block_id = named.id)
+		)
+	`, artifactID, ids).Scan(&opens); err != nil {
+		return false, fmt.Errorf("read which ask blocks of document %s have no ask: %w", artifactID, err)
+	}
+	return opens, nil
+}
+
 // loadAskBlocks reads and locks every ask anchored to a block of this document. `for no key
 // update` by the rule at lockDocumentRoom: settlement holds these rows across the room lock, and
 // nothing deletes an ask or writes a key column - reconciliation here and the ask routes update
 // question, options, multiple, urgency, edited_at, state, answer and resolution, and `asks.id` is
-// the key.
+// the key. The rows are locked in ascending id, the order every write locking several asks rows
+// takes them in (the close's withdrawal, a move of who asks wait on, inboxwrite.MoveWaiting), so
+// a settlement and a move of the project's default over two asks of one document cannot each
+// hold one the other waits on.
 func loadAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`
-		from asks a where a.block_artifact_id = $1 and a.block_id is not null for no key update
+		from asks a where a.block_artifact_id = $1 and a.block_id is not null
+		order by a.id
+		for no key update
 	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("load ask blocks: %w", err)

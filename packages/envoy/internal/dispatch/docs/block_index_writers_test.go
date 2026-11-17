@@ -711,12 +711,21 @@ var indexPasses = map[string]string{
 	// The one writer of the threads a person takes part in and of what reaches them there
 	// (dispatch://INFRA-1152 D3): it reads the write its caller stored, the thread that write's head
 	// pointer tuples name, and who takes part in that thread - the participates_in tuples into its
-	// root, and the login of each user_threads row of it the marker test passes - and appends the
-	// participation and the deliveries of that one write, through graphstore.ToPerson. An answer's
-	// catch-up reads its ask's own row and refs rows while their markers are null, which is the
-	// marker test passing. It reads no marked row's columns to decide what to write, so it mends
-	// nothing and is no repair.
-	"inboxwrite/record.go#Record": "the write its caller stored and the event that recorded it, the thread's participates_in tuples and the rows of the thread the marker test passes",
+	// root, and the login of each user_threads row of it the marker test passes - and, for an
+	// ask's create, the person the ask waits on (asks.AskedOfPersonExpression over the ask's own
+	// row and its issue's and project's) - and appends the participation and the deliveries of that
+	// one write, through graphstore.ToPerson. An answer's catch-up reads its ask's own row and refs
+	// rows while their markers are null, which is the marker test passing. It reads no marked
+	// row's columns to decide what to write, so it mends nothing and is no repair.
+	"inboxwrite/record.go#Record": "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples and the rows of the thread the marker test passes",
+	// The move of the person open asks wait on (dispatch://INFRA-1152 R2): it locks the asks the
+	// write that changed who they wait on may have moved, and reads of each who it waits on now and,
+	// in the store, whom its delivery stands to - whether each such person's delivery and
+	// participation stand, and what else holds them there - and appends the delivery and
+	// participation of the person it waits on and the retractions of the others' through
+	// graphstore.ToPerson. It reads the store to state what the store holds next, never a
+	// projection to mend it, so it is no repair.
+	"inboxwrite/waiting.go#MoveWaiting": "the asks its caller's write may have moved, who each waits on, and the tuples of whom its delivery stands to",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

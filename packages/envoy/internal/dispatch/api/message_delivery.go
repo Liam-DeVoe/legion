@@ -1244,8 +1244,13 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	// The session takes no row of its own, so the event names exactly the rows already there.
+	// The session takes no row of its own, so the event names exactly the rows already there. A
+	// reply under a direct conversation reaches the person who started it (R2's
+	// direct-conversation arm): Record appends that delivered_to beside the participants' own,
+	// whether or not that person's participation still stands, and user_threads_message, which
+	// returns on a message on no issue, never did.
 	inbox := stored.inbox(reply, actor)
+	inbox.Starter = stored.starter
 	event, err := s.appendEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload))
 	if err != nil {
 		return model.Message{}, model.Event{}, err

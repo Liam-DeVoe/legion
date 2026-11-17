@@ -43,6 +43,13 @@ func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
 			[]storeStep{rig.issueOwnerStep(issueOwnerStatement)}, rig.bodyBlockSteps("the ask", refs.ItemAsk, "insert into asks ("),
 			[]storeStep{ownRowStep()},
 			"/api/v1/issues/"+rig.issue+"/asks", map[string]any{"question": "Does the lock order hold?"}),
+		rig.projectDefaultReader(rig.objectCreate("createAskFor on a project document", "the ask", "asks", "insert into asks (",
+			[]storeStep{
+				ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document),
+				rig.projectDefaultStep(),
+			}, rig.bodyBlockSteps("the ask", refs.ItemAsk, "insert into asks ("),
+			[]storeStep{ownRowStep()},
+			"/api/v1/artifacts/"+rig.document+"/asks", map[string]any{"question": "Does the default's lock order hold?"})),
 		rig.objectCreate("createStoredMessage on an issue", "the message", "messages", "insert into messages (",
 			nil, rig.bodyBlockSteps("the message", refs.ItemMessage, "insert into messages ("),
 			[]storeStep{threadRowsStep(), ownRowStep()},

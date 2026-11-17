@@ -277,6 +277,11 @@ type messageStoreWrite struct {
 	// (graphstore.MessageFacts): its row names no node and who wrote it is not recorded, so the
 	// old arms over messages answer its edges.
 	projected bool
+	// starter is, for a reply on no issue, the person who started the direct conversation it
+	// joins: who wrote its root, where that root is on no issue, was sent to a session and was
+	// written by a person, by their canonical login; "" for any other message. A session's reply
+	// reaches them (insertSessionReply, inboxwrite.Write.Starter).
+	starter string
 }
 
 // rowNode is the node columns the message's row names in its insert: the message kind and the
@@ -302,7 +307,8 @@ func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inbo
 // among its facts (graphstore.MessageFacts). A message on an issue is in that issue's project. A
 // message on none is between its thread's parties (graphstore.ThreadParties): those of the root it
 // answers, read up in_reply_to as messageThreadCTE walks it, or, for a message that answers
-// nothing, its own author and target.
+// nothing, its own author and target. A reply on no issue also learns from that root who started
+// its direct conversation, where it joins one (directStarter).
 //
 // pages is, for a write that stores several messages, the page each of their targets hangs from,
 // which that write resolved and wrote before any of them ("" for a target that hangs from none;
@@ -310,7 +316,7 @@ func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inbo
 // writing it again, so the write takes every page once, in ascending (kind, id), rather than one
 // per message in the order it writes them. A write of one message passes nil.
 func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow, author model.Actor, pages map[string]string) (messageStoreWrite, error) {
-	var project string
+	var project, starter string
 	var parties []string
 	switch {
 	case row.IssueKey != "":
@@ -321,10 +327,11 @@ func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow,
 	case row.InReplyTo != "":
 		var rootAuthor []byte
 		var rootTarget *string
+		var rootIssueless bool
 		if err := tx.QueryRow(ctx, messageThreadCTE+`
-			select m.author, m.target from messages m join thread t on t.id = m.id
+			select m.author, m.target, m.issue_key is null from messages m join thread t on t.id = m.id
 			where t.in_reply_to is null
-		`, row.InReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+		`, row.InReplyTo).Scan(&rootAuthor, &rootTarget, &rootIssueless); err != nil {
 			return messageStoreWrite{}, fmt.Errorf("read the thread root of a reply to message %s: %w", row.InReplyTo, err)
 		}
 		var root model.Actor
@@ -332,6 +339,7 @@ func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow,
 			return messageStoreWrite{}, fmt.Errorf("decode the author of the thread root of message %s: %w", row.InReplyTo, err)
 		}
 		parties = graphstore.ThreadParties(root, rootTarget)
+		starter = directStarter(root, rootTarget, rootIssueless)
 	default:
 		var target *string
 		if row.Target != "" {
@@ -356,7 +364,7 @@ func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow,
 		}
 		row.Page = page
 	}
-	write := messageStoreWrite{}
+	write := messageStoreWrite{starter: starter}
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&write.at); err != nil {
 		return messageStoreWrite{}, fmt.Errorf("read the time of message %s: %w", row.ID, err)
 	}
@@ -373,6 +381,22 @@ func writeMessageNode(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow,
 	}
 	write.written, write.projected = stored, projected
 	return write, nil
+}
+
+// directStarter is the person who started a direct conversation, by their canonical login: the
+// author of its root, where that root is on no issue, was sent to a session and was written by a
+// person - the root unreadDirectRepliesCTE's direct_roots reads. "" for any other root.
+func directStarter(root model.Actor, target *string, issueless bool) string {
+	if !issueless || target == nil {
+		return ""
+	}
+	if route, err := model.ParseRoute(*target); err != nil || route.Kind != "session" {
+		return ""
+	}
+	if kind, id, named := graphstore.AuthorOf(root); named && kind == graphstore.KindPerson {
+		return id
+	}
+	return ""
 }
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's

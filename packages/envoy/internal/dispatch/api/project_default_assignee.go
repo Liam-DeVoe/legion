@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 )
 
 // A project's default assignee is the last step of the chain that decides who a question
@@ -146,6 +148,19 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// Every open ask that falls through to the default now reaches the new default, who takes
+	// part in its thread, and whoever its delivery stood to loses it - and their part in the
+	// thread, where nothing of their own holds them there - under this write's event, in the same
+	// four statements however many asks it moves (dispatch://INFRA-1152 R2's move). The project's
+	// row is held `for no key update` since the first read above, so a create that falls through
+	// to the default, which holds that row `for share` (inboxwrite.HoldDefault), committed before
+	// this write read anything or waits for it.
+	if previous != assignee {
+		if err := inboxwrite.MoveWaiting(r.Context(), tx, inboxwrite.DefaultMoved(key, event)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

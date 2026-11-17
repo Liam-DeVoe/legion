@@ -83,8 +83,10 @@ end`
 // the open ask the Replies list leaves out, since the Inbox already lists it (myRepliesOwner in
 // api/replies.go), the read the hand-on route takes before it writes, which is whom the question
 // waited on until then (putAskAskedOf in api/ask_asked_of.go), and the person a write that opens
-// a question answers with (askWaitingOnPerson below). A seventh, outside this package, is the
-// answer's catch-up of an ask an older build created (inboxwrite.ReadAsk).
+// a question answers with (askWaitingOnPerson below). Three more, outside this package, are the
+// answer's catch-up of an ask an older build created (inboxwrite.ReadAsk), the create's
+// delivery to the person the ask waits on (inboxwrite.Record), and the move of that person by the
+// writes that change who an ask waits on (inboxwrite.MoveWaiting).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three
 // the way askReadFrom does, the ask's own document among them: a question owned by an issue has

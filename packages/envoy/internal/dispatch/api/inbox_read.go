@@ -481,7 +481,30 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // own row. The backfill marks a row under that same lock, so no delivery falls on both sides of a
 // row's mark (D4). Two writes into one thread queue at their owner row before either reaches this
 // pass, so the pass orders nothing between writers; it is what holds a mark to the deliveries
-// around it.
+// around it. The delivered_to an ask's create appends to the person the ask waits on, with its
+// participation, and the ones a move of that person appends (inboxwrite.MoveWaiting) take no
+// user_threads row first: neither moves a row, and the mark counts only the deliveries a reply
+// caused (P13).
+//
+// Who an ask waits on (asks.AskedOfPersonExpression) is read from three rows, and each write that
+// decides a delivery by it holds the ones it reads, so the delivered person is the one that
+// expression names once every such write has committed. The ask's asked_of and its issue's
+// assignee are written under the owner row, which every create and every move of an ask on that
+// owner takes first. The project's default is written under the project's row `for no key
+// update`, which putProjectDefaultAssignee takes first, as its owner. A write that reads the
+// default to deliver an ask - a create that falls through to it, an issue's assignee cleared, a
+// reopen restoring its withdrawn asks - takes that project's row `for share`
+// (inboxwrite.HoldDefault) after its owner rows, the order events.Broker.LockOwners takes an
+// issue's owner and a project's, and before any asks row, node or tuple it writes, settlement
+// before the document's asks rows (docs' reconcileAskBlocks). Then a move of who asks wait on
+// (inboxwrite.MoveWaiting) locks the asks rows it moves `for no key update`, in ascending id,
+// after its owner row and its project row and before the person nodes and tuples it writes, and
+// reads who each ask waits on, and whom its delivery stands to, in a statement after that lock,
+// so a move it waited for is read as it committed. Every write locking several asks rows takes
+// them in that ascending id order: the close's withdrawal and the reopen's restore
+// (readOpenIssueAsks, restoreIssueAsksTx), a settlement's (docs' loadAskBlocks) and the move.
+// No writer locks an asks row `for no key update` and then a project's row, so the project's row
+// always comes first; a snooze's foreign key takes its ask `for key share`, which no move waits on.
 //
 // The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
 // sequence of its own. Its writers do not all run their steps in one order - one learns its

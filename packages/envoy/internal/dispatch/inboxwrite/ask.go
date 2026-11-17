@@ -120,7 +120,8 @@ type owed struct {
 // Where the marker is null the ask's create owes its tuples, all under the ask's own create event,
 // ask.opened, and dated at its created_at, as the backfill dates them: the asker's
 // participates_in; for an ask that was open until this answer, the participates_in and the
-// delivered_to of the person it waits on; and the ask's citations, taken from the ask's own refs
+// delivered_to of the person it waits on, as this build's create appends them (waitingOnTuples,
+// which reaches no asker by their own ask); and the ask's citations, taken from the ask's own refs
 // rows as they are stored rather than by indexing the question again - a fresh index resolves
 // bare keys against the database as it stands (refs' Reader), and an answer rewrites no question
 // - each row marked tuples_stored as its mentions tuple is stated (markCitations). Where the ask
@@ -157,10 +158,14 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 		if kind, id, named := graphstore.AuthorOf(ask.author); named && graphstore.AddressFits(id) {
 			takesPart(kind, id, ask.createdAt, ask.author, ask.opened)
 		}
-		if ask.state == asks.StateOpen && ask.waitingOn != "" {
-			waiting := model.CanonicalLogin(ask.waitingOn)
-			takesPart(graphstore.KindPerson, waiting, ask.createdAt, ask.author, ask.opened)
-			delivered(waiting, ask.createdAt, ask.author, ask.opened)
+		if ask.state == asks.StateOpen {
+			for _, tuple := range waitingOnTuples(ask.id, ask.waitingOn, askerOf(ask.author), ask.createdAt, ask.author, ask.opened) {
+				if tuple.Kind == graphstore.TupleDeliveredTo {
+					tuples.deliveries = append(tuples.deliveries, tuple)
+				} else {
+					tuples.people = append(tuples.people, tuple)
+				}
+			}
 		}
 		if ask.node != nil {
 			cited, err := markCitations(ctx, tx, ask.id, *ask.node, ask.opened)

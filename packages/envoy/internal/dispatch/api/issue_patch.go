@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -356,6 +357,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An issue left to nobody hands its asks to its project's default, which the move below reads
+	// to deliver them: the project's row is held `for share` from here, after the issue's own row
+	// and before any asks row or node, so a move of the default either committed already or waits
+	// for this write (inboxwrite.HoldDefault).
+	if assigneeProvided && assignee == nil {
+		if err := inboxwrite.HoldDefault(r.Context(), tx, &key, nil); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if previousClaim != nil {
 		// Closing releases the claim through the one writer of those columns.
 		if err := writeIssueClaim(r.Context(), tx, key, nil); err != nil {
@@ -529,6 +540,17 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
+	// The issue's open asks handed to nobody follow its assignee, so each now reaches the new
+	// assignee, who takes part in its thread, and whoever its delivery stood to loses it - and
+	// their part in the thread, where nothing of their own holds them there - under the issue's
+	// own event (dispatch://INFRA-1152 R2's move). A write that closes the issue moves nothing: its
+	// asks stand on a closed issue, which retracts nothing until its reopen restores them.
+	if movedAssignees != nil {
+		if err := inboxwrite.MoveWaiting(r.Context(), tx, inboxwrite.Reassigned(key, event)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if previousClaim != nil {
 		released, err := s.appendEvent(r.Context(), tx, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {

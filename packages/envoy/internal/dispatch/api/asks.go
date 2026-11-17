@@ -198,6 +198,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An ask on a project document, or on an issue nobody holds, waits on its project's default,
+	// which the one writer of its thread reads to deliver it (inboxwrite.Record): the project's row
+	// is held `for share` from here, after the owner row and before anything is written, so a move
+	// of the default either committed already or waits for this create (inboxwrite.HoldDefault).
+	if err := inboxwrite.HoldDefault(r.Context(), tx, owner.IssueKey, owner.ArtifactID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The ask's id and its created_at, drawn before anything is written: the node goes in before
 	// the row, and each relation it states is dated as graph_edges' old arm dates the row, by the
 	// transaction's now(), which is the default the insert below gives created_at.

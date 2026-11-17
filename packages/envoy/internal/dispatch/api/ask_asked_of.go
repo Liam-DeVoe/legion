@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -143,6 +144,15 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		"ask.asked_of", actor, payload,
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The ask now reaches the person it was handed to, who takes part in its thread, and whoever
+	// its delivery stood to loses it - and their part in the thread, where nothing of their own
+	// holds them there - under this write's event (dispatch://INFRA-1152 R2's move). The ask's
+	// row is held since lockAskForTransition, before the person it waited on was read, so a move
+	// of the project's default waits for this write at that row.
+	if err := inboxwrite.MoveWaiting(r.Context(), tx, inboxwrite.HandedOn(ask.ID, event)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -166,10 +167,22 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // closed kept for each document that owes no settlement (doc_closed_edit_sources); a document
 // that owes one keeps it until that settlement deletes it (docs.clearSettlementPending).
 //
+// A closed issue moved no delivery of its withdrawn asks, so once those events are in, and before
+// the documents' versions are followed, each restored ask reaches the person it waits on now and
+// stops reaching whoever its delivery stood to, under the ask.opened that records its restore
+// (inboxwrite.Restored, dispatch://INFRA-1152 R2): an assignee written while the issue was closed,
+// or a default moved then, is where the ask goes.
+// The project's row is held `for share` first, where the issue's asks fall through to its default
+// (inboxwrite.HoldDefault), after the issue's row and before the asks rows, so a move of the
+// default either committed already or waits for the reopen.
+//
 // ctx is joined to tx (Docs.Join); the caller holds the issue's row and has locked every event
 // owner it appends to before calling, and commits through the ledger and publishes the returned
 // events. It answers the restored asks, oldest id first, as the reopen restored them.
 func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) ([]model.Ask, []model.Event, error) {
+	if err := inboxwrite.HoldDefault(ctx, tx, &issueKey, nil); err != nil {
+		return nil, nil, err
+	}
 	withdrawn, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
@@ -203,6 +216,7 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		return nil, nil, err
 	}
 	appended := make([]model.Event, 0, len(restored))
+	reopened := make(map[string]model.Event, len(restored))
 	for index, ask := range restored {
 		// The restore took each ask's answer off, which removes its answer part: index the
 		// parts in the transaction that wrote the row, and let the ask.opened name what that
@@ -232,6 +246,12 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 			return nil, nil, err
 		}
 		appended = append(appended, event)
+		reopened[ask.ID] = event
+	}
+	if len(reopened) > 0 {
+		if err := inboxwrite.MoveWaiting(ctx, tx, inboxwrite.Restored(reopened)); err != nil {
+			return nil, nil, err
+		}
 	}
 	followed, err := s.deps.Docs.FollowClosedIssueVersions(ctx, issueKey)
 	if err != nil {
