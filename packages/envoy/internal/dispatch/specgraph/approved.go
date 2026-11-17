@@ -58,15 +58,55 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
 // after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
 // two nodes, a node with no version, version numbers that do not go up from 1, a version with no
-// time or with one older than the one before it, and a block that is not its node's one block as
-// Print writes it. The error names the node and the version. It reads the whole file, with no
-// bound on its size.
+// time or with one older than the one before it, a block that is not its node's one block as
+// Print writes it, and a node that sets no removed or no partly_checked (approvedFlagsFault). The
+// error names the node and the version. It reads the whole file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
-	var file ApprovedFile
-	if err := decodeJSONFrom(r, &file, approvedForm); err != nil {
+	data, err := io.ReadAll(r)
+	if err != nil {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
 	}
-	return file.approved()
+	var file ApprovedFile
+	if err := decodeJSON(data, &file, approvedForm); err != nil {
+		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
+	}
+	a, err := file.approved()
+	if err == nil {
+		err = approvedFlagsFault(data)
+	}
+	if err != nil {
+		return Approved{}, err
+	}
+	return a, nil
+}
+
+// approvedFlagsFault is the first member removed or partly_checked that a node of data, a text
+// that decodeJSON took in approvedForm, does not set, or nil. After that decode an absent member
+// is false, which reads as a real value: a node that the approved spec removed would read as
+// current, so a check that it removed is judged and can make its statement met where the statement
+// reads unknown, and a statement would lose its "partly checked" (R10). So the presence of the two
+// is read from data, and the exported types stay as they are.
+func approvedFlagsFault(data []byte) error {
+	var flags struct {
+		Nodes []struct {
+			Removed       *bool `json:"removed"`
+			PartlyChecked *bool `json:"partly_checked"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(data, &flags); err != nil {
+		return fmt.Errorf("specgraph: approved spec: %w", err)
+	}
+	for i, n := range flags.Nodes {
+		for _, member := range []struct {
+			name string
+			set  bool
+		}{{"removed", n.Removed != nil}, {"partly_checked", n.PartlyChecked != nil}} {
+			if !member.set {
+				return fmt.Errorf("specgraph: approved spec: it is not in the form %s: the value at %q is not set", approvedForm, fmt.Sprintf("/nodes/%d/%s", i, member.name))
+			}
+		}
+	}
+	return nil
 }
 
 // WriteApproved writes a to w as approved.json (ApprovedFile), the nodes in the order of their ids,
