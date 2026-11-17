@@ -12,6 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -3954,6 +3955,41 @@ test("a row back after its session left mid-send holds the send it left until it
     expect(held()).toBe(false);
     expect(field().value).toBe("");
   } finally {
+    sent.resolve(message("Status please"));
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reader who sends from an Agents row's Send is still writing to that agent: once the send
+// lands, the focus is in the row's box, ready for the next message.
+test("a send from an Agents row's Send gives the focus to the row's box once it lands", async () => {
+  const user = userEvent.setup();
+  const sent = Promise.withResolvers<Message>();
+  const page = renderAgents({ issues: [coreIssue] });
+  page.createAgentMessage.mockImplementationOnce(() => sent.promise);
+  const stopFocusFixup = runFocusFixup();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = () =>
+      within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
+    await type(user, comment(), "Status please");
+    const send = within(planner).getByRole("button", { name: "Send" });
+    act(() => send.focus());
+    await user.keyboard(" ");
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      sent.resolve(message("Status please"));
+      await sent.promise;
+    });
+    await waitFor(() => expect(comment().value).toBe(""));
+    expect(comment()).toHaveFocus();
+  } finally {
+    stopFocusFixup();
     sent.resolve(message("Status please"));
     page.view.unmount();
     page.restore();
