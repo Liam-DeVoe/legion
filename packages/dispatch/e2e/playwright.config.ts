@@ -629,9 +629,11 @@ const visualProjects = [
  *
  * Its origin is its own, a static file server over `web/dist` rather than a Dispatch server, which
  * `globalSetup` starts on a port the kernel chooses and hands to the workers (e2e/stub/server.ts,
- * e2e/stub/origin.ts). That origin is also what gives it a configuration key of its own:
- * `chromium` runs the same engine at the same viewport, and the origin is what tells the two
- * apart.
+ * e2e/stub/origin.ts). `chromium` runs the same engine at the same viewport, so in a worker the
+ * origin is what gives this project a configuration key of its own. In the runner's first
+ * evaluation, which the guard above lists, both origins are still port 0 and the two keys are
+ * one; no row runs twice under it, because `chromium` ignores `stubSpecs` and these projects
+ * match nothing else.
  *
  * `testIgnore: []` because this config's own `testIgnore` holds `stubSpecs`, to keep a project
  * that names neither selector from picking these rows up; a project's `testIgnore` replaces this

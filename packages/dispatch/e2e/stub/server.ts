@@ -14,21 +14,20 @@
  *  to the workers in `stubOriginVariable` (e2e/stub/origin.ts). */
 import { fileURLToPath } from "node:url";
 
-import type { ReportingListener } from "../harness-listeners";
+import { listenerBootMs, type ReportingListener } from "../harness-listeners";
 import { startReporting } from "../harness-start";
 import { Supervisor } from "../local-instance-support";
-import { stubOriginVariable } from "./origin";
+import { stubListening, stubOriginVariable } from "./origin";
 import type { StubSelection } from "./selection";
 
+// No health path: `Bun.serve` returns once the server listens, and the server prints its line
+// after that, so a server that has printed its line answers.
 const staticServer: ReportingListener = {
   argv: ["bun", fileURLToPath(new URL("./static-server.ts", import.meta.url))],
-  // A minute, the budget Playwright's `webServer` gave it.
-  bootMs: 60_000,
-  // The document every row loads first, which is also what the `webServer` waited for.
-  health: "/index.html",
+  bootMs: listenerBootMs,
   id: "stub-static-server",
   name: "the stubbed layer's static file server",
-  report: /^dispatch stub static server: listening http:\/\/127\.0\.0\.1:(\d+)\/ over /,
+  report: new RegExp(`^${stubListening} http://127\\.0\\.0\\.1:(\\d+)/ over `),
 };
 
 /** The server's supervisor while it runs. */

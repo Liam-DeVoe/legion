@@ -21,6 +21,8 @@ import { existsSync, statSync } from "node:fs";
 import { basename, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { stubListening } from "./origin";
+
 /** The build it serves: `web/dist`, or the directory `DISPATCH_E2E_STUB_DIST` names, which
  *  e2e/__tests__/stub-web-server.test.ts sets so that it starts this server with no build of its
  *  own. */
@@ -133,14 +135,13 @@ const server = Bun.serve({
   },
 });
 
-console.log(`dispatch stub static server: listening ${server.url} over ${dist}`);
+console.log(`${stubListening} ${server.url} over ${dist}`);
 
 // The run that started this server can end by a signal that runs no teardown - a SIGTERM to
 // Playwright's runner - and the server is the leader of a process group of its own, so nothing
-// would stop it then. It stops itself instead, once the process that started it is gone.
+// would stop it then. It stops itself instead, once the process that started it is gone: the
+// exit closes its socket.
 const parent = process.ppid;
 setInterval(() => {
-  if (process.ppid === parent) return;
-  server.stop(true);
-  process.exit(0);
+  if (process.ppid !== parent) process.exit(0);
 }, 1000);

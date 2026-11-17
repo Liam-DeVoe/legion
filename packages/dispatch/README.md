@@ -665,14 +665,15 @@ docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 `e2e/seed.ts` empties its database before each scenario. Always set
 `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
 
-The stubbed layer reads three variables of its own, and a run that is not recording needs none
-of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
+The stubbed layer reads three variables a person may set, and a run that is not recording needs
+none of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
 what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_RECORDINGS` points a run at a
 set of recordings other than the committed one, which the nightly's re-record job uses so that
 it can see a committed recording no row writes any more. And `DISPATCH_E2E_STUB_DIST` makes the
 static file server serve another directory than `web/dist`, which its own test uses
-(`e2e/__tests__/stub-web-server.test.ts`). The server takes no port setting: it binds a port the
-kernel chooses, and `globalSetup` hands its origin to the workers in `DISPATCH_E2E_STUB_ORIGIN`.
+(`e2e/__tests__/stub-web-server.test.ts`). Two more are the run's own, which it sets for itself.
+`DISPATCH_E2E_STUB_ORIGIN` is the static file server's origin: the server takes no port setting,
+it binds a port the kernel chooses, and `globalSetup` hands the origin to the workers in it.
 `DISPATCH_E2E_STUB_ONLY=1` is how the config carries "this run is the stubbed layer alone" to the
 rest of the run; set by hand it tells `globalSetup` to start no stack at all, for the whole run
 and real-stack projects included, which then find no server to address.

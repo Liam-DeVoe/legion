@@ -7,12 +7,12 @@
  *  the stubbed layer alone (`e2e/stub/selection.ts`) each return here before a stack's directory
  *  is made or its servers start.
  *
- *  The two things it does BEFORE those returns: it starts the stubbed layer's static file server
- *  for a run that holds a stubbed row (`e2e/stub/server.ts`), since both kinds of run can hold
- *  one; and it refuses a run of more than one worker whose caller set a variable one stack owns
+ *  Before both returns it starts the stubbed layer's static file server for a run that holds a
+ *  stubbed row (`e2e/stub/server.ts`), since both kinds of run can hold one. Before the reuse
+ *  return it refuses a run of more than one worker whose caller set a variable one stack owns
  *  (`refuseStackConflicts`, `e2e/harness-ports.ts`), since returning on such a run is exactly
  *  what would put four workers on one server and one database. A run of the stubbed layer alone
- *  is out of that refusal: it addresses none of them.
+ *  has returned by then: it addresses none of them.
  *
  *  A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) does start a stack, and a small
  *  one: `targetedListeners()` keeps the rows marked `deployed` alone (`e2e/harness-listeners.ts`,

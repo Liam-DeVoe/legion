@@ -14,8 +14,13 @@
  *  recording: the fixture retargets every entry at the run's own base URL before it replays. */
 
 /** The origin of the static file server this run started, `http://127.0.0.1:<port>`, which
- *  e2e/stub/server.ts sets and e2e/global-teardown.ts removes. */
+ *  e2e/stub/server.ts sets once the server serves and removes when it stops it. */
 export const stubOriginVariable = "DISPATCH_E2E_STUB_ORIGIN";
+
+/** How the static file server's listening line begins: e2e/stub/static-server.ts prints it, then
+ *  its URL and the directory it serves, and e2e/stub/server.ts reads the port out of that URL. It
+ *  holds no character that a regular expression treats as special. */
+export const stubListening = "dispatch stub static server: listening";
 
 /** The stubbed layer's origin. Before `globalSetup` has started the server - the config's first
  *  evaluation, in Playwright's runner, where no row runs - it answers port 0, as `e2e/api.ts`'s

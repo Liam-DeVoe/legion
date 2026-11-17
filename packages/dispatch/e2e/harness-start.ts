@@ -61,8 +61,8 @@ const tailLines = 20;
 /** How long a port keeper may take to hold its port. */
 const keeperBootMs = 30_000;
 
-export interface HarnessProcess<Listener extends ReportingListener = HarnessListener> {
-  readonly listener: Listener;
+export interface HarnessProcess {
+  readonly listener: ReportingListener;
   /** The process, the leader of a process group of its own, as `node:child_process` returns it:
    *  `exitCode` and `signalCode` say how it ended. */
   readonly child: ChildProcess;
@@ -101,7 +101,7 @@ export interface HarnessOptions {
   readonly signal?: AbortSignal;
 }
 
-interface Watched<Listener extends ReportingListener> extends HarnessProcess<Listener> {
+interface Watched extends HarnessProcess {
   /** The port on its listening line, once the line has been read. */
   readonly reported: () => number | undefined;
   /** Its last lines of output. */
@@ -110,11 +110,7 @@ interface Watched<Listener extends ReportingListener> extends HarnessProcess<Lis
 
 /** Copies the process's output to `logDir` or this process's stderr, and reads each line for the
  *  listener's report. */
-function watch<Listener extends ReportingListener>(
-  running: PipedRunning,
-  listener: Listener,
-  logDir?: string
-): Watched<Listener> {
+function watch(running: PipedRunning, listener: ReportingListener, logDir?: string): Watched {
   const log = logDir === undefined ? undefined : join(logDir, `${listener.id}.log`);
   const file = log === undefined ? undefined : createWriteStream(log);
   const tail: string[] = [];
@@ -154,7 +150,7 @@ function watch<Listener extends ReportingListener>(
  *  caller set for it, as `FAKE_ENVOY_PORT=4100`, or undefined where the OS chose it: a set port it
  *  could not bind is named as such. */
 function refusal(
-  watched: Watched<ReportingListener>,
+  watched: Watched,
   named: string | undefined,
   what: string
 ): Error {
@@ -175,7 +171,7 @@ function refusal(
  *  server whose build failed is reported at once rather than when the wait runs out. `named` is
  *  as for `refusal`. */
 async function serving(
-  watched: Watched<ReportingListener>,
+  watched: Watched,
   named: string | undefined,
   supervisor: Supervisor
 ): Promise<number> {
@@ -297,7 +293,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   };
   const env: Record<string, string> = {};
   const kept = new Map<HarnessListener, Kept>();
-  const processes: Watched<HarnessListener>[] = [];
+  const processes: Watched[] = [];
   try {
     for (const listener of listeners) {
       if (listener.heldAhead === undefined || given[listener.key].port !== 0) continue;
@@ -308,11 +304,12 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     }
     for (const listener of listeners) {
       const held = kept.get(listener);
+      const set = given[listener.key].port;
       const heldInputs =
         listener.heldAhead === undefined
           ? {}
           : held === undefined
-            ? { [listener.heldAhead.portEnv]: String(given[listener.key].port) }
+            ? { [listener.heldAhead.portEnv]: String(set) }
             : { [listener.heldAhead.keeperEnv]: held.socket };
       const running = supervisor.startPiped(listener.name, listener.argv, dispatchPackage, {
         ...environment,
@@ -322,7 +319,6 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       });
       const watched = watch(running, listener, options.logDir);
       processes.push(watched);
-      const set = given[listener.key].port;
       env[harnessVariables[listener.key]] = String(
         await serving(
           watched,

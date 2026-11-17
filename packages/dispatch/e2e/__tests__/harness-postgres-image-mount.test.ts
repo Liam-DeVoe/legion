@@ -17,11 +17,11 @@
  *  .github/workflows/dispatch-browser.yaml runs it with that job's image. */
 
 import { expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { stackPostgres } from "../harness-postgres";
+import { sqlAt } from "../psql";
 
 const image = (process.env.DISPATCH_E2E_PG_IMAGE ?? "").trim();
 
@@ -52,10 +52,7 @@ for (const [index, row] of rows.entries()) {
         try {
           expect(database.address.startsWith(`${dir}/`)).toBe(row.socketInRunDirectory);
           expect(database.address).not.toContain(",");
-          const answer = execFileSync("psql", [database.url, "-XAtc", "select 1"], {
-            encoding: "utf8",
-          });
-          expect(answer.trim()).toBe("1");
+          expect(await sqlAt(database.url, ["select 1"])).toBe("1");
         } finally {
           await database.stop();
         }
