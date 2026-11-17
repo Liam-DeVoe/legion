@@ -4,6 +4,8 @@ body: |-
   before any of its body, that names the status and says where it points: the origin when it is on
   the API URL's own host and `another host` otherwise, another path of the same address, or no
   target. The reply is not sent on. The refusal of a `SLACK_POST_API_URL` that is no https or
-  loopback URL names it with no user and no password. `@legion/envoy-client/redirect` exports
-  `redirectTarget`, which reads where a 3xx points, and `redirectedTo`, the words a refusal says it
-  with, which name no origin longer than a host name can make.
+  loopback URL names it with no user and no password, and one that does not parse by its length.
+  `@legion/envoy-client/redirect` exports `redirectTarget`, which reads where a 3xx points and
+  cancels its body, `redirectedTo`, the words a refusal says it with, which name no origin longer
+  than a host name can make, and `OWN_PATH_CHECK`, what to check when a client that builds its own
+  path is redirected within the same address.
