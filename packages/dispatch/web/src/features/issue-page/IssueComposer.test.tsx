@@ -18,6 +18,7 @@ import {
 } from "../../__tests__/search-fixture";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
+import { heldSends } from "../conversation/held-sends";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
@@ -1236,6 +1237,100 @@ test("a statement held twice is refused in the page's words, with no Retry and t
   expect(within(composerBox()).queryByRole("button", { name: "Retry" })).toBeNull();
   expect(writeField().value).toBe("Agreed");
   expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`);
+});
+
+// The reviewer's finding PRRT_kwDORFy7ds64Sg45: a comment on a statement refused with
+// `TARGET_AMBIGUOUS` holds the box on its statement only while the held send carries it. The
+// target line's control takes the statement off the held send, its refusal and its words kept,
+// so `r` on another row then aims the box at that row, the refused words kept, and `a` on an
+// open question draws the answer line.
+test("a refused statement let go with the target line's control frees a Reply and an Answer", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, {
+        code: "TARGET_AMBIGUOUS",
+        error: `"${STATEMENT_QUOTE}" matches 2 places; pass a zero-based occurrence, or quote more of the surrounding text`,
+      })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  expect(await within(composerBox()).findByRole("alert")).toHaveTextContent(
+    ANSWER_LINES.statement_twice
+  );
+
+  // The target line's control: the box writes on the issue.
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(page.writer().statement).toBeUndefined();
+
+  // `r` on bob's comment: a reply to it, the refused words still the box's draft.
+  await page.press(user, "comment-1", "r");
+  await waitFor(() =>
+    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`)
+  );
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(page.writer().reply?.id).toBe("comment-1");
+  expect(page.writer().statement).toBeUndefined();
+  expect(writeField().value).toBe("Agreed");
+
+  // `a` on the open question: the answer line.
+  await page.press(user, "ask-1", "a");
+  await waitFor(() => expect(answerField()).toHaveFocus());
+  expect(targetWords()).toBe(`${CONTROL_LABELS.answering} Question ask-1?`);
+  expect(page.writer().answer?.askId).toBe("ask-1");
+  expect(page.writer().statement).toBeUndefined();
+
+  // The refusal is still held, with no statement left on it.
+  const held = heldSends(page.client).get(["issue-composer", KEY]);
+  expect(held?.status).toBe("refused");
+  expect(held?.request.statement).toBeUndefined();
+});
+
+// The reviewer's finding PRRT_kwDORFy7ds64Sg4-: a reply Dispatch refused keeps the box on the
+// comment it answers when the reader presses `r` on a statement, as a Reply on another row does
+// (`redirectedReplyTarget`), so Enter sends the words again as that reply and never as a comment
+// anchored to the statement.
+test("r on a statement keeps the box on a refused reply, and the send carries the reply", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockRejectedValueOnce(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+      )
+      .mockResolvedValue(
+        commentRecord("comment-9", ALICE, "My reply to bob", { reply_to: "comment-1" })
+      )
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+
+  // `r` on the statement: the box stays on bob's comment, the refused words in it.
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
+  expect(page.writer().reply?.id).toBe("comment-1");
+  expect(page.writer().statement).toBeUndefined();
+  expect(writeField().value).toBe("My reply to bob");
+
+  // Enter sends the words again as the reply, with no statement's anchor.
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  expect(createComment.mock.calls[1]?.[1]).toEqual({
+    body: "My reply to bob",
+    reply_to: "comment-1",
+  });
 });
 
 // The reading list's `issue-page-composer-target`: the target line and the answer's options draw

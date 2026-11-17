@@ -64,8 +64,12 @@ export interface OutlineWriter {
    *  issue and came back, or a reload - that send's document and words alone, which are all a
    *  held send keeps of it; undefined otherwise. It never stands beside a reply, an answer or an
    *  edit: setting it ends them, and setting any of them, or `clear`, ends it. While a comment on
-   *  a statement Dispatch refused is held, every other aim puts the line back on that statement
-   *  instead, until the comment is sent or the reader ends the statement in the line. */
+   *  a statement Dispatch refused is held under the line's name and the held send still carries
+   *  its statement (`SentRequest.statement`), every other aim puts the line back on that
+   *  statement instead (`keptOnStatement`). Ending the statement in the line - the target line's
+   *  control or Escape, which reach `clear` - takes the statement off the held send
+   *  (`HeldSends.readdress`), its refusal and its words kept, so every aim takes effect again and
+   *  a line that mounts again over that send writes on the issue. */
   readonly statement: StatementTarget | StatementAnchor | undefined;
   /** Picks `label` of the options of the question the line answers, or lets it go. */
   readonly toggle: (label: string) => void;
@@ -223,10 +227,14 @@ export function OutlineWriterProvider({
           quote: item.tree === undefined ? item.text : wordsOf(item.tree),
         };
         if (keptOnStatement(store.get(sendKey)?.request.statement, line, target)) return;
-        setReply(null);
+        // A reply Dispatch refused keeps the line on the entry it answers, as a Reply on another
+        // entry does (`redirectedReplyTarget`), so its words are never sent as a comment on the
+        // statement instead.
+        const heldReply = store.get(sendKey)?.request.replyTo ?? null;
+        setReply(heldReply);
         setAnswer(undefined);
         setEditing(undefined);
-        setStatement(target);
+        setStatement(heldReply === null ? target : undefined);
         focus();
         return;
       }
@@ -303,6 +311,15 @@ export function OutlineWriterProvider({
   }, []);
   const clear = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
+    // Ending a statement in the line ends the hold a refused comment on it keeps there
+    // (`keptOnStatement`): the held send loses its statement, its refusal and its words kept,
+    // so the next aim takes effect and a line that mounts again over the send writes on the
+    // issue. The guard above has run, so a send held here was refused.
+    const held = store.get(sendKey)?.request;
+    if (held?.statement !== undefined) {
+      const { statement: _ended, ...onIssue } = held;
+      store.readdress(sendKey, onIssue);
+    }
     setReply(null);
     setAnswer(undefined);
     setEditing(undefined);
@@ -399,14 +416,17 @@ interface StatementLine {
 
 /**
  * Keeps the line on `held`, the statement of a comment Dispatch refused that is held under the
- * line's name, and says whether it did; with none held it does nothing. A press that would aim
- * the line elsewhere - a Reply, an Answer, an option, a change of answer, an Edit - puts the
- * caret back in the line on that statement instead, as a Reply elsewhere is put back on a refused
- * reply (`redirectedReplyTarget`), so the refused words are neither replaced by another target's
- * seed nor sent under another target. A Reply on that same statement, `aimed`, takes its row's
- * whole target. Each caller's `sendingNow` guard runs first, so a send held then was refused.
- * The writer's setters are handed in, so each setter that calls this keeps the dependencies it
- * had.
+ * line's name, and says whether it did. A press that would aim the line elsewhere - a Reply, an
+ * Answer, an option, a change of answer, an Edit - puts the caret back in the line on that
+ * statement instead, as a Reply elsewhere is put back on a refused reply
+ * (`redirectedReplyTarget`), so the refused words are neither replaced by another target's seed
+ * nor sent under another target. A Reply on that same statement, `aimed`, takes its row's whole
+ * target. The hold lasts while the held send carries its statement: with none held it does
+ * nothing, and ending the statement in the line (`clear`, which the target line's control and
+ * Escape reach) takes the statement off the held send, so a refusal the same words would meet
+ * again (`TARGET_AMBIGUOUS`) holds the line only until the reader lets its statement go. Each
+ * caller's `sendingNow` guard runs first, so a send held then was refused. The writer's setters
+ * are handed in, so each setter that calls this keeps the dependencies it had.
  */
 function keptOnStatement(
   held: StatementAnchor | undefined,
