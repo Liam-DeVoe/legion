@@ -7,16 +7,19 @@ name: CI job dispatch-project-access
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The private-projects acceptance drivers (verification v17), from
-# packages/dispatch. project-access-blob.sh (c-blob-unchanged) builds the merge base beside this
-# tree through scripts/e2e/lib/two-builds.sh, seeds each alike on a database of its own with
-# every project public, and fails on any answer a caller reads differently at the two. The merge
-# base is the commit this run tests the change against: the merge group's base, else the first
-# parent of the commit checked out, which on a pull request is the merge commit's base and on a
-# dispatched run the commit before main's tip. two-builds.sh takes its tree with `git archive`,
-# so the checkout holds the whole history (fetch-depth 0). The driver runs on its own rather
-# than under e2e/acceptance/with-harness.sh, whose stack it does not read: it starts both
-# servers and a fake Envoy itself, and reads the service only to make and drop its two
+# The private-projects blob driver (verification v17's c-blob-unchanged), from packages/dispatch.
+# project-access-blob.sh builds the merge base beside this tree through
+# scripts/e2e/lib/two-builds.sh, seeds each alike on a database of its own with every project
+# public, and fails on any answer a caller reads differently at the two. project-access.sh
+# (c-private-unseen) is not run here: it makes a project private through the route, which answers
+# 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus writer the switch needs is in the tree, and its
+# stand-in (--private-by-sql) fails the run on purpose, so it joins this job with that writer.
+# The merge base is the commit this run tests the change against: the merge group's base, else
+# the first parent of the commit checked out, which on a pull request is the merge commit's base
+# and on a dispatched run the commit before main's tip. two-builds.sh takes its tree with
+# `git archive`, so the checkout holds the whole history (fetch-depth 0). The driver runs on its
+# own rather than under e2e/acceptance/with-harness.sh, whose stack it does not read: it starts
+# both servers and a fake Envoy itself, and reads the service only to make and drop its two
 # databases, so the step makes the database it names, with the vector extension the driver's
 # shared prerequisites ask of it.
 #

@@ -4428,13 +4428,13 @@ jobs:
               - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
               - '!packages/envoy/internal/fold/**/*_test.go'
               # END generated
-            # The private-projects acceptance drivers (dispatch-project-access): from
+            # The private-projects blob driver (dispatch-project-access): from
             # packages/dispatch, e2e/acceptance/project-access-blob.sh, which builds ./cmd/dispatch
             # of this tree and of the merge base through scripts/e2e/lib/two-builds.sh and the rig
             # it sources, and starts both beside the browser harness's fake Envoy (e2e/fake-envoy.ts,
             # which imports the contracts). This step holds no copy of the dispatch_server group,
             # and the head build's closure spans most of packages/envoy, so the module is named
-            # whole; what every caller reads is the drivers' subject. filter2 is within reach of
+            # whole; what every caller reads is the driver's subject. filter2 is within reach of
             # the INPUT_FILTERS cap, which is why this filter is in this step.
             dispatch_project_access:
               - *ci_router

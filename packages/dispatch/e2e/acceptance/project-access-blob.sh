@@ -35,7 +35,7 @@
 #
 #   DATABASE_URL=<a loopback PostgreSQL this run may create databases on> \
 #     bash e2e/acceptance/with-harness.sh bash e2e/acceptance/project-access-blob.sh \
-#     [--base-commit <rev> | --base-branch <ref>] [--control private-pub]
+#     [--base-commit <rev> | --base-branch <ref>] [--control private-pub | --control private-header]
 #
 # The harness is not needed: the run starts its own servers and its own fake Envoy, and reads
 # DATABASE_URL only for the server it names, whose database must hold the vector extension (the
@@ -43,8 +43,11 @@
 # HEAD's merge base with --base-branch's ref, the branch the change is built on, origin/main when
 # the run names none, chosen as base_branch_merge_base says. A change stacked on another branch
 # names that branch, so the base holds every route the branch it is built on holds. --control
-# private-pub is the negative control: it
-# makes PUB private in the head's database after the seed, and the run must fail naming a route.
+# private-pub is the negative control of the bodies: it makes PUB private in the head's database
+# after the seed, and the run must fail naming a route. --control private-header is the negative
+# control of the headers: it starts the head with DISPATCH_PRIVATE_PROJECTS=PRIV, so every answer
+# says `Dispatch-Private-Projects: 1` where the declared addition is `0`, and the run must fail
+# naming the header.
 #
 # The ports are the kernel's, chosen at the start. The work directory, under TMPDIR, holds the
 # base tree, both binaries, every process's log and every answer: removed when the run passes,
@@ -85,7 +88,7 @@ forwarded=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --control)
-      [ $# -ge 2 ] || fail "--control takes the control to apply: private-pub"
+      [ $# -ge 2 ] || fail "--control takes the control to apply: private-pub or private-header"
       control=$2
       shift 2
       ;;
@@ -101,8 +104,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$control" in
-  '' | private-pub) ;;
-  *) fail "unknown control '$control': the one control is private-pub" ;;
+  '' | private-pub | private-header) ;;
+  *) fail "unknown control '$control': the controls are private-pub and private-header" ;;
 esac
 
 base_port=$(free_port)
@@ -199,8 +202,10 @@ build_url[head]=$head_url
 begin servers
 database_url=$base_database_url start_server base "$work/bin/dispatch-base" "$base_port" \
   DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1
+head_private=()
+[ "$control" != private-header ] || head_private=(DISPATCH_PRIVATE_PROJECTS=PRIV)
 database_url=$head_database_url start_server head "$work/bin/dispatch-head" "$head_port" \
-  DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1
+  DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1 "${head_private[@]}"
 await_start base "$base_pid" 120 "the base build to answer /healthz" curl -fsS --max-time 2 "$base_url/healthz"
 await_start head "$head_pid" 120 "this build to answer /healthz" curl -fsS --max-time 2 "$head_url/healthz"
 note "the base build serves $base_url, this build $head_url"
@@ -286,16 +291,49 @@ readonly project_reads=(
   "/api/v1/artifacts/{{P} playbook}"
 )
 
+# The response headers are compared too, after a mask that drops each header below, with why it
+# differs between two answers of one build:
+#   date            the answer's own time
+#   content-length  the raw body's length; the bodies are compared masked, and an id or a duration
+#                   the mask names can be a byte longer at one build
+#   etag            a digest of the raw body, which holds each build's own ids
+# The status line is compared as the status. The one declared addition: this build answers
+# `Dispatch-Private-Projects: 0` (KF7) on every answer, which the base does not send, so it must be
+# on this build's answer and is then dropped from it; any other header difference fails, naming
+# the route and the header.
+readonly masked_headers='^(date|content-length|etag):'
+readonly declared_header='dispatch-private-projects: 0'
+
+# keep_headers NAME keeps the last answer's headers, one `name: value` line each with the name in
+# lower case, sorted, the masked ones dropped, as $work/answers/NAME.headers.
+keep_headers() {
+  tr -d '\r' <"$work/headers" | tail -n +2 | sed -E '/^$/d; s/^([^:]+):[[:space:]]*/\L\1\E: /' |
+    grep -v -E "$masked_headers" | sort >"$work/answers/$1.headers" || true
+}
+
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
-# made as CALLER, are the same status and, masked, the same bytes (same_answers).
+# made as CALLER, are the same status and, masked, the same bytes (same_answers), and the same
+# headers but the declared addition.
 compare() {
   local caller=$1 method=$2 path=$3 body=${4:-} build target
   for build in base head; do
     target=$(resolve "$build" "$path")
     send "$build" "$caller" "$method" "$target" "$body"
     keep_answer "$build" "$build"
+    keep_headers "$build"
   done
   same_answers "$caller $method $path" base head
+  if ! grep -qx "$declared_header" "$work/answers/head.headers"; then
+    differed=$((differed + 1))
+    printf '%s %s %s: this build answered no "%s": %s\n' "$caller" "$method" "$path" "$declared_header" \
+      "$(grep -i '^dispatch-private-projects:' "$work/answers/head.headers" || echo 'the header is absent')" >>"$work/differences"
+  fi
+  grep -vx "$declared_header" "$work/answers/head.headers" >"$work/answers/head.headers.compared" || true
+  if ! cmp -s "$work/answers/base.headers" "$work/answers/head.headers.compared"; then
+    differed=$((differed + 1))
+    printf '%s %s %s: the headers differ:\n%s\n' "$caller" "$method" "$path" \
+      "$(diff "$work/answers/base.headers" "$work/answers/head.headers.compared" | grep -E '^[<>]' | sed 's/^</   base:/; s/^>/   this build:/')" >>"$work/differences"
+  fi
 }
 
 begin create-projects
@@ -321,6 +359,8 @@ for caller in "${callers[@]}"; do
   done
 done
 no_difference
+# A run that compared no answer has not passed: the fixed list or the callers held none.
+[ "$compared" -gt 0 ] || fail "no answer was compared: the fixed list or the callers held none"
 note "$compared answers compared, each the same status and the same masked bytes at both builds;" \
   "by this build's status: $(statuses)"
 pass

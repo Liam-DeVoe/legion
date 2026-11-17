@@ -72,10 +72,10 @@ email_of() {
   esac
 }
 
-# send BUILD CALLER METHOD PATH [BODY]: one request to BUILD as CALLER, the status in $status and
-# the body in $work/body. A person (alice, bob, carol) sends their session cookie and the build's
-# origin, as a browser does; any other caller sends the header $work/auth/BUILD-CALLER holds, so no
-# argument list carries a bearer.
+# send BUILD CALLER METHOD PATH [BODY]: one request to BUILD as CALLER, the status in $status, the
+# body in $work/body and the response headers in $work/headers. A person (alice, bob, carol) sends
+# their session cookie and the build's origin, as a browser does; any other caller sends the header
+# $work/auth/BUILD-CALLER holds, so no argument list carries a bearer.
 send() {
   local build=$1 caller=$2 method=$3 path=$4 body=${5:-} url=${build_url[$1]}
   local -a credential data=()
@@ -84,7 +84,7 @@ send() {
     *) credential=(-H "@$work/auth/$build-$caller") ;;
   esac
   [ -z "$body" ] || data=(-H 'Content-Type: application/json' --data-binary "$body")
-  status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
+  status=$(curl -sS -o "$work/body" -D "$work/headers" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
     "${credential[@]}" "${data[@]}" "$url$path" 2>"$work/curl") || status="curl failed: $(<"$work/curl")"
 }
 
@@ -223,11 +223,13 @@ mint_token() {
 #                 (GET /api/v1/agents/{session_id}/answers); and, as a decimal event id, the
 #                 cursor the live socket's events_start frame names, which is the event log's
 #                 head, so it counts every event of the server, a hidden one's included
+#   from          the default start of a delivery window, seven days before the read
+#                 (GET /api/v1/delivery/timeline, /measures)
 #   last_seen     a session's last heartbeat as the listener reports it, in epoch milliseconds
 #                 (GET /api/v1/agents); each server reads a fake listener of its own
 readonly durations='["took_ms","age_seconds"]'
 readonly timings='["keyword_ms","meaning_ms","total_ms"]'
-readonly window_starts='["since"]'
+readonly window_starts='["since","from"]'
 readonly event_cursors='["since"]'
 readonly epoch_instants='["last_seen"]'
 
