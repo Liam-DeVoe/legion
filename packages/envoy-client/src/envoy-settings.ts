@@ -350,9 +350,8 @@ async function natsCredential(
  * server's nonce and replay the signature. So `ENVOY_NATS_URL` gets the file's seed only when it
  * names the file's servers (as a set, compared normalised: `natsServerKey`), and is otherwise
  * refused, turning off inbound messages alone; a seed from the variables goes with whatever servers
- * resolve. The file's `!` token and seed run here, only when Envoy uses them, and the resolution
- * waits for them without holding the event loop; a seed's failing command, too, turns off inbound
- * messages alone.
+ * resolve. The file's `!` token and seed run here, only when Envoy uses them, and a seed's failing
+ * command, too, turns off inbound messages alone.
  *
  * A caller that opens no NATS connection (`nats: false`: the `dispatch` command, `claude-envoy`'s
  * `envoy-send`, pi-legion's `legion.ts` extension) takes no inbound messages and resolves no NATS

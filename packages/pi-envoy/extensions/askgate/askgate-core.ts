@@ -256,6 +256,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { killGroup } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -1805,13 +1806,7 @@ export async function spawnDryRun(
     detached: true,
   });
   let timedOut = false;
-  const kill = () => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group already exited.
-    }
-  };
+  const kill = () => killGroup(child.pid);
   const timer = setTimeout(() => {
     timedOut = true;
     kill();

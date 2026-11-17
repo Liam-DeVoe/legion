@@ -162,16 +162,21 @@ describe("operator_dispatch", () => {
 . "$1"
 operator_dispatch
 printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$operator_dispatch_token" "$operator_dispatch_notice"`;
-  const run = (directory: string, extra: Record<string, string> = {}) =>
+  const run = (
+    directory: string,
+    extra: Record<string, string> = {}
+  ): Bun.SyncSubprocess<"pipe", "pipe"> =>
     Bun.spawnSync(["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh")], {
       cwd: directory,
       env: { HOME: home, PATH: process.env.PATH ?? "", ...extra },
+      stdout: "pipe",
+      stderr: "pipe",
     });
   // The three runs and the old checkout they read are made in a hook, not in this body: the
   // directories they run in are made by the file's own `beforeAll`, which Bun runs first.
-  let on: Bun.SyncSubprocess | undefined;
-  let refused: Bun.SyncSubprocess | undefined;
-  let inOldCheckout: Bun.SyncSubprocess | undefined;
+  let on: Bun.SyncSubprocess<"pipe", "pipe"> | undefined;
+  let refused: Bun.SyncSubprocess<"pipe", "pipe"> | undefined;
+  let inOldCheckout: Bun.SyncSubprocess<"pipe", "pipe"> | undefined;
   const oldCheckout = join(dir, "old-checkout");
   const old = join(oldCheckout, ".opencode", "envoy.json");
   beforeAll(() => {
@@ -209,11 +214,11 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
   });
 
   test("a checkout's .opencode/envoy.json is named on stderr with its rename, and the user file's server is used", () => {
-    expect(inOldCheckout.exitCode).toBe(0);
-    expect(inOldCheckout.stderr.toString()).toBe(
+    expect(inOldCheckout?.exitCode).toBe(0);
+    expect(inOldCheckout?.stderr.toString()).toBe(
       `dispatch: ${old} is not read: mkdir -p ${join(oldCheckout, ".envoy")} && mv ${old} ${join(oldCheckout, ".envoy", "envoy.json")}\n`
     );
-    expect(inOldCheckout.stdout.toString()).toBe(
+    expect(inOldCheckout?.stdout.toString()).toBe(
       `${join(home, ".config", "legion", "envoy.json")}|https://dispatch.internal.example|neutral-1|\n`
     );
   });

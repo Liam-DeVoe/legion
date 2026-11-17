@@ -485,11 +485,13 @@ file and not whatever repository the session started in. It runs in its own proc
 most 10 s, and its trimmed stdout is the value. The read waits for it without holding the process:
 every resolver that can run one (`fileValue`, `fileBearer`, `dispatchSettings`, `envoySettings`,
 `sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`) returns a Promise, so the
-session's timers, deliveries and NATS pings are served while it runs, and a process that exits
-first kills its group. Its
-exit status decides: a command that exited 0 has printed its value even when a process it left
-running holds stdout open; a timeout kills the whole group. It runs only when its section's
-resolver is about to use the value (the section on, no variable overriding the field). Its value
+session's timers, deliveries and NATS pings are served while it runs, and `sessionSettings` runs
+the two sections' commands at once. The command's exit status decides: a command that exited 0
+has printed its value even when a process it left running holds stdout open; a timeout kills the
+whole group, and so does a process that exits (by `process.exit` or an empty event loop, not by a
+signal it does not handle) while the command runs, removing its output with it. It runs only when
+its section's resolver is about to use the value (the section on, no variable overriding the
+field). Its value
 is kept for the process, shared across module instances (one map on `globalThis` under
 `Symbol.for("legion.envoy-config.commands.v1")`, since Oh My Pi loads each extension instance, a
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,

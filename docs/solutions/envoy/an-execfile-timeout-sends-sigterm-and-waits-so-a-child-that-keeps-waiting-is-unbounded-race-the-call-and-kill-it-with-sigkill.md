@@ -106,4 +106,4 @@ exec's own abort listener makes that independent of the runtime's execFile.
 ## Related Issues
 
 - `docs/solutions/testing/bounded-command-must-wait-for-leader-kill-group-and-read-after-kill.md`:
-  the synchronous command runner's bound, which also refuses to wait on descendants.
+  the envoy.json command runner's bound, which also refuses to wait on descendants.

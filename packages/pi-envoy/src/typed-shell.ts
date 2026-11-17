@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import { killGroup, onExit } from "@legion/envoy-client/process-group";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
 /**
@@ -145,32 +146,6 @@ function shellInvocation(command: string): {
  *  Dispatch reply needs, where the answer is text and there is no terminal and nobody at one. */
 type ShellSubprocess = Bun.Subprocess<"ignore", "pipe", "pipe">;
 
-/** Kills every process the command started, which its own process group holds. */
-function killGroup(pid: number): void {
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // The group is already gone.
-  }
-}
-
-/** The process groups of the commands running now. A command's group is its own, so nothing but
- *  a kill ends it: this process holds the only handle on it, and a group left behind when the
- *  process goes is a `!while :; do :; done` nobody stops. The kill runs as this process exits,
- *  for every way out that is not a signal it cannot handle. The CLI leaves a bang command in the
- *  session's own group, under the eye of the person who typed it; the group and this kill are
- *  what answering through a Dispatch reply needs, where a command nobody is watching must not
- *  outlive the session or fill the pod's disk. */
-const runningGroups = new Set<number>();
-let killsGroupsOnExit = false;
-function killGroupsOnExit(): void {
-  if (killsGroupsOnExit) return;
-  killsGroupsOnExit = true;
-  process.on("exit", () => {
-    for (const pid of runningGroups) killGroup(pid);
-  });
-}
-
 /**
  * The first `SHELL_OUTPUT_BYTES` the command printed, from both of its streams in the order they
  * arrived. Everything past that is read and thrown away rather than kept or written anywhere: a
@@ -280,7 +255,6 @@ export async function runShellCommand(
 ): Promise<ShellCommandResult> {
   let child: ShellSubprocess;
   try {
-    killGroupsOnExit();
     // Inside the try with the spawn: the host's own configuration is what answers here, and a
     // shell it cannot resolve is a command that did not start rather than a throw at the caller.
     // Nothing is awaited before this spawn, and nothing may be. The caller reads the session the
@@ -305,7 +279,11 @@ export async function runShellCommand(
       status: `The command could not start: ${messageFor(error)}.`,
     };
   }
-  runningGroups.add(child.pid);
+  // The kill runs as this process exits too: a group left behind when the process goes is a
+  // `!while :; do :; done` nobody stops. The CLI leaves a bang command in the session's own
+  // group, under the eye of the person who typed it; a command answered through a Dispatch reply,
+  // which nobody watches, must not outlive the session or fill the pod's disk.
+  const release = onExit(() => killGroup(child.pid));
   // The reads start before the wait: a pipe nobody empties fills, and a command blocked on a
   // full one would never reach its own end.
   const printed = new BoundedOutput();
@@ -330,7 +308,7 @@ export async function runShellCommand(
     // Whatever the outcome, nothing the command started outlives it - and the pipes close with
     // the last process holding them, which is what ends the reads.
     killGroup(child.pid);
-    runningGroups.delete(child.pid);
+    release();
   }
   await drained(reads);
   const output = printable(printed.text());

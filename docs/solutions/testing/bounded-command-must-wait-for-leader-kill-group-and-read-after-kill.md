@@ -51,28 +51,36 @@ A timeout does not by itself bound a spawned command's resource lifetime. Under 
 
 ## Solution
 
-The synchronous command runner in `packages/envoy-client/src/envoy-config.ts` makes the wait end
-with the shell alone: it sends stdout to a mode-0600 file in a mode-0700 `mkdtemp` directory,
-ignores stdin and stderr, and starts the shell detached. In a `finally` after `Bun.spawnSync`
-returns, it kills the negative PID process group regardless of success, failure, or timeout. Only
-then does it read and validate the output file.
+The command runner in `packages/envoy-client/src/envoy-config.ts` makes the wait end with the
+shell alone: it sends stdout to a mode-0600 file in a mode-0700 `mkdtemp` directory, ignores stdin
+and stderr, and starts the shell detached with `Bun.spawn`, so the read waits for the leader without
+holding the event loop. A timer of its own, not the runtime's spawn timeout (which signals the leader
+alone), kills the group at the bound; a process that exits first kills it too (`onExit`,
+`packages/envoy-client/src/process-group.ts`). After the leader exits it kills the negative PID
+process group regardless of success, failure, or timeout. Only then does it read and validate the
+output file.
 
 ```ts
 const output = path.join(directory, "stdout");
 const fd = openSync(output, "wx", 0o600);
-const result = Bun.spawnSync(["/bin/sh", "-c", command], {
+const child = Bun.spawn(["/bin/sh", "-c", command], {
   stdin: "ignore",
   stdout: fd,
   stderr: "ignore",
-  timeout: COMMAND_TIMEOUT_MS,
   detached: true,
 });
 closeSync(fd);
+let timedOut = false;
+const timer = setTimeout(() => {
+  timedOut = true;
+  killGroup(child.pid);
+}, COMMAND_TIMEOUT_MS);
 try {
-  process.kill(-result.pid, "SIGKILL");
-} catch {
-  // The group is already empty.
+  await child.exited;
+} finally {
+  clearTimeout(timer);
 }
+killGroup(child.pid);
 const value = readFileSync(output, "utf-8").trim();
 ```
 

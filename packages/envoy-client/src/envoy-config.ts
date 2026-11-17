@@ -16,6 +16,7 @@ import type { Subprocess } from "bun";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
+import { killGroup, onExit } from "./process-group";
 import { sendable } from "./secret-file";
 
 /** Where a caller runs: one of the two plugins (and the `dispatch` command, which takes its host
@@ -358,15 +359,6 @@ processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
 const commandRuns: Map<string, Promise<KeptOutcome>> = processGlobal[COMMAND_RUNS] ?? new Map();
 processGlobal[COMMAND_RUNS] = commandRuns;
 
-/** Kills every process of the group `pid` leads, if any is left. */
-function killGroup(pid: number): void {
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // The group is already gone.
-  }
-}
-
 async function runCommand(
   command: string,
   env: EnvoyConfigEnvironment,
@@ -404,15 +396,17 @@ async function runCommand(
       timedOut = true;
       killGroup(child.pid);
     }, COMMAND_TIMEOUT_MS);
-    // A process that exits while the command runs takes the command's group with it, as the
-    // timeout would have.
-    const killOnExit = () => killGroup(child.pid);
-    process.once("exit", killOnExit);
+    // A process that exits while the command runs takes the command's group and its output with
+    // it, as the timeout and the read would have.
+    const release = onExit(() => {
+      killGroup(child.pid);
+      rmSync(directory, { recursive: true, force: true });
+    });
     try {
       await child.exited;
     } finally {
       clearTimeout(timer);
-      process.off("exit", killOnExit);
+      release();
     }
     // Whatever the outcome, nothing the command started outlives it, and so nothing it left
     // running can change the value read below.
@@ -459,8 +453,9 @@ export type CommandMode = "run" | "kept";
  * is a run out of time, while a failure that ended on its own (a non-zero exit, empty output, more
  * than one line) is kept for 60 s, then the command runs again.
  * Its exit status decides, and the wait is for the shell alone: once it exits or runs out of time,
- * or the process exits first, every process of its group still running is killed, then its output
- * is read. A non-zero exit, a timeout or empty output rejects naming the field and the file. A
+ * every process of its group still running is killed, then its output is read; a process that
+ * exits while it runs (not by a signal it does not handle) kills the group and removes the output
+ * first. A non-zero exit, a timeout or empty output rejects naming the field and the file. A
  * value with whitespace or a control character inside it, as written or as printed, rejects too,
  * since it cannot be sent as one bearer. No error carries the value or either stream.
  *

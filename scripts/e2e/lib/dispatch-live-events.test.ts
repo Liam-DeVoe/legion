@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Server } from "bun";
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
 const servers: Server<undefined>[] = [];

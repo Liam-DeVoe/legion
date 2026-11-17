@@ -967,8 +967,8 @@ describe("a ! command in envoy.json", () => {
     return { during, lateMs };
   }
 
-  // A read that waited for its command synchronously held the whole process for as long as the
-  // command ran, up to its 10 s timeout: no timer, delivery or NATS ping of the session was served.
+  // A read leaves the process serving its timers while its command runs: waiting for the command
+  // synchronously would hold every timer, delivery and NATS ping of the session for up to 10 s.
   test("runs while the process goes on serving its timers, for every field that names one", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
@@ -1415,6 +1415,60 @@ describe("a ! command in envoy.json", () => {
     expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
     expect(left).toEqual([]);
   }, 20_000);
+
+  // A read waits for its command without holding the process, so the process can exit while the
+  // command runs: the command's group and its output directory must go with it, as the timeout
+  // would have taken them.
+  test("a process that exits while its command runs takes the command's group and output with it", async () => {
+    const home = tempDir();
+    const scratch = tempDir();
+    const pidFile = path.join(home, "child.pid");
+    const release = path.join(home, "release");
+    const file = writeFile(path.join(home, "envoy.json"), {});
+    const reader = `
+import { existsSync } from "node:fs";
+import { fileValue } from ${JSON.stringify(path.resolve(import.meta.dir, "../envoy-config.ts"))};
+fileValue(process.env.COMMAND, "dispatch.token", process.env.FILE, { PATH: process.env.PATH }).catch(() => {});
+while (!existsSync(process.env.RELEASE)) await Bun.sleep(20);
+process.exit(0);
+`;
+    const child = Bun.spawn([process.execPath, "-e", reader], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        TMPDIR: scratch,
+        COMMAND: `!sleep 60 & echo $! > ${pidFile}; wait`,
+        FILE: file,
+        RELEASE: release,
+      },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    let pid = 0;
+    try {
+      // A real process on the platform's clock: the command writes its child's pid when it has
+      // started it, and nothing else says so.
+      for (const deadline = Date.now() + 10_000; pid === 0; await Bun.sleep(20)) {
+        if (Date.now() > deadline) throw new Error("the command never wrote its child's pid");
+        if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
+      }
+      // The control: while the reading process runs, the command's child and its output are there.
+      expect(gone(pid)).toBe(false);
+      expect(readdirSync(scratch)).toHaveLength(1);
+      writeFileSync(release, "");
+      expect(await child.exited).toBe(0);
+      expect(gone(pid)).toBe(true);
+      expect(readdirSync(scratch)).toEqual([]);
+    } finally {
+      child.kill("SIGKILL");
+      if (pid !== 0) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Gone, as the test expects.
+        }
+      }
+    }
+  }, 30_000);
 
   test("whose field a variable overrides, or whose section is off, is not run", async () => {
     const home = tempDir();

@@ -131,10 +131,11 @@ function startNotice(
  * session passes nothing, and a trade names whatever `AGENT_SECRETS_SESSION` does. */
 export type SessionNameOption = { readonly session?: BrokerSessionName | undefined };
 
-/** Both sections from `file` (`dispatchSettings`, `envoySettings`), each resolved on its own, and
- * the session's start notice. A file whose location could not be worked out turns both off with
- * that error. `nats: false` is for a session that opens no NATS connection (`envoySettings`), whose
- * notice says nothing of inbound messages. */
+/** Both sections from `file` (`dispatchSettings`, `envoySettings`), each resolved on its own and
+ * both at once, so a session whose sections each run a `!` command waits for the slower one rather
+ * than for both in turn; and the session's start notice. A file whose location could not be worked
+ * out turns both off with that error. `nats: false` is for a session that opens no NATS
+ * connection (`envoySettings`), whose notice says nothing of inbound messages. */
 export async function sessionSettings(
   file: SessionConfigFile,
   env: EnvoyEnvironment,
@@ -145,8 +146,10 @@ export async function sessionSettings(
     return { dispatch: off, envoy: off, notice: `${file.error}: Dispatch and Envoy are off` };
   }
   const config = readEnvoyConfig(file.path, env, options);
-  const dispatch = await dispatchSettings(env, config, { session: options.session });
-  const envoy = await envoySettings(env, config, { nats: options.nats, session: options.session });
+  const [dispatch, envoy] = await Promise.all([
+    dispatchSettings(env, config, { session: options.session }),
+    envoySettings(env, config, { nats: options.nats, session: options.session }),
+  ]);
   return {
     dispatch,
     envoy,

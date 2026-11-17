@@ -80,6 +80,34 @@ describe("sessionConfigFile", () => {
 });
 
 describe("sessionSettings", () => {
+  // Each section's command waits for the other's to have started: read one after the other, the
+  // first would run out its 10 s and fail, which is what a session start waited for in turn.
+  test("reads Dispatch and Envoy at once, each section's `!` command running beside the other's", async () => {
+    const home = tempDir();
+    const dispatchStarted = path.join(home, "dispatch-started");
+    const envoyStarted = path.join(home, "envoy-started");
+    const dispatchToken = fixtureSecret("dsp");
+    const listenerToken = fixtureSecret("listener");
+    const waitFor = (file: string) => `while [ ! -e '${file}' ]; do sleep 0.02; done`;
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: {
+        ...dispatchOn,
+        token: `!touch '${dispatchStarted}'; ${waitFor(envoyStarted)}; echo ${dispatchToken}`,
+      },
+      envoy: {
+        ...envoyOn,
+        token: `!touch '${envoyStarted}'; ${waitFor(dispatchStarted)}; echo ${listenerToken}`,
+      },
+    });
+    const settings = await sessionSettings(
+      { path: file, error: null },
+      { HOME: home, PATH: process.env.PATH },
+      { cwd: tempDir() }
+    );
+    expect(withToken(settings.dispatch)).toMatchObject({ enabled: true, token: dispatchToken });
+    expect(withToken(settings.envoy)).toMatchObject({ enabled: true, token: listenerToken });
+  }, 30_000);
+
   test("a missing file turns both sections off with its notice", async () => {
     const file = path.join(tempDir(), "envoy.json");
     expect(await sessionSettings({ path: file, error: null }, {}, { cwd: tempDir() })).toEqual({

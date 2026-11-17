@@ -723,8 +723,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // Legion finds, and this instance pushes no claim instance onto it (first wins).
   const publishedInterface = publishEnvoyPluginInterface(import.meta.url);
   // Dispatch and Envoy as this session starts with them, each resolved on its own from the
-  // session's envoy.json (`CONFIG_FILE`) and the variables over it, awaited so a `!` command in it
-  // runs while the process goes on serving everything else it holds. The dispatch-first context is
+  // session's envoy.json (`CONFIG_FILE`) and the variables over it. The dispatch-first context is
   // injected only where Dispatch is on at load. Dispatch's URL and token are re-read on every use
   // (`dispatchConfigFor`), so a Dispatch that moved - a new dispatch.serverUrl in envoy.json -
   // takes effect without /reload-plugins, and a file that has since broken fails with its own

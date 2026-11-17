@@ -165,10 +165,9 @@ export function lostDispatchUrlNotice(
  * `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`. A checkout's server with its own token points the
  * session at that server as that token's holder, whichever server it is, the user's own included;
  * what a checkout cannot do is take the user's token, or a variable's, anywhere. A checkout's `!`
- * token is refused; the chosen file's runs here, only once Dispatch is about to use it, and the
- * resolution waits for it without holding the event loop, unless `options.commands` is `kept`:
- * then only an outcome a run already kept in this process answers, and with none Dispatch is off
- * with an error saying the command has not run (`fileValue`).
+ * token is refused; the chosen file's runs here, only once Dispatch is about to use it, unless
+ * `options.commands` is `kept`: then only an outcome a run already kept in this process answers,
+ * and with none Dispatch is off with an error saying the command has not run (`fileValue`).
  * Dispatch is on when its URL resolves and a credential does: one of those bearers, or — when no
  * bearer is configured at all — an access token traded at the secrets broker (`AGENT_SECRETS_URL`
  * with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`) for this machine's identity, or for
