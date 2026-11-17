@@ -2,13 +2,12 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -58,56 +57,80 @@ func TestStoredKeysListsEveryKeyTheStreamHoldsAMessageOn(t *testing.T) {
 
 // A list of more subjects than one STREAM.INFO answer holds comes in pages, each read from the
 // stream as it is when asked, so the pages are one list only when the stream's state is the same
-// in each and they add up to the first page's total. Each page here is scripted, since a
-// single-node server pages only past 100,000 subjects.
+// in each, in one more ask after the last page too, and they add up to the first page's total. A
+// list of one page is taken without that ask. Each answer here is scripted, as the server's JSON,
+// since a single-node server pages only past 100,000 subjects.
 func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
 	const prefix = "$KV.b."
-	state := func(last uint64, subjects ...string) *jetstream.StreamState {
-		s := &jetstream.StreamState{FirstSeq: 1, LastSeq: last, Msgs: 3, Subjects: map[string]uint64{}}
-		for _, subject := range subjects {
-			s.Subjects[prefix+subject] = 1
-		}
-		return s
-	}
-	// pages answers the page scripted at each offset it is asked for.
-	pages := func(byOffset map[int]subjectsPage) func(int) (subjectsPage, error) {
+	// pages answers the answer scripted at each offset it is asked for.
+	pages := func(byOffset map[int]answer) func(int) (subjectsPage, error) {
 		return func(offset int) (subjectsPage, error) {
-			page, ok := byOffset[offset]
+			scripted, ok := byOffset[offset]
 			if !ok {
 				return subjectsPage{}, fmt.Errorf("no page scripted at offset %d", offset)
 			}
-			return page, nil
+			return scripted.page(t, prefix), nil
 		}
 	}
 	for _, row := range []struct {
 		name  string
-		pages map[int]subjectsPage
+		pages map[int]answer
 		want  []string
 		fails error
 	}{
 		{
-			name:  "two pages of one state",
-			pages: map[int]subjectsPage{0: {Total: 3, State: state(3, "a", BarrierKey)}, 2: {Total: 3, State: state(3, "c")}},
-			want:  []string{"a", "c"},
+			name:  "one page",
+			pages: map[int]answer{0: {total: 2, first: 1, last: 3, msgs: 3, subjects: []string{"a", BarrierKey}}},
+			want:  []string{"a"},
 		},
 		{
-			name:  "a later page read the stream after a write",
-			pages: map[int]subjectsPage{0: {Total: 3, State: state(3, "a", "b")}, 2: {Total: 3, State: state(4, "c")}},
+			name: "two pages of one state",
+			pages: map[int]answer{
+				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", BarrierKey}},
+				2: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"c"}},
+				3: {total: 3, first: 1, last: 3, msgs: 3},
+			},
+			want: []string{"a", "c"},
+		},
+		{
+			// The bucket holds a, b and c. The last page reads the stream's state, then a expires
+			// and e is stored before it reads its subjects, which are now b, c and e: the subject at
+			// its offset is e, and c has moved into the range the first page read.
+			name: "the last page's subjects read after its state",
+			pages: map[int]answer{
+				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
+				2: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"e"}},
+				3: {total: 3, first: 2, last: 4, msgs: 3},
+			},
 			fails: ErrIncompleteKeyList,
 		},
 		{
-			name:  "a later page listed nothing of what remains",
-			pages: map[int]subjectsPage{0: {Total: 3, State: state(3, "a", "b")}, 2: {Total: 3, State: state(3)}},
+			name: "a later page read the stream after a write",
+			pages: map[int]answer{
+				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
+				2: {total: 3, first: 1, last: 4, msgs: 3, subjects: []string{"c"}},
+			},
 			fails: ErrIncompleteKeyList,
 		},
 		{
-			name:  "a later page listed a key again",
-			pages: map[int]subjectsPage{0: {Total: 3, State: state(3, "a", "b")}, 2: {Total: 3, State: state(3, "b")}},
+			name: "a later page listed nothing of what remains",
+			pages: map[int]answer{
+				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
+				2: {total: 3, first: 1, last: 3, msgs: 3},
+			},
+			fails: ErrIncompleteKeyList,
+		},
+		{
+			name: "a later page listed a key again",
+			pages: map[int]answer{
+				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
+				2: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"b"}},
+			},
 			fails: ErrIncompleteKeyList,
 		},
 		{
 			name:  "a page from a copy behind the sequence asked for",
-			pages: map[int]subjectsPage{0: {Total: 1, State: state(2, "a")}},
+			pages: map[int]answer{0: {total: 1, first: 1, last: 2, msgs: 2, subjects: []string{"a"}}},
 			fails: ErrKeyListBehind,
 		},
 	} {
@@ -125,8 +148,45 @@ func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
 			}
 		})
 	}
-	outside := map[int]subjectsPage{0: {Total: 1, State: &jetstream.StreamState{Subjects: map[string]uint64{"$KV.other.a": 1}}}}
-	if _, err := storedKeys(prefix, 0, pages(outside)); err == nil || !strings.Contains(err.Error(), "outside "+prefix) {
+	outside := map[int]answer{0: {total: 1, first: 1, last: 1, msgs: 1}}
+	outsidePage := func(offset int) (subjectsPage, error) {
+		page, err := pages(outside)(offset)
+		page.State.Subjects = map[string]uint64{"$KV.other.a": 1}
+		return page, err
+	}
+	if _, err := storedKeys(prefix, 0, outsidePage); err == nil || !strings.Contains(err.Error(), "outside "+prefix) {
 		t.Fatalf("storedKeys of a subject outside the filter = %v, want it refused", err)
 	}
+}
+
+// answer is one scripted STREAM.INFO answer with its subject list: the total the server counts,
+// the stream's first and last sequence and message count, and this page's subjects under the
+// prefix it is rendered with.
+type answer struct {
+	total             int
+	first, last, msgs uint64
+	subjects          []string
+}
+
+// page is a's JSON as nats-server v2.15.1 sends it (jetstream_api.go:503-507), decoded as
+// StoredKeys decodes an answer.
+func (a answer) page(t *testing.T, prefix string) subjectsPage {
+	t.Helper()
+	subjects := map[string]uint64{}
+	for _, subject := range a.subjects {
+		subjects[prefix+subject] = 1
+	}
+	data, err := json.Marshal(map[string]any{
+		"type":  "io.nats.jetstream.api.v1.stream_info_response",
+		"total": a.total,
+		"state": map[string]any{"first_seq": a.first, "last_seq": a.last, "messages": a.msgs, "subjects": subjects},
+	})
+	if err != nil {
+		t.Fatalf("render the scripted answer: %v", err)
+	}
+	var page subjectsPage
+	if err := json.Unmarshal(data, &page); err != nil {
+		t.Fatalf("decode the scripted answer: %v", err)
+	}
+	return page
 }

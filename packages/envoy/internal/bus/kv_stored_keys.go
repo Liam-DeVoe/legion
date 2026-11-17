@@ -16,8 +16,8 @@ import (
 )
 
 // ErrIncompleteKeyList is a list of a bucket's keys whose pages do not add up to one list: the
-// stream changed between two of its pages, or a page answered fewer subjects than the total says
-// remain (StoredKeys).
+// stream changed between two of its pages or after its last page's state was read, or a page
+// answered fewer subjects than the total says remain (StoredKeys).
 var ErrIncompleteKeyList = errors.New("the bucket's key list did not add up to one list")
 
 // ErrKeyListBehind is a list of a bucket's keys from a copy of its stream that had not yet
@@ -52,10 +52,18 @@ type subjectsPage struct {
 // a record at through, whether that record or a later one.
 //
 // A list of more than JSMaxSubjectDetails subjects, 100,000 (jetstream_api.go:494-495), comes in
-// pages of the subjects sorted by name (jetstream_api.go:2214-2243), each read from the stream's
-// state at the time it is asked for. A key stored or removed between two pages can shift a later
-// page past a subject, so the pages are one list only when the stream's state is the same in each
-// and they add up to the total the first one gave. A list whose pages differ, or fall short of that
+// pages of the subjects sorted by name (jetstream_api.go:2214-2243), each read from the stream as
+// it is when asked for. A key stored or removed between two pages can shift a later page past a
+// subject, so the pages are one list only when the stream's state is the same in each and they add
+// up to the total the first one gave. One answer reads the stream's state (jetstream_api.go:2192)
+// before its subjects (:2207), under separate store locks (filestore.go:10110-10128, 5085-5106),
+// so the last page's subjects can be newer than the state it names: a subject that sorts before
+// the page's offset expires and one after it is added, and a key moves into the range an earlier
+// page already read. So a list of more than one page asks the stream once more after its last
+// page, for its state alone, and that state must be the first page's too. A list of one page needs
+// no second ask: its subjects come from one read of the store's per-subject index, taken after
+// the state whose last sequence is checked against through, so they are the store as one moment
+// after through holds it. A list whose pages or that last ask differ, or that falls short of the
 // total, is ErrIncompleteKeyList.
 //
 // ctx bounds the whole list, every page included. A ctx carrying no deadline is bounded by
@@ -112,21 +120,19 @@ func storedKeys(prefix string, through uint64, read func(offset int) (subjectsPa
 	var keys []string
 	var first jetstream.StreamState
 	listed := map[string]struct{}{}
-	for offset, total := 0, 0; ; {
+	for offset, total, pages := 0, 0, 1; ; pages++ {
 		page, err := read(offset)
 		if err != nil {
 			return nil, err
 		}
-		state := *page.State
-		if state.LastSeq < through {
-			return nil, fmt.Errorf("%w: the copy that answered has stored through sequence %d, the list was asked through %d",
-				ErrKeyListBehind, state.LastSeq, through)
+		if err := current(page, through); err != nil {
+			return nil, err
 		}
+		state := *page.State
 		if offset == 0 {
 			first, total = state, page.Total
-		} else if page.Total != total || state.FirstSeq != first.FirstSeq || state.LastSeq != first.LastSeq || state.Msgs != first.Msgs {
-			return nil, fmt.Errorf("%w: the page at %d of %d subjects read the stream at sequences %d-%d, %d messages, where the first read %d-%d, %d messages, %d subjects",
-				ErrIncompleteKeyList, offset, page.Total, state.FirstSeq, state.LastSeq, state.Msgs, first.FirstSeq, first.LastSeq, first.Msgs, total)
+		} else if err := sameList(page, offset, first, total); err != nil {
+			return nil, err
 		}
 		for subject := range state.Subjects {
 			key, ok := strings.CutPrefix(subject, prefix)
@@ -143,10 +149,46 @@ func storedKeys(prefix string, through uint64, read func(offset int) (subjectsPa
 		}
 		offset += len(state.Subjects)
 		if offset >= total {
+			if pages == 1 {
+				return keys, nil
+			}
+			// The stream's state once more, read after the last page's subjects: an offset past
+			// the list answers the state with no subject.
+			last, err := read(offset)
+			if err != nil {
+				return nil, err
+			}
+			if err := current(last, through); err != nil {
+				return nil, err
+			}
+			if err := sameList(last, offset, first, total); err != nil {
+				return nil, err
+			}
 			return keys, nil
 		}
 		if len(state.Subjects) == 0 {
 			return nil, fmt.Errorf("%w: a page at %d listed no subject of the %d the first page counted", ErrIncompleteKeyList, offset, total)
 		}
 	}
+}
+
+// current refuses page when the copy of the stream that answered it may lack a key that held a
+// record at sequence through (ErrKeyListBehind), as StoredKeys documents.
+func current(page subjectsPage, through uint64) error {
+	if page.State.LastSeq < through {
+		return fmt.Errorf("%w: the copy that answered has stored through sequence %d, the list was asked through %d",
+			ErrKeyListBehind, page.State.LastSeq, through)
+	}
+	return nil
+}
+
+// sameList refuses page, asked for at offset, when the stream it read is not the one the first
+// page read, of total subjects and state first (ErrIncompleteKeyList).
+func sameList(page subjectsPage, offset int, first jetstream.StreamState, total int) error {
+	state := *page.State
+	if page.Total == total && state.FirstSeq == first.FirstSeq && state.LastSeq == first.LastSeq && state.Msgs == first.Msgs {
+		return nil
+	}
+	return fmt.Errorf("%w: the answer at %d of %d subjects read the stream at sequences %d-%d, %d messages, where the first read %d-%d, %d messages, %d subjects",
+		ErrIncompleteKeyList, offset, page.Total, state.FirstSeq, state.LastSeq, state.Msgs, first.FirstSeq, first.LastSeq, first.Msgs, total)
 }
