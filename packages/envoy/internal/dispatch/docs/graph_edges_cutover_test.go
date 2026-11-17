@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -171,7 +172,13 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	// The rows of one document are put back in the shape the release before this one left
 	// them in, so the four old arms answer rows of their own while the store answers the rest.
 	unwriteTheStoreOfADocument(t, database, graphEdgeLegacyRefKey)
+	requireTheIndexStampedTheOtherDocuments(t, database)
 	before := readEachArm(t, database, "before the backfill", moved, tuple)
+	// The tuple arm answers the stamped rows of the other two documents, so the reading's
+	// comparison of that arm is over rows and not over two empty sets.
+	if len(before.tuple) == 0 {
+		t.Errorf("the tuple arm answers no row before the backfill, so its comparison with the stamped rows proves nothing")
+	}
 	projected := before.view
 	projectedCounts := before.counts
 	// Each of the four answers rows of its own before the backfill, so finding it empty after
@@ -895,6 +902,35 @@ func unwriteTheStoreOfADocument(t *testing.T, database *store.Store, refKey stri
 	t.Logf("%s holds %d block rows and %d link rows that name no node", refKey, rows, links)
 }
 
+// requireTheIndexStampedTheOtherDocuments reads, before the backfill, the rows of the two
+// documents the fixture leaves as the block index wrote them, target.md and plan.md: each holds
+// block rows, plan.md holds link rows too, and every one of them carries the node the index
+// stamped. The tuple arm is held to answering exactly the rows that carry their node, so a
+// fixture whose rows carried none would hold it to answering nothing and pass.
+func requireTheIndexStampedTheOtherDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	for _, held := range []struct{ table, refKey string }{
+		{"document_blocks", "CORE-1/target"},
+		{"document_blocks", "CORE-1/plan"},
+		{"block_refs", "CORE-1/plan"},
+	} {
+		var rows, stamped int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*), count(*) filter (where r.node_kind is not null and r.node_address is not null)
+			from `+held.table+` r join artifacts a on a.id = r.artifact_id
+			where a.ref_key = $1
+		`, held.refKey).Scan(&rows, &stamped); err != nil {
+			t.Fatalf("read the %s rows of %s: %v", held.table, held.refKey, err)
+		}
+		if rows == 0 || stamped != rows {
+			t.Errorf("before the backfill %s holds %d %s row(s), %d of them naming the node the block index stamped, want some and every one",
+				held.refKey, rows, held.table, stamped)
+			continue
+		}
+		t.Logf("before the backfill %s holds %d %s row(s), each naming its node", held.refKey, rows, held.table)
+	}
+}
+
 // writeAsThePreviousRelease writes a comment and a block reference as a pod of the release before
 // this one writes them, naming no node and stating no tuple, and answers their edges: a comment
 // the plan owns, and a mention of CORE-2 out of the target's r1, whose own row carries its node.
@@ -1113,6 +1149,10 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 		t.Fatal("the version that brings one back was not indexed")
 	}
 
+	// The block version 2 dropped and version 3 brought back is one node, stated gone and then
+	// live again, and its row, written again by version 3, names that node.
+	requireTheRestoredBlockIsLive(t, database, "CORE-1/plan", "revive")
+
 	var gone, live int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) filter (where state = 'gone'), count(*) filter (where state = 'live')
@@ -1203,4 +1243,53 @@ func scanGraphEdgeFixture(t *testing.T, database *store.Store, what, statement s
 		t.Fatalf("%s: %v", what, err)
 	}
 	return id
+}
+
+// requireTheRestoredBlockIsLive fails unless the block blockID of the document refKey, which a
+// version dropped and a later one brought back, is live now with gone before it in its state's
+// history, and unless its document_blocks row names that node.
+func requireTheRestoredBlockIsLive(t *testing.T, database *store.Store, refKey, blockID string) {
+	t.Helper()
+	ctx := context.Background()
+	address := refKey + "#" + blockID
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, address)
+	if err != nil || !held {
+		t.Fatalf("read the node of the restored block %s: held %t, %v", address, held, err)
+	}
+	if node.State != graphstore.StateLive {
+		t.Errorf("the restored block %s is %s, want %s", address, node.State, graphstore.StateLive)
+	}
+	history, err := graphstore.History(ctx, database.Pool, refs.BlockNodeKind, address, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s: %v", address, err)
+	}
+	states := make([]string, 0, len(history))
+	for _, stated := range history {
+		states = append(states, stated.ToID)
+	}
+	gone := slices.Index(states, graphstore.StateGone)
+	if gone < 0 || states[len(states)-1] != graphstore.StateLive {
+		t.Errorf("the restored block %s states %v, want gone once a version dropped it and live last, once one brought it back",
+			address, states)
+	}
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select d.node_kind, d.node_address from document_blocks d join artifacts a on a.id = d.artifact_id
+		where a.ref_key = $1 and d.block_id = $2
+	`, refKey, blockID).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the row of the restored block %s: %v", address, err)
+	}
+	if nodeKind == nil || nodeAddress == nil || *nodeKind != refs.BlockNodeKind || *nodeAddress != address {
+		t.Errorf("the row of the restored block %s names node %s/%s, want %s/%s", address,
+			deref(nodeKind), deref(nodeAddress), refs.BlockNodeKind, address)
+	}
+	t.Logf("the restored block %s is %s, its state history %v, and its row names it", address, node.State, states)
+}
+
+// deref is the text a nullable column holds, or null where it holds none.
+func deref(text *string) string {
+	if text == nil {
+		return "null"
+	}
+	return *text
 }

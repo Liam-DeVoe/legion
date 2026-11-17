@@ -107,9 +107,14 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // whole-table read under a better name, so the rule is read off the plan and never off the
 // index list.
 //
+// The current value of one attribute is held to more than that: to graph_tuples_values alone,
+// the one read index partial on to_kind = 'value', which the planner takes only where the
+// statement binds that predicate.
+//
 // The one read held to the opposite is the inbox read naming no kind (requireWholeInbox), the
 // control: with no kind to scan by it reads the crowded node's whole inbox under either mode,
-// which is what naming the kinds buys.
+// which is what naming the kinds buys. Under the generic plan it still reads that inbox through
+// an index and not by a scan of the log, and the run prints the rows it read.
 //
 // It also reports the bytes a row the store costs at this size, which the issue's growth
 // projection is read off.
@@ -161,7 +166,7 @@ func requireReadRunsThroughTheIndexes(
 	subject := read.name + " under " + mode
 	t.Logf("%s:\n%s", subject, text)
 	if read.wantWholeInbox {
-		requireWholeInbox(t, subject, plan, text)
+		requireWholeInbox(t, subject, mode, plan, text)
 		return
 	}
 	if explaintest.SeqScansRelation(t, plan, "graph_tuples") {
@@ -187,6 +192,10 @@ func requireReadRunsThroughTheIndexes(
 			t.Errorf("%s reads graph_tuples through %s, which is no read index of the first migration (%v):\n%s",
 				subject, scan.Index, graphTupleReadIndexes, text)
 		}
+		if read.wantOnlyIndex != "" && scan.Index != read.wantOnlyIndex {
+			t.Errorf("%s reads graph_tuples through %s, want %s alone: the planner takes that index only where the statement binds %s, which is the index's own predicate:\n%s",
+				subject, scan.Index, read.wantOnlyIndex, valueReadPredicate, text)
+		}
 		requireIndexCondition(t, subject, scan, text)
 	}
 	keys.RequireIndexKeyed(t, plan, explaintest.AnyIndex, subject, explaintest.CondOptional)
@@ -197,19 +206,29 @@ func requireReadRunsThroughTheIndexes(
 
 // requireWholeInbox holds the read that names no kind to what naming none costs: the crowded
 // node's whole inbox, every row of it read and all but inboxLimit of them thrown away. How the
-// planner reaches those rows differs by mode and is its own business - a sequential scan of the
-// log where it sees the node's own values and knows the inbox is long, the whole of one index
-// range sorted where it does not - so what is held here is the rows the plan read out of
-// graph_tuples rather than the node it read them with.
-func requireWholeInbox(t *testing.T, subject string, plan json.RawMessage, text string) {
+// planner reaches those rows differs by mode - a sequential scan of the log where it sees the
+// node's own values and knows the inbox is long, the whole of one index range sorted where it
+// does not - so what is held here is the rows the plan read out of graph_tuples rather than the
+// node it read them with. The generic plan is the one production runs, and it does not see the
+// node's values, so it reads the inbox through an index: a generic plan that scans the log reads
+// every node's tuples to answer one node's, which costs more than the whole inbox, so it fails
+// here too. The rows read are printed on success as well, so the cost is on the record.
+func requireWholeInbox(t *testing.T, subject, mode string, plan json.RawMessage, text string) {
 	t.Helper()
+	if mode == "force_generic_plan" && explaintest.SeqScansRelation(t, plan, "graph_tuples") {
+		t.Errorf("%s scans graph_tuples, and under the generic plan this read takes the crowded node's inbox through an index and sorts it:\n%s",
+			subject, text)
+	}
 	// EXPLAIN reports a parallel node's rows per loop and rounds them to two places, so a whole
 	// inbox of 400,000 read by three workers reads back as 399,999.99. One row of slack covers
 	// that rounding, and a plan that read any less than the inbox falls short of it by thousands.
-	if rows := tupleRowsRead(t, plan); rows+1 < seedCrowdedInbox {
+	rows := tupleRowsRead(t, plan)
+	if rows+1 < seedCrowdedInbox {
 		t.Errorf("%s reads %.0f rows of graph_tuples, and naming no kind is supposed to cost the whole inbox of %d rows:\n%s",
 			subject, rows, seedCrowdedInbox, text)
+		return
 	}
+	t.Logf("%s reads %.0f rows of graph_tuples, the whole inbox of %d rows", subject, rows, seedCrowdedInbox)
 }
 
 // requireIndexCondition holds one index scan of graph_tuples to narrowing the index on a
@@ -235,15 +254,17 @@ func requireIndexCondition(t *testing.T, subject string, scan planNode, text str
 
 // storeRead is one read under test: what it is called, the statement and arguments the package
 // sent for it, whether its plan is the whole-inbox read that naming no kind costs, how many
-// index scans of graph_tuples it must hold and whether those are merged in time order. The
-// answer each read gave is compared with the reference walk before the plan is explained, so a
-// read that is wrong fails on its answer rather than on its plan.
+// index scans of graph_tuples it must hold, whether those are merged in time order, and the one
+// read index every scan must take where the read is held to one. The answer each read gave is
+// compared with the reference walk before the plan is explained, so a read that is wrong fails
+// on its answer rather than on its plan.
 type storeRead struct {
 	name             string
 	statement        recordedStatement
 	wantWholeInbox   bool
 	wantIndexScans   int
 	wantMergedInTime bool
+	wantOnlyIndex    string
 }
 
 // storeReads runs each read the package states, checks its answer against the reference walk and
@@ -286,6 +307,13 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 			value, found, reference.currentValue, reference.currentValueFound)
 	}
 	record("CurrentValue", false, 1, false)
+	// The current value binds to_kind = 'value', and the plan is where that is read. Its one
+	// read index is the one partial on that predicate, and the planner takes a partial index
+	// only where the statement's own predicate implies the index's, under the generic plan as
+	// much as under the custom one. A read that dropped the binding answers the same value
+	// through graph_tuples_as_of_out, which keys every tuple out of a node, attributes among
+	// them, so the answer alone would not catch it.
+	reads[len(reads)-1].wantOnlyIndex = valueReadIndex(t)
 
 	asOfOut, err := AsOfOut(ctx, recorder, probeKind, probeID, probeAsOf(), nil)
 	if err != nil {
@@ -1146,6 +1174,27 @@ var graphTupleReadIndexes = []string{
 	"graph_tuples_inbound",
 	"graph_tuples_as_of_out",
 	"graph_tuples_as_of_in",
+}
+
+// valueReadPredicate is the predicate a read of one attribute binds, and the one read index
+// partial on it is the index that read is held to.
+const valueReadPredicate = "to_kind = '" + KindValue + "'"
+
+// valueReadIndex is the read index declared partial on valueReadPredicate, taken from
+// requiredGraphIndexes, so the index the value read is held to is the one the migration check
+// and the catalog check hold to that predicate, and not a name written a second time here.
+func valueReadIndex(t *testing.T) string {
+	t.Helper()
+	var partial []string
+	for _, index := range requiredGraphIndexes {
+		if slices.Contains(graphTupleReadIndexes, index.name) && index.predicate == valueReadPredicate {
+			partial = append(partial, index.name)
+		}
+	}
+	if len(partial) != 1 {
+		t.Fatalf("the read indexes partial on %s are %v, want exactly one", valueReadPredicate, partial)
+	}
+	return partial[0]
 }
 
 // graphStoreMigration is the migration that must declare every index of the store. An index
