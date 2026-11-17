@@ -436,8 +436,10 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 // Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
 // rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A body naming
 // neither is the rating route's own refusal, since the store takes a step write with no rating; the
-// same body on the step route lands, which is its control. A reason of exactly 2,000 code points is
-// taken, which is the control of the bound.
+// same body on the step route lands, which is its control. A rating with no reason reaches the
+// store, which refuses the reason in its own words, and so it reaches it only after the issue's
+// lookup: the same body for an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND. A reason of
+// exactly 2,000 code points is taken, which is the control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -454,7 +456,7 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
 		{"no rating", noRating, "rating"},
 		{"neither a rating nor a reason", retro, "rating"},
-		{"no reason", noReason, "rating_reason"},
+		{"no reason", noReason, "rating_reason is left out or blank: a rating carries one sentence of why"},
 		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
 		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
 	} {
@@ -465,6 +467,8 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused ratings left %d records, want none", len(steps))
 	}
+	missing := putRating(t, handler, "LEG-999", uuid.NewString(), noReason)
+	requireStepRefusal(t, "a rating with no reason of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 	if written := putStepOK(t, handler, issue, uuid.NewString(), retro); written.Kind != "retro" || written.Rating != nil {
 		t.Fatalf("the step route answers %s for the retro's identity alone, want the retro with no rating", stepJSON(t, written))
 	}
