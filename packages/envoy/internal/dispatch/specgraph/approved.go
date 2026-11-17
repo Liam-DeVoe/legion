@@ -48,9 +48,13 @@ type ApprovedFile struct {
 	Nodes []ApprovedNode `json:"nodes"`
 }
 
+// timeForm is a time as each form text of this package names its type: an RFC 3339 time as
+// time.RFC3339Nano writes it, which the readers take only with an upper-case T and Z.
+const timeForm = `<RFC 3339 time with an upper-case T and Z>`
+
 // approvedForm is the form of approved.json, with the type of each value, as ReadApproved names it
 // for a value of another type.
-const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"` + timeForm + `","block":"<block>"}, …]}, …]}`
 
 // ReadApproved reads an approved spec in the form of approved.json (ApprovedFile). It refuses
 // what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is written
@@ -59,8 +63,8 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
 // two nodes, a node with no version, version numbers that do not go up from 1, a version with no
 // time or with one older than the one before it, and a block that is not its node's one block as
-// Print writes it. The error names the node and the version. It reads the whole file, with no
-// bound on its size.
+// Print writes it. The error names the node, by its id as quoted prints a value of the input, and
+// the version. It reads the whole file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	var file ApprovedFile
 	if err := decodeJSONFrom(r, &file, approvedForm); err != nil {
@@ -78,7 +82,7 @@ func WriteApproved(w io.Writer, a Approved) error {
 	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
 		n := a.Nodes[id]
 		if n.ID != id {
-			return fmt.Errorf("specgraph: approved spec: node %q is under the id %q", n.ID, id)
+			return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
 		}
 		file.Nodes = append(file.Nodes, n)
 	}
@@ -104,7 +108,7 @@ func (f ApprovedFile) approved() (Approved, error) {
 			return Approved{}, errors.New("specgraph: approved spec: a node has no id")
 		}
 		if _, twice := a.Nodes[n.ID]; twice {
-			return Approved{}, fmt.Errorf("specgraph: approved spec: node %q is in the approved spec two times", n.ID)
+			return Approved{}, fmt.Errorf("specgraph: approved spec: node %s is in the approved spec two times", quoted(n.ID))
 		}
 		if err := n.check(); err != nil {
 			return Approved{}, err
@@ -117,7 +121,7 @@ func (f ApprovedFile) approved() (Approved, error) {
 // check is the first fault of n that ReadApproved refuses, or nil.
 func (n ApprovedNode) check() error {
 	if len(n.Versions) == 0 {
-		return fmt.Errorf("specgraph: approved node %q: it has no version", n.ID)
+		return fmt.Errorf("specgraph: approved node %s: it has no version", quoted(n.ID))
 	}
 	for i, v := range n.Versions {
 		fault := ""
@@ -134,7 +138,7 @@ func (n ApprovedNode) check() error {
 			}
 		}
 		if fault != "" {
-			return fmt.Errorf("specgraph: approved node %q version %d: %s", n.ID, v.Version, fault)
+			return fmt.Errorf("specgraph: approved node %s version %d: %s", quoted(n.ID), v.Version, fault)
 		}
 	}
 	return nil
@@ -194,7 +198,7 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	case len(nodes) != 1:
 		return refuse(fmt.Sprintf("the block holds %d nodes, not one", len(nodes)))
 	case nodes[0].id != id:
-		return refuse(fmt.Sprintf("the block holds node %q, not %q", nodes[0].id, id))
+		return refuse(fmt.Sprintf("the block holds node %s, not %s", quoted(nodes[0].id), quoted(id)))
 	}
 	if printed, err := nodes[0].node.Print(); err != nil || printed != v.Block {
 		return refuse("the block is not as Print writes it")
