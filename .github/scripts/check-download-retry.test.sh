@@ -2491,6 +2491,104 @@ check "with the job written at the figure advised, passes" "$(is "$status" 0)"
 check "with the job written at the figure advised, refuses nothing" \
   "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 
+# The same advice reads every retried step of the job, not the refused one alone
+# (dispatch://INFRA-1545, round 37). The step-key refusal holds the job above each of its retried
+# steps' keys, and the advice read the refused step's key alone: under a job key of 7, 'Fetch the
+# index' at 450 s keyed at 8 is refused for its arithmetic, and the job was told the larger of 8
+# and 9, so 9, which 'Fetch the list''s key of 20 refuses. It is told 21 now, and the job written
+# there passes. The class search's inputs H and H3.
+echo "case: a job written at the figure its arithmetic refusal advises passes, above a longer key of another step"
+root=$(fixture job-budget-advice-longest-key)
+write_longest_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: above the index's ladder and the list step's own key -> $1 min.
+    timeout-minutes: $1
+    steps:
+      - name: Fetch the index
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the index" 60 -- gh api repos/o/r
+      - name: Fetch the list
+        timeout-minutes: 20
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the list" 30 -- gh api repos/o/r/pulls
+YAML
+}
+write_longest_case 7
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job under the index step's arithmetic" \
+  "$(contains "$out" "job .build. carries .timeout-minutes: 7., 420 s, and its step .Fetch the index. holds retries taking 450 s to exhaust")"
+advised=$(grep 'holds retries taking 450 s' <<<"$out" | grep -o 'Write .timeout-minutes: [0-9]*. or more on this job' | grep -o '[0-9][0-9]*' || true)
+check "advises the least key above the arithmetic and the list step's key of 20, which is 21" \
+  "$(is "$advised" 21)"
+check "names the step whose key is the job's longest" \
+  "$(contains "$out" "holds retries taking 450 s .*The job's key must also strictly exceed the .timeout-minutes: 20. of its step 'Fetch the list'")"
+first_refusal=$(grep -m1 '^::error' <<<"$out" || true)
+check "keeps the refusal first among the two at the job's key" \
+  "$(contains "$first_refusal" 'holds retries taking 450 s')"
+write_longest_case "${advised:-0}"
+run_check "$root"
+check "with the job written at the figure advised, passes" "$(is "$status" 0)"
+check "with the job written at the figure advised, refuses nothing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
+
+# The step-key refusal's advice reads every retried step of the job too (dispatch://INFRA-1545,
+# round 37). Under a job key of 10, steps keyed at 20 and 30, each above its own 450 s and 300 s,
+# are each refused for the job's key, and the first was told 21, which the second's key refuses.
+# Both are told 31 now, the first naming the step whose key is 30, and the job written there
+# passes.
+echo "case: a job written at the figure its step-key refusals advise passes, above the longest key"
+root=$(fixture job-step-key-advice-longest)
+write_step_keys_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: above the longest of its steps' own keys -> $1 min.
+    timeout-minutes: $1
+    steps:
+      - name: Fetch the index
+        timeout-minutes: 20
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the index" 60 -- gh api repos/o/r
+      - name: Fetch the list
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the list" 30 -- gh api repos/o/r/pulls
+YAML
+}
+write_step_keys_case 10
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job at the index step's key of 20" \
+  "$(contains "$out" "job 'build' carries .timeout-minutes: 10., and its step 'Fetch the index' carries .timeout-minutes: 20., which that job budget does not strictly exceed")"
+check "refuses the job at the list step's key of 30" \
+  "$(contains "$out" "job 'build' carries .timeout-minutes: 10., and its step 'Fetch the list' carries .timeout-minutes: 30., which that job budget does not strictly exceed")"
+advised=$(grep -o 'Write .timeout-minutes: [0-9]*. or more on this job' <<<"$out" | grep -o '[0-9][0-9]*' | sort -u | tr '\n' ' ' || true)
+check "advises 31 in both refusals, the first minute above the longest key" "$(is "$advised" "31 ")"
+check "tells the index step's refusal of the list step's longer key" \
+  "$(contains "$out" "its step 'Fetch the index' carries .timeout-minutes: 20.,.*The job's key must also strictly exceed the .timeout-minutes: 30. of its step 'Fetch the list'")"
+first_refusal=$(grep -m1 '^::error' <<<"$out" || true)
+check "keeps the refusals in the order of their steps" \
+  "$(contains "$first_refusal" "its step 'Fetch the index' carries")"
+write_step_keys_case 31
+run_check "$root"
+check "with the job written at the figure advised, passes" "$(is "$status" 0)"
+check "with the job written at the figure advised, refuses nothing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
+
 # The job-derivation clause's advice is a key the job passes with too (dispatch://INFRA-1545,
 # round 37). It named the first minute above the sum it compares, and a job written there can sit
 # at a step's own key, which the step-budget loop refuses a job for. Here the step's key is 8
@@ -12889,8 +12987,8 @@ for refusal in \
   check "refuses '$step' by name at its run" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, so this check cannot name the script that runs there")"
 done
-check "tells each run to write the script's literal path" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*Write the script's literal path at the run")" 11)"
+check "tells each run to write the script's literal path, or a tool's or a data file's" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*Where a script of this repository runs there, write its literal path at the run")" 11)"
 check "still refuses 12e's path in its assignment" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=34::step 'Assign it to a variable and run the variable' of job 'build' names .github/scripts/r37-c.sh in a variable assignment")"
 for step in "Run a tool by its literal path" "Run a script outside .github/scripts by a variable" \
@@ -12898,6 +12996,47 @@ for step in "Run a tool by its literal path" "Run a script outside .github/scrip
   check "passes '$step'" "$(is "$(contains "$out" "step '$step'")" false)"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 12)"
+
+# The advice of a refusal of a run this check cannot name covers a tool and a data file as well
+# as a script (dispatch://INFRA-1545, round 37). The refusal stands where a script of this
+# repository could run, and it told every run to write that script's literal path, where what
+# runs here is a tool and a data file. It names their literal path or their bare name now, and
+# the step written either way passes.
+echo "case: a run of a tool or a data file named by a variable is told to write its literal path or bare name"
+root=$(fixture r37-unnamed-tool)
+write_tool_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the installed tool
+        run: |
+          $1 --version
+      - name: Read the state the last step wrote
+        run: |
+          . $2
+YAML
+}
+write_tool_case '"$tool"' '"$state_file"'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the tool's run by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=9::step 'Run the installed tool' of job 'build' runs .\\\$tool. as a command, whose last path element is an expansion")"
+check "refuses the data file's source by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Read the state the last step wrote' of job 'build' sources .\\\$state_file., whose last path element is an expansion")"
+check "tells each run to write a tool's or a data file's literal path or bare name" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*where a tool or a data file runs there, write its literal path, ...HOME/\.local/bin/mise.., or its bare name, .mise., so this check can see it is not one of this repository.s scripts")" 2)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+write_tool_case '"$HOME/.local/bin/mise"' '"$RUNNER_TEMP/build.state"'
+run_check "$root"
+check "with the literal paths written, passes" "$(is "$status" 0)"
+write_tool_case mise build.state
+run_check "$root"
+check "with the bare names written, passes" "$(is "$status" 0)"
 
 # E2. A function whose body runs one of its positional parameters runs the word its caller hands
 # it in that place, so a call handing it a word built from data is a run this check cannot name,

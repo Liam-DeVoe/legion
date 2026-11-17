@@ -4989,6 +4989,42 @@ def waits_for_nothing(item: Uncounted) -> bool:
 
 
 JOB_SLOWEST: dict[tuple[str, str], dict] = {}
+# The longest key a retried step of each job writes, with that step's name, by the job's file and
+# id, whether or not the job writes a key of its own: the step-budget loop's last refusal holds a
+# job's key strictly above every one of them, so a refusal of a job's key advises a figure above
+# the longest (job_key_floor; dispatch://INFRA-1545, round 37).
+JOB_LONGEST_KEY: dict[tuple[str, str], tuple[int, str]] = {}
+
+
+def job_key_floor(path: str, job: str, least: int) -> tuple[int, str]:
+    """The key a refusal of a job's key advises, and the sentence saying why where it is not
+    `least`, the first whole minute above what that refusal compares: the larger of `least` and
+    the first minute above the longest key a retried step of the job writes, which the
+    step-budget loop's last refusal holds a job's key above. Until round 37's class search the
+    advice of the job-derivation clause named `least` alone, and a job written at it could sit
+    at a step's key and be refused there: a comment deriving 0 + 450 = 450 s over a step keyed
+    at 8 minutes was told 8; and the job-arithmetic refusal and the step-key refusal read the
+    key of the step each refused alone, so a job of a step at 450 s keyed at 8 and another
+    keyed at 20 was told 9, and a job under steps keyed at 20 and 30 was told 21, each a key
+    another step's key refused (dispatch://INFRA-1545, round 37)."""
+    longest = JOB_LONGEST_KEY.get((path, job))
+    if longest is None or longest[0] + 1 <= least:
+        return least, ""
+    key, step = longest
+    return (key + 1,
+            f"The job's key must also strictly exceed the `timeout-minutes: {key}` of its step "
+            f"'{step}', which this rule refuses a job for too, so the least key passing both is "
+            f"the larger of {least} and {key + 1}. ")
+
+
+# The refusals of a job's key the step-budget loop below makes, under one of its steps'
+# arithmetic or at one of its steps' keys, each with its place in `problems`, the budget refused,
+# the least key that refusal compares, and its text before and after the advice. The advice is
+# written once the loop has read every step of the job, since a step read after the refused one
+# may write the job's longest key (job_key_floor; dispatch://INFRA-1545, round 37).
+JOB_KEY_REFUSALS: list[tuple[int, Budget, int, str, str]] = []
+
+
 def step_name(budget) -> str:
     """What a refusal calls this step. A `uses:` step with no `name:` reads as '-' in the
     workflow, which names nothing a reader can search for, so the action it runs is what the
@@ -5198,8 +5234,15 @@ UNNAMED_RUN = (
     "the operand of `bash`, `sh`, `.` or `source`, and refuses a path built from data, or a file "
     "written, as the step runs rather than guess what it holds: a script under .github/scripts/ "
     "that fetches may run there, and its attempts would be charged to no budget. {cure}")
-UNNAMED_CURE = ("Write the script's literal path at the run, `.github/scripts/<name>.sh …`, and "
-                "hand it what varies as its arguments")
+# The cure covers what the run can be: the refusal stands where a script of this repository
+# could run, and until round 37's class search it told every such run to write that script's
+# path, where what runs may as well be a tool or a data file, whose literal path or bare name is
+# a run this check sees is none of its scripts (unnamed_target; dispatch://INFRA-1545, round 37).
+UNNAMED_CURE = ("Where a script of this repository runs there, write its literal path at the "
+                "run, `.github/scripts/<name>.sh …`, and hand it what varies as its arguments; "
+                "where a tool or a data file runs there, write its literal path, "
+                "`\"$HOME/.local/bin/mise\"`, or its bare name, `mise`, so this check can see it "
+                "is not one of this repository's scripts")
 UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its literal name, "
                      "`{name} .github/scripts/<name>.sh …` or `{name} grep …`, and what varies as "
                      "the arguments after it")
@@ -6027,18 +6070,20 @@ for budget in budgets:
     # The slowest retried step of each job, kept as this loop computes it — the step's own calls,
     # the scripts it runs and the composite action it uses — for the job-derivation clause below.
     # It is taken here and never recomputed there, because a `uses:` step's whole arithmetic is
-    # the action's and is known only at this point. Beside it, the longest key a retried step of
-    # the job writes, which the last refusal of this loop holds the job's key above, so the
-    # advice of the job-derivation clause can name a key that refusal passes too
-    # (dispatch://INFRA-1545, round 37).
+    # the action's and is known only at this point. Beside it, for every job, the longest key a
+    # retried step of the job writes, which the last refusal of this loop holds the job's key
+    # above, so each refusal of a job's key can advise a key that refusal passes too
+    # (job_key_floor; dispatch://INFRA-1545, round 37).
     if cost is not None and budget.job_minutes is not None and budget.job_line is not None:
         slowest = JOB_SLOWEST.setdefault((budget.path, budget.job),
                                          {"line": budget.job_line, "minutes": budget.job_minutes,
-                                          "cost": 0, "step": "", "key": 0, "key_step": ""})
+                                          "cost": 0, "step": ""})
         if cost > slowest["cost"]:
             slowest["cost"], slowest["step"] = cost, step_name(budget)
-        if cost and budget.minutes is not None and budget.minutes > slowest["key"]:
-            slowest["key"], slowest["key_step"] = budget.minutes, step_name(budget)
+    if cost and budget.minutes is not None:
+        longest = JOB_LONGEST_KEY.get((budget.path, budget.job))
+        if longest is None or budget.minutes > longest[0]:
+            JOB_LONGEST_KEY[(budget.path, budget.job)] = (budget.minutes, step_name(budget))
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
@@ -6273,22 +6318,21 @@ for budget in budgets:
             else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
                  f"{JOB_DEFAULT_MINUTES} minutes, {60 * JOB_DEFAULT_MINUTES} s")
         # The figure the advice names passes both of this rule's readings of a job: it is above
-        # this arithmetic and above the step's own key, which the reading below holds the job's
-        # key over. The step's key already exceeds this arithmetic wherever this is reached, so
-        # the first minimum alone, which the advice named, was a job key the reading below
-        # refused (dispatch://INFRA-1545, round 37).
-        least = max(cost // 60 + 1, budget.minutes + 1)
-        problem(budget.path, budget.job_line,
-                f"{job_carries}, and its step '{step_name(budget)}' holds retries taking {cost} s to "
-                "exhaust, which that budget does not strictly exceed. A job whose ceiling sits "
-                "at or under one of its own steps' arithmetic cuts that step before the step's own "
-                "budget can name the site that failed, so the step's `timeout-minutes` buys "
-                "nothing: a job carries its measured duration plus the arithmetic of its "
-                "slowest retried step, which is the rule ci-budgets.md's Budgets note writes out. "
-                "The job's key must also strictly exceed that step's own `timeout-minutes: "
-                f"{budget.minutes}`, which this rule refuses a job for too, so the least key "
-                f"passing both is the larger of {cost // 60 + 1} and {budget.minutes + 1}. "
-                f"Write `timeout-minutes: {least}` or more on this job.")
+        # this arithmetic and above the longest key a retried step of the job writes, which the
+        # reading below holds the job's key over. A step this loop reads after this one may write
+        # that key, so the refusal keeps its place here and is written once the loop has read
+        # the whole job (JOB_KEY_REFUSALS). The arithmetic's minute alone was a key the reading
+        # below refused, and so was one above this step's key alone, where another step of the
+        # job writes a longer one (dispatch://INFRA-1545, round 37).
+        JOB_KEY_REFUSALS.append((
+            len(problems), budget, cost // 60 + 1,
+            f"{job_carries}, and its step '{step_name(budget)}' holds retries taking {cost} s to "
+            "exhaust, which that budget does not strictly exceed. A job whose ceiling sits at or "
+            "under one of its own steps' arithmetic cuts that step before the step's own budget "
+            "can name the site that failed, so the step's `timeout-minutes` buys nothing: a job "
+            "carries its measured duration plus the arithmetic of its slowest retried step, which "
+            "is the rule ci-budgets.md's Budgets note writes out. ", "."))
+        problems.append("")
         continue
     if allowed <= budget.minutes:
         job_carries = (
@@ -6296,25 +6340,37 @@ for budget in budgets:
             if budget.job_minutes is not None
             else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
                  f"{JOB_DEFAULT_MINUTES} minutes")
-        problem(budget.path, budget.job_line,
-                f"{job_carries}, and its step '{step_name(budget)}' carries "
-                f"`timeout-minutes: {budget.minutes}`, which that job budget does not strictly "
-                "exceed. The step's retries fit inside the step's own budget here, so this "
-                "rule's step-budget refusal, which refuses a step whose `timeout-minutes` does "
-                "not strictly exceed its own retries, says nothing; what cuts the step is the "
-                "job, because the job holds that "
-                "step AND everything else it runs. A job ceiling at or below one of its steps' "
-                "ceilings therefore ends the run mid-ladder and reports GitHub's bare "
-                "`The job running on runner … has exceeded the maximum execution time` instead "
-                "of the step naming the site that failed, which is the same loss the step-budget "
-                "refusal refuses by another road. The Budgets note derives a job budget as its "
-                "measured duration plus its slowest retried step's whole ladder, and a program "
-                "cannot read a measurement, so this is the half of that rule a check can hold: "
-                f"write `timeout-minutes: {budget.minutes + 1}` or more on this job, or the "
-                "figure that job's own comment derives, whichever is larger. "
-                "(dispatch://INFRA-1545, round 27: twenty-two job keys stood below their own "
-                "documented derivation while this check was green, because it read only a step's "
-                "arithmetic against its job's key.)")
+        # The advice is above every retried step's key, and not this step's alone: a job under
+        # steps keyed at 20 and 30 was told 21, which the second step's refusal refused. So this
+        # refusal waits for the whole job too (JOB_KEY_REFUSALS; dispatch://INFRA-1545, round 37).
+        JOB_KEY_REFUSALS.append((
+            len(problems), budget, budget.minutes + 1,
+            f"{job_carries}, and its step '{step_name(budget)}' carries "
+            f"`timeout-minutes: {budget.minutes}`, which that job budget does not strictly "
+            "exceed. The step's retries fit inside the step's own budget here, so this "
+            "rule's step-budget refusal, which refuses a step whose `timeout-minutes` does "
+            "not strictly exceed its own retries, says nothing; what cuts the step is the "
+            "job, because the job holds that "
+            "step AND everything else it runs. A job ceiling at or below one of its steps' "
+            "ceilings therefore ends the run mid-ladder and reports GitHub's bare "
+            "`The job running on runner … has exceeded the maximum execution time` instead "
+            "of the step naming the site that failed, which is the same loss the step-budget "
+            "refusal refuses by another road. The Budgets note derives a job budget as its "
+            "measured duration plus its slowest retried step's whole ladder, and a program "
+            "cannot read a measurement, so this is the half of that rule a check can hold. ",
+            ", or the figure that job's own comment derives, whichever is larger. "
+            "(dispatch://INFRA-1545, round 27: twenty-two job keys stood below their own "
+            "documented derivation while this check was green, because it read only a step's "
+            "arithmetic against its job's key.)"))
+        problems.append("")
+
+# Each refusal of a job's key the loop above made, written now that every step of the job is
+# read, in the place the loop kept for it (JOB_KEY_REFUSALS).
+for index, budget, least, before, after in JOB_KEY_REFUSALS:
+    floor, why = job_key_floor(budget.path, budget.job, least)
+    problem(budget.path, budget.job_line,
+            f"{before}{why}Write `timeout-minutes: {floor}` or more on this job{after}")
+    problems[index] = problems.pop()
 
 # Rule 8, the priced comment against its own key, which is the control dispatch://INFRA-1545's
 # tester ran by `python3` at every round, moved into this check. EVERY ROUND OF THAT ISSUE
@@ -6483,22 +6539,6 @@ for path in sorted(set(budget.path for budget in budgets)):
 DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
 
 
-def job_key_floor(row: dict, least: int) -> tuple[int, str]:
-    """The key a job-derivation refusal advises, and the sentence saying why where it is not
-    `least`, the first whole minute above the sum that refusal compares: the larger of `least`
-    and the first minute above the longest key a retried step of the job writes, which the
-    step-budget loop's last refusal holds a job's key above. Until round 37's class search the
-    advice named `least` alone, and a job written at it could sit at a step's key and be refused
-    there: a comment deriving 0 + 450 = 450 s over a step keyed at 8 minutes was told 8
-    (dispatch://INFRA-1545, round 37)."""
-    if not row["key"]:
-        return least, ""
-    return (max(least, row["key"] + 1),
-            f"The job's key must also strictly exceed the `timeout-minutes: {row['key']}` of its "
-            f"step '{row['key_step']}', which this rule refuses a job for too, so the least key "
-            f"passing both is the larger of {least} and {row['key'] + 1}. ")
-
-
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     # The block that prices this job's key, and nothing else: a figure outside it belongs to
     # another job or another step and is never read here. A key no block prices has no
@@ -6518,7 +6558,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
         continue
     allowed = 60 * row["minutes"]
     if allowed <= total:
-        least, why = job_key_floor(row, total // 60 + 1)
+        least, why = job_key_floor(path, job, total // 60 + 1)
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, which that key does not strictly exceed. A job "
@@ -6533,7 +6573,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     # measured + term here, so it can sit at or under measured + cost only when cost is the
     # larger, and a test of that would be a condition no input can tell from its absence.
     if allowed <= recomputed:
-        least, why = job_key_floor(row, recomputed // 60 + 1)
+        least, why = job_key_floor(path, job, recomputed // 60 + 1)
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, but the slowest retried "
