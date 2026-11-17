@@ -34,8 +34,11 @@ import { bringOnScreen } from "../identity-block";
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
+import { NodeMarks } from "../node-states/NodeMarks";
+import { useFilterWords } from "../node-states/settle-write";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PLAN_WORDS, PRESET_NAMES } from "../page-words";
+import { isOvertaken } from "../tree-fold";
 import {
   needsChip,
   type PlanBar,
@@ -155,8 +158,14 @@ export function PlanFilterBody({
         const node = inView.get(task.id);
         return node === undefined ? [] : [node];
       });
+    // The view's overtaken tasks have no place in the order (`planOrder`), so they stand after
+    // every step, each once, and I's tree draws them as the one line they fold to there
+    // (dispatch://INFRA-4063 R5).
+    rows.push(...[...inView.values()].filter(isOvertaken));
     return { ...root, children: rows, held: heldBy(rows) };
   }, [entries, inView, root]);
+  // The same tasks, which the chart draws in the one line after every bar.
+  const overtaken = useMemo(() => ordered.children.filter(isOvertaken), [ordered]);
   // The node the address names, and the one the view has put the focus on or the reader went
   // past with a press of the switch: the address's node takes the focus while the two differ.
   const revealed = tree.reveal?.at(-1)?.id;
@@ -173,6 +182,13 @@ export function PlanFilterBody({
         : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
     }`;
   const empty = root.children.length === 0;
+  // An address naming an overtaken task opens the steps' line that holds it and lands on the
+  // task there (dispatch://INFRA-4063 R6): the line hangs under the steps' own root, wherever the
+  // outline holds the task, so the path to it is the root's.
+  const addressed = tree.reveal?.at(-1);
+  if (addressed !== undefined && isOvertaken(addressed)) {
+    tree = { ...tree, reveal: [ordered, addressed] };
+  }
   return (
     <div
       className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
@@ -230,6 +246,7 @@ export function PlanFilterBody({
           inView={inView}
           land={landing ? revealed : undefined}
           onLanded={setTaken}
+          overtaken={overtaken}
           reveal={revealed}
         />
       )}
@@ -337,6 +354,15 @@ const FOCUSED =
 /** Every row of the chart, a step's and a cycle's, in the order it is drawn. */
 const CHART_ROW = "[data-plan-bar-row], [data-plan-cycle-row]";
 
+/** The key of the chart's one line of overtaken tasks among its places (`DrawnPlace.key`, the
+ *  focus and the tab stop), and, before a task's id, the key of that task's row under it: no
+ *  node's id begins so, and a cycle's key is its tasks' ids (dispatch://INFRA-4063 R5). */
+const OVERTAKEN_KEY = "overtaken:";
+
+/** The chart's line of overtaken tasks and each task's row it holds open: places the keys walk,
+ *  drawn after every bar and cycle (dispatch://INFRA-4063 R5). */
+const LINE_ROWS = "[data-overtaken-line], [data-plan-overtaken-row]";
+
 /** What the reader does that ends the hold of the address's row on screen: a key, a press, a
  *  wheel and a touch, as the outline's own list (`IssueTree.tsx`'s `READER_ACTS`, which that
  *  file keeps to itself). */
@@ -398,6 +424,7 @@ function PlanChart({
   inView,
   land,
   onLanded,
+  overtaken,
   reveal,
 }: {
   entries: readonly PlanEntry[];
@@ -412,6 +439,9 @@ function PlanChart({
   land: string | undefined;
   /** Says the address's node has taken the focus. */
   onLanded: (id: string) => void;
+  /** The view's overtaken tasks, which have no place in the order: the one line after every bar
+   *  holds them (dispatch://INFRA-4063 R5). */
+  overtaken: readonly TreeNode[];
   /** The node the address names: the task a cycle's row stands for where it is one of its own. */
   reveal: string | undefined;
 }): ReactNode {
@@ -442,6 +472,29 @@ function PlanChart({
   const tabStop = rows.some((place) => place.key === stop)
     ? stop
     : (rows.find((place) => place.row.kind === "bar") ?? rows[0])?.key;
+  // The line the view's overtaken tasks fold to, after every bar (dispatch://INFRA-4063 R5,
+  // R6): closed until the reader opens it. While the words filter holds words the view holds
+  // only its matches, so the line holds one and is drawn open, less a line the reader closed
+  // under them, which stays closed until they open it again, as the outline's lines do
+  // (`IssueTree.tsx`'s `linesOpen`).
+  const holdsWords = useFilterWords().trim() !== "";
+  const [fold, setFold] = useState({ closed: false, open: false });
+  const lineOpen = fold.open || (holdsWords && !fold.closed);
+  // The line, and each task's row it holds open, take the chart's one tab stop as a row does:
+  // where the reader last stood on one of them, and on the line where the chart draws no other
+  // row. While one of them holds it, no bar or cycle does.
+  const lined = [
+    OVERTAKEN_KEY,
+    ...(lineOpen ? overtaken.map((task) => `${OVERTAKEN_KEY}${task.id}`) : []),
+  ];
+  const lineStop =
+    overtaken.length === 0
+      ? undefined
+      : stop !== undefined && lined.includes(stop)
+        ? stop
+        : tabStop === undefined
+          ? OVERTAKEN_KEY
+          : undefined;
 
   // The focused row gives its task to Details (`focused-node.tsx`) as the outline gives a focused
   // node, by the outline's own facts of it (`focusedNodeOf`: who wrote it, the item it is, its
@@ -495,6 +548,36 @@ function PlanChart({
     grown.observe(document.body);
     hold.signal.addEventListener("abort", () => grown.disconnect());
   }, [land, onLanded, rows]);
+  // An address naming an overtaken task opens the line, then puts the focus on the task's row
+  // under it once that is drawn and holds it on screen until the reader acts, as for a bar's row
+  // (dispatch://INFRA-4063 R6).
+  useEffect(() => {
+    if (land === undefined || !overtaken.some((task) => task.id === land)) return;
+    if (!lineOpen) {
+      setFold({ closed: false, open: true });
+      return;
+    }
+    const row = chart.current?.querySelector<HTMLElement>(
+      `[data-node-row][data-node-id="${CSS.escape(land)}"]`
+    );
+    if (row == null) return;
+    onLanded(land);
+    const box = row.getBoundingClientRect();
+    row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
+    landingHold.current?.abort();
+    const hold = new AbortController();
+    landingHold.current = hold;
+    for (const type of READER_ACTS) {
+      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    const grown = new ResizeObserver(() => {
+      if (document.activeElement === row) bringOnScreen(row);
+      else hold.abort();
+    });
+    grown.observe(document.body);
+    hold.signal.addEventListener("abort", () => grown.disconnect());
+  }, [land, lineOpen, onLanded, overtaken]);
 
   // The lines between a bar and the bars it needs, from where the browser laid the bars out:
   // from the end of the needed bar to the start of the one that needs it (the prototype's
@@ -563,6 +646,8 @@ function PlanChart({
   /** The chart's rows as the browser holds them, bars and cycles, in the order of `rows`. */
   const items = (): HTMLElement[] => [
     ...(chart.current?.querySelectorAll<HTMLElement>(CHART_ROW) ?? []),
+    // The line of overtaken tasks and the rows it holds open, which stand after every other row.
+    ...(chart.current?.querySelectorAll<HTMLElement>(LINE_ROWS) ?? []),
   ];
   /** Which of `held` the reader is on, a link inside it included, or -1 when on none. */
   const at = (held: readonly HTMLElement[]): number => {
@@ -578,6 +663,8 @@ function PlanChart({
    *  none: the keys that move the reader pass over a cycle's row (R7). */
   const barFrom = (held: readonly HTMLElement[], from: number, by: 1 | -1): number => {
     for (let index = from + by; index >= 0 && index < held.length; index += by) {
+      // The line of overtaken tasks and each row it holds open are walked as bars are.
+      if (held[index]?.matches(LINE_ROWS) === true) return index;
       if (held[index]?.hasAttribute("data-plan-bar-row") === true) return index;
     }
     return -1;
@@ -748,6 +835,8 @@ function PlanChart({
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
               tabStop={tabStop === place.key}
+              // Where the line of overtaken tasks holds the one tab stop, no other row does.
+              {...(lineStop === undefined ? {} : { tabStop: false })}
               task={place.task}
             />
           ) : (
@@ -758,8 +847,25 @@ function PlanChart({
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
               tabStop={tabStop === place.key}
+              {...(lineStop === undefined ? {} : { tabStop: false })}
             />
           )
+        )}
+        {overtaken.length === 0 ? null : (
+          <OvertakenTasks
+            focused={focused}
+            onFocus={takeFocus}
+            onStop={() => {
+              setFocused(OVERTAKEN_KEY);
+              setStop(OVERTAKEN_KEY);
+            }}
+            // A press focuses the line before it toggles it, so the tab stop a task's row held
+            // under it is the line's by then.
+            onToggle={() => setFold({ closed: lineOpen && holdsWords, open: !lineOpen })}
+            open={lineOpen}
+            tabStop={lineStop}
+            tasks={overtaken}
+          />
         )}
       </div>
       {/* Decoration over the rows: the words on each row say what a step needs. The lines of
@@ -833,6 +939,147 @@ function CycleRow({
       tabIndex={tabStop ? 0 : -1}
     >
       <CycleLine cycle={cycle} inChart />
+    </div>
+  );
+}
+
+/**
+ * The chart's one line of overtaken tasks, after every bar and cycle (dispatch://INFRA-4063 R5),
+ * as the outline draws its own (`node-states/OvertakenLine.tsx`): a treeitem with
+ * `aria-expanded`, `[data-overtaken-line]`, that says how many it holds in one text node
+ * ("1 overtaken"). A task a later one took the place of has no position (`planOrder`), so it is
+ * no bar: opened, the line draws each after it, one level down, as a row of its first line and
+ * its marks, Overtaken among them, with no bar. The line and those rows are places the chart's
+ * keys walk (`LINE_ROWS`), and each takes the chart's one tab stop as a row does. A press on the
+ * line, Enter and the right arrow open it and close it again, and the left arrow closes an open
+ * one. Its focus focuses no node, so Details goes on drawing what it drew.
+ */
+function OvertakenTasks({
+  focused,
+  onFocus,
+  onStop,
+  onToggle,
+  open,
+  tabStop,
+  tasks,
+}: {
+  /** The key of the chart's focused place (`DrawnPlace.key`). */
+  focused: string | undefined;
+  /** Gives a task's row the focus, by its key, as a bar's row takes it (`takeFocus`). */
+  onFocus: (key: string, task: TreeNode) => void;
+  /** Makes the line the focused place and the chart's one tab stop. */
+  onStop: () => void;
+  onToggle: () => void;
+  open: boolean;
+  /** The key of the place among the line and its rows that holds the chart's one tab stop. */
+  tabStop: string | undefined;
+  tasks: readonly TreeNode[];
+}): ReactNode {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const press = useRowOnScreen(ref, focused === OVERTAKEN_KEY);
+  return (
+    <>
+      <div
+        aria-expanded={open}
+        aria-level={1}
+        className={`flex min-h-10 min-w-0 cursor-pointer items-center border-t px-3.5 text-xs leading-5 font-medium outline-none max-[761px]:border-0 max-[761px]:px-0 ${pageLineBorder} ${pageQuietText} ${
+          focused === OVERTAKEN_KEY ? FOCUSED : ""
+        }`}
+        data-overtaken-line=""
+        onClick={onToggle}
+        onFocus={onStop}
+        onKeyDown={(event) => {
+          // Its own keys alone: a key with Ctrl, Alt or Meta is the browser's or another
+          // binding's, and every key it does not take here is the chart's (`useKeymap`).
+          if (event.target !== event.currentTarget) return;
+          if (event.altKey || event.ctrlKey || event.metaKey) return;
+          const toggles =
+            event.key === "Enter" ||
+            event.key === "ArrowRight" ||
+            (event.key === "ArrowLeft" && open);
+          if (!toggles) return;
+          event.preventDefault();
+          onToggle();
+        }}
+        onPointerDown={press}
+        ref={ref}
+        role="treeitem"
+        tabIndex={tabStop === OVERTAKEN_KEY ? 0 : -1}
+      >
+        <span {...pageChrome}>{`${tasks.length} ${CONTROL_LABELS.overtaken_count}`}</span>
+      </div>
+      {open
+        ? tasks.map((task) => (
+            <OvertakenTask
+              focused={focused === `${OVERTAKEN_KEY}${task.id}`}
+              key={task.id}
+              onFocus={() => onFocus(`${OVERTAKEN_KEY}${task.id}`, task)}
+              tabStop={tabStop === `${OVERTAKEN_KEY}${task.id}`}
+              task={task}
+            />
+          ))
+        : null}
+    </>
+  );
+}
+
+/** One overtaken task under the chart's open line (`OvertakenTasks`): its first line and its
+ *  marks, Overtaken among them, and no bar, since it has no position (dispatch://INFRA-4063 R5).
+ *  It is a row of the chart as a bar's is: its focus gives its task to Details, it places itself
+ *  on screen, and Enter on it goes to its task in the conversation. */
+function OvertakenTask({
+  focused,
+  onFocus,
+  tabStop,
+  task,
+}: {
+  focused: boolean;
+  onFocus: () => void;
+  tabStop: boolean;
+  task: TreeNode;
+}): ReactNode {
+  const navigate = useNavigate();
+  const ref = useRef<HTMLDivElement | null>(null);
+  const press = useRowOnScreen(ref, focused);
+  const line = taskLine(task);
+  return (
+    <div
+      aria-level={2}
+      className={`border-t py-2 pr-3.5 pl-7 outline-none max-[761px]:border-0 max-[761px]:px-0 ${pageLineBorder} ${
+        focused ? FOCUSED : ""
+      }`}
+      data-node-id={task.id}
+      data-node-row=""
+      data-node-type={task.type}
+      data-plan-overtaken-row=""
+      onFocus={onFocus}
+      onKeyDown={(event) => {
+        // On the row itself, as on a bar's (`tree-edit`), whose place among the chart's rows
+        // this row has none of; on a control inside it Enter is that control's own.
+        if (event.key !== "Enter" || event.target !== event.currentTarget) return;
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const path = conversationPath(task);
+        if (path === undefined) return;
+        event.preventDefault();
+        navigate(path);
+      }}
+      onPointerDown={press}
+      ref={ref}
+      role="treeitem"
+      tabIndex={tabStop ? 0 : -1}
+    >
+      <p
+        className={`text-[15px] leading-[22px] break-words ${pageInkText}`}
+        data-node-words=""
+        {...line.marks}
+      >
+        {line.words}
+      </p>
+      <p
+        className={`mt-px flex min-w-0 flex-wrap gap-x-1.5 text-xs leading-[18px] ${pageQuietText}`}
+      >
+        <NodeMarks marks={task} />
+      </p>
     </div>
   );
 }
@@ -965,10 +1212,13 @@ function BarRow({
               {needs.map(({ needed, words }) => (
                 <span data-plan-need={needed.id} key={needed.id} {...taskLine(needed).marks}>
                   {words}
+                  <NodeMarks compact marks={needed} />
                 </span>
               ))}
             </>
           )}
+          {/* After the step's facts, in that line's grey (dispatch://INFRA-4063 R2, R7). */}
+          <NodeMarks marks={task} />
         </p>
       </div>
       <div className="relative h-[54px] min-w-0 max-[761px]:-order-1 max-[761px]:my-[3px] max-[761px]:h-2.5 max-[761px]:basis-full max-[761px]:rounded-[5px] max-[761px]:bg-page-mark">
@@ -992,9 +1242,16 @@ function BarRow({
           // an inline link inside the box's 18 px line takes without growing the box. A long
           // first word wraps inside the column rather than run past it (R5).
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
+          // The marks of the statement it names, as its parent line or its chip carries them,
+          // after its words in the chip's own size (dispatch://INFRA-4063 R2, R7).
+          const marks =
+            (one.reference === task.parentLine?.reference ? task.parentLine : undefined) ??
+            task.alsoUnder.find((chip) => chip.ref === one.reference) ??
+            {};
           return route === undefined ? (
             <span className={look} data-plan-serve="" key={one.line} {...authorText}>
               {chipWords(one.line)}
+              <NodeMarks compact marks={marks} />
             </span>
           ) : (
             <span className={look} key={one.reference}>
@@ -1007,6 +1264,7 @@ function BarRow({
               >
                 {chipWords(one.line)}
               </Link>
+              <NodeMarks compact marks={marks} />
             </span>
           );
         })}

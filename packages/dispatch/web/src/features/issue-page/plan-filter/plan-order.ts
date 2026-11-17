@@ -5,6 +5,7 @@ import { documentOfNode } from "../issue-artifacts";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
+import { isOvertaken } from "../tree-fold";
 
 /**
  * The plan's tasks as ordered steps (dispatch://INFRA-1196 R26).
@@ -168,10 +169,15 @@ export function writtenOrder(
  * it is a task (dispatch://INFRA-3938 R1, `slots/view-plan.tsx`). A task the filter drew under
  * two statements is one task here, at its first place: a plan holds each task once, and its
  * second statement is its "Also under" chip (the tester's F19: task 1 was drawn twice).
+ *
+ * An overtaken task has no position, since a later task took its place: it is no entry, and the
+ * page draws it after the steps, in the one line its issue's overtaken tasks fold to
+ * (dispatch://INFRA-4063 R5).
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();
   const nodes = drawn.filter((node) => {
+    if (isOvertaken(node)) return false;
     if (seen.has(node.id)) return false;
     seen.add(node.id);
     return true;

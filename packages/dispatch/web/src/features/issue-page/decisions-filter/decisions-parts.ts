@@ -401,6 +401,9 @@ function placements(root: TreeNode): ReadonlyMap<string, Placement> {
                 id: above.id,
                 line: lineOf(above),
                 type: above.type,
+                // The parent's marks, which its line draws (dispatch://INFRA-4063 R2, R7).
+                ...(above.life === undefined ? {} : { life: above.life }),
+                ...(above.onlyYou === undefined ? {} : { onlyYou: above.onlyYou }),
               },
             }),
       });

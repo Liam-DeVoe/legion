@@ -20,10 +20,25 @@ import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { contentsEntries } from "../contents-entries";
+import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
+import {
+  answeredAsk,
+  DECISIONS_DOCUMENT,
+  decision,
+  decisionNode,
+  issueDetails as decisionsIssue,
+  decisionsRead as decisionsReadOf,
+  openAsk,
+  READER,
+  shaped,
+  specRef,
+  statement as specStatement,
+} from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider } from "../focused-node";
 import { ContentsList } from "../IssueContents";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
 import { overtakenLineOf } from "../issue-address";
+import { artifactsBySlug } from "../issue-artifacts";
 import {
   buildIssueTree,
   heldBy,
@@ -38,14 +53,18 @@ import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
+  BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   type NodeType,
+  PLAN_WORDS,
   ROW_MARK_WORDS,
   VERIFICATION_WORDS,
 } from "../page-words";
+import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
+import { planOrder } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
@@ -2143,5 +2162,448 @@ test("what waits leaves out what the held tree read closes, and reads nothing fo
   } finally {
     view.unmount();
     fetched.mockRestore();
+  }
+});
+
+/** The marks drawn under `element`, by their tokens, in the order they are drawn. */
+function marksIn(element: Element | null | undefined): (string | undefined)[] {
+  return [...(element?.querySelectorAll<HTMLElement>("[data-node-mark]") ?? [])].map(
+    (mark) => mark.dataset.nodeMark
+  );
+}
+
+/** The Decisions view over `root`, with `made` as the issue's decisions read, drawn as its slot
+ *  draws it (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no address and no words. */
+function drawDecisions(root: TreeNode, made: Parameters<typeof decisionsReadOf>[0]) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["decisions", KEY], decisionsReadOf(made));
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], []);
+  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
+  const issue = decisionsIssue();
+  return render(
+    createElement(
+      MemoryRouter,
+      null,
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          KeymapProvider,
+          null,
+          createElement(
+            MarginProvider,
+            null,
+            createElement(IssueScope),
+            createElement(
+              NoTooltips,
+              null,
+              createElement(DecisionsFilterBody, {
+                artifacts: artifactsBySlug(issue),
+                emptyLine: EMPTY_STATE_LINES.decisions,
+                holdsEscape: false,
+                isClosed: false,
+                issue,
+                reader: READER,
+                root,
+                view: presetView(root, "decisions", "", new Set()).root,
+              })
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+// R2, R7: under Decisions a proposed decision is marked in its margin, after the word for how it
+// stands on that line, and on a line of its own where it stands in none. The line naming its
+// parent carries the parent's marks after the parent's words, and each statement it informs
+// carries that statement's marks after its name, both in the compact form. A live entry, and a
+// live statement it informs, carry none.
+test("the Decisions view marks a proposed decision and its parent line", () => {
+  const waiting = decisionNode("waiting");
+  const under = decisionNode("under", { chips: [chip(specRef("s7")), chip(specRef("s1"))] });
+  const root = stamped(
+    node(KEY, "issue", [
+      specStatement("s1"),
+      specStatement("s7"),
+      openAsk("q-live", false),
+      answeredAsk(
+        "a-put",
+        { at: "2026-11-14T09:00:00Z", text: "Keep the rail." },
+        { children: [under] }
+      ),
+      waiting,
+    ]),
+    {
+      "a-put": { life: "proposed", onlyYou: true },
+      [specStatement("s7").id]: { life: "proposed" },
+      [under.id]: { life: "proposed" },
+      [waiting.id]: { life: "proposed" },
+    }
+  );
+  const view = drawDecisions(root, [
+    decision("under", {
+      links: [shaped(specRef("s7")), shaped(specRef("s1"))],
+      waiting_review: false,
+    }),
+    decision("waiting", { links: [shaped(specRef("s1"))] }),
+  ]);
+  try {
+    // Waiting for the reader's review: the mark after the state's word, on the state's line.
+    const state = rowOf(view.container, waiting.id)?.querySelector(
+      "[data-node-margin] [data-node-state]"
+    );
+    expect(state?.getAttribute("data-node-state")).toBe("waiting_review");
+    expect(marksIn(state?.parentElement?.parentElement)).toEqual(["proposed"]);
+    expect(state?.parentElement?.nextElementSibling?.getAttribute("data-node-mark")).toBe(
+      "proposed"
+    );
+
+    // Standing in none: no state, and the mark on a line of its own.
+    const decided = rowOf(view.container, under.id);
+    expect(decided?.querySelector("[data-node-margin] [data-node-state]")).toBeNull();
+    expect(marksIn(decided?.querySelector("[data-node-margin]"))).toEqual(["proposed"]);
+
+    // Its parent's line: the question it hangs under, proposed and reserved for the reader,
+    // marked after its words.
+    const parentLine = decided?.querySelector("[data-node-parent-line]");
+    expect(parentLine?.getAttribute("data-parent-id")).toBe("a-put");
+    expect(marksIn(parentLine)).toEqual(["proposed", "only_you"]);
+    expect(textOf(decided as HTMLElement, "[data-node-parent-line]")).toMatch(
+      new RegExp(`${ROW_MARK_WORDS.proposed} ${ROW_MARK_WORDS.only_you}$`, "u")
+    );
+
+    // The statements it informs: the proposed one marked after its name, the live one not.
+    const informs = (block: string) =>
+      decided?.querySelector(`[data-decision-statement="${specStatement(block).id}"]`);
+    expect(informs("s7")).not.toBeNull();
+    expect(marksIn(informs("s7"))).toEqual(["proposed"]);
+    expect(informs("s7")?.lastElementChild?.getAttribute("data-node-mark")).toBe("proposed");
+    expect(informs("s1")).not.toBeNull();
+    expect(marksIn(informs("s1"))).toEqual([]);
+
+    // The question itself, answered, carries its own marks on its state's line; a live
+    // question carries none.
+    expect(marksIn(rowOf(view.container, "a-put")?.querySelector("[data-node-margin]"))).toEqual([
+      "proposed",
+      "only_you",
+    ]);
+    expect(rowOf(view.container, "q-live")).not.toBeNull();
+    expect(marksIn(rowOf(view.container, "q-live"))).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The plan document's address of the task `block`. */
+function planRef(block: string): string {
+  return `dispatch://${KEY}/artifact/plan-md#b-${block}`;
+}
+
+/** One task of the plan document, by its block id, as the Plan view hands it over. */
+function planTask(block: string, extra: Partial<TreeNode> = {}): TreeNode {
+  return node(`plan-md#b-${block}`, "plan_task", [], {
+    reference: planRef(block),
+    text: `Task ${block} is carried out.`,
+    ...extra,
+  });
+}
+
+const T1 = "plan-md#b-t1";
+const T2 = "plan-md#b-t2";
+const T3 = "plan-md#b-t3";
+
+/** Three tasks of the plan, in its order, the second one a later task took the place of. */
+function planWithOvertaken(): TreeNode {
+  return stamped(node(KEY, "issue", [planTask("t1"), planTask("t2"), planTask("t3")]), {
+    [T2]: { life: "overtaken" },
+  });
+}
+
+/** What a case draws the Plan view under: the whole plan's tasks where the view is what the
+ *  words filter left of them, the chain down to the node the address names, and the address's
+ *  search, which carries the words (`?q=`). */
+interface PlanPlace {
+  readonly plan?: readonly TreeNode[];
+  readonly reveal?: readonly TreeNode[];
+  readonly search?: string;
+}
+
+/** The Plan view over `root`, the view's tasks, drawn as its slot draws it
+ *  (`PlanFilterBody.test.tsx`'s `renderBody`), with no document read, so the plan's own order is
+ *  the order the view hands the tasks over in. */
+function planBody(
+  root: TreeNode,
+  client: QueryClient,
+  { plan = root.children, reveal, search = "" }: PlanPlace
+): ReactNode {
+  return createElement(
+    MemoryRouter,
+    { initialEntries: [`/${search}`] },
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(
+        KeymapProvider,
+        null,
+        createElement(
+          MarginProvider,
+          null,
+          createElement(
+            FocusedNodeProvider,
+            null,
+            createElement(IssueScope),
+            createElement(PlanFilterBody, {
+              artifacts: new Map(),
+              context: new Set<string>(),
+              emptyLine: EMPTY_STATE_LINES.plan,
+              filtering: true,
+              focusReveal: true,
+              holdsEscape: search !== "",
+              isClosed: false,
+              onEditing: () => {},
+              plan,
+              reveal,
+              root,
+              rootRow: false,
+            })
+          )
+        )
+      )
+    )
+  );
+}
+
+/** `planBody` drawn, with `again` to draw it once more at another place, as the page does when
+ *  its address moves. */
+function drawPlan(root: TreeNode, place: PlanPlace = {}) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(planBody(root, client, place));
+  return { ...view, again: (next: PlanPlace) => view.rerender(planBody(root, client, next)) };
+}
+
+/** Each row the view draws, by its node's id, and each line of overtaken tasks, as `line`, in
+ *  the order drawn. */
+function placesDrawn(container: HTMLElement): string[] {
+  return [...container.querySelectorAll<HTMLElement>("[data-node-row], [data-overtaken-line]")].map(
+    (place) => place.dataset.nodeId ?? "line"
+  );
+}
+
+// R5, root R26: in the Plan view an overtaken task has no position: the plan's order leaves it
+// out, so no step stands at its place. The steps draw it after every step, as the one line its
+// issue's overtaken tasks fold to, which a press opens: the task is then a row under it, marked
+// Overtaken.
+test("the Plan view gives an overtaken step no position and folds it after the steps", async () => {
+  readWide();
+  const root = planWithOvertaken();
+  expect(
+    planOrder(root.children).map((entry) => (entry.kind === "step" ? entry.task.id : "cycle"))
+  ).toEqual([T1, T3]);
+  const user = userEvent.setup();
+  const view = drawPlan(root);
+  try {
+    await user.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
+    expect(view.container.querySelectorAll("[data-overtaken-line]")).toHaveLength(1);
+    expect(placesDrawn(view.container)).toEqual([T1, T3, "line"]);
+    expect(theLine(view.container).textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(theLine(view.container));
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
+    expect(placesDrawn(view.container)).toEqual([T1, T3, "line", T2]);
+    expect(
+      rowOf(view.container, T2)?.querySelector('[data-node-mark="overtaken"]')?.textContent
+    ).toContain(ROW_MARK_WORDS.overtaken);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R5, R9: the Plan chart draws an overtaken task as no bar, since it has no position: one line
+// after every bar says how many there are, a treeitem with `aria-expanded` that the chart's keys
+// walk to after the last bar, and the chart's one tab stop once the walk is on it. Enter or a
+// press opens it: the task is then a row after it, marked Overtaken, which the walk and End reach
+// next. A press closes it again.
+test("the Plan chart folds an overtaken task into one line after the bars", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const view = drawPlan(planWithOvertaken());
+  try {
+    expect(
+      [...view.container.querySelectorAll("[data-plan-bar-row]")].map((bar) =>
+        bar.getAttribute("data-node-id")
+      )
+    ).toEqual([T1, T3]);
+    expect(view.container.querySelector(`[data-plan-bar="${T2}"]`)).toBeNull();
+    expect(placesDrawn(view.container)).toEqual([T1, T3, "line"]);
+    const line = theLine(view.container);
+    expect(line).toHaveAttribute("role", "treeitem");
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(line.textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
+    const stops = (): (Element | null)[] => [
+      ...view.container.querySelectorAll('[role="tree"] [tabindex="0"]'),
+    ];
+    expect(stops()).toEqual([rowOf(view.container, T1)]);
+
+    // The walk goes from the last bar to the line, which takes the one tab stop.
+    act(() => rowOf(view.container, T1)?.focus());
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(rowOf(view.container, T3));
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(line);
+    expect(stops()).toEqual([line]);
+
+    // Enter opens it in place, and the walk goes on into the task it holds.
+    await user.keyboard("{Enter}");
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(placesDrawn(view.container)).toEqual([T1, T3, "line", T2]);
+    const opened = rowOf(view.container, T2);
+    expect(opened?.querySelector('[data-node-mark="overtaken"]')?.textContent).toContain(
+      ROW_MARK_WORDS.overtaken
+    );
+    expect(opened?.querySelector("[data-plan-bar]")).toBeNull();
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(opened);
+    expect(stops()).toEqual([opened]);
+    await user.keyboard("k");
+    expect(document.activeElement).toBe(line);
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(opened);
+
+    // A press closes it, and the line keeps the one tab stop; a press opens it again.
+    await user.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, T2)).toBeNull();
+    expect(stops()).toEqual([line]);
+    await user.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(view.container, T2)).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R6: an address naming an overtaken task opens the line that holds it and puts the focus on the
+// task's row there, in the chart and, where the address moves while the reader reads the steps,
+// in the steps, though the outline holds the task under a statement the view draws as no row.
+// Under the words filter the line that holds a match is drawn open, in both.
+test("the Plan view opens the line of an overtaken task an address or the words name", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const root = planWithOvertaken();
+  const replaced = nodeOf(root, T2);
+  if (replaced === undefined) throw new Error("the plan holds task 2");
+  // The chain the outline gives the address: the issue, the statement the task serves, the task.
+  const addressed = [root, node("spec#b-r1", "requirement"), replaced];
+
+  const chart = drawPlan(root, { reveal: addressed });
+  try {
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(chart.container, T2)));
+    expect(theLine(chart.container)).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    chart.unmount();
+  }
+
+  const steps = drawPlan(root);
+  try {
+    await user.click(steps.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(rowOf(steps.container, T2)).toBeNull();
+    steps.again({ reveal: addressed });
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(steps.container, T2)));
+    expect(theLine(steps.container)).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    steps.unmount();
+  }
+
+  // The words match task 2 alone, so the view holds it alone, under the whole plan's order.
+  const words = drawPlan(node(KEY, "issue", [replaced]), {
+    plan: root.children,
+    search: "?q=t2",
+  });
+  try {
+    expect(theLine(words.container)).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(words.container, T2)).not.toBeNull();
+    expect(theLine(words.container)).toHaveAttribute("tabindex", "0");
+    await user.click(words.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(theLine(words.container)).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(words.container, T2)).not.toBeNull();
+  } finally {
+    words.unmount();
+  }
+});
+
+// R2, R7: the Plan chart marks a proposed step after its facts, and names what a step needs and
+// what it serves each with the marks of the node named, after its name, in the compact form. A
+// step with no mark of its own draws none in its facts.
+test("the Plan chart marks a proposed step, and what a step needs and serves", () => {
+  readWide();
+  const serves: ParentLine = {
+    id: "spec#b-r7",
+    line: "The page draws r7.",
+    readId: "spec#b-r7",
+    reference: `dispatch://${KEY}/spec#b-r7`,
+    type: "requirement",
+  };
+  const needs: NodeChip = {
+    answered: true,
+    gone: false,
+    label: BLOCK_ATTRIBUTE_LABELS.needs,
+    name: "Task t1 is carried out.",
+    ref: planRef("t1"),
+  };
+  const view = drawPlan(
+    stamped(
+      node(KEY, "issue", [planTask("t1"), planTask("t2", { chips: [needs], parentLine: serves })]),
+      { [T1]: { life: "proposed" }, "spec#b-r7": { life: "proposed", onlyYou: true } }
+    )
+  );
+  try {
+    const bar = (id: string) =>
+      view.container.querySelector(`[data-plan-bar-row][data-node-id="${id}"]`);
+    expect(marksIn(bar(T1)?.querySelector("[data-plan-facts]"))).toEqual(["proposed"]);
+    expect(bar(T1)?.querySelector("[data-plan-facts]")?.lastElementChild).toHaveAttribute(
+      "data-node-mark",
+      "proposed"
+    );
+    expect(marksIn(bar(T2)?.querySelector(`[data-plan-need="${T1}"]`))).toEqual(["proposed"]);
+    expect(bar(T2)?.querySelector("[data-plan-facts] > [data-node-mark]")).toBeNull();
+    expect(marksIn(bar(T2)?.querySelector("[data-plan-serves]"))).toEqual(["proposed", "only_you"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R4: the steps are I's rows, so a focused proposed step draws G's acts, Settle among them, and
+// a focused live step draws its acts with no Settle.
+test("a proposed step carries Settle", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const view = drawPlan(
+    stamped(node(KEY, "issue", [planTask("t1"), planTask("t2")]), {
+      [T1]: { life: "proposed" },
+    })
+  );
+  try {
+    await user.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    act(() => rowOf(view.container, T1)?.focus());
+    await waitFor(() =>
+      expect(rowOf(view.container, T1)?.querySelector('[data-row-act="settle"]')).not.toBeNull()
+    );
+    act(() => rowOf(view.container, T2)?.focus());
+    await waitFor(() =>
+      expect(rowOf(view.container, T2)?.querySelector("[data-row-acts]")).not.toBeNull()
+    );
+    expect(rowOf(view.container, T2)?.querySelector('[data-row-act="settle"]')).toBeNull();
+    expect(view.container.querySelectorAll('[data-row-act="settle"]')).toHaveLength(0);
+  } finally {
+    view.unmount();
   }
 });

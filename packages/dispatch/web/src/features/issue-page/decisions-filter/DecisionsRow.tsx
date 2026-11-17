@@ -29,6 +29,7 @@ import {
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
+import { NodeMarks } from "../node-states/NodeMarks";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -44,6 +45,7 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
+import { conversationPath } from "./decisions-parts";
 import { type EntryStanding, entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -263,6 +265,8 @@ export function DecisionsRow({
                   {entry.parent.line}
                 </span>
               )}
+              {/* After the parent's words, in the line's own size (dispatch://INFRA-4063 R2). */}
+              <NodeMarks compact marks={entry.parent} />
             </p>
           )}
           {statements.length === 0 ? null : (
@@ -296,6 +300,21 @@ export function DecisionsRow({
                       {name}
                     </Link>
                   )}
+                  {/* The statement's marks, after its name in the chip's own size: those of the
+                      chip the entry's own node holds for the same tie, found by the statement's
+                      address in the conversation, which is how its shape names it. A decision's
+                      ties are its node's chips (`tree-drafts.ts`), and each carries the marks of
+                      the node it names (dispatch://INFRA-4063 R2, R7). */}
+                  <NodeMarks
+                    compact
+                    marks={
+                      node.chips.find(
+                        (chip) =>
+                          shape.path !== undefined &&
+                          conversationPath({ reference: chip.ref }) === shape.path
+                      ) ?? {}
+                    }
+                  />
                 </span>
               ))}
             </p>
@@ -495,6 +514,14 @@ function RowMargin({
           </span>
         )}
       </div>
+      {/* The node's marks stand where its state stands, on a line of their own where it has
+          none, as the outline's row draws them (`NodeRow.tsx`'s `RowMargin`;
+          dispatch://INFRA-4063 R2, R7). */}
+      {standing === undefined && !unsure && (node.life !== undefined || node.onlyYou === true) ? (
+        <div className={NODE_ROW_LAYOUT.marginState}>
+          <NodeMarks marks={node} />
+        </div>
+      ) : null}
       {standing === undefined && !unsure ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
           {standing === undefined ? null : (
@@ -521,6 +548,7 @@ function RowMargin({
               {CONTROL_LABELS.unsure}
             </span>
           ) : null}
+          <NodeMarks marks={node} />
         </div>
       )}
     </div>
