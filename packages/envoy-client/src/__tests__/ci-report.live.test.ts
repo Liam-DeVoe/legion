@@ -568,53 +568,78 @@ describe.skipIf(!dispatchStackEnabled)(
       });
     }, 120_000);
 
-    // A write whose 201 gives no stored result - here the JSON {}, which is not the route's row -
-    // landed, since Dispatch answers a write's 2xx only after the write committed: the CLI prints
-    // {"landed_without_answer":"ANSWER_LOST"} and exits 0. The step counts that one result as
-    // written, and its line says that the answer was lost, with no id. The job's token is traded
-    // at the stack's real broker; only Dispatch is a stand-in, on a raw socket, so its answer is
-    // exactly these bytes.
-    test("a write whose 201 gives no stored result counts as written, and its line says that the answer was lost", async () => {
-      const checkout = checkoutOf("answer-lost", SPEC_WITHOUT_SECOND);
+    /** A stand-in of Dispatch on a raw socket, so its answer is exactly these bytes: every POST
+     *  gets a 201 whose body is `{}`, which is not the route's row, and, with `echo`, the
+     *  request's own `Idempotency-Key` back, as Dispatch's keyed layer sends it on each 2xx of a
+     *  keyed write. It reads each request up to the end of its headers before it answers, and
+     *  counts the POSTs and the keys they carried. */
+    function rowlessDispatch(echo: boolean) {
       const body = "{}";
-      let posts = 0;
-      const lost = Bun.listen({
+      const seen = { posts: 0, keys: [] as string[] };
+      const heads = new Map<object, string>();
+      const server = Bun.listen({
         hostname: "127.0.0.1",
         port: 0,
         socket: {
-          data(socket, request) {
-            if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
-            posts += 1;
+          data(socket, chunk) {
+            const head = (heads.get(socket) ?? "") + chunk.toString("latin1");
+            heads.set(socket, head);
+            const end = head.indexOf("\r\n\r\n");
+            if (end < 0) return;
+            heads.set(socket, "\0answered");
+            if (!head.startsWith("POST ")) return;
+            seen.posts += 1;
+            const key = /^idempotency-key:[ \t]*(.*?)[ \t]*$/im.exec(head.slice(0, end))?.[1] ?? "";
+            seen.keys.push(key);
             socket.write(
               "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
+                (echo ? `Idempotency-Key: ${key}\r\n` : "") +
                 `Content-Length: ${body.length}\r\n\r\n${body}`
             );
             socket.end();
           },
+          close(socket) {
+            heads.delete(socket);
+          },
         },
       });
+      return { seen, server };
+    }
+
+    /** The step's lines as their check, outcome, exit, result id and why, its count line, and
+     *  its exit status. */
+    function stepAnswer(reported: Reported) {
+      return {
+        code: reported.code,
+        lines: reported.lines.map(({ check, outcome, exit, result_id, why }) => ({
+          check,
+          outcome,
+          exit,
+          result_id,
+          why,
+        })),
+        counted: /; (\d+ results written, \d+ calls failed)$/m.exec(reported.stderr)?.[1],
+      };
+    }
+
+    // A write whose 201 carries back its own Idempotency-Key and gives no stored result - here
+    // the JSON {}, which is not the route's row - landed: the echoed key says Dispatch's keyed
+    // layer answered, and Dispatch answers a write's 2xx only after the write committed. The CLI
+    // prints {"landed_without_answer":"ANSWER_LOST"} and exits 0. The step counts that one result
+    // as written, and its line says that the answer was lost, with no id. The job's token is
+    // traded at the stack's real broker; only Dispatch is a stand-in.
+    test("a write whose 201 echoes its key and gives no stored result counts as written, and its line says that the answer was lost", async () => {
+      const checkout = checkoutOf("answer-lost", SPEC_WITHOUT_SECOND);
+      const { seen, server } = rowlessDispatch(true);
       try {
         const reported = await lastStep(
           checkout,
           jobOf(checkout, 951),
           "go-test-all-pass.jsonl",
           JOB,
-          {
-            DISPATCH_URL: `http://127.0.0.1:${lost.port}`,
-          }
+          { DISPATCH_URL: `http://127.0.0.1:${server.port}` }
         );
-        expect({
-          code: reported.code,
-          lines: reported.lines.map(({ check, outcome, exit, result_id, why }) => ({
-            check,
-            outcome,
-            exit,
-            result_id,
-            why,
-          })),
-          counted: /; (\d+ results written, \d+ calls failed)$/m.exec(reported.stderr)?.[1],
-          posts,
-        }).toEqual({
+        expect({ ...stepAnswer(reported), posts: seen.posts }).toEqual({
           code: 0,
           lines: [
             {
@@ -628,10 +653,61 @@ describe.skipIf(!dispatchStackEnabled)(
           counted: "1 results written, 0 calls failed",
           posts: 1,
         });
+        // The echo is the request's own key, which the CLI sent.
+        expect(seen.keys[0]).toMatch(/^\S+$/);
       } finally {
-        lost.stop(true);
+        server.stop(true);
       }
       // The write went to the stand-in alone: the stack's Dispatch holds no row at the commit.
+      expect(await rowsAt(checkout.sha)).toEqual([]);
+    }, 120_000);
+
+    // The same 201 with no key carried back is no answer of Dispatch's keyed layer: a proxy in
+    // Dispatch's place can write a 2xx while the write never reached Dispatch. Nothing says the
+    // result was stored, so the CLI prints {"write_outcome_unknown":"<code>"} and exits 1, and the
+    // step counts no result as written, says that the outcome is unknown, and exits 1.
+    test("a write whose 201 echoes no key and gives no stored result is not counted as written, and its line says that the outcome is unknown", async () => {
+      const checkout = checkoutOf("no-echo", SPEC_WITHOUT_SECOND);
+      const { seen, server } = rowlessDispatch(false);
+      try {
+        const reported = await lastStep(
+          checkout,
+          jobOf(checkout, 952),
+          "go-test-all-pass.jsonl",
+          JOB,
+          { DISPATCH_URL: `http://127.0.0.1:${server.port}` }
+        );
+        const answer = stepAnswer(reported);
+        expect({
+          code: answer.code,
+          lines: answer.lines.map(({ why, ...line }) => ({
+            ...line,
+            unknown:
+              /^the write went out and no answer said whether Dispatch stored it \([^()\s]+\): a second run of the step is safe, since Dispatch keeps each result$/.test(
+                why
+              ),
+            why,
+          })),
+          counted: answer.counted,
+          posted: seen.posts > 0,
+        }).toEqual({
+          code: 1,
+          lines: [
+            {
+              check: PROBE,
+              outcome: "pass",
+              exit: 1,
+              result_id: "",
+              unknown: true,
+              why: expect.any(String),
+            },
+          ],
+          counted: "0 results written, 1 calls failed",
+          posted: true,
+        });
+      } finally {
+        server.stop(true);
+      }
       expect(await rowsAt(checkout.sha)).toEqual([]);
     }, 120_000);
   }
