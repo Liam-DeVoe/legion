@@ -59,6 +59,12 @@ type PlanReason struct {
 // registerPlanRoute is register_plan as a refusal names it, the operation the caller retries.
 const registerPlanRoute = "register_plan"
 
+// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 156): the
+// routes register_plan and stop_task, a failed step's returnTo on handoff_complete, and the hold
+// reasons task-stopped and children in the state's holdReason, which a caller below it is served
+// without (stateNarrowings).
+const OwnerPlanContract = 156
+
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
 // (PlanRefusal), and every other refusal as its code and its sentence (Failure).
 func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
