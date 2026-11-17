@@ -917,3 +917,51 @@ test("a read given up asks for no next page", async () => {
     read.mockRestore();
   }
 });
+
+/** Reads the tree once through `issueTreeQuery`, with every page `serve` answers for the cursor
+ *  it is asked with. The server answers at most `bound` pages and then refuses, so a walk that
+ *  never ends fails the case rather than holding it. */
+async function walkWith(serve: (cursor: string | undefined) => TreeAnswer, bound = 10) {
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
+    if (read.mock.calls.length > bound) throw new Error(`more than ${bound} page reads`);
+    return serve(page?.cursor);
+  });
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const outcome = await client.fetchQuery(issueTreeQuery(KEY)).then(
+      (merged) => ({ nodes: merged.nodes.map((one) => one.id) }),
+      (error: unknown) => ({ error: String(error) })
+    );
+    return { cursors: read.mock.calls.map(([, page]) => page?.cursor), outcome };
+  } finally {
+    read.mockRestore();
+  }
+}
+
+// A page that names no next page is the last one, however the server writes "none": a server
+// whose paged answers leave an empty cursor out of the body, as Go's `omitzero` does, or write it
+// as the empty string, sends one page, and the walk ends there instead of asking for the first
+// page again, without end.
+test("a page that names no next page ends the walk, the cursor left out or empty", async () => {
+  const only = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const { cursor: _none, ...leftOut } = only;
+  for (const last of [leftOut as TreeAnswer, { ...only, cursor: "" }]) {
+    expect(await walkWith(() => last)).toEqual({
+      cursors: [undefined],
+      outcome: { nodes: [KEY, "r1"] },
+    });
+  }
+});
+
+// A server that names the same next page again never ends a walk that follows it: the walk asks
+// for each page at most once and ends, with an answer or a failure, instead of asking without
+// end.
+test("a cursor the server names twice ends the walk", async () => {
+  const { cursors, outcome } = await walkWith((cursor) =>
+    cursor === undefined
+      ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
+      : { ...answer([]), cursor: "page-2", nodes: [node("c1", "comment", "r1")] }
+  );
+  expect(cursors).toEqual([undefined, "page-2"]);
+  expect(JSON.stringify(outcome)).not.toContain("page reads");
+});
