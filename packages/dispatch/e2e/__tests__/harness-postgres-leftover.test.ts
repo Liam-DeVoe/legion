@@ -424,14 +424,23 @@ function removeContainersOf(run: string): void {
   removeIds(containersOf(run));
 }
 
-/** The lines of a start's stderr that name the container `container`, by name or id, each of
- *  which must say that this start removed it or that another start removed it first; at most one.
- *  A start names no container another start removed before it listed them. */
+/** The lines of a start's stderr that name the container `container`, by name or id. Each says
+ *  that this start removed it, or that another start removed it first, or, for a container that
+ *  another start removed, that this start removed the socket directory it served in, which is the
+ *  run directory sweep's once Docker lists no such container (e2e/harness-postgres-marks.ts). At
+ *  most one says that this start removed the container. A start names no container another start
+ *  removed before it listed them. */
 function removalLines(stderr: string, container: string): string[] {
   const lines = linesWith(stderr, container);
-  expect(lines.length, stderr).toBeLessThanOrEqual(1);
-  for (const line of lines)
-    expect(line).toMatch(/: removed container |another start removed first/);
+  for (const line of lines) {
+    expect(line).toMatch(
+      /: removed container |another start removed first|its container \S+ is gone, as Docker lists no such container/
+    );
+  }
+  expect(
+    lines.filter((line) => line.includes(": removed container ")).length,
+    stderr
+  ).toBeLessThanOrEqual(1);
   return lines;
 }
 
@@ -530,8 +539,8 @@ for (const provider of [
           expect(containerExists(containers.killed)).toBe(false);
           expect(killedVolumes.filter((volume) => exists("volume", volume))).toEqual([]);
           expect(existsSync(dirname(killed.address))).toBe(false);
-          // At most one line names it, the container sweep's: the run directory sweep removes the
-          // mark of a container that sweep removed and says nothing more of it.
+          // Each line that names it says what this start did of it (`removalLines`): another
+          // start of the machine may have removed the container first.
           removalLines(lines, containers.killed);
         } else {
           expect(existsSync(join(killed.dir, "worker-0", "pgdata"))).toBe(false);
@@ -1180,32 +1189,36 @@ test.skipIf(skipImage)(
     const real = Bun.which("docker");
     if (real === null) throw new Error("no docker on PATH");
     try {
-      const inProgress = leaveContainer(
-        image,
-        made,
-        run,
-        0,
-        who.gone,
-        mkdtempSync(join(run, "pg-0-"))
-      );
-      const goneFirst = leaveContainer(
-        image,
-        made,
-        run,
-        1,
-        who.gone,
-        mkdtempSync(join(run, "pg-1-"))
-      );
+      // The row's two dead containers carry no label that Docker lists: the stand-in `docker`
+      // below adds their marks to the listing of the start under test alone, so no other start
+      // of the machine removes them before that start meets the removals the row stages.
+      const listed: string[] = [];
+      const plant = (index: number) => {
+        const name = plantedName(run, index);
+        const sockets = mkdtempSync(join(run, `pg-${index}-`));
+        const id = docker("create", "--name", name, image).trim();
+        made.push(id);
+        const mark = { owner: who.gone, run, identity: identityOf(run), sockets, container: name };
+        listed.push(`${id} ${name} ${JSON.stringify(mark)}`);
+        return { name, id: id.slice(0, 12) };
+      };
+      const inProgress = plant(0);
+      const goneFirst = plant(1);
       const [inProgressId = "", goneFirstId = ""] = made;
       // Another start's removal, as the start under test meets it: its `docker` removes the first
       // container a second after it answers Docker's refusal of a removal in progress, and
       // removes the second itself just before the real `docker rm` of it, which then finds it
       // gone. Every other call is the real `docker`'s.
       const bin = mkdtempSync(join(tmp, "bin-"));
+      writeFileSync(join(bin, "listed"), `${listed.join("\n")}\n`);
       writeFileSync(
         join(bin, "docker"),
         [
           "#!/usr/bin/env bash",
+          `if [ "$1" = ps ] && [[ " $* " == *" label=${markLabel} "* ]]; then`,
+          `  ${JSON.stringify(real)} "$@" || exit`,
+          `  exec cat ${JSON.stringify(join(bin, "listed"))}`,
+          "fi",
           `if [ "$1" = rm ] && [[ " $* " == *" ${inProgressId} "* ]]; then`,
           `  ( sleep 1; exec ${JSON.stringify(real)} rm --force --volumes ${inProgressId} >/dev/null 2>&1 ) &`,
           `  echo "Error response from daemon: removal of container ${inProgressId} is already in progress" >&2`,

@@ -218,14 +218,18 @@ with its data and socket directories. Each start of a stack removes what such a
 harness left, where it can show the harness dead. Each Postgres carries a mark
 of the process that started it: a file in the run's directory, and the image
 provider's container also carries it as a label
-(`e2e/harness-postgres-marks.ts`). A start reads three places: the
+(`e2e/harness-postgres-marks.ts`). Each shell stack of `scripts/e2e` that
+starts a Postgres container marks it the same way and runs the same removal
+first (`scripts/e2e/lib/leftovers.sh`). A start reads three places: the
 `dispatch-e2e-run-*` directories of its own `TMPDIR`; the containers that Docker
 lists with the label, wherever their stack ran; and `/proc`, for each postmaster
-of its own user whose working directory is a stack's data directory in a
-`dispatch-e2e-run-*` directory of another `TMPDIR`, which that directory's
-`postmaster.pid` names. A name only finds a candidate; the mark decides. The
-start reads a mark only where no other user can have written it (each
-directory of its path, read without following a link, is root's or the user's,
+of its own user whose working directory is a stack's data directory in a run
+directory that its listing does not read (another `TMPDIR`'s, or one renamed
+after its stack started), which that directory's `postmaster.pid` names by the
+pid the postmaster's own PID namespace gives it. A name only finds a candidate;
+the mark decides. The start reads a mark only where no other user can have
+written it (each directory of its path, read without following a link, is
+root's or the user's,
 and none that another user can reach may be written by another user but for a
 sticky one such as `/tmp`), and it follows no link. It removes each Postgres
 whose process is gone, in this boot and PID namespace, by the steps the mark
@@ -254,6 +258,9 @@ What a start leaves and names, and what you do to remove it by hand:
   no running server, so no start finds it: remove that `dispatch-e2e-run-*`
   directory by hand. One whose postmaster still runs is removed as above, and
   a postmaster there that no mark names is named, for you to stop by hand.
+- A run directory renamed after its stack was killed (to keep its logs, say):
+  its marks name the old directory, so a start trusts none of them and names
+  the postmaster that serves from it. Stop it by hand as above.
 - A mark, or a path it names, that another user could have written or that a
   link leads through is never acted on: read who owns it before you remove it.
 
