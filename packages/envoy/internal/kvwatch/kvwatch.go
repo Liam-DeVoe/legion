@@ -75,12 +75,14 @@ type Cache interface {
 	// the read found no evidence of (Copy.CompleteRead). A read that times out or ends before its
 	// end marker never completes, and removes nothing.
 	CompleteRead(read Read)
-	// Unmarked names the entries CompleteRead would remove now: those the read has no evidence of
-	// (Copy.Unmarked). The watcher reads each from the stream's leader before the read completes
-	// and applies each record found through Apply, so CompleteRead removes only a row whose key
-	// the leader answered it holds no record of (verifyUnmarked). A cache that keeps no copy names
-	// none.
-	Unmarked(read Read) []string
+	// Unmarked names the keys the read has no evidence of among the entries the cache holds,
+	// which CompleteRead would remove now, and among stored, the keys the bucket's stream holds a
+	// message on, which the cache may never have held (Copy.Unmarked). The watcher reads each from
+	// the stream's leader before the read completes and applies each record found through Apply,
+	// so the completed read holds every key the bucket held at the read's barrier, and
+	// CompleteRead removes only a row whose key the leader answered it holds no record of
+	// (verifyUnmarked). A cache that keeps no copy names none.
+	Unmarked(read Read, stored []string) []string
 }
 
 // Read names one read of the bucket: the watcher generation that reads it, as the cache sees it.
@@ -603,16 +605,16 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 // until nats.go closes its updates, whether or not it is still current. The first nil ends the
 // read's scan, and a complete scan does not complete the read on its own: the read then waits past
 // a barrier (settle) until its own consumer has delivered a record at or past the barrier's
-// sequence, and completes once the stream's leader was asked about every row it has no evidence
-// of (finishSettle, completeRead). Every record delivered until
-// then is applied as the read's. A scan that delivers nothing for the idle timeout, counted from
-// since (when its idle wait was armed) and then from its last entry, ends as timed out instead
-// (idleExpired, signalled on idle by the scan's idle wait): the read completes nothing and is read
-// again (readAgainLater), and the watcher goes on applying what it delivers, its scan's nil
-// included as nothing more than a late marker. A watcher that ends before its read completes
-// completes nothing either: the cache removes nothing for a read it cannot vouch for. A record
-// delivered after the read completed waits for a read of the bucket's stream when the latest
-// confirmation of it is too old to vouch for the record (applyCurrent).
+// sequence, and completes once the stream's leader was asked about every key it has no evidence
+// of, whether the copy holds it or only the stream does (finishSettle, completeRead). Every record
+// delivered until then is applied as the read's. A scan that delivers nothing for the idle
+// timeout, counted from since (when its idle wait was armed) and then from its last entry, ends as
+// timed out instead (idleExpired, signalled on idle by the scan's idle wait): the read completes
+// nothing and is read again (readAgainLater), and the watcher goes on applying what it delivers,
+// its scan's nil included as nothing more than a late marker. A watcher that ends before its read
+// completes completes nothing either: the cache removes nothing for a read it cannot vouch for. A
+// record delivered after the read completed waits for a read of the bucket's stream when the
+// latest confirmation of it is too old to vouch for the record (applyCurrent).
 func (w *Watcher) consume(sub *subscription, generation uint64, read Read, started time.Time, idle chan struct{}, since time.Time) {
 	var scan KeyScan
 	scanning := true
@@ -653,7 +655,7 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 			case settle.caughtUp(ack.sequence):
 				since := settle.since
 				settle = nil
-				w.finishSettle(generation, read, since)
+				w.finishSettle(generation, read, since, ack.sequence)
 			case w.confirmStream(generation) == streamReplaced:
 				// The barrier went to a bucket other than the one the read was installed on, which
 				// was deleted and created again during the scan: the check has stopped the copy
@@ -695,9 +697,9 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 			w.applyCurrent(entry, generation, read)
 		}
 		if settle != nil && settle.delivered(delivered) {
-			since := settle.since
+			since, barrier := settle.since, settle.barrier
 			settle = nil
-			w.finishSettle(generation, read, since)
+			w.finishSettle(generation, read, since, barrier)
 		}
 	}
 }
@@ -705,23 +707,25 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 // settling is one read's wait past its barrier, which consume keeps while the read waits. The
 // barrier is the stream sequence its write was acknowledged at, 0 until the acknowledgement
 // arrives on acks; passed is the highest stream sequence the consumer has delivered. The read stops
-// waiting once passed has reached the barrier, and then reads from the stream's leader every row
-// it has no evidence of before it removes any (verifyUnmarked).
+// waiting once passed has reached the barrier, and then reads from the stream's leader every key
+// it has no evidence of, among the copy's rows and the keys the stream lists, before it removes
+// any (verifyUnmarked).
 //
 // What a delivery at or past the barrier proves is the consumer's place: it walks the stream in
 // sequence order, handing over every message it passes that the store still holds
-// (nats-server v2.15.1 consumer.go:6400-6406, 5050-5074), so every row the read has delivered
+// (nats-server v2.15.1 consumer.go:6400-6406, 5050-5074), so every key the read has delivered
 // nothing for by then either has no record or has one written after the consumer passed its old
-// one, which the leader's read finds. The pending count a delivery carries (its Delta) is read for
-// nothing: it is the server's cached count, not a reading of the store, and it is wrong both
-// ways. A stored message is acknowledged before its consumer signal is queued
-// (stream.go:7505-7526), the signal is counted later on another goroutine (stream.go:8416-8449,
-// consumer.go:7084-7102), the removal of an undelivered message the bucket replaced is counted at
-// once (consumer.go:7020-7026), and a count below zero is reported as zero (consumer.go:5709-5713),
-// so a delivery can carry 0 while a replacement is stored and undelivered; and a removal the
-// cursor had already skipped is not counted at all (consumer.go:5688-5689, 7020-7022), so a
-// delivery can carry 1 with nothing left to deliver, and a read that waited for a 0 would wait out
-// its timeout.
+// one, which the leader's read finds: a row the copy holds, and a key only the stream lists, one
+// a window write of another writer's stored and the bucket replaced ahead of the consumer. The
+// pending count a delivery carries (its Delta) is read for nothing: it is the server's cached
+// count, not a reading of the store, and it is wrong both ways. A stored message is acknowledged
+// before its consumer signal is queued (stream.go:7505-7526), the signal is counted later on
+// another goroutine (stream.go:8416-8449, consumer.go:7084-7102), the removal of an undelivered
+// message the bucket replaced is counted at once (consumer.go:7020-7026), and a count below zero is
+// reported as zero (consumer.go:5709-5713), so a delivery can carry 0 while a replacement is stored
+// and undelivered; and a removal the cursor had already skipped is not counted at all
+// (consumer.go:5688-5689, 7020-7022), so a delivery can carry 1 with nothing left to deliver, and a
+// read that waited for a 0 would wait out its timeout.
 type settling struct {
 	since   time.Time
 	acks    chan barrierAck
@@ -770,7 +774,7 @@ func (w *Watcher) beginSettle(generation uint64, read Read) *settling {
 	w.mu.Lock()
 	if !w.completes(generation) {
 		w.mu.Unlock()
-		w.finishSettle(generation, read, time.Time{})
+		w.finishSettle(generation, read, time.Time{}, 0)
 		return nil
 	}
 	kv := w.kv
@@ -817,12 +821,13 @@ func (w *Watcher) settleExpired(generation uint64, idle chan<- struct{}) bool {
 	return true
 }
 
-// finishSettle ends generation's wait past its barrier, begun at since. It first reads from the
-// stream's leader every row the read has no evidence of (verifyUnmarked); a read of them that
-// fails ends the wait as settleFailed does, so the read removes nothing and is read again.
-// Otherwise it disarms the wait's bound, completes the read (completeRead) and releases readiness.
-func (w *Watcher) finishSettle(generation uint64, read Read, since time.Time) {
-	if err := w.verifyUnmarked(generation, read); err != nil {
+// finishSettle ends generation's wait past its barrier, begun at since and acknowledged at stream
+// sequence barrier. It first reads from the stream's leader every key the read has no evidence of
+// (verifyUnmarked); a read of them that fails ends the wait as settleFailed does, so the read
+// removes nothing and is read again. Otherwise it disarms the wait's bound, completes the read
+// (completeRead) and releases readiness.
+func (w *Watcher) finishSettle(generation uint64, read Read, since time.Time, barrier uint64) {
+	if err := w.verifyUnmarked(generation, read, barrier); err != nil {
 		w.settleFailed(generation, read, since, err)
 		return
 	}
@@ -833,38 +838,58 @@ func (w *Watcher) finishSettle(generation uint64, read Read, since time.Time) {
 	}
 }
 
-// unmarkedReads is how many rows verifyUnmarked reads from the stream's leader at once.
+// unmarkedReads is how many keys verifyUnmarked reads from the stream's leader at once.
 const unmarkedReads = 16
 
-// verifyUnmarked reads from the stream's leader each row generation's read has no evidence of
-// (Cache.Unmarked), which CompleteRead would remove, and applies each record the leader holds to
-// the cache as a delivered record (Cache.Apply): the row takes the leader's value and revision
-// through the copy's fence and is marked, so CompleteRead keeps it. A row whose key the leader
-// answers it holds no record of - none, or a delete or purge marker as its newest message
-// (nats.ErrKeyNotFound) - is left for CompleteRead to remove. Any other answer, a refusal, a
-// timeout or an error from the stream, keeps every row and is returned, for the caller to fail the
-// read; nothing is applied then.
+// verifyUnmarked reads from the stream's leader each key generation's read has no evidence of
+// (Cache.Unmarked): each row of the copy, which CompleteRead would remove, and each key the
+// bucket's stream holds a message on (bus.KeyValue.StoredKeys, asked through barrier) that the
+// copy does not hold. It applies each record the leader holds to the cache as a delivered record
+// (Cache.Apply): the key takes the leader's value and revision through the copy's fence and is
+// marked, so CompleteRead keeps it. A key the leader answers it holds no record of - none, or a
+// delete or purge marker as its newest message (nats.ErrKeyNotFound) - is left for CompleteRead to
+// remove, or is never added. Any other answer, a refusal, a timeout, a list of the keys that is
+// incomplete or from a copy of the stream behind the barrier, or an error from the stream, keeps
+// every row and is returned, for the caller to fail the read; nothing is applied then.
 //
 // The leader is the authority because it alone answers the stream message get
 // (bus.KeyValue.HeldFromLeader; nats-server v2.15.1 jetstream_api.go:3956-3958), and it stores a
 // write before it acknowledges it (stream.go:7505-7526), so a write the copy took through a
 // write-through is in the leader's store. A direct get is answered by any copy of the stream 90%
-// caught up (jetstream_cluster.go:4810-4822) and may not hold it yet. A key the copy never held
-// is not read here: there is no row to remove, and the read's consumer, which keeps running,
-// delivers its record.
+// caught up (jetstream_cluster.go:4810-4822) and may not hold it yet.
 //
-// At most unmarkedReads reads are in flight, each bounded by bus.RequestTimeout, and the first
-// failure ends the rest. A read that may no longer complete, or a generation replaced or stopped
-// meanwhile, reads and applies nothing.
-func (w *Watcher) verifyUnmarked(generation uint64, read Read) error {
-	w.applyMu.Lock()
+// The list is what finds a key the copy never held. Another writer's window write - stored after
+// the read's consumer was made, before the read began - that the bucket replaced ahead of the
+// consumer, after the barrier, is delivered only once the consumer passes the barrier, after a
+// delivery at the barrier has ended the wait. A copy of the stream that has stored through the
+// barrier holds a message on every key that held a record at the barrier, that record or a later
+// one, so the list names it, and the leader's read applies it before the read completes. The
+// list costs one STREAM.INFO per read that reaches its barrier, of one entry per key the bucket
+// holds a message on; the scan delivers every key's newest message, delete markers included, so
+// the leader reads only what the scan and the wait did not deliver.
+//
+// At most unmarkedReads reads are in flight, each bounded by bus.RequestTimeout, as the list is,
+// and the first failure ends the rest. A read that may no longer complete, or a generation
+// replaced or stopped meanwhile, reads and applies nothing.
+func (w *Watcher) verifyUnmarked(generation uint64, read Read, barrier uint64) error {
 	w.mu.RLock()
 	completes := w.completes(generation)
 	kv := w.kv
 	w.mu.RUnlock()
+	if !completes {
+		return nil
+	}
+	stored, err := kv.StoredKeys(context.Background(), barrier)
+	if err != nil {
+		return fmt.Errorf("list the keys of KV bucket %s before the read completes: %w", w.bucket, err)
+	}
+	w.applyMu.Lock()
+	w.mu.RLock()
+	completes = w.completes(generation)
+	w.mu.RUnlock()
 	var keys []string
 	if completes {
-		keys = w.cache.Unmarked(read)
+		keys = w.cache.Unmarked(read, stored)
 	}
 	w.applyMu.Unlock()
 	if len(keys) == 0 {
@@ -890,7 +915,7 @@ func (w *Watcher) verifyUnmarked(generation uint64, read Read) error {
 		})
 	}
 	if err := reads.Wait(); err != nil {
-		return fmt.Errorf("read from the stream's leader a row of KV bucket %s the read did not deliver: %w", w.bucket, err)
+		return fmt.Errorf("read from the stream's leader a key of KV bucket %s the read did not deliver: %w", w.bucket, err)
 	}
 	w.applyMu.Lock()
 	defer w.applyMu.Unlock()

@@ -244,10 +244,10 @@ func refuseRoleClaimView(t *testing.T, registry *store.Registry) func() {
 // registry's own view as the stopped watcher left it (refuseRoleClaimView).
 type feedsNothing struct{}
 
-func (feedsNothing) BeginRead(kvwatch.Read)            {}
-func (feedsNothing) Apply(kvwatch.Entry, kvwatch.Read) {}
-func (feedsNothing) CompleteRead(kvwatch.Read)         {}
-func (feedsNothing) Unmarked(kvwatch.Read) []string    { return nil }
+func (feedsNothing) BeginRead(kvwatch.Read)                   {}
+func (feedsNothing) Apply(kvwatch.Entry, kvwatch.Read)        {}
+func (feedsNothing) CompleteRead(kvwatch.Read)                {}
+func (feedsNothing) Unmarked(kvwatch.Read, []string) []string { return nil }
 
 // requireRolesOrUnanswered fails the test unless recorder answers 200 with the session's rows
 // (rolesOf reads them) holding exactly want, or exactly kept, the copy the view had when the read

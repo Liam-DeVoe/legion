@@ -117,13 +117,19 @@ func (c *Copy[V]) CompleteRead() {
 	c.marks.end()
 }
 
-// Unmarked is the keys of the entries the read under way has no evidence of, which CompleteRead
-// would remove now (Cache.Unmarked). A fence entry with no row is not one: removing it takes no
-// row from the copy.
-func (c *Copy[V]) Unmarked() []string {
+// Unmarked is the keys the read under way has no evidence of (Cache.Unmarked): the keys of the
+// entries CompleteRead would remove now, and the keys of stored, the bucket's stream's keys, that
+// the copy holds no entry for. A fence entry with no row is not one: removing it takes no row from
+// the copy.
+func (c *Copy[V]) Unmarked(stored []string) []string {
 	var keys []string
 	for key := range c.entries {
 		if !c.marks.marked(key) {
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range stored {
+		if _, held := c.entries[key]; !held && !c.marks.marked(key) {
 			keys = append(keys, key)
 		}
 	}

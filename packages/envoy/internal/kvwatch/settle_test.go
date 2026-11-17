@@ -199,9 +199,9 @@ func TestAReadKeepsWritesAnotherWriterMadeInItsWindow(t *testing.T) {
 // on the real server: a reconnect's consumer delivered its window writes, then its barrier with a
 // pending count of 1, and nothing more, so a read that waited for a count of 0 waited out its
 // timeout and failed. The read stops waiting at its consumer's first delivery at or past the
-// barrier, whatever that delivery's count, and completes.
+// barrier, whatever that delivery's count, and completes. The barrier is written to the bucket,
+// so the list of its keys the read takes before it completes is answered through the barrier.
 func TestAReadStopsWaitingAtTheBarrierWhateverItsPendingCount(t *testing.T) {
-	const barrier = 100
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	armed := make(chan struct{})
@@ -209,9 +209,14 @@ func TestAReadStopsWaitingAtTheBarrierWhateverItsPendingCount(t *testing.T) {
 	updates <- nil
 	go func() {
 		// Once the read waits past its barrier (its bound is armed), the consumer delivers the
-		// barrier with a pending count of 1, and then nothing more.
+		// barrier, the bucket's last record, with a pending count of 1, and then nothing more.
 		<-armed
-		updates <- scriptedRecord{key: bus.BarrierKey, revision: barrier, delta: 1, op: jetstream.KeyValueDelete}
+		state, err := kv.ReadStreamState(context.Background())
+		if err != nil {
+			t.Errorf("read the bucket's stream for its barrier: %v", err)
+			return
+		}
+		updates <- scriptedRecord{key: bus.BarrierKey, revision: state.LastSeq, delta: 1, op: jetstream.KeyValueDelete}
 	}()
 	main := scripted(kv, func(context.Context, jetstream.KeyValue) (jetstream.KeyWatcher, error) {
 		return &scriptedWatcher{updates: updates}, nil
@@ -221,7 +226,7 @@ func TestAReadStopsWaitingAtTheBarrierWhateverItsPendingCount(t *testing.T) {
 	timers := &pending{}
 	var once sync.Once
 	afterFunc := timers.afterFunc()
-	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), main, ackedAt{JetStream: kv.Streams(), sequence: barrier}), into,
+	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), main, kv.Streams()), into,
 		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScanIdleTimeout(7*time.Hour),
 		kvwatch.WithAfterFunc(func(d time.Duration, f func()) kvwatch.Timer {
 			timer := afterFunc(d, f)

@@ -954,12 +954,13 @@ func (c knownCache) CompleteRead(kvwatch.Read) {
 	c.s.records.CompleteRead()
 }
 
-// Unmarked names the records the read would remove now, for the watcher to read from the
-// stream's leader first (kvwatch.Copy.Unmarked).
-func (c knownCache) Unmarked(kvwatch.Read) []string {
+// Unmarked names the records the read has no evidence of, held or only in stored, the stream's
+// keys, for the watcher to read from the stream's leader before the read completes
+// (kvwatch.Copy.Unmarked).
+func (c knownCache) Unmarked(_ kvwatch.Read, stored []string) []string {
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
-	return c.s.records.Unmarked()
+	return c.s.records.Unmarked(stored)
 }
 
 // sweepUntilStopped runs the one periodic pass until the store is stopped.

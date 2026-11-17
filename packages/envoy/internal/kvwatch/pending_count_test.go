@@ -2,6 +2,7 @@ package kvwatch_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -77,52 +78,132 @@ func TestAReadKeepsRowsAFalseZeroPendingCountWouldSweep(t *testing.T) {
 	}
 }
 
-// A row the read has no evidence of is read from the stream's leader before the read removes it,
-// and only the leader's answer that the bucket holds no record of it removes it. A read whose
-// question cannot be answered - here the connection the leader's read goes through is closed -
-// keeps every row and does not complete: it is read again, and a read the leader answers removes
-// the row.
-func TestARowTheLeaderCannotBeAskedAboutIsKeptAndTheReadFails(t *testing.T) {
-	const heldByTheCopy = "held-by-the-copy"
+// The order the round-5 deep review of #4238 derived. The read's consumer is made on an empty
+// bucket and paused, so nats.go queues the scan's end at once, having found nothing pending
+// (nats.go v1.53.1 jetstream/kv.go:1369-1377). Another listener then writes K@1 in the window,
+// through its own connection, so the copy never holds K; the read's barrier is B@2; and the other
+// listener writes K@3, which replaces K@1 ahead of the paused consumer. Once the server counts the
+// two records the consumer has left, B@2 and K@3, the consumer is resumed: its first delivery is
+// B@2 with a true pending count of 1. The read must hold K when it completes, before K@3 is
+// delivered: the bucket held K at the read's barrier, and holds it still.
+//
+// e4edeac218 completes the read at that delivery without K, because it read from the stream's
+// leader only the rows the copy held; this build lists the keys the stream holds and reads K from
+// the leader before the read completes.
+func TestAReadHoldsAWindowKeyOnlyAnotherWriterWrote(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	closed := testnats.Connect(t, uri)
-	closed.Close()
-	failing := &atomic.Bool{}
-	failing.Store(true)
-	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), leaderReadsThrough{JetStream: kv.Streams(), closed: closed, failing: failing})
-	into := newSeen()
-	into.hold(heldByTheCopy)
+	_, other := bucket(t, uri)
+	paused := newPausedWatch(t, kv.Streams(), false)
+	barrier := &replacingBarrier{JetStream: kv.Streams(), other: other, replace: []string{"k"}, written: map[string]uint64{}}
+	cache := newWindowCache(1)
 	timers := &pending{}
-	w := kvwatch.New("test cache", handle, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), scripted(kv, paused.step()), barrier), cache,
+		kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0), kvwatch.WithScanIdleTimeout(7*time.Hour))
 	t.Cleanup(w.Stop)
+	t.Cleanup(cache.letGo)
 	w.Start()
 
-	eventually(t, "the read to be read again", func() bool { return len(timers.armed(5*time.Second)) == 1 })
-	if done := len(into.completions()); done != 0 || w.Following() || !into.has(heldByTheCopy) {
-		t.Fatalf("after the leader could not be asked: %d reads completed, Following %v, copy %v; want none completed, not following, %s kept",
-			done, w.Following(), into.keyList(), heldByTheCopy)
+	wait(t, paused.held.created, "the read's watch to make and pause its consumer")
+	if _, err := other.Put("k", []byte("1")); err != nil {
+		t.Fatalf("the other listener's window write of k: %v", err)
 	}
-	failing.Store(false)
-	timers.last(t, 5*time.Second).fire()
-	eventually(t, "the read after the leader answers to complete", func() bool { return len(into.completions()) == 1 })
-	if into.has(heldByTheCopy) {
-		t.Fatalf("after the leader answered that the bucket holds no record of %s, the copy still holds %v", heldByTheCopy, into.keyList())
+	paused.held.let()
+	// The scan's idle wait and then the wait past the barrier, armed once its write was answered:
+	// by then K@3 is stored.
+	eventually(t, "the read to wait past its barrier", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
+	if err := barrier.failure(); err != nil {
+		t.Fatalf("the write after the barrier: %v", err)
+	}
+	eventually(t, "the server to count B@2 and K@3 as the consumer's pending records", func() bool { return paused.consumerPending(t) == 2 })
+	paused.resume(t)
+	eventually(t, "the read's completion", cache.targetDone)
+
+	if got, want := paused.barrierPending(), uint64(1); got != want {
+		t.Fatalf("the consumer delivered the barrier with a pending count of %d, want %d: K@3, stored after it", got, want)
+	}
+	if got, want := bucketKeys(t, kv), []string{"k"}; !slices.Equal(got, want) {
+		t.Fatalf("the bucket holds %v, want %v", got, want)
+	}
+	if !cache.has("k") {
+		t.Fatalf("the completed read left the copy holding %v, want k: the bucket held it at the read's barrier", cache.keyList())
+	}
+}
+
+// A row the read has no evidence of is read from the stream's leader before the read removes it,
+// once the read has listed the keys the bucket's stream holds, and only the leader's answer that
+// the bucket holds no record of it removes it. A read either of whose questions cannot be answered
+// - the connection they go through is closed, for the list and the leader's read, or for the
+// leader's read alone - keeps every row and does not complete: it is read again, and a read the
+// stream answers removes the row.
+func TestARowTheLeaderCannotBeAskedAboutIsKeptAndTheReadFails(t *testing.T) {
+	const heldByTheCopy = "held-by-the-copy"
+	for _, row := range []struct {
+		name            string
+		listGoesThrough bool
+		failed          string
+	}{
+		{name: "the list of the bucket's keys", failed: "list the keys of KV bucket " + testBucketName},
+		{name: "the leader's read of the row", listGoesThrough: true, failed: "read from the stream's leader a key of KV bucket " + testBucketName},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			uri := testnats.URL(t)
+			_, kv := bucket(t, uri)
+			closed := testnats.Connect(t, uri)
+			closed.Close()
+			failing := &atomic.Bool{}
+			failing.Store(true)
+			streams := leaderReadsThrough{JetStream: kv.Streams(), closed: closed, failing: failing, listGoesThrough: row.listGoesThrough, asked: &atomic.Int32{}}
+			handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), streams)
+			into := newSeen()
+			into.hold(heldByTheCopy)
+			timers := &pending{}
+			logger, records := jsonLogger(t)
+			w := kvwatch.New("test cache", handle, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0),
+				kvwatch.WithLogger(logger))
+			t.Cleanup(w.Stop)
+			w.Start()
+
+			eventually(t, "the read to be read again", func() bool { return len(timers.armed(5*time.Second)) == 1 })
+			if done := len(into.completions()); done != 0 || w.Following() || !into.has(heldByTheCopy) {
+				t.Fatalf("after the stream could not be asked: %d reads completed, Following %v, copy %v; want none completed, not following, %s kept",
+					done, w.Following(), into.keyList(), heldByTheCopy)
+			}
+			var errs []string
+			for _, record := range records() {
+				if record["level"] == "WARN" {
+					errs = append(errs, fmt.Sprint(record["error"]))
+				}
+			}
+			if len(errs) != 1 || !strings.Contains(errs[0], row.failed) {
+				t.Fatalf("the failed read logged %q at WARN, want one error naming %q", errs, row.failed)
+			}
+			failing.Store(false)
+			timers.last(t, 5*time.Second).fire()
+			eventually(t, "the read after the stream answers to complete", func() bool { return len(into.completions()) == 1 })
+			if into.has(heldByTheCopy) {
+				t.Fatalf("after the leader answered that the bucket holds no record of %s, the copy still holds %v", heldByTheCopy, into.keyList())
+			}
+		})
 	}
 }
 
 // leaderReadsThrough is a bucket's jetstream context whose connection, while failing is set, is
-// closed: the leader's read of a key (bus.KeyValue.HeldFromLeader) builds its request on that
-// connection, so it fails, while the read barrier, every stream read and every watch go on as
-// usual.
+// closed: the list of the bucket's keys (bus.KeyValue.StoredKeys) and the leader's read of a key
+// (HeldFromLeader) build their requests on that connection, so they fail, while the read barrier,
+// every stream read and every watch go on as usual. With listGoesThrough, the first connection
+// asked for while failing is the live one: a read asks for it once for its list, before any
+// leader read, so only the leader's reads fail.
 type leaderReadsThrough struct {
 	jetstream.JetStream
-	closed  *natsgo.Conn
-	failing *atomic.Bool
+	closed          *natsgo.Conn
+	failing         *atomic.Bool
+	listGoesThrough bool
+	asked           *atomic.Int32
 }
 
 func (s leaderReadsThrough) Conn() *natsgo.Conn {
-	if s.failing.Load() {
+	if s.failing.Load() && (!s.listGoesThrough || s.asked.Add(1) > 1) {
 		return s.closed
 	}
 	return s.JetStream.Conn()
@@ -143,6 +224,9 @@ type pausedWatch struct {
 	mu       sync.Mutex
 	consumer string
 	barriers int
+	// pending is the pending count the first delivery of a read barrier carried, as the server
+	// sent it.
+	pending uint64
 }
 
 func newPausedWatch(t *testing.T, streams jetstream.JetStream, zeroBarrier bool) *pausedWatch {
@@ -167,6 +251,9 @@ func (p *pausedWatch) step() watchStep {
 				if entry != nil && entry.Key() == bus.BarrierKey {
 					p.mu.Lock()
 					p.barriers++
+					if p.barriers == 1 {
+						p.pending = entry.Delta()
+					}
 					p.mu.Unlock()
 					if p.zeroBarrier {
 						entry = zeroPending{entry}
@@ -229,6 +316,33 @@ func (p *pausedWatch) barrierDeliveries() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.barriers
+}
+
+// barrierPending is the pending count the watch's first delivery of a read barrier carried.
+func (p *pausedWatch) barrierPending() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pending
+}
+
+// consumerPending is the server's count of the records the paused consumer has left to deliver
+// (its CONSUMER.INFO's NumPending).
+func (p *pausedWatch) consumerPending(t *testing.T) uint64 {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p.mu.Lock()
+	consumer := p.consumer
+	p.mu.Unlock()
+	handle, err := p.streams.PushConsumer(ctx, "KV_"+testBucketName, consumer)
+	if err != nil {
+		t.Fatalf("look up the read's consumer %s: %v", consumer, err)
+	}
+	info, err := handle.Info(ctx)
+	if err != nil {
+		t.Fatalf("read the read's consumer %s: %v", consumer, err)
+	}
+	return info.NumPending
 }
 
 // unexpectedConsumers is the error of a pause that found other than the one consumer it pauses.

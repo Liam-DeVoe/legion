@@ -310,14 +310,15 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 	}
 }
 
-// Unmarked names the claims the read would remove now, for the watcher to read from the stream's
-// leader first (kvwatch.Copy.Unmarked). A claim the leader holds is applied as a delivered record
-// (Apply), so a read that repairs counts it as any delivery is counted.
-func (c roleCache) Unmarked(kvwatch.Read) []string {
+// Unmarked names the claims the read has no evidence of, held or only in stored, the stream's
+// keys, for the watcher to read from the stream's leader before the read completes
+// (kvwatch.Copy.Unmarked). A claim the leader holds is applied as a delivered record (Apply), so a
+// read that repairs counts it as any delivery is counted.
+func (c roleCache) Unmarked(_ kvwatch.Read, stored []string) []string {
 	r := c.r
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
-	return r.roleHolders.Unmarked()
+	return r.roleHolders.Unmarked(stored)
 }
 
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch

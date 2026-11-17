@@ -524,13 +524,14 @@ func (c ciCache) Apply(entry kvwatch.Entry, read kvwatch.Read) {
 	}
 }
 
-// Unmarked names the records the read would remove now, for the watcher to read from the
-// stream's leader first (kvwatch.Copy.Unmarked).
-func (c ciCache) Unmarked(kvwatch.Read) []string {
+// Unmarked names the records the read has no evidence of, held or only in stored, the stream's
+// keys, for the watcher to read from the stream's leader before the read completes
+// (kvwatch.Copy.Unmarked).
+func (c ciCache) Unmarked(_ kvwatch.Read, stored []string) []string {
 	s := c.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cache.Unmarked()
+	return s.cache.Unmarked(stored)
 }
 
 // CompleteRead removes every record and fence entry the read found no evidence of: the bucket no

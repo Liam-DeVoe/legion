@@ -132,10 +132,10 @@ func (failedBarriers) PublishMsg(context.Context, *natsgo.Msg, ...jetstream.Publ
 // keepsNothing is a kvwatch.Cache that keeps nothing.
 type keepsNothing struct{}
 
-func (keepsNothing) Apply(kvwatch.Entry, kvwatch.Read) {}
-func (keepsNothing) BeginRead(kvwatch.Read)            {}
-func (keepsNothing) CompleteRead(kvwatch.Read)         {}
-func (keepsNothing) Unmarked(kvwatch.Read) []string    { return nil }
+func (keepsNothing) Apply(kvwatch.Entry, kvwatch.Read)        {}
+func (keepsNothing) BeginRead(kvwatch.Read)                   {}
+func (keepsNothing) CompleteRead(kvwatch.Read)                {}
+func (keepsNothing) Unmarked(kvwatch.Read, []string) []string { return nil }
 
 // heldWaits is a kvwatch.AfterFunc that keeps every wait and fires none: the watcher's re-reads
 // wait for the test, which reads only how many re-reads of a failed read were armed (the 5 s wait
