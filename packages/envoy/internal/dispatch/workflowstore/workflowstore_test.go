@@ -678,6 +678,9 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"returned_to": func(write *StepWrite) {
 			write.ReturnedTo, write.Result, write.EndedAt = new(2), new(ResultPassed), new(minute(1))
 		},
+		"returned_to below 0": func(write *StepWrite) {
+			write.ReturnedTo, write.Result, write.EndedAt = new(-1), new(ResultFailed), new(minute(1))
+		},
 		"report":     func(write *StepWrite) { write.Report = new("not-a-uuid") },
 		"id":         func(write *StepWrite) { write.ID = "not-a-uuid" },
 		"task":       func(write *StepWrite) { write.Task = new("Default") },
