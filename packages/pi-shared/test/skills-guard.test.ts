@@ -250,6 +250,20 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     2,
   ],
+  [
+    // Brought in from main (cybermonklabs/legion#4211) by the forward merge at 32d06c1c. It tells
+    // the reviewer not to re-run a check the base does not require, which red-at-the-head.md puts
+    // in the counted set, so in k1's world (i), whose base requires nothing, all five reviewers of
+    // the tester's round-5 batch approved over the red with no re-run, citing this rule.
+    'merge-gate.md\'s "You neither wait for it nor re-run it for the approval"',
+    [
+      "  `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required set is the",
+      "  base branch's rulesets' required checks and its branch protection's, when it has any.",
+      "  A check the base does not require holds no approval. You neither wait for it nor",
+      "  re-run it for the approval, and the daemon reads no verdict from it either.",
+    ],
+    3,
+  ],
 ];
 
 test.each(retired)("%s is reported at the line it starts on", (_source, page, line) => {
