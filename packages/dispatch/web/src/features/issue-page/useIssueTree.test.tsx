@@ -1736,3 +1736,46 @@ test("the outline mounted again on the same reads builds no tree, and a changed 
     client.clear();
   }
 });
+
+// The load's first comments read fails, as on a dropped connection, and the reader then replies.
+// The comments are read again and hold the reply, while the comments query, left invalid by its
+// failure, reports no new invalidation, and held no answer to compare the new one with. The tree
+// has to be read again for that reply all the same, or the reply is in the comments read and
+// never a row of the outline.
+test("a reply after the load's comments read failed reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let written: Comment[] = [];
+  let commentsFail = true;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer(written)
+  );
+  (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => {
+    if (commentsFail) throw new Error("the comments read failed");
+    return [...written];
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await waitFor(() => expect(client.getQueryState(["comments", KEY])?.status).toBe("error"));
+
+    commentsFail = false;
+    written = [comment];
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    expect(client.getQueryState(["comments", KEY])?.status).toBe("success");
+    await waitFor(
+      () =>
+        expect(
+          nodesInOrder(view.result.current).some((node) => node.id === comment.id),
+          "the reply is a row"
+        ).toBe(true),
+      { timeout: 3_000 }
+    );
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
