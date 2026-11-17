@@ -25,6 +25,10 @@ import (
 type routeAnswer struct {
 	Status int
 	Body   any
+	// Advice and OtherAdvice are the advice shapes this answer carries beside Body, as
+	// routeShape's are for the success answer: nil for an answer that carries none.
+	Advice      any
+	OtherAdvice []any
 }
 
 // routeShape is what one route takes and answers, in Go types an OpenAPI document is reflected
@@ -67,6 +71,11 @@ type routeShape struct {
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
 	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
 	Advice any
+	// OtherAdvice are the advice shapes the success answer carries in Advice's place where it
+	// carries another: withSuggestions answers suggestionsOnlyAdvice for a write with no issue
+	// state to report, or whose write advice could not be read. Empty for a route whose advice is
+	// always Advice.
+	OtherAdvice []any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders

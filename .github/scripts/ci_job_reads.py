@@ -688,9 +688,17 @@ RULES = {
         (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:983")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
-         "internal/dispatch/api/openapi_test.go:199-200 (the path built runtime-relative ../../../../.., then "
-         "read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
-         "emitter's bytes with)")),
+         "internal/dispatch/api/openapi_test.go:261-262 (the path built runtime-relative ../../../../.., then "
+         "read: the committed /api/v1 document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
+         "emitter's bytes with)"),
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         "internal/dispatch/api/openapi_test.go:261-262, the same read of the committed /api/v2 document, which "
+         "TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares too and TestTheV2DocumentRequiresWhatTheStructsTag "
+         "and TestTheV2DocumentListsEveryCodeItCanAnswer hold to the Go types and the code list")),
+    f"{ENVOY}/internal/dispatch/api/routes_v2_tour_test.go": reads(
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         "internal/dispatch/api/routes_v2_tour_test.go:546-550 (the path built runtime-relative ../../../../.., then "
+         "opened: the committed /api/v2 document the route tour's contract subtest holds every answer to)")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
@@ -2480,6 +2488,13 @@ GATES = [
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
          "document every committed recording's body is held to, which this job's test step runs"),
+        # The /api/v2 document beside it. At this head no step of this job reads it:
+        # stub-recordings.test.ts:50-53 reads the /api/v1 document above alone, and the dashboard
+        # does not yet import the module gen-api.ts renders from it. It is declared, and named in
+        # the filter, beside the /api/v1 one, so a change to it starts this job.
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         "declared beside packages/contracts/schemas/dispatch-openapi.json: stub-recordings.test.ts:50-53 reads "
+         "the /api/v1 document alone at this head, and no other step of this job reads the /api/v2 one"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
@@ -2705,8 +2720,12 @@ GATES = [
         # must start this job: the Run stands for what the command compiles, never for what it reads.
         ("packages/contracts/schemas/dispatch-openapi.json",
          f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
-         "cmd/dispatch/subcommands.go:127 reads the committed document to compare it (:173 only builds a "
+         "cmd/dispatch/subcommands.go:166 reads each committed document to compare it (:217 only builds a "
          "candidate path for it)"),
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
+         "cmd/dispatch/subcommands.go:166 reads the committed /api/v2 document to compare it, as it reads the "
+         "/api/v1 one"),
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),

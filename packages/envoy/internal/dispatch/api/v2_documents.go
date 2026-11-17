@@ -169,8 +169,8 @@ func (s *server) v2DocumentRows() []routeRow {
 			Resource: "approval-requests", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyJSON, Type: approvalRequestInput{}, Optional: true},
 			Shape: routeShape{
-				Status: http.StatusCreated, Response: approvalRequestResponse{},
-				Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestResponse{}}},
+				Status: http.StatusCreated, Response: approvalRequestV2{},
+				Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestV2{}}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
@@ -202,8 +202,11 @@ func (s *server) v2DocumentRows() []routeRow {
 				"document, 400 ARTIFACT_AGENT_OWNED for a conversation's file, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.createArtifactAskV2,
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
-			Body:  requestBody{Kind: bodyJSON, Type: createAskInput{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: askV2{}, Advice: writeAdvice{}},
+			Body: requestBody{Kind: bodyJSON, Type: createAskInput{}},
+			Shape: routeShape{
+				Status: http.StatusCreated, Response: askV2{}, Advice: writeAdvice{},
+				OtherAdvice: []any{suggestionsOnlyAdvice{}},
+			},
 			Scope: scopeProject, ProjectOf: projectPathArtifact,
 			IDs:      documentIDs(),
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal},
@@ -275,6 +278,9 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body: requestBody{Kind: bodyJSON, Type: editArtifactInput{}},
 			Shape: routeShape{
 				Status: http.StatusOK, Response: editArtifactResponse{}, Advice: writeAdvice{},
+				// A document of no issue, or one whose issue advice could not be read, carries the
+				// document half alone (applyEdits, the withRawAdvice arm).
+				OtherAdvice: []any{documentWriteAdvice{}},
 				Refusals: []routeAnswer{
 					{Status: http.StatusConflict, Body: editPreconditionError{}},
 					{Status: http.StatusConflict, Body: editLostError{}},
@@ -437,8 +443,10 @@ func (s *server) v2DocumentRows() []routeRow {
 			Query: artifactVersionV2Query{},
 			Shape: routeShape{
 				Status: http.StatusOK, Response: artifactVersionText{},
-				Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
-				OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
+				Opaque: "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
+				// A file's own content type is any type: `*/*`, the media range OpenAPI keys such
+				// an answer by.
+				OpaqueContentTypes: []string{"*/*", "text/markdown"},
 			},
 			IDs:      documentIDs(),
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, documentMissingRefusal, versionMissingRefusal},
@@ -462,8 +470,13 @@ func (s *server) v2DocumentRows() []routeRow {
 				"the body is read.",
 			Handler:  s.uploadIssueArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
-			Body:  requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadResponse{}, Advice: writeAdvice{}},
+			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
+			// An issue document whose issue advice could not be read carries the document half
+			// alone (storeArtifact, the withRawAdvice arm).
+			Shape: routeShape{
+				Status: http.StatusCreated, Response: artifactUploadResponse{}, Advice: writeAdvice{},
+				OtherAdvice: []any{documentWriteAdvice{}},
+			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			RefusesClosedOwner: true,
 			Refusals:           []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
@@ -828,12 +841,44 @@ func (s *server) renameArtifactV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requestArtifactApprovalV2 answers POST /api/v2/artifacts/{id}/approval-requests: the request POST
-// /api/v1/artifacts/{id}/approval-requests makes (requestApproval).
+// /api/v1/artifacts/{id}/approval-requests makes (requestApproval), answered with the ask as every
+// /api/v2 write of one answers it (askV2), so the request's ask carries its opened_event_id (R6).
 func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireArtifactV2(w, r, r.PathValue("id")) {
 		return
 	}
-	s.requestApproval(w, r, v2Body[approvalRequestInput](r))
+	status, answer, answered := s.requestApproval(w, r, v2Body[approvalRequestInput](r))
+	if !answered {
+		return
+	}
+	reply := approvalRequestV2{
+		ArtifactID: answer.ArtifactID, Version: answer.Version, Approval: answer.Approval,
+		Coverage: answer.Coverage, CoverageUnread: answer.CoverageUnread,
+	}
+	if answer.Ask != nil {
+		ask, err := s.readWrittenAskV2(r.Context(), r, answer.Ask.ID)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		reply.Ask = &ask
+	}
+	WriteJSON(w, status, reply)
+}
+
+// approvalRequestV2 is the body POST /api/v2/artifacts/{id}/approval-requests answers:
+// approvalRequestResponse's, its ask the one ask row of /api/v2 rather than the /api/v1 shape,
+// whose opened_event_id the /api/v1 document leaves optional (decision 2).
+type approvalRequestV2 struct {
+	// Ask is the request's ask, null where nothing is asked: every document it names is approved
+	// at its current version already.
+	Ask        *askV2               `json:"ask"`
+	ArtifactID string               `json:"artifact_id"`
+	Version    int                  `json:"version"`
+	Approval   artifactApprovalRead `json:"approval"`
+	// Coverage and CoverageUnread are approvalRequestResponse's.
+	Coverage       []string `json:"coverage"`
+	CoverageUnread bool     `json:"coverage_unread,omitempty"`
 }
 
 // artifactAsksV2Query is GET /api/v2/artifacts/{id}/asks's query: the keys an issue's ask list

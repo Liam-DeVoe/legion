@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -224,10 +225,7 @@ func credentialTourSteps() []tourStep {
 	decide := func(state, holds string) func(*testing.T, *routeTour) tourRequest {
 		return func(_ *testing.T, tour *routeTour) tourRequest {
 			record := "tour-record-" + uuid.NewString()
-			tour.secrets.answer(http.MethodPost, "/v1/machine-logins/lookup", http.StatusOK, map[string]any{
-				"record_id": record, "kind": "launcher_credential", "state": holds, "approver": "alice",
-				"identifiers": []string{"tour-host"}, "session": map[string]any{}, "requested_at": time.Now().UTC(),
-			})
+			tour.secrets.answer(http.MethodPost, "/v1/machine-logins/lookup", http.StatusOK, tourLoginRecord(record, holds))
 			tour.secrets.answer(http.MethodPost, "/v1/credential-requests/"+record+"/approve", http.StatusOK,
 				map[string]any{"credential_id": "tour-credential", "state": "approved"})
 			tour.secrets.answer(http.MethodPost, "/v1/credential-requests/"+record+"/deny", http.StatusOK, map[string]any{"state": "denied"})
@@ -276,7 +274,9 @@ func credentialTourSteps() []tourStep {
 		},
 		{
 			Method: http.MethodPost, Pattern: "/machine-login-lookups", Status: http.StatusOK,
-			Setup: func(*testing.T, *routeTour) tourRequest {
+			Setup: func(_ *testing.T, tour *routeTour) tourRequest {
+				tour.secrets.answer(http.MethodPost, "/v1/machine-logins/lookup", http.StatusOK,
+					tourLoginRecord("tour-record-"+uuid.NewString(), "pending"))
 				return tourRequest{Body: map[string]any{"code": "ABCD-1234"}, As: alice}
 			},
 		},
@@ -298,6 +298,17 @@ func credentialTourSteps() []tourStep {
 			Setup:   onID(brokerMissing("/v1/person-signins/no-such-signin/revoke", "sign-in")),
 			Missing: []tourMissing{{Param: "id", Value: "no-such-signin", Code: apicode.SigninNotFound}},
 		},
+	}
+}
+
+// tourLoginRecord is a credential request as the broker's machine-login lookup answers it: a
+// launcher credential alice approves, for tour-host, holding state, every member the broker's
+// wire type writes (wire.RecordResponse), which Dispatch relays as the broker answered it.
+func tourLoginRecord(record, state string) wire.RecordResponse {
+	return wire.RecordResponse{
+		RecordID: record, Kind: "launcher_credential", State: state, Approver: "alice",
+		Identifiers: []string{"tour-host"}, Reason: "the tour's machine", RulesVersion: "tour",
+		ExpiresAt: time.Now().UTC().Add(time.Hour), RequestedAt: time.Now().UTC(),
 	}
 }
 

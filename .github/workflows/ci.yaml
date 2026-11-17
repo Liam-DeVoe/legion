@@ -2404,6 +2404,9 @@ jobs:
               # change to it is a change to a shape the recordings carry, and this job's test
               # step is where that test runs.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              # The /api/v2 document beside it, which no step of this job reads yet: named here
+              # with the /api/v1 one, as ci_job_reads.py declares it.
+              - 'packages/contracts/schemas/dispatch-openapi-v2.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
               # reads and parses with the app's own remark pipeline: a filter change that moves
@@ -2844,11 +2847,13 @@ jobs:
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
               # compiles with the rest of that package.
               - 'packages/contracts/fixtures/live/**'
-              # internal/dispatch/api/openapi_test.go:189-190, whose
-              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
-              # at run time, through a path built relative to the test binary; the guard step
-              # compiles it with the rest of that package.
+              # internal/dispatch/api/openapi_test.go:261-262, whose
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads both committed documents
+              # at run time, through a path built relative to the test binary, and
+              # routes_v2_tour_test.go:546-550, which holds the route tour's answers to the /api/v2
+              # one; the guard step compiles them with the rest of that package.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              - 'packages/contracts/schemas/dispatch-openapi-v2.json'
             # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
             # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
@@ -3738,9 +3743,11 @@ jobs:
               # The relayed shapes routes_shapes.go names, which this job's own package compiles.
               - 'packages/envoy/internal/broker/wire/*'
               # internal/dispatch/api/openapi_test.go's
-              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
-              # so an edit of it alone must start this job.
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads both committed documents,
+              # and the route tour's contract subtest the /api/v2 one, so an edit of either alone
+              # must start this job.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              - 'packages/contracts/schemas/dispatch-openapi-v2.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
               # The step that sizes this job's Postgres runs this script, which runs

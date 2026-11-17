@@ -30,15 +30,20 @@ import (
 	"cmp"
 	"encoding/json"
 	"maps"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
@@ -159,6 +164,10 @@ func tourSteps() []tourStep {
 //
 //   - every-route-has-a-step: a mounted route with no step fails, so the tour covers the table.
 //   - steps: each step is answered its status.
+//   - contract: each step's answer holds to the response the committed /api/v2 document declares
+//     for its operation at the status it was answered - every required member present, no member
+//     the schema does not declare, a content type the document names - and a route no step
+//     recorded an answer of fails (R6).
 //   - unknown-keys: each step sent again with ?zz_undeclared=1 is answered 400 QUERY_KEY_UNKNOWN,
 //     naming the key and every key the route declares, and writes nothing (R4).
 //   - undeclared-members: each write step sent with a body member, or an upload's field, the
@@ -205,9 +214,32 @@ func TestV2RouteTour(t *testing.T) {
 		}
 	})
 
-	// contract: plan t16 step 2's subtest that validates every step's answer body against
-	// dispatch-openapi-v2.json - every required member present and no undeclared one - is the
-	// v2 document's task's to add here, once that document is emitted.
+	t.Run("contract", func(t *testing.T) {
+		contract := newTourContract(t)
+		recorded := map[string]bool{}
+		for _, step := range steps {
+			t.Run(step.name(), func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				request := step.Setup(t, tour)
+				response := tour.send(t, route, request, "")
+				if response.Code != step.Status {
+					t.Fatalf("answered %d %s, want %d", response.Code, response.Body.String(), step.Status)
+				}
+				recorded[step.route()] = true
+				contract.hold(t, route, response)
+			})
+		}
+		var unrecorded []string
+		for _, route := range slices.Sorted(maps.Keys(tour.routes)) {
+			if !recorded[route] {
+				unrecorded = append(unrecorded, route)
+			}
+		}
+		if len(unrecorded) > 0 {
+			t.Errorf("%d of the %d /api/v2 routes recorded no answer to hold to %s:\n\t%s", len(unrecorded),
+				len(tour.routes), OpenAPIV2DocumentPath, strings.Join(unrecorded, "\n\t"))
+		}
+	})
 
 	t.Run("unknown-keys", func(t *testing.T) {
 		for _, step := range steps {
@@ -495,4 +527,112 @@ func declaredQueryKeys(query any) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// tourContract is the committed /api/v2 document (OpenAPIV2DocumentPath), compiled to hold
+// answers to: an OpenAPI 3.1 document's schemas are JSON Schema 2020-12, so each response
+// schema is compiled where it stands in the document, its references resolved within it.
+type tourContract struct {
+	location string
+	document map[string]any
+	compiler *jsonschema.Compiler
+	compiled map[string]*jsonschema.Schema
+}
+
+// newTourContract reads the committed /api/v2 document, which the emitter's own test holds to what
+// the emitter writes, so an answer is held to what the clients' types say.
+func newTourContract(t *testing.T) *tourContract {
+	t.Helper()
+	location, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "..", filepath.FromSlash(OpenAPIV2DocumentPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(location)
+	if err != nil {
+		t.Fatalf("open the committed /api/v2 document: %v", err)
+	}
+	defer file.Close()
+	read, err := jsonschema.UnmarshalJSON(file)
+	if err != nil {
+		t.Fatalf("read the committed /api/v2 document: %v", err)
+	}
+	document, isObject := read.(map[string]any)
+	if !isObject {
+		t.Fatalf("the committed /api/v2 document is no JSON object")
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if err := compiler.AddResource(location, document); err != nil {
+		t.Fatalf("load the committed /api/v2 document: %v", err)
+	}
+	return &tourContract{location: location, document: document, compiler: compiler, compiled: map[string]*jsonschema.Schema{}}
+}
+
+// hold holds one answer of route to the response its operation declares at the answer's status:
+// a status the operation declares, no body where that response has no content, a content type it
+// names, and for a body the document models, the schema that content type carries.
+func (contract *tourContract) hold(t *testing.T, route apiRoute, response *httptest.ResponseRecorder) {
+	t.Helper()
+	method, status := strings.ToLower(route.Method), strconv.Itoa(response.Code)
+	declared := openAPIAt(contract.document, "paths", route.Pattern, method, "responses", status)
+	if declared == nil {
+		t.Fatalf("answered %s, a status the document declares no response of %s %s at", status, route.Method, route.Pattern)
+	}
+	body := response.Body.Bytes()
+	content, _ := declared["content"].(map[string]any)
+	if content == nil {
+		if len(body) > 0 {
+			t.Fatalf("answered %s with the body %s, and the document declares none at that status", status, body)
+		}
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header().Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("answered %s under the content type %q, which is no media type: %v", status, response.Header().Get("Content-Type"), err)
+	}
+	// The most specific key the answer's media type matches, as OpenAPI reads a response's content:
+	// the type itself, then its range (text/*), then any type (*/*).
+	key := ""
+	for _, candidate := range []string{mediaType, strings.SplitN(mediaType, "/", 2)[0] + "/*", "*/*"} {
+		if _, declared := content[candidate]; declared {
+			key = candidate
+			break
+		}
+	}
+	named, held := content[key].(map[string]any)
+	if !held {
+		t.Fatalf("answered %s as %s, and the document declares %v at that status", status, mediaType, slices.Sorted(maps.Keys(content)))
+	}
+	if _, modelled := named["schema"]; !modelled {
+		// Bytes Dispatch does not model: the document names their content type and nothing more.
+		return
+	}
+	schema := contract.schemaAt(t, "paths", route.Pattern, method, "responses", status, "content", key, "schema")
+	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("answered %s %s, which is no JSON: %v", status, body, err)
+	}
+	if err := schema.Validate(value); err != nil {
+		t.Errorf("the answer of %s %s at %s holds to no schema the document declares there:\n%v\nthe answer: %s",
+			route.Method, route.Pattern, status, err, body)
+	}
+}
+
+// schemaAt is the schema at path in the document, compiled once.
+func (contract *tourContract) schemaAt(t *testing.T, path ...string) *jsonschema.Schema {
+	t.Helper()
+	var pointer strings.Builder
+	for _, token := range path {
+		pointer.WriteString("/" + url.PathEscape(strings.NewReplacer("~", "~0", "/", "~1").Replace(token)))
+	}
+	location := contract.location + "#" + pointer.String()
+	if schema, compiled := contract.compiled[location]; compiled {
+		return schema
+	}
+	schema, err := contract.compiler.Compile(location)
+	if err != nil {
+		t.Fatalf("compile the document's schema at %s: %v", pointer.String(), err)
+	}
+	contract.compiled[location] = schema
+	return schema
 }

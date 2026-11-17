@@ -82,6 +82,19 @@ func issuesTourSteps() []tourStep {
 			},
 		},
 		{
+			// An import of a reference that already has its issue answers that issue, 200, with the
+			// advice and suggestions a create writes (issue_create.go, the existing-issue arm).
+			Method: http.MethodPost, Pattern: "/issues", Name: "an import of a reference already imported", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				project, repo := tour.repository(t)
+				body := map[string]any{"project": project, "external": repo + "#7", "title": "An issue the tour imports"}
+				if imported := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues", body, "alice"); imported.Code != http.StatusCreated {
+					t.Fatalf("import %s#7: %d %s", repo, imported.Code, imported.Body.String())
+				}
+				return tourRequest{Body: body, As: alice}
+			},
+		},
+		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/issues", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				return tourRequest{Path: map[string]string{"key": tour.projectOf(t, tour.issue(t))}, As: alice}

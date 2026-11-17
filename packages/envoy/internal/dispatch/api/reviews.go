@@ -580,14 +580,21 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
-	s.requestApproval(w, r, input)
+	if status, answer, ok := s.requestApproval(w, r, input); ok {
+		WriteJSON(w, status, answer)
+	}
 }
 
 // requestApproval opens, renews or hands back the approval request of the document {id} names,
 // as input asks, once the route has read its body: the work of POST
 // /api/v1/artifacts/{id}/approval-requests (requestArtifactApproval) and of its /api/v2 route
-// (requestArtifactApprovalV2). It answers 201 for a request it wrote, 200 for one that stood.
-func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input approvalRequestInput) {
+// (requestArtifactApprovalV2). It answers the status to answer, 201 for a request it wrote and 200
+// for one that stood, and the answer as /api/v1 writes it, for the route to write in the shape of
+// its version. A request it refuses it answers itself, and reports answered false: each bare
+// return below is such a refusal.
+func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input approvalRequestInput) (
+	status int, answer approvalRequestResponse, answered bool,
+) {
 	// A summary is trimmed and must hold text, so "" below means the request named none.
 	var summary string
 	if input.Summary != nil {
@@ -693,11 +700,10 @@ func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input a
 	if settled {
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
-		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
+		return http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
 			Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
 			Coverage:       coverage,
-			CoverageUnread: coverageUnread})
-		return
+			CoverageUnread: coverageUnread}, true
 	}
 	// The open request is found by any document this one names, not by the named document
 	// alone: a request already open over the issue's Verification document is renewed to cover
@@ -753,7 +759,7 @@ func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input a
 	}
 	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
 	// open request already stood as asked.
-	status := http.StatusOK
+	status = http.StatusOK
 	if len(events) > 0 {
 		status = http.StatusCreated
 	}
@@ -764,10 +770,10 @@ func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input a
 	}
 	// The reason, like the question above, is read where it stands: the write beside it stored
 	// its tree.
-	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
+	return status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
 		Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
 		Coverage:       coverage,
-		CoverageUnread: coverageUnread})
+		CoverageUnread: coverageUnread}, true
 }
 
 // openApprovalAsk inserts the approval request naming documents, asking question, and appends

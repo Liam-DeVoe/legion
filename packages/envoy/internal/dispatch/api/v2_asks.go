@@ -209,8 +209,11 @@ func (s *server) v2AskRows() []routeRow {
 				"ISSUE_NOT_FOUND.",
 			Handler:  s.createIssueAskV2,
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
-			Body:  requestBody{Kind: bodyJSON, Type: createAskInput{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: askV2{}, Advice: writeAdvice{}},
+			Body: requestBody{Kind: bodyJSON, Type: createAskInput{}},
+			Shape: routeShape{
+				Status: http.StatusCreated, Response: askV2{}, Advice: writeAdvice{},
+				OtherAdvice: []any{suggestionsOnlyAdvice{}},
+			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissing},
 		},

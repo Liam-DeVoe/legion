@@ -120,7 +120,13 @@ func (s *server) v2IssueRows() []routeRow {
 			Body: requestBody{Kind: bodyJSON, Type: createIssueInput{}},
 			Shape: routeShape{
 				Status: http.StatusCreated, Response: model.Issue{}, Advice: writeAdvice{},
-				Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
+				OtherAdvice: []any{suggestionsOnlyAdvice{}},
+				// An import whose reference already has an issue answers that issue with the advice
+				// and suggestions a create writes (issue_create.go, the existing-issue arm).
+				Also: []routeAnswer{{
+					Status: http.StatusOK, Body: model.Issue{},
+					Advice: writeAdvice{}, OtherAdvice: []any{suggestionsOnlyAdvice{}},
+				}},
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
 			},
 			Scope:    scopeProjectInBody,
