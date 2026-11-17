@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The worker image carries Oh My Pi `18.18.6-sami.20261117-013345` of cybermonklabs/oh-my-pi,
+  which `.omp-pin` now names as `github:cybermonklabs/oh-my-pi@<version>`. On this build a
+  failed Hindsight memory recall pauses the automatic recall for `hindsight.recallCooldownMs`
+  (environment `HINDSIGHT_RECALL_COOLDOWN_MS`; 30 minutes, doubling with each further failure up
+  to 8 hours, and 0 turns the pause off), so a recall that cannot answer no longer holds the start
+  of every turn for its 30-second timeout.
