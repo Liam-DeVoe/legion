@@ -115,6 +115,30 @@ func planHold(issue record.Issue) bool {
 		(issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren)
 }
 
+// planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
+// escalation (retryOrEscalate), the operator's restart (restartPhase) — where its plan holds it
+// (planHold), and nil for any other hold. A retry would start the role of the phase the hold is
+// from and an escalation would overwrite the reason, so each is refused with what starts the work
+// again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
+// for its children the last of them to leave (RetryOfHeldParent, naming each one still open).
+func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
+	if !planHold(issue) {
+		return nil, nil
+	}
+	if issue.Hold.Reason == record.HoldForChildren {
+		beneath, err := e.openBeneath(ctx, tx, issue)
+		if err != nil {
+			return nil, err
+		}
+		return intake.RetryOfHeldParent(issue.Key, beneath), nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	return intake.RetryOfStoppedTask(issue.Key, w.Task), nil
+}
+
 // stopTask stops w's task of issue where it stands, in the caller's transaction (R16; C2-1): the
 // step the issue stands in ends as end says (endStep), the task keeps its place and becomes
 // stopped with why (record.Store.StopTask), and the issue is held from the phase that place

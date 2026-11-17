@@ -1476,6 +1476,23 @@ func TaskLeft(issue, task string) *Refusal {
 		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
 }
 
+// RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the
+// architect's retry or escalation, the operator's restart — where the issue is held because its
+// owner stopped task (record.HoldTaskStopped): a later version of the plan starts the task again,
+// and no release of the hold does.
+func RetryOfStoppedTask(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_STOPPED", Message: fmt.Sprintf(
+		"task %s of %s was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan). This retry changed nothing.", task, issue)}
+}
+
+// RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
+// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
+// beneath (record.HoldForChildren): the last of them to leave starts the retro.
+func RetryOfHeldParent(issue string, beneath []string) *Refusal {
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
+		"%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves. This retry changed nothing.", issue, strings.Join(beneath, ", "))}
+}
+
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of
 // tree, when it is asked to join want: it is that tree's, not want's. A release of children and
 // the workflow's adoption both answer it.

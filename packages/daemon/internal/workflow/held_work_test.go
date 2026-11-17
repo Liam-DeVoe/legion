@@ -172,6 +172,82 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 	})
 }
 
+// No release of a hold resumes a hold of an owner's plan (C2-1): the architect's retry_or_escalate,
+// both of its decisions, and the operator's restart of the role (restartPhase; `legion claims
+// retry` sends a held issue's retry as the architect's, api's retryClaim) refuse a stopped task
+// 409 TASK_STOPPED and a parent held for its children 409 HELD_FOR_CHILDREN, each naming why and
+// what starts the work again, and change nothing: the hold stays with its reason, no role starts
+// and no notice is written. An escalation is refused the same way, since it would overwrite the
+// reason. The twin of each is a hold of an issue with no plan rows, a failed claim's (reason
+// none), which each release resumes as today (R20): the retry and the restart give back the phase
+// and start its role, and the escalation records `escalated` and tells the controller.
+func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
+	const beneath = "LEGION-210"
+	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan). This retry changed nothing."}
+	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro for these issues beneath it: " + beneath + ". Legion starts the retro when the last one leaves. This retry changed nothing."}
+	for _, h := range heldWorks {
+		for _, release := range []struct {
+			name string
+			fact func(claim.Role) intake.Fact
+		}{
+			{"retry", func(claim.Role) intake.Fact {
+				return intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "try again"}
+			}},
+			{"escalate", func(claim.Role) intake.Fact {
+				return intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.EscalateDecision, Reason: "a person must look"}
+			}},
+			{"restart", func(role claim.Role) intake.Fact { return intake.RestartPhase{Issue: "LEGION-208", Role: role} }},
+		} {
+			t.Run(h.name+"/"+release.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				engine := returnEngine()
+				root := stepRoot(t, pool, h.from)
+				parent := root.Key
+				seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
+					Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
+				want := record.Hold{From: h.from}
+				if h.held() {
+					h.stand(t, pool, root)
+					want.Reason = h.reason
+				} else {
+					root.Phase, root.Hold = phase.Held, &want
+					seedIssue(t, pool, root)
+				}
+
+				result := applyFacts(t, pool, engine)(release.name, release.fact(h.role()))
+				issue := issueOf(t, pool, engine, root.Key)
+				starts, held := superviseRowsOf(t, pool, root.Key, "start"), noticesOf(t, pool, root.Key, "held")
+				if h.held() {
+					refusal := stopped
+					if h.reason == record.HoldForChildren {
+						refusal = waiting
+					}
+					if result.Refusal == nil || result.Refusal.Status != refusal.Status || result.Refusal.Code != refusal.Code || result.Refusal.Message != refusal.Message {
+						t.Fatalf("the %s of %s = %+v, want %+v", release.name, h.name, result.Refusal, refusal)
+					}
+					if issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != want || len(starts) != 0 || len(held) != 0 {
+						t.Fatalf("the refused %s changed %s: %s with hold %+v, starts %+v, held notices %+v; want held %+v still, nothing started, nobody told",
+							release.name, root.Key, issue.Phase, issue.Hold, starts, held, want)
+					}
+					return
+				}
+				if result.Refusal != nil {
+					t.Fatalf("the %s of a hold of no plan rows was refused: %+v", release.name, result.Refusal)
+				}
+				if release.name == "escalate" {
+					if issue.Phase != phase.Held || issue.Hold == nil || issue.Hold.Reason != record.HoldEscalated || len(held) != 1 {
+						t.Fatalf("after the escalation %s stands in %s with hold %+v and %d held notices, want escalated and told once", root.Key, issue.Phase, issue.Hold, len(held))
+					}
+					return
+				}
+				if issue.Phase != h.from || issue.Hold != nil || len(starts) != 1 || starts[0].Role != h.role() {
+					t.Fatalf("after the %s %s stands in %s with hold %+v and starts %+v, want %s again with its %s started", release.name, root.Key, issue.Phase, issue.Hold, starts, h.from, h.role())
+				}
+			})
+		}
+	}
+}
+
 // seedSilentWorker records role's claim of issue as the silence repair finds a worker it would
 // prompt (aSilentTester, for any role): the admission slot the issue's phase keeps, or its open
 // tree, the role's phase row naming the entry the claim was last given, and the claim up and

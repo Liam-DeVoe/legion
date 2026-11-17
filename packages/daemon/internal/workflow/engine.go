@@ -1221,10 +1221,18 @@ func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 	}
 }
 
+// retryOrEscalate is the architect's decision on a held issue: a retry restores the phase the
+// hold is from and starts its role again (retryPhase), and an escalation records the reason
+// `escalated` and tells the controller. A hold its plan holds the issue in, a stopped task or a
+// parent held for its children, is neither one's to release, and both are refused
+// (planHoldRefusal) with nothing changed.
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Phase != phase.Held || issue.Hold == nil {
 		return intake.Result{}, err
+	}
+	if refusal, err := e.planHoldRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	if fact.Decision == intake.EscalateDecision {
 		// Recorded on the issue as well as sent: the controller reads holds from the record at every
@@ -1260,7 +1268,8 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 // workflow, is refused, since starting that phase under this claim's name would run the wrong
 // role. A restart that asks for a new session (`--fresh-session`) says so on the start it
 // queues, so the claim forgets its recorded session in the retry that start makes and no refusal
-// above can leave a session discarded for a restart that never happened.
+// above can leave a session discarded for a restart that never happened. An issue its plan holds
+// is refused as the architect's retry is (planHoldRefusal).
 func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.RestartPhase) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1270,6 +1279,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if !InWorkflow(*issue) || phase.RoleFor(working) != fact.Role {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
+	}
+	if refusal, err := e.planHoldRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
