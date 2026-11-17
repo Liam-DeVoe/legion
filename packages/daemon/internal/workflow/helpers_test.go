@@ -37,11 +37,17 @@ const (
 
 // reviewBody is a review's body as a Legion role writes it: what the role said, then the Legion
 // footer naming the session that wrote it and the head it read (skills/legion-worker/SKILL.md).
-// The session it names decides nothing while the reviewer's claim records none, which is what
-// the shared fixtures seed (seedReviewOf): there the review App's login decides by itself
-// (byReviewer), and a fixture about the sessions writes its own body.
+// The session it names is the one the shared fixtures record on the reviewer's claim
+// (seedRoundOneRows), so it is the reviewer's own review, and a fixture about another session
+// writes its own body.
 func reviewBody(said, head string) string {
 	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\"} -->"
+}
+
+// commentBody is reviewBody for the reviewer's COMMENT: its Legion footer names the reviewer's
+// session and no head, since a comment reads no head the round could be decided on.
+func commentBody(said string) string {
+	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\"} -->"
 }
 
 // reviewBodyOf is reviewBody for a review the review App submitted and what the author said for

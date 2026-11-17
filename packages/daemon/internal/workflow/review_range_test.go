@@ -38,8 +38,7 @@ func roleRow(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseRow 
 var reviewTestedAt = time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
 
 // reviewAt is the review App's review of state as the reviewer posts it, its Legion footer naming
-// head: the shared fixtures record no session on the reviewer's claim, so the login decides
-// (byReviewer).
+// head and the session the shared fixtures record on the reviewer's claim (seedRoundOneRows).
 func reviewAt(id int64, state, head string, at time.Time) intake.PullRequestReview {
 	return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: id, State: state, CommitID: head,
 		Author: testReviewApp, Body: reviewBody("the review", head), SubmittedAt: at}
@@ -241,17 +240,19 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // round when its author can write (DecidesRound), and the round's decision is that review's; the
 // commit is still the one the reviewer's own last deciding review read. The pull request moves to
 // headTwo before the other session's review, so a commit moved by that review would differ from
-// the reviewer's headOne.
+// the reviewer's headOne. The reviewer completes round 1 after its review, as it does in
+// production, which is what puts its claim on its row for round 2.
 func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
-	seedClaimSession(t, pool, "review-claim", "ses-reviewer")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
 	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
 	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
 		t.Fatalf("after the reviewer's own review the reviewer's row reads the reviewed commit %q, want %s: its footer names the session on the reviewer's claim", got, headOne)
 	}
+	apply("reviewer-completes", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
+		Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
 	backToReviewing(t, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {

@@ -60,7 +60,7 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 			complete := func() {
 				t.Helper()
 				result, err := intake.ApplyFact(ctx, pool, "api", "reviewer-handoff", intake.HandoffComplete{Generation: 1,
-					Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}, engine)
+					Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}, engine)
 				if err != nil || result.Refusal != nil {
 					t.Fatalf("the reviewer's completion = %+v, %v; want it recorded", result.Refusal, err)
 				}
@@ -123,7 +123,7 @@ func TestAnApprovalWaitsWhileGitHubHasNotAnsweredForTheHead(t *testing.T) {
 				t.Fatalf("after the approval the issue is in %s, want reviewing: GitHub has not answered for the head", got)
 			}
 			if result := apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-				Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}); result.Refusal != nil {
+				Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}); result.Refusal != nil {
 				t.Fatalf("the reviewer's completion = %+v, want it recorded", result.Refusal)
 			}
 			if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -171,7 +171,7 @@ func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) 
 	}
 
 	if result := apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-		Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}); result.Refusal != nil {
+		Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}); result.Refusal != nil {
 		t.Fatalf("the reviewer's completion = %+v, want it recorded", result.Refusal)
 	}
 	apply("second-read", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
@@ -486,7 +486,7 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 			if approved == "" {
 				approved = headOne
 			}
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
 				Decision: &record.ReviewDecision{State: "approved", Head: approved}})
 			var asked []string
 			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
@@ -527,9 +527,7 @@ func seedMergeStateRound(t *testing.T, pool *pgxpool.Pool, state record.MergeSta
 			t.Fatalf("clear GitHub's answer on the seeded pull request: %v", err)
 		}
 	}
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedClaimSession(t, pool, "review-claim", "")
+	seedRoundOneRows(t, pool)
 }
 
 // A read of GitHub's merge state is one round trip outside the record's transaction, so a push can
@@ -662,7 +660,7 @@ func TestAnApprovalEndsTheRoundWhateverCISays(t *testing.T) {
 				apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 				approve := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
 					Body: reviewBody("ship it", headOne), SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)}
-				complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
+				complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
 				halves := []intake.Fact{approve, complete}
 				if completeFirst {
 					halves[0], halves[1] = halves[1], halves[0]
@@ -702,9 +700,7 @@ func seedReviewUndecided(t *testing.T, pool *pgxpool.Pool, head string) {
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
 		Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, CheckedHead: head, Failing: []string{},
 		CheckRuns: []record.AttemptRun{{Name: "lint", ID: 1}}})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedClaimSession(t, pool, "review-claim", "")
+	seedRoundOneRows(t, pool)
 }
 
 func seedReview(t *testing.T, pool *pgxpool.Pool, verdict string) {
@@ -738,9 +734,7 @@ func seedReviewReporting(t *testing.T, pool *pgxpool.Pool, head, verdict string,
 		pr.Failing = append([]string{}, checks...)
 	}
 	seedPR(t, pool, pr)
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedClaimSession(t, pool, "review-claim", "")
+	seedRoundOneRows(t, pool)
 }
 
 func issuePhase(t *testing.T, pool *pgxpool.Pool) phase.Phase {
@@ -905,7 +899,7 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 					fact = intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: head,
 						Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean}
 				case "complete":
-					fact = intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
+					fact = intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
 						Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
 				}
 				result, err := intake.ApplyFact(ctx, pool, "test", fmt.Sprintf("%d-%s", i, step), fact, engine)
@@ -938,7 +932,7 @@ func TestACommentLeavesTheRoundsRequestForChanges(t *testing.T) {
 	for i, fact := range []intake.Fact{
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headOne, Author: testReviewApp, Body: reviewBody("rename the widget", headOne)},
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "commented", CommitID: headOne, Body: "one more thought"},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 	} {
 		if result, err := intake.ApplyFact(ctx, pool, "test", fmt.Sprintf("step-%d", i), fact, engine); err != nil || result.Refusal != nil {
 			t.Fatalf("step %d = %+v, %v", i, result.Refusal, err)
@@ -968,11 +962,11 @@ func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
 	requestChanges := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 10, State: "changes_requested", CommitID: headOne, Author: testReviewApp, Body: reviewBody("round 1", headOne)}
 	for i, fact := range []intake.Fact{
 		requestChanges,
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2},
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 2},
 		requestChanges,
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2},
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2},
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("round 2", headOne)},
 	} {
 		if result, err := intake.ApplyFact(ctx, pool, "test", fmt.Sprintf("step-%d", i), fact, engine); err != nil || result.Refusal != nil {
@@ -1000,7 +994,7 @@ func TestAReviewOutsideReviewingRecordsNoRound(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	for i, fact := range []intake.Fact{
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("", headOne)},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 	} {
 		if result, err := intake.ApplyFact(ctx, pool, "test", fmt.Sprintf("step-%d", i), fact, engine); err != nil || result.Refusal != nil {
 			t.Fatalf("step %d = %+v, %v", i, result.Refusal, err)
@@ -1045,7 +1039,7 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
 				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: tc.state, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)},
 				intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
-				intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+				intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 			} {
 				if i == 1 {
 					if got := issuePhase(t, pool); got != phase.Held {
@@ -1078,7 +1072,7 @@ func TestAReopenedPullRequestKeepsItsNewestReview(t *testing.T) {
 		intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 3}},
 			Generation: 3, Snapshot: "green-again", Failing: []string{}},
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne, Author: testReviewApp, Body: reviewBody("redelivered", headOne)},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 	} {
 		result, err := intake.ApplyFact(ctx, pool, "test", fmt.Sprintf("reopen-%d", i), fact, engine)
 		if err != nil || result.Refusal != nil {
@@ -1109,7 +1103,7 @@ func TestARetryEndsARoundWhoseReviewerCompletedBeforeTheHold(t *testing.T) {
 			seedReview(t, pool, "green")
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			for i, fact := range []intake.Fact{
-				intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+				intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
 				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: tc.state, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)},
 				intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
@@ -1146,7 +1140,7 @@ func TestARetryOfAStuckRoundTellsTheReviewerWhy(t *testing.T) {
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	for i, fact := range []intake.Fact{
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 		intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
 		intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
 	} {
@@ -1240,7 +1234,7 @@ func TestALateDeliveredApprovalEndsAStuckRound(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
 		Body: reviewBody("ship it", headOne), SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
 	if got := issuePhase(t, pool); got != phase.Accepting {
@@ -1274,13 +1268,13 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 	}{
 		{name: "a COMMENT, then the reviewer completes", before: []string{"commented"}, told: 1, decision: "approved", want: phase.Accepting},
 		{name: "no review at all", told: 1, decision: "approved", want: phase.Accepting},
-		{name: "the reviewer completes, then its COMMENT submitted after the completion", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: "one more thought", SubmittedAt: late}},
+		{name: "the reviewer completes, then its COMMENT submitted after the completion", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: commentBody("one more thought"), SubmittedAt: late}},
 			told: 2, decision: "changes_requested", want: phase.Implementing},
-		{name: "the reviewer completes, then its COMMENT submitted before the completion, delivered after", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: "one more thought", SubmittedAt: early}},
+		{name: "the reviewer completes, then its COMMENT submitted before the completion, delivered after", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: commentBody("one more thought"), SubmittedAt: early}},
 			told: 1, decision: "changes_requested", want: phase.Implementing},
-		{name: "the reviewer completes, then its COMMENT with no submission time", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: "one more thought"}},
+		{name: "the reviewer completes, then its COMMENT with no submission time", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: commentBody("one more thought")}},
 			told: 1, decision: "approved", want: phase.Accepting},
-		{name: "the reviewer completes, then its COMMENT submitted within the clocks' skew of the completion", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: "one more thought", SubmittedAt: withinSkew}},
+		{name: "the reviewer completes, then its COMMENT submitted within the clocks' skew of the completion", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, Body: commentBody("one more thought"), SubmittedAt: withinSkew}},
 			told: 1, decision: "approved", want: phase.Accepting},
 		{name: "the reviewer completes, then its reply on a review thread", after: []intake.PullRequestReview{{State: "commented", Author: testReviewApp, SubmittedAt: late}},
 			told: 1, decision: "approved", want: phase.Accepting},
@@ -1303,7 +1297,7 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 				}
 			}
 			if result := apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-				Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}); result.Refusal != nil {
+				Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}); result.Refusal != nil {
 				t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
 			}
 			for i, after := range tc.after {
@@ -1364,7 +1358,7 @@ func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 			if got := reviewStuckNotices(t, pool); len(got) != 1 {
 				t.Fatalf("the reviewer's completion told the architect %d times (%+v), want once", len(got), got)
 			}
@@ -1405,7 +1399,7 @@ func TestARoundItsApprovalCannotEndTellsTheArchitect(t *testing.T) {
 		return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: head, Author: testReviewApp, Body: reviewBody("approved", head)}
 	}
 	requestChanges := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headTwo, Author: testReviewApp, Body: reviewBody("fix the widget", headTwo)}
-	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
+	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
 	sync := func(head string) intake.Fact {
 		return intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head}
 	}
@@ -1504,7 +1498,7 @@ func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
 		fact intake.Fact
 		told int
 	}
-	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
+	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
 	approve := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("approved", headOne)}
 	sync := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo}
 	push := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"}
@@ -1556,7 +1550,7 @@ func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
 // with the move (dispatch://INFRA-714 R2). An approval of a head the branch never reached decides
 // nothing however often it is read.
 func TestAnApprovalOfAHeadTheRecordHasNotReachedDecidesOnlyOnceItArrives(t *testing.T) {
-	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
+	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
 	approve := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo, Author: testReviewApp, Body: reviewBody("approved", headTwo)}
 	sync := func(head string) intake.Fact {
 		return intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head}
@@ -1642,6 +1636,37 @@ func reviewStuckNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 	return notices
 }
 
+// reviewClaim is LEGION-208's reviewer claim as the daemon names it, the token claim.NewToken
+// spells for the issue's project, key and role (the workflow's reviewerToken): the claim the
+// fixtures record the reviewer's session on, and the claim each of the reviewer's completions
+// carries, as the claim a reviewer's agent completes under does.
+const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
+
+// seedRoundOneRows seeds LEGION-208's implementer and reviewer rows as a first review round holds
+// them. The implementer's row names the claim its completion carried. The reviewer's names none
+// yet: the reviewer submits its review before it completes, and only a completion writes a row's
+// claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
+// claim is recorded as the daemon records it, under the token the daemon names it by
+// (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
+// A test of a later round gives the row its claim through the reviewer's completion, or through
+// afterTheReviewersFirstCompletion when it applies none.
+func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
+}
+
+// afterTheReviewersFirstCompletion puts on LEGION-208's reviewer row the claim the reviewer's
+// first completion writes there (record.PhaseRow.Claim), for a test of a later round that applies
+// no completion of the reviewer's own.
+func afterTheReviewersFirstCompletion(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	row := reviewerRow(t, pool)
+	row.Claim = reviewClaim
+	seedPhase(t, pool, row)
+}
+
 // seedClaimSession records a claims row for token holding session, so the workflow's read of the
 // reviewer's claim (record.Store.ClaimSession) finds it (byReviewer) and the daemon is known to
 // have started the reviewer on the issue (engine's leftItsPhase). A row already seeded takes the
@@ -1674,11 +1699,10 @@ func reviewerDecision(t *testing.T, pool *pgxpool.Pool) *record.ReviewDecision {
 func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
-	seedClaimSession(t, pool, "review-claim", "ses-reviewer")
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 	apply := applyFacts(t, pool, engine)
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 
 	apply("another session's approval", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne,
 		Author: testReviewApp, Body: "ship it\n\n<!-- legion: {\"session\":\"ses-controller\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",
@@ -1718,9 +1742,8 @@ func TestACommentFromAnotherSessionIsNotTheReviewersAnswer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
-			seedClaimSession(t, pool, "review-claim", "ses-reviewer")
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 			if got := reviewStuckNotices(t, pool); len(got) != 1 {
 				t.Fatalf("the completion told the architect %d times (%+v), want once", len(got), got)
 			}
@@ -1739,11 +1762,10 @@ func TestACommentFromAnotherSessionIsNotTheReviewersAnswer(t *testing.T) {
 func TestAReviewWithNoFooterWhileTheReviewersSessionIsRecordedIsSetAside(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
-	seedClaimSession(t, pool, "review-claim", "ses-reviewer")
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 	apply := applyFacts(t, pool, engine)
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 	apply("no footer", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne, Author: testReviewApp,
 		Body: "ship it", SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -1758,16 +1780,17 @@ func TestAReviewWithNoFooterWhileTheReviewersSessionIsRecordedIsSetAside(t *test
 	}
 }
 
-// With no session recorded on the reviewer's claim - a reviewer claim with no row, as every
-// existing fixture seeds - the login decides a round by itself, as it always has, since there is
-// nothing recorded to tell its sessions apart; this is logged once at info.
+// With no session recorded on the reviewer's claim - a claim a daemon recorded before it kept the
+// session of the claim's agent - the login decides a round by itself, as it always has, since
+// there is nothing recorded to tell its sessions apart; this is logged once at info.
 func TestWithNoRecordedReviewerSessionTheLoginDecides(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
+	seedClaimSession(t, pool, reviewClaim, "")
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 	apply := applyFacts(t, pool, engine)
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne, Author: testReviewApp,
 		Body: reviewBody("ship it", headOne), SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 	if got := issuePhase(t, pool); got != phase.Accepting {
@@ -1785,11 +1808,10 @@ func TestWithNoRecordedReviewerSessionTheLoginDecides(t *testing.T) {
 func TestATruncatedReviewWithNoFooterIsSetAsideAndLogsTruncation(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
-	seedClaimSession(t, pool, "review-claim", "ses-reviewer")
 	var logs bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 	apply := applyFacts(t, pool, engine)
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 	apply("truncated", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne, Author: testReviewApp,
 		Body: "a capped body", BodyTruncated: true, SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -1910,7 +1932,7 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 	if got := implementerRounds(t, pool); got != 0 {
 		t.Fatalf("the implementer's rounds = %d, want none: no review ended the round", got)
 	}
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
 		Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the reviewer completed the issue is in %s, want reviewing: the round is stuck", got)
@@ -1987,7 +2009,7 @@ func TestANewRoundInheritsNoRefusal(t *testing.T) {
 	if got := reviewerDecision(t, pool); got != nil {
 		t.Fatalf("round 2's reviewer row holds %+v, want nothing: the round's entry cleared round 1's decision and its refusal", got)
 	}
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
 		Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2})
 	told := reviewStuckNotices(t, pool)
 	if len(told) != 1 || strings.Contains(told[0].Reason, "was set aside") {
