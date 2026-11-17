@@ -488,10 +488,13 @@ every resolver that can run one (`fileValue`, `fileBearer`, `dispatchSettings`, 
 session's timers, deliveries and NATS pings are served while it runs, and `sessionSettings` runs
 the two sections' commands at once. The command's exit status decides: a command that exited 0
 has printed its value even when a process it left running holds stdout open; a timeout kills the
-whole group, and so does a process that exits (by `process.exit` or an empty event loop, not by a
-signal it does not handle) while the command runs, removing its output with it. It runs only when
-its section's resolver is about to use the value (the section on, no variable overriding the
-field). Its value
+whole group. The group also ends with the process however the process ends: its own exit, a
+signal it handles through `process.reallyExit` (as Oh My Pi's SIGINT, SIGTERM, SIGHUP and
+fatal-error handlers do), or a SIGKILL. A watch in the group (`groupWatchedBy` in
+`src/process-group.ts`) reads a pipe the process holds and kills the group once the kernel has
+closed it. The command's stdout goes to a file whose name is removed before the command starts,
+so no exit leaves the value on disk under a name. It runs only when its section's resolver is
+about to use the value (the section on, no variable overriding the field). Its value
 is kept for the process, shared across module instances (one map on `globalThis` under
 `Symbol.for("legion.envoy-config.commands.v1")`, since Oh My Pi loads each extension instance, a
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,

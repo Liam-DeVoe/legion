@@ -278,9 +278,10 @@ One command runs for a session at a time, and the claim is keyed by the session 
 addressed to (`runningShellCommands`), so a second `!` sent to the same session is answered
 naming that session's running command while a `!` sent to a session the host has moved to runs
 on its own.
-The group is also killed as this process exits and at `session_shutdown`, which holds the kill
-of every command running then: a detached group outlives the session otherwise, so an `/exit`
-during `!while :; do :; done` would leave a process nobody stops.
+The group is also killed at `session_shutdown`, which holds the kill of every command running
+then, and it ends with this process however the process ends, a signal or a crash included
+(`groupWatchedBy` in envoy-client's `src/process-group.ts`): a detached group outlives the session
+otherwise, so an `/exit` during `!while :; do :; done` would leave a process nobody stops.
 A `!` that arrives once the session is shutting down runs nothing and is answered saying so,
 since a command started then would outlive the session it was asked of.
 A `!` whose session is no longer the one open here (`sessionOpen`: this instance's own id and

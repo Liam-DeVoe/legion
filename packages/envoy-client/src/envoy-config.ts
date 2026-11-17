@@ -2,11 +2,13 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readlinkSync,
+  readSync,
   rmSync,
   statSync,
 } from "node:fs";
@@ -16,7 +18,7 @@ import type { Subprocess } from "bun";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
-import { killGroup, onExit } from "./process-group";
+import { groupWatchedBy, killGroup } from "./process-group";
 import { sendable } from "./secret-file";
 
 /** Where a caller runs: one of the two plugins (and the `dispatch` command, which takes its host
@@ -359,6 +361,34 @@ processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
 const commandRuns: Map<string, Promise<KeptOutcome>> = processGlobal[COMMAND_RUNS] ?? new Map();
 processGlobal[COMMAND_RUNS] = commandRuns;
 
+/** A file of its own for a command's stdout that no one can name: created in a private directory,
+ * which is removed again before the command starts. The command writes it through the descriptor
+ * it is handed, this process reads it through its own (`readOutput`), and the kernel frees it once
+ * the last of them is closed: no exit of this process or of the command leaves the value on disk
+ * under a name. */
+function unnamedFile(): number {
+  const directory = mkdtempSync(path.join(tmpdir(), "envoy-command-"));
+  try {
+    chmodSync(directory, 0o700);
+    return openSync(path.join(directory, "stdout"), "wx+", 0o600);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** All that was written to `fd`, read from its start: the command's writes moved the offset this
+ * descriptor shares with it, so each read names its position. */
+function readOutput(fd: number): string {
+  const output = Buffer.alloc(fstatSync(fd).size);
+  let read = 0;
+  while (read < output.length) {
+    const got = readSync(fd, output, read, output.length - read, read);
+    if (got === 0) break;
+    read += got;
+  }
+  return output.toString("utf-8", 0, read);
+}
+
 async function runCommand(
   command: string,
   env: EnvoyConfigEnvironment,
@@ -368,49 +398,39 @@ async function runCommand(
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;
   }
-  // stdout goes to a file in a private directory, so the wait is for the shell alone: a pipe would
-  // be held open by any process the command left running, until the timeout.
-  const directory = mkdtempSync(path.join(tmpdir(), "envoy-command-"));
+  // stdout goes to a file, so the wait is for the shell alone: a pipe would be held open by any
+  // process the command left running, until the timeout.
+  const fd = unnamedFile();
   try {
-    chmodSync(directory, 0o700);
-    const output = path.join(directory, "stdout");
-    const fd = openSync(output, "wx", 0o600);
-    let child: Subprocess<"ignore", number, "ignore">;
+    let child: Subprocess<"pipe", number, "ignore">;
     try {
-      // Its own process group, so every process the command started is killed with it.
-      child = Bun.spawn(["/bin/sh", "-c", command], {
+      // Its own process group, so every process the command started is killed with it, and a
+      // group that ends with this process, however it ends (`groupWatchedBy`).
+      child = Bun.spawn(groupWatchedBy(["/bin/sh", "-c", command]), {
         cwd,
         env: childEnv,
-        stdin: "ignore",
+        stdin: "pipe",
         stdout: fd,
         stderr: "ignore",
         detached: true,
       });
     } catch (error) {
       return { failure: `could not start: ${messageFor(error)}`, timedOut: false };
-    } finally {
-      closeSync(fd);
     }
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       killGroup(child.pid);
     }, COMMAND_TIMEOUT_MS);
-    // A process that exits while the command runs takes the command's group and its output with
-    // it, as the timeout and the read would have.
-    const release = onExit(() => {
-      killGroup(child.pid);
-      rmSync(directory, { recursive: true, force: true });
-    });
     try {
       await child.exited;
     } finally {
       clearTimeout(timer);
-      release();
     }
     // Whatever the outcome, nothing the command started outlives it, and so nothing it left
     // running can change the value read below.
     killGroup(child.pid);
+    void child.stdin.end();
     if (timedOut) {
       return {
         failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
@@ -423,7 +443,7 @@ async function runCommand(
         timedOut: false,
       };
     }
-    const value = readFileSync(output, "utf-8").trim();
+    const value = readOutput(fd).trim();
     if (value.length === 0) return { failure: "printed nothing", timedOut: false };
     if (!sendable(value)) {
       return {
@@ -433,7 +453,7 @@ async function runCommand(
     }
     return { value };
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    closeSync(fd);
   }
 }
 

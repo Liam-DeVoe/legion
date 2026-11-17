@@ -2,7 +2,10 @@ kind: Fixed
 body: |-
   A `!` token command in envoy.json no longer holds a Legion pane's process while the notice
   publisher or the document lookup reads Envoy or Dispatch; two notices due together build one
-  publisher, and a build that failed is tried again at the next notice.
+  publisher, and a build that failed is tried again at the next notice. A phase reminder's
+  architect notice whose run ended while the publisher was built is not sent (it named a worker
+  with 0 unanswered reminders), and a stall notice whose session's claim ended meanwhile is not
+  sent under the ended claim.
 time: 2026-11-17T12:31:04Z
 custom:
   Issue: pr4318

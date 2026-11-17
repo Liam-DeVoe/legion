@@ -6,10 +6,11 @@ body: |-
   `dispatchSettings`, `envoySettings`, `sessionSettings`, `sessionDispatchSettings` and
   `sessionEnvoySettings` return Promises of what they returned before. A read that starts while
   the same command runs waits for that run, so a command still runs once per process; a read with
-  `commands: "kept"` still never runs one. `sessionSettings` resolves Dispatch and Envoy at once. A
-  process that exits while a command runs kills the command's group and removes its output.
-  `@legion/envoy-client/process-group` holds the group kill (`killGroup`) and the kill on exit
-  (`onExit`) that every detached command of the plugins uses.
+  `commands: "kept"` still never runs one. `sessionSettings` resolves Dispatch and Envoy at once.
+  A command's process group ends with the process however the process ends, a signal or a crash
+  included, and its output is in a file with no name, so no exit leaves the value on disk.
+  `@legion/envoy-client/process-group` holds the group kill (`killGroup`) and the watch that ends a
+  group with its process (`groupWatchedBy`), which every detached shell command of the plugins uses.
 time: 2026-11-17T12:31:04Z
 custom:
   Issue: pr4318

@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
-import { killGroup, onExit } from "@legion/envoy-client/process-group";
+import { groupWatchedBy, killGroup } from "@legion/envoy-client/process-group";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
 /**
@@ -143,8 +143,9 @@ function shellInvocation(command: string): {
 /** The shell this module starts: no standard input and no pty, and a pipe of its own for each
  *  output stream, which this module reads to its end so the command is never blocked by a full
  *  one. The CLI gives a zsh or fish bang command a pty; these two are what answering through a
- *  Dispatch reply needs, where the answer is text and there is no terminal and nobody at one. */
-type ShellSubprocess = Bun.Subprocess<"ignore", "pipe", "pipe">;
+ *  Dispatch reply needs, where the answer is text and there is no terminal and nobody at one. Its
+ *  stdin is the pipe its group's watch reads (`groupWatchedBy`); the command itself reads nothing. */
+type ShellSubprocess = Bun.Subprocess<"pipe", "pipe", "pipe">;
 
 /**
  * The first `SHELL_OUTPUT_BYTES` the command printed, from both of its streams in the order they
@@ -229,10 +230,12 @@ async function drained(reads: readonly StreamRead[]): Promise<void> {
  * Dispatch reply needs: nobody watches a terminal for this command, and the CLI's own bash
  * timeout (300 s by default) does not reach it. It runs in a process group of its own for the
  * same reason, so nothing it left running outlives it or holds the session: the group is killed
- * when the command ends, when `stop` is called before it ends, and as this process exits, which
- * is the only handle anything has on a detached group. A `stop` that arrives after the command
- * ended is nothing: the command answered for itself, and a session shutting down in that moment
- * must not report it stopped.
+ * when the command ends and when `stop` is called before it ends, and it ends with this process
+ * however this process ends (`groupWatchedBy`): the CLI leaves a bang command in the session's
+ * own group, under the eye of the person who typed it, and a command answered through a Dispatch
+ * reply, which nobody watches, must not outlive the session or fill the pod's disk. A `stop` that
+ * arrives after the command ended is nothing: the command answered for itself, and a session
+ * shutting down in that moment must not report it stopped.
  *
  * Both streams are pipes this module reads to their end, keeping the first `SHELL_OUTPUT_BYTES`
  * and throwing the rest away, so `!yes` or `!cat /dev/urandom` costs the session those bytes of
@@ -264,12 +267,12 @@ export async function runShellCommand(
     // anywhere on that path lets a `/new` or a `/resume` land inside it, and the whole command
     // then runs for the conversation the host moved to, in its directory.
     const invocation = shellInvocation(command);
-    child = Bun.spawn(invocation.argv, {
+    child = Bun.spawn(groupWatchedBy(invocation.argv), {
       cwd: options.cwd,
       detached: true,
       env: invocation.env,
       stderr: "pipe",
-      stdin: "ignore",
+      stdin: "pipe",
       stdout: "pipe",
     });
   } catch (error) {
@@ -279,11 +282,6 @@ export async function runShellCommand(
       status: `The command could not start: ${messageFor(error)}.`,
     };
   }
-  // The kill runs as this process exits too: a group left behind when the process goes is a
-  // `!while :; do :; done` nobody stops. The CLI leaves a bang command in the session's own
-  // group, under the eye of the person who typed it; a command answered through a Dispatch reply,
-  // which nobody watches, must not outlive the session or fill the pod's disk.
-  const release = onExit(() => killGroup(child.pid));
   // The reads start before the wait: a pipe nobody empties fills, and a command blocked on a
   // full one would never reach its own end.
   const printed = new BoundedOutput();
@@ -308,7 +306,7 @@ export async function runShellCommand(
     // Whatever the outcome, nothing the command started outlives it - and the pipes close with
     // the last process holding them, which is what ends the reads.
     killGroup(child.pid);
-    release();
+    void child.stdin.end();
   }
   await drained(reads);
   const output = printable(printed.text());

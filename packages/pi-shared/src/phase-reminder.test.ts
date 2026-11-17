@@ -88,6 +88,9 @@ function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
   readonly publish?: EnvoyPublish;
   readonly state?: LegionState;
+  /** The publisher's build, which settles before the publisher is handed over, as a first build
+   *  that runs Envoy's token command does; the publisher is at hand at once otherwise. */
+  readonly buildPublisher?: () => Promise<void>;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -105,9 +108,12 @@ function rig(options: {
     saveEntry: (entry) => entries.push(entry),
     claim: () => implementer,
     readState: async () => options.state ?? ({ issues: {} } as unknown as LegionState),
-    publisher: async () => async (input) => {
-      published.push(input);
-      return options.publish === undefined ? {} : options.publish(input);
+    publisher: async () => {
+      await options.buildPublisher?.();
+      return async (input) => {
+        published.push(input);
+        return options.publish === undefined ? {} : options.publish(input);
+      };
     },
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
@@ -168,6 +174,45 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
   expect(published).toHaveLength(2);
   expect(published[1]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
   expect(published[1]?.idempotencyKey).not.toBe(firstKey);
+  expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the worker meanwhile: a turn that resets the count lands inside that wait. The notice must then
+// tell nothing, since its run has ended: read after the wait, it would tell the architect of a
+// worker that "has let 0 phase reminders go unanswered". The next run is told as any run is.
+test("a notice whose publisher was still being built when the run ended tells nothing, and the next run is told", async () => {
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  let builds = 0;
+  const { reminder, timers, entries, published } = rig({
+    buildPublisher: () => {
+      builds += 1;
+      if (builds > 1) return Promise.resolve();
+      building.resolve();
+      return built.promise;
+    },
+  });
+
+  // The run reaches the threshold; its notice waits for the publisher.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  const delivered = fireLast(timers);
+  await building.promise;
+
+  // The worker acts meanwhile, which ends the run, and the publisher is built after.
+  reminder.apply({ kind: "tool-call" });
+  built.resolve();
+  await delivered;
+  expect(published).toEqual([]);
+  expect(entries.at(-1)).toMatchObject({ count: 0, reported: false });
+
+  // The next run reaches the threshold and tells the architect of its two reminders.
+  expect(await reminder.settle(said("Working on it."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(1);
+  expect(published[0]?.message).toContain("has let 2 phase reminders go unanswered");
   expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
 });
 

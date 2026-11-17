@@ -1447,59 +1447,99 @@ describe("a ! command in envoy.json", () => {
     expect(left).toEqual([]);
   }, 20_000);
 
-  // A read waits for its command without holding the process, so the process can exit while the
-  // command runs: the command's group and its output directory must go with it, as the timeout
-  // would have taken them.
-  test("a process that exits while its command runs takes the command's group and output with it", async () => {
-    const home = tempDir();
-    const scratch = tempDir();
-    const pidFile = path.join(home, "child.pid");
-    const release = path.join(home, "release");
-    const file = writeFile(path.join(home, "envoy.json"), {});
-    const reader = `
+  // A read waits for its command without holding the process, so the process can end while the
+  // command runs, by any path: its own exit, Oh My Pi's handlers for SIGINT, SIGTERM and SIGHUP and
+  // for a fatal error (each ends through `process.reallyExit`, which skips the `exit` event), or a
+  // SIGKILL nothing can handle. On each, the command's group must go with it, as the timeout would
+  // have taken it, and the command's output, here holding the value, must be in no file anyone can
+  // name, before or after.
+  const endings = [
+    { how: "process.exit", end: "release", exit: "process.exit(0);", code: 0 },
+    {
+      how: "SIGINT, handled as Oh My Pi does",
+      end: "SIGINT",
+      exit: 'process.on("SIGINT", () => process.reallyExit(130));',
+      code: 130,
+    },
+    {
+      how: "SIGTERM, handled as Oh My Pi does",
+      end: "SIGTERM",
+      exit: 'process.on("SIGTERM", () => process.reallyExit(143));',
+      code: 143,
+    },
+    {
+      how: "SIGHUP, handled as Oh My Pi does",
+      end: "SIGHUP",
+      exit: 'process.on("SIGHUP", () => process.reallyExit(129));',
+      code: 129,
+    },
+    {
+      how: "a fatal error, handled as Oh My Pi does",
+      end: "release",
+      exit: 'process.on("uncaughtException", () => process.reallyExit(1)); setTimeout(() => { throw new Error("fatal"); });',
+      code: 1,
+    },
+    { how: "SIGKILL", end: "SIGKILL", exit: "", code: null },
+  ] as const;
+  for (const { how, end, exit, code } of endings) {
+    test(`a process ended by ${how} while its command runs takes the command's group with it, and its output is in no file`, async () => {
+      const home = tempDir();
+      const scratch = tempDir();
+      const pidFile = path.join(home, "child.pid");
+      const release = path.join(home, "release");
+      const secret = fixtureSecret("dsp");
+      const file = writeFile(path.join(home, "envoy.json"), {});
+      // The process waits for the release before it ends on its own, so the read is in flight.
+      const reader = `
 import { existsSync } from "node:fs";
 import { fileValue } from ${JSON.stringify(path.resolve(import.meta.dir, "../envoy-config.ts"))};
 fileValue(process.env.COMMAND, "dispatch.token", process.env.FILE, { PATH: process.env.PATH }).catch(() => {});
+${end === "release" ? "" : exit}
 while (!existsSync(process.env.RELEASE)) await Bun.sleep(20);
-process.exit(0);
+${end === "release" ? exit : ""}
 `;
-    const child = Bun.spawn([process.execPath, "-e", reader], {
-      env: {
-        PATH: process.env.PATH ?? "",
-        TMPDIR: scratch,
-        COMMAND: `!sleep 60 & echo $! > ${pidFile}; wait`,
-        FILE: file,
-        RELEASE: release,
-      },
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    let pid = 0;
-    try {
-      // A real process on the platform's clock: the command writes its child's pid when it has
-      // started it, and nothing else says so.
-      for (const deadline = Date.now() + 10_000; pid === 0; await Bun.sleep(20)) {
-        if (Date.now() > deadline) throw new Error("the command never wrote its child's pid");
-        if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
-      }
-      // The control: while the reading process runs, the command's child and its output are there.
-      expect(gone(pid)).toBe(false);
-      expect(readdirSync(scratch)).toHaveLength(1);
-      writeFileSync(release, "");
-      expect(await child.exited).toBe(0);
-      expect(gone(pid)).toBe(true);
-      expect(readdirSync(scratch)).toEqual([]);
-    } finally {
-      child.kill("SIGKILL");
-      if (pid !== 0) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // Gone, as the test expects.
+      const child = Bun.spawn([process.execPath, "-e", reader], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          TMPDIR: scratch,
+          COMMAND: `!echo ${secret}; sleep 60 & echo $! > ${pidFile}; wait`,
+          FILE: file,
+          RELEASE: release,
+        },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      let pid = 0;
+      try {
+        // A real process on the platform's clock: the command writes its child's pid when it has
+        // started it, and nothing else says so.
+        for (const deadline = Date.now() + 10_000; pid === 0; await Bun.sleep(20)) {
+          if (Date.now() > deadline) throw new Error("the command never wrote its child's pid");
+          if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
+        }
+        // The control: while the reading process runs, the command's child is there.
+        expect(gone(pid)).toBe(false);
+        expect(readdirSync(scratch)).toEqual([]);
+        if (end === "release") writeFileSync(release, "");
+        else child.kill(end);
+        await child.exited;
+        // The way the process ended is the one named: its own handler's code, or the signal.
+        if (code === null) expect(child.signalCode).toBe("SIGKILL");
+        else expect(child.exitCode).toBe(code);
+        expect(gone(pid)).toBe(true);
+        expect(readdirSync(scratch)).toEqual([]);
+      } finally {
+        child.kill("SIGKILL");
+        if (pid !== 0) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Gone, as the test expects.
+          }
         }
       }
-    }
-  }, 30_000);
+    }, 30_000);
+  }
 
   test("whose field a variable overrides, or whose section is off, is not run", async () => {
     const home = tempDir();

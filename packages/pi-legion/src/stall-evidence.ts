@@ -639,10 +639,19 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       });
       return false;
     }
-    const claim = deps.claim();
+    // The publisher first: its first build can run Envoy's token command, and the session's claim
+    // can end meanwhile. The notice carries the claim the session holds when it publishes.
     const publish = await deps.publisher();
-    if (publish === undefined || claim === undefined) {
+    if (publish === undefined) {
       deps.log.warn("legion: Envoy is off for this session, so its owner was not told", {
+        ...context,
+        topic: notice.topic,
+      });
+      return false;
+    }
+    const claim = deps.claim();
+    if (claim === undefined) {
+      deps.log.warn("legion: this session's claim ended before its owner was told", {
         ...context,
         topic: notice.topic,
       });

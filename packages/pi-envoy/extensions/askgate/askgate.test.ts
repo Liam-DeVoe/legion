@@ -3322,6 +3322,51 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       }
     }
   });
+  // The gate's process can end while a dry run is under way, by a signal or a crash that runs
+  // nothing as it goes: the script's group, its own process group, must end with it.
+  test("a dry run's group ends with the process that started it, even one killed by SIGKILL", async () => {
+    const pidFile = path.join(work, "dry-run-orphan.pid");
+    const runner = path.join(work, "dry-run-runner.ts");
+    fs.writeFileSync(
+      runner,
+      [
+        `import { spawnDryRun } from ${JSON.stringify(path.join(import.meta.dir, "askgate-core.ts"))};`,
+        `void spawnDryRun(${JSON.stringify(`sleep 600 & echo $! > '${pidFile}'; wait`)}, {`,
+        `  cwd: ${JSON.stringify(work)},`,
+        "  env: { PATH: process.env.PATH ?? '' },",
+        "  timeoutMs: 600_000,",
+        "});",
+        `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
+        "  await Bun.sleep(10);",
+        "}",
+        'process.kill(process.pid, "SIGKILL");',
+      ].join("\n")
+    );
+    const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
+    await runs.exited;
+    const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
+    try {
+      expect(await new Response(runs.stderr).text()).toBe("");
+      expect(runs.signalCode).toBe("SIGKILL");
+      // A killed orphan answers `kill(pid, 0)` as a zombie until whatever adopted it reaps it.
+      let alive = true;
+      for (const deadline = Date.now() + 2_000; alive && Date.now() < deadline; Bun.sleepSync(20)) {
+        try {
+          process.kill(helper, 0);
+          alive = !/\) Z /.test(fs.readFileSync(`/proc/${helper}/stat`, "utf8"));
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      try {
+        process.kill(helper, "SIGKILL");
+      } catch {
+        // Gone, as the test expects.
+      }
+    }
+  }, 30_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
     expect(await g.bash("b1", ASK)).toBeUndefined();

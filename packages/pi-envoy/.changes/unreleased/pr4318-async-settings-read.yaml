@@ -6,7 +6,8 @@ body: |-
   without stopping the session's timers, deliveries and NATS pings for up to the command's 10 s.
   AskGate's dry run of a `dispatch` command kills its process group once the script's shell
   exits, so a helper the script left running neither outlives it nor holds its answer open until
-  the limit.
+  the limit. The process groups of a dry run and of a person's `!command` end with the session's
+  process however it ends, a signal or a crash included, where only its own exit took them before.
 time: 2026-11-17T12:31:04Z
 custom:
   Issue: pr4318

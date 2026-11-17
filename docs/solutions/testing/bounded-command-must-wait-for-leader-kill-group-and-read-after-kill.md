@@ -52,24 +52,27 @@ A timeout does not by itself bound a spawned command's resource lifetime. Under 
 ## Solution
 
 The command runner in `packages/envoy-client/src/envoy-config.ts` makes the wait end with the
-shell alone: it sends stdout to a mode-0600 file in a mode-0700 `mkdtemp` directory, ignores stdin
-and stderr, and starts the shell detached with `Bun.spawn`, so the read waits for the leader without
-holding the event loop. A timer of its own, not the runtime's spawn timeout (which signals the leader
-alone), kills the group at the bound; a process that exits first kills it too (`onExit`,
-`packages/envoy-client/src/process-group.ts`). After the leader exits it kills the negative PID
-process group regardless of success, failure, or timeout. Only then does it read and validate the
-output file.
+shell alone: it sends stdout to a mode-0600 file whose mode-0700 `mkdtemp` directory it removes
+before the command starts, so the file has no name, and starts the shell detached with
+`Bun.spawn`, so the read waits for the leader without holding the event loop. A timer of its own,
+not the runtime's spawn timeout (which signals the leader alone), kills the group at the bound.
+After the leader exits it kills the negative PID process group regardless of success, failure, or
+timeout. Only then does it read and validate the output, by position from the start of the file.
+
+The group also ends with the caller however the caller ends (`groupWatchedBy`,
+`packages/envoy-client/src/process-group.ts`): a watch in the group reads a pipe the caller holds
+and kills the group once its last writer is gone. An `exit` listener is not enough: Oh My Pi's
+SIGINT, SIGTERM, SIGHUP and fatal-error handlers end through `process.reallyExit`, which skips the
+`exit` event, and nothing runs on a SIGKILL.
 
 ```ts
-const output = path.join(directory, "stdout");
-const fd = openSync(output, "wx", 0o600);
-const child = Bun.spawn(["/bin/sh", "-c", command], {
-  stdin: "ignore",
+const fd = unnamedFile(); // opened "wx+", 0o600, in a directory removed at once
+const child = Bun.spawn(groupWatchedBy(["/bin/sh", "-c", command]), {
+  stdin: "pipe", // the watch's pipe: closed by the kernel when this process ends
   stdout: fd,
   stderr: "ignore",
   detached: true,
 });
-closeSync(fd);
 let timedOut = false;
 const timer = setTimeout(() => {
   timedOut = true;
@@ -81,7 +84,8 @@ try {
   clearTimeout(timer);
 }
 killGroup(child.pid);
-const value = readFileSync(output, "utf-8").trim();
+void child.stdin.end();
+const value = readOutput(fd).trim(); // readSync at explicit positions: the offset is shared
 ```
 
 For an asynchronous command that needs streams, the pending change in
