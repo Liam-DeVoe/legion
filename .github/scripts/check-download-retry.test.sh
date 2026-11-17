@@ -12368,6 +12368,118 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "names the subdirectory script" "$(contains "$out" 'lib/r37-namesake.sh')"
 
+# W10 and W11. The four cases above share one cure: the gate reads the `.sh` scripts directly in
+# .github/scripts/ and no other file there, so every other file under that directory, at any
+# depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
+# top-level harness, `.py` or `.jq`, and the bytecode Python writes for those `.py` files into
+# .github/scripts/__pycache__/ (dispatch://INFRA-1545, round 37). W10's refused files fetch
+# nothing and no step runs them, so the file is what is refused, and not a fetch or a run:
+# a `.zsh` script, a file with no suffix and no shebang, a `.txt` file, a `.sh` in a
+# subdirectory and a `.txt` in the `__pycache__`, beside a top-level `.py` and `.jq` that pass.
+# W11 holds only what is left alone.
+echo "case: r37 W10 a shell program under .github/scripts that this check does not read is refused by name whatever it holds"
+root=$(fixture r37-w10-unread-files)
+mkdir -p "$root/.github/scripts/lib" "$root/.github/scripts/__pycache__"
+printf '#!/usr/bin/env zsh\necho quiet\n' > "$root/.github/scripts/r37-quiet.zsh"
+printf 'echo quiet\n' > "$root/.github/scripts/r37-data"
+printf 'quiet\n' > "$root/.github/scripts/r37-notes.txt"
+printf '#!/usr/bin/env bash\nset -euo pipefail\necho quiet\n' > "$root/.github/scripts/lib/r37-quiet.sh"
+printf 'quiet\n' > "$root/.github/scripts/__pycache__/x.txt"
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/r37-quiet.py"
+printf '.name\n' > "$root/.github/scripts/r37-quiet.jq"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for file in r37-quiet.zsh r37-data r37-notes.txt lib/r37-quiet.sh __pycache__/x.txt; do
+  check "refuses .github/scripts/$file by name at its line 1, with the move as its cure" \
+    "$(contains "$out" "::error file=.github/scripts/$file,line=1::.github/scripts/$file is a file under .github/scripts/ this check does not read, whatever it holds: .*Move a shell script to .github/scripts/<name>.sh, its name lowercase letters, digits and .-. .*, and anything else out of .github/scripts/")"
+done
+check "passes the top-level .py" "$(is "$(contains "$out" 'r37-quiet.py')" false)"
+check "passes the top-level .jq" "$(is "$(contains "$out" 'r37-quiet.jq')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+echo "case: r37 W11 a top-level .py, .jq and .test.sh under .github/scripts pass"
+root=$(fixture r37-w11-left-alone)
+mkdir -p "$root/.github/scripts/__pycache__"
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/x.py"
+printf '.name\n' > "$root/.github/scripts/r37-quiet.jq"
+printf '#!/usr/bin/env bash\necho quiet\n' > "$root/.github/scripts/r37-quiet.test.sh"
+printf '\363\r\r\n' > "$root/.github/scripts/__pycache__/x.cpython-313.pyc"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
+
+# W12. The two routes past that rule to shell text the gate does not read (dispatch://INFRA-1545,
+# round 37). A shell, `.` or `source` handed a top-level `.py` or `.jq` runs it as shell text,
+# and is refused at the run with the cure to run the program with `python3` or read the filter
+# with `jq -f`: by a literal path, from the workspace's root, with `ksh` and `./`, by its name
+# under a directory held in a variable, and from a step's working directory. And a directory the
+# tree's walk does not enter hides every file in it from that rule, so it is refused by name: a
+# symbolic link to a directory holding a bare curl, directly in .github/scripts/ and inside a
+# subdirectory, and a directory named `vendor`, a name the walk skips. `python3` and `jq -f`
+# given the same files pass, and so does a shell given a `.py` the tree does not hold there.
+echo "case: r37 W12 a shell given a top-level .py or .jq, and a symlinked directory under .github/scripts, are refused by name"
+root=$(fixture r37-w12-shell-data)
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/r37-tool.py"
+printf '.name\n' > "$root/.github/scripts/r37-filter.jq"
+mkdir -p "$root/r37-elsewhere" "$root/.github/scripts/lib" "$root/.github/scripts/vendor"
+printf '#!/usr/bin/env bash\ncurl -fsSL -o b https://example.com/b\n' > "$root/r37-elsewhere/r37-fetch.sh"
+cp "$root/r37-elsewhere/r37-fetch.sh" "$root/.github/scripts/vendor/r37-fetch.sh"
+ln -s ../../r37-elsewhere "$root/.github/scripts/r37-linked"
+ln -s ../../../r37-elsewhere "$root/.github/scripts/lib/r37-deep"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the Python program with bash
+        run: bash .github/scripts/r37-tool.py
+      - name: Source the jq filter
+        run: . .github/scripts/r37-filter.jq
+      - name: Source the Python program from the workspace
+        run: source "$GITHUB_WORKSPACE/.github/scripts/r37-tool.py"
+      - name: Run the jq filter with ksh
+        run: ksh ./.github/scripts/r37-filter.jq
+      - name: Run the Python program by its name under a variable directory
+        run: sh "$dir/r37-tool.py"
+      - name: Run the Python program from a working directory
+        working-directory: packages/envoy
+        run: bash ../../.github/scripts/r37-tool.py
+      - name: Run the Python program and read the jq filter as they are run
+        run: |
+          python3 .github/scripts/r37-tool.py
+          jq -f .github/scripts/r37-filter.jq data.json
+          bash "$RUNNER_TEMP/r37-other.py"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "8	Run the Python program with bash	runs ..github/scripts/r37-tool.py. with .bash." \
+  "10	Source the jq filter	sources ..github/scripts/r37-filter.jq." \
+  "12	Source the Python program from the workspace	sources .\$GITHUB_WORKSPACE/.github/scripts/r37-tool.py." \
+  "14	Run the jq filter with ksh	runs ../.github/scripts/r37-filter.jq. with .ksh." \
+  "16	Run the Python program by its name under a variable directory	runs .\$dir/r37-tool.py. with .sh." \
+  "19	Run the Python program from a working directory	runs .\.\./\.\./\.github/scripts/r37-tool.py. with .bash."; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name at its run" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is or may be a .\.py. or a .\.jq. directly in .github/scripts/, a file this check does not read as shell text, so this check cannot name the script that runs there")"
+done
+check "tells each of the six to run the program with python3 or read the filter with jq -f" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "a file this check does not read as shell text, so .*Run a Python program with .python3 .github/scripts/<name>.py .*. and read a jq filter with .jq -f .github/scripts/<name>.jq .*.; a shell script goes in .github/scripts/<name>.sh")" 6)"
+check "passes python3 and jq -f given the same files, and a shell given a .py elsewhere" \
+  "$(is "$(contains "$out" "step 'Run the Python program and read the jq filter as they are run'")" false)"
+for directory in "r37-linked	it is a symbolic link" "lib/r37-deep	it is a symbolic link" \
+  "vendor	that walk skips every directory named .vendor."; do
+  IFS=$'\t' read -r name why <<<"$directory"
+  check "refuses .github/scripts/$name by name, since $why" \
+    "$(contains "$out" "::error file=.github/scripts/$name,line=1::.github/scripts/$name is a directory at or under .github/scripts/ that this check's walk of the tree does not enter, since $why, so no file in it is read for its fetches.*Replace it with the files it holds")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
+
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
 # line is refused by name, and the block is paired with the key below it.

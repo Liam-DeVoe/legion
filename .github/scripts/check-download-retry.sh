@@ -49,14 +49,22 @@
 #      helper there would throw that layer's cache away on every edit of the helper.
 #
 # WHAT IT READS: every file under .github/workflows/, every action.yml (or action.yaml) under
-# .github/actions/, every *.sh under .github/scripts/ but the `.test.sh` harnesses, and the four
-# Dockerfiles a CI job builds (DOCKERFILES below; a missing one fails this check, so a rename is
-# seen, and a step building a Dockerfile it does not name is refused, so a fifth is seen too:
-# rule 10). Files are discovered by walking the tree, not by asking git, so an unsnapshotted
-# change cannot read green locally. Workflows and actions are parsed as YAML, never grepped, and
-# only a step's `run:` is read for its fetches. This check reads its own file like any other
-# script, which is why the comments here write no heredoc operator of their own: an operator no
-# line of this file closes would blank every line after it for this file's own reading.
+# .github/actions/, every `<name>.sh` directly in .github/scripts/ but the `.test.sh` harnesses,
+# and the four Dockerfiles a CI job builds (DOCKERFILES below; a missing one fails this check, so
+# a rename is seen, and a step building a Dockerfile it does not name is refused, so a fifth is
+# seen too: rule 10). Every other file under .github/scripts/, at any depth and whatever it
+# holds, is refused by name, but that directory's top-level `.py` and `.jq` files and the
+# bytecode Python writes for them: a file there this check would not read is refused where it
+# stands rather than passed with its fetches unread and a step running it charged nothing for
+# it. So is a directory there the walk below does not enter, a symbolic link or one of the names
+# it skips, and a shell, `.` or `source` handed one of those `.py` or `.jq` files, which runs it
+# as shell text no rule reads (the reading set and data_operand below; dispatch://INFRA-1545,
+# round 37).
+# Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
+# read green locally. Workflows and actions are parsed as YAML, never grepped, and only a step's
+# `run:` is read for its fetches. This check reads its own file like any other script, which is
+# why the comments here write no heredoc operator of their own: an operator no line of this file
+# closes would blank every line after it for this file's own reading.
 #
 # Rule 8 reads one step across more than one of those files: a step that runs a script under
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
@@ -113,13 +121,17 @@
 #      be. One naming a script that fetches nothing is neither charged nor refused. A script is
 #      named as lowercase letters, digits and `-` before `.sh` (SCRIPT_CALL), and a script under
 #      .github/scripts/ named otherwise is refused by name where it fetches, since no call of it
-#      is found (dispatch://INFRA-1545, round 37).
+#      is found (dispatch://INFRA-1545, round 37). Every other file under that directory, a
+#      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level `.py` or `.jq`, is
+#      refused by name whatever it holds, as WHAT IT READS says, so no run of one stands to be
+#      charged, and a shell, `.` or `source` handed one of those `.py` or `.jq` files is refused
+#      at that run (data_operand; dispatch://INFRA-1545, round 37).
 #      THE REACH OF THIS READING: rule 8 reads literal paths. It names a script by the path a run
 #      or a source writes, and refuses a run whose target is built from data as the step runs
 #      rather than guess what that data holds (unnamed_runs; dispatch://INFRA-1545, round 37).
-#      The target is the operand of `bash`, `sh`, `dash`, `zsh`, `.` or `source`, or a command
-#      word, and it is refused where it could be a script under .github/scripts/ this check
-#      cannot name: its last path element is wholly an expansion (`"$p"`, `$(cmd)`), that
+#      The target is the operand of `bash`, `sh`, `dash`, `zsh`, `ksh`, `.` or `source`, or a
+#      command word, and it is refused where it could be a script under .github/scripts/ this
+#      check cannot name: its last path element is wholly an expansion (`"$p"`, `$(cmd)`), that
 #      element holds an expansion and ends in `.sh` (`"$dir/$name.sh"`), its literal directory
 #      is .github/scripts/ and that element holds an expansion, it names a script with no
 #      directory (`bash x.sh`, `x.sh`), which bash finds through the working directory or PATH,
@@ -360,13 +372,16 @@
 # reviewer reads it (dispatch://INFRA-1545, round 37). Until round 37 every call that did not
 # write the script's path was this limit. A path that is written, in a variable or in any other
 # place the first list refuses, is refused where its script fetches. And a script outside
-# .github/scripts/ is not read at all, since that one directory is the whole set: a `run:` that
-# calls the repository's own scripts/<name>.sh or a packages/<package>/scripts/<name>.sh —
-# ci.yaml and the release workflows each hold such calls — is read no further than its own
-# words, so a download written inside one of those files is held to no floor here and sits in
-# no budget; which of those files this check should reach is dispatch://INFRA-2899's question.
-# Moving one under .github/scripts/ is what brings it back under both rules, and a new file there
-# is read without anyone remembering to list it.
+# .github/scripts/ is not read at all, since the `.sh` files directly in that one directory are
+# the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
+# packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
+# — is read no further than its own words, so a download written inside one of those files is
+# held to no floor here and sits in no budget; which of those files this check should reach is
+# dispatch://INFRA-2899's question. Moving one to .github/scripts/<name>.sh is what brings it
+# back under both rules, and a new `.sh` file there is read without anyone remembering to list
+# it, while a file put anywhere else under that directory, in a subdirectory or with no `.sh`
+# suffix, is refused by name rather than left unread, but a top-level `.py` or `.jq`
+# (dispatch://INFRA-1545, round 37).
 #
 # A heredoc's body is blanked before any rule reads the step (without_heredocs), so a path
 # written in it is a path something prints rather than runs, a later run of what it printed
@@ -480,10 +495,15 @@
 #      compared with its backslash continuations joined and each run of blank space collapsed to
 #      one space, which is the one liberty the tree's own two shapes force: a `RUN --mount=...`
 #      indents the definition under the flag. Each fetch of that `RUN` is then wrapped in
-#      `retry <bound> <what>`, or is a curl carrying curl's own options. A `RUN` that defines a
-#      retry loop of its own text is refused. A Dockerfile is judged against the floor alone:
-#      rule 2 does not read one, because the canonical definition is itself a loop and because a
-#      `RUN` iterating a list is how a Dockerfile writes what a script would write as a function.
+#      `retry <bound> <what>`, or is a curl carrying curl's own options. A `RUN` whose text holds
+#      `retry()` and does not open with the canonical text is refused, and so is one that calls
+#      `retry` without opening with it. A retry loop of a `RUN`'s own text under another name is
+#      read by no rule: a `RUN` whose own `attempts()` loop wraps a curl carrying curl's own
+#      options at the floor passes, the curl reading as mechanism 2 and the loop as nothing. That
+#      is an accepted limit, named for the next round to close (dispatch://INFRA-1545, round
+#      38). A Dockerfile is judged against the floor alone: rule 2 does not read one, because
+#      the canonical definition is itself a loop and because a `RUN` iterating a list is how a
+#      Dockerfile writes what a script would write as a function.
 #      A `RUN` is read as Docker reads it: a comment line or a blank line inside its continuation
 #      is dropped and the `RUN` reads on, so a fetch written below a comment is a fetch of that
 #      `RUN` (dispatch://INFRA-1545, round 37). What holds the key of the step building a
@@ -510,14 +530,18 @@
 #      scoping the rule to the retried ones would differ only in handing an author who writes a
 #      bare `apt-get update` one refusal now and a second one after they add the retry. The sites
 #      an exception below removes are outside this rule as they are outside the rest.
-#   6. In Python, inside the heredoc of a *.sh under .github/scripts/, a read through
-#      `urllib.request` goes through check-ci-images.sh's `read_retrying`, which carries the floor
-#      in that check's own idiom — five attempts, waits of 10, 20, 40 and 80 seconds, each bounded
-#      by the read's own `timeout=30`. One definition, no copies, as the shell has. A read is
-#      `read_retrying`'s where it is written in the same heredoc, each a program of its own,
-#      indented deeper than the `def` with no line between them at the `def`'s indentation or
-#      shallower; until round 37 one stack of `def`s ran across every heredoc of a script
-#      (dispatch://INFRA-1545, round 37).
+#   6. In Python, inside the heredoc of a *.sh under .github/scripts/, a `urlopen` read,
+#      `urllib.request.urlopen(…)` or a bare `urlopen(…)` (PYTHON_READ), goes through
+#      check-ci-images.sh's `read_retrying`, which carries the floor in that check's own idiom —
+#      five attempts, waits of 10, 20, 40 and 80 seconds, each bounded by the read's own
+#      `timeout=30`. One definition, no copies, as the shell has. A read is `read_retrying`'s
+#      where it is written in the same heredoc, each a program of its own, indented deeper than
+#      the `def` with no line between them at the `def`'s indentation or shallower; until round
+#      37 one stack of `def`s ran across every heredoc of a script (dispatch://INFRA-1545, round
+#      37). Another urllib call that reads the network, such as `urllib.request.urlretrieve`,
+#      and Python handed to `python3 -c` as text, are read by no rule, so a read written either
+#      way gets no floor: an accepted limit, named for the next round to close
+#      (dispatch://INFRA-1545, round 38).
 #   7. A `mise x`, `mise exec`, `mise up` or `mise upgrade` carries no retry, anywhere: not a
 #      `retry_fetch` call and not a Dockerfile `retry` call. None of the four fails when it
 #      cannot resolve the tool. `mise x` warns (`Failed to resolve tool version list for … HTTP
@@ -590,14 +614,15 @@
 #
 #      PYTHON IS READ IN ONE PLACE ONLY, which is the other gap worth stating here. Rule 6
 #      reads a `urlopen` written in a heredoc of a `.sh` under .github/scripts, so those
-#      reads meet R1's floor. Python anywhere else — a `.py` file, or a heredoc in a
-#      workflow's or an action's `run:`, which the shell rules blank as data — is read by no
-#      rule of this check at all: not rule 8, which puts a figure on none of it, and not rule
-#      1, so a network read written there gets no floor rather than merely no price. ci.yaml's
-#      `Check the package holds
-#      every row of .github/ci-images.yaml` is this tree's instance: its reads are urllib's
-#      inside .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by
-#      hand.
+#      reads meet R1's floor. Python anywhere else — a `.py` file, a heredoc in a workflow's or
+#      an action's `run:`, which the shell rules blank as data, or the text a `python3 -c` is
+#      handed — is read by no rule of this check at all: not rule 8, which puts a figure on none
+#      of it, and not rule 1, so a network read written there gets no floor rather than merely
+#      no price. And in the heredocs rule 6 does read it reads a `urlopen` alone, so another
+#      urllib call, such as `urllib.request.urlretrieve`, gets no floor either
+#      (dispatch://INFRA-1545, round 38). ci.yaml's `Check the package holds every row of
+#      .github/ci-images.yaml` is this tree's instance: its reads are `urlopen` calls inside
+#      .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by hand.
 #      This is the rule ci-budgets.md's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
@@ -979,7 +1004,7 @@ from pathlib import Path
 
 import yaml
 
-from workflow_paths import walk
+from workflow_paths import SKIP_DIRS, walk
 
 # The mode the argument chose: "" for the check, "--list" for its sites, "--jobs" for its jobs.
 MODE = os.environ.get("DOWNLOAD_RETRY_MODE")
@@ -1043,6 +1068,11 @@ DOCKERFILES = (
 WORKFLOWS = Path(".github/workflows")
 ACTIONS = Path(".github/actions")
 SCRIPTS = Path(".github/scripts")
+# The files of .github/scripts/ that are no script, and that this check leaves unread where they
+# sit directly in that directory: its Python programs and its jq filter. A shell, `.` or `source`
+# handed one is refused (data_operand), and so is every other file there that it does not read
+# (the reading set; dispatch://INFRA-1545, round 37).
+SCRIPT_DATA = (".py", ".jq")
 HELPER = ".github/scripts/ci-retry.sh"
 # This file, named by the problems it raises about its own lists.
 SELF = ".github/scripts/check-download-retry.sh"
@@ -1063,13 +1093,15 @@ TEST_HARNESS = ".test.sh"
 # What names a script: a word holding `/<name>.sh`, wherever on the line it sits —
 # `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
 # `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
-# a name SCRIPTS holds is followed, SCRIPTS being the names under .github/scripts/ alone. The
-# path a call writes in front of the name is one of half a dozen ways of reaching the same file,
-# so reading the name rather than the path is what makes those spellings one script. A match is
-# an occurrence and not yet a call: call_of below reads where on its line it is written, and
-# only a path in a recognised call's place is charged (dispatch://INFRA-1545, round 37). WHAT
-# THIS DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS: a CI job also runs scripts outside that
-# directory, and four of them carry retried fetches this change wrote -
+# a name SCRIPTS holds is followed, SCRIPTS being the `.sh` names directly in .github/scripts/
+# alone, where every other file under that directory is refused by name (the reading set below;
+# dispatch://INFRA-1545, round 37). The path a call writes in front of the name is one of half a
+# dozen ways of reaching the same file, so reading the name rather than the path is what makes
+# those spellings one script. A match is an occurrence and not yet a call: call_of below reads
+# where on its line it is written, and only a path in a recognised call's place is charged
+# (dispatch://INFRA-1545, round 37). WHAT THIS DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS:
+# a CI job also runs scripts outside that directory, and four of them carry retried fetches this
+# change wrote -
 # scripts/go-third-party-notices.sh, scripts/e2e/dispatch-session-settings.sh,
 # scripts/e2e/lib/live-daemon-proof.sh and packages/envoy/loadtest/cluster/render-nats.sh. A
 # call of one of those is a name SCRIPTS does not hold, so this reader does not follow it and
@@ -1127,8 +1159,9 @@ SUFFIX = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # A curl `--max-time` value that is no limit at all: `0`, in any spelling curl reads as zero
 # seconds (dispatch://INFRA-1545, round 37).
 ZERO_SECONDS = re.compile(r"0*\.?0*")
-# The one Python function a `urllib.request` read of a script under .github/scripts/ goes through,
-# and the one file that defines it.
+# The one Python function a `urlopen` read (PYTHON_READ) of a script under .github/scripts/ goes
+# through, and the one file that defines it. Another urllib call, such as `urlretrieve`, is no
+# read PYTHON_READ matches, and is read by no rule (dispatch://INFRA-1545, round 38).
 PYTHON_READER = "read_retrying"
 PYTHON_READER_FILE = ".github/scripts/check-ci-images.sh"
 PYTHON_READ = re.compile(r"urllib\.request\.urlopen\s*\(|(?<![\w.])urlopen\s*\(")
@@ -1164,8 +1197,10 @@ LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
-# reads in one form, `bash -c '<text>'` (sites_of_command).
-INTERPRETERS = {"bash", "sh", "dash", "zsh"}
+# reads in one form, `bash -c '<text>'` (sites_of_command). `ksh` is one of them since round 37,
+# so that a run of a file under .github/scripts/ by it is read as by the others (data_operand;
+# dispatch://INFRA-1545, round 37); the tree writes none.
+INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh"}
 # Transparent, and the verb is what they run: a package runner resolves a binary the workspace's
 # own install already provides.
 RUNNERS = {"bunx", "npx", "pnpx", "pnpm-dlx"}
@@ -3905,6 +3940,64 @@ scripts = [
     and path.endswith(".sh")
     and not path.endswith(TEST_HARNESS)
 ]
+# THE ONE DIRECTORY'S TOP LEVEL IS THE WHOLE SET OF SCRIPTS (dispatch://INFRA-1545, round 37).
+# `scripts` is every `.sh` directly in .github/scripts/ but the `.test.sh` harnesses, and this
+# check reads no other file there: a script with no suffix, one ending `.bash` and a `.sh` in a
+# subdirectory each passed, its own fetches held to no floor and a step running it charged
+# nothing for it, or charged the top-level script of its name, which is all SCRIPT_CALL reads of
+# `lib/x.sh` (the tester's round-37 battery, W1, W2, W6 and W9). Telling which of those files is
+# a shell program would be one more model to fall short, so every file under that directory, at
+# any depth, is refused by name at its line 1, whatever its name, its first line or its text, but
+# the files this check reads, a top-level harness, and a top-level `.py` or `.jq`, the
+# directory's Python programs and its jq filter. Python's bytecode for those, a `.pyc` in the
+# `__pycache__` directly under .github/scripts/, is left alone too: every gate, harness and step
+# importing them sets PYTHONDONTWRITEBYTECODE, but go-test-step-expansion.py, the by-hand tool
+# AGENTS.md lists, run as `python3 .github/scripts/go-test-step-expansion.py`, sets none, and
+# its import of ci_filter_coverage.py and workflow_paths.py leaves two such files there; a
+# documented run must not turn a dev box red. Any other file under a `__pycache__` is refused
+# like any file. A top-level `.py` or `.jq` left alone here and handed to a shell, `.` or
+# `source`, which run it as shell text, is refused at that run (data_operand). At 9a181791 the
+# tree holds no file this refuses: of its 101 files under .github/scripts/, 89 are top-level
+# `.sh`, 11 are `.py` and one is `.jq`.
+script_data = {path for path in files
+               if Path(path).parent == SCRIPTS and Path(path).suffix in SCRIPT_DATA}
+for path in files:
+    if (SCRIPTS not in Path(path).parents
+            # A top-level `.sh` is a script `scripts` holds or a harness.
+            or Path(path).parent == SCRIPTS and path.endswith(".sh") or path in script_data
+            or Path(path).parent == SCRIPTS / "__pycache__" and path.endswith(".pyc")):
+        continue
+    problem(path, 1,
+            f"{path} is a file under .github/scripts/ this check does not read, whatever it "
+            "holds: it reads the `.sh` scripts directly in .github/scripts/ and leaves that "
+            "directory's `.py`, `.jq` and `*.test.sh` files alone, so a file anywhere else "
+            "there is neither read for its fetches, which no floor then holds, nor charged where "
+            "a step runs or sources it. Move a shell script to .github/scripts/<name>.sh, its "
+            "name lowercase letters, digits and `-` (a `*.test.sh` harness directly into "
+            ".github/scripts/), and anything else out of .github/scripts/ "
+            "(dispatch://INFRA-1545, round 37).")
+# A directory under .github/scripts/ whose files `files` does not hold: walk() enters no symbolic
+# link to a directory and no directory SKIP_DIRS names, such as `vendor` or `node_modules`, so no
+# file in one is read, held to the floor or refused by the rule above. This check looks for them
+# itself, entering no link either, and refuses each by name, as it does .github/scripts/ itself
+# where that is a link (dispatch://INFRA-1545, round 37). The tree holds none.
+hidden = [(str(SCRIPTS), "it is a symbolic link")] if SCRIPTS.is_symlink() else []
+for where, directories, _names in os.walk(SCRIPTS):
+    for name in list(directories):
+        if os.path.islink(os.path.join(where, name)):
+            hidden.append((os.path.join(where, name), "it is a symbolic link"))
+        elif name in SKIP_DIRS:
+            hidden.append((os.path.join(where, name),
+                           f"that walk skips every directory named `{name}`"))
+            directories.remove(name)
+for path, why in hidden:
+    problem(path, 1,
+            f"{path} is a directory at or under .github/scripts/ that this check's walk of the "
+            f"tree does not enter, since {why}, so no file in it is read for its fetches, held "
+            "to the floor or refused as a file this check does not read. Replace it with the "
+            "files it holds, under that rule: a shell script as .github/scripts/<name>.sh, a "
+            "`.py` or a `.jq` directly in .github/scripts/, and anything else out of "
+            ".github/scripts/ (dispatch://INFRA-1545, round 37).")
 for dockerfile in DOCKERFILES:
     if dockerfile not in files:
         problem(SELF, 1,
@@ -4330,13 +4423,13 @@ for path in scripts:
             exempted.append(site)
             continue
         sites.append(site)
-    # Rule 6: a `urllib.request` read inside this script's Python goes through the one reader. A
-    # read is inside a `def` where it is written in the same heredoc, each a program of its own,
-    # with every line from the `def` to it indented deeper than the `def`: a line at the `def`'s
-    # own indentation or shallower ends its body. Until round 37 one stack of `def`s ran across
-    # every heredoc of the script and was trimmed only at another `def` or an unindented line, so
-    # a read in a second heredoc, or after the reader's body at its own indentation, was read as
-    # the reader's (dispatch://INFRA-1545, round 37).
+    # Rule 6: a `urlopen` read (PYTHON_READ) inside this script's Python goes through the one
+    # reader. A read is inside a `def` where it is written in the same heredoc, each a program of
+    # its own, with every line from the `def` to it indented deeper than the `def`: a line at the
+    # `def`'s own indentation or shallower ends its body. Until round 37 one stack of `def`s ran
+    # across every heredoc of the script and was trimmed only at another `def` or an unindented
+    # line, so a read in a second heredoc, or after the reader's body at its own indentation, was
+    # read as the reader's (dispatch://INFRA-1545, round 37).
     for number, _match, body_lines, _quoted in heredocs_of(EXPRESSION.sub("EXPR", text)):
         indents: list[tuple[int, str]] = []
         for offset, body in enumerate(body_lines):
@@ -4352,11 +4445,11 @@ for path in scripts:
             if inside == PYTHON_READER and path == PYTHON_READER_FILE:
                 continue
             problem(path, line,
-                    f"this read goes straight to urllib.request. Every Python read of a CI script "
-                    f"goes through {PYTHON_READER_FILE}'s {PYTHON_READER}(), which carries R1's "
-                    f"floor in that check's idiom: {ATTEMPT_FLOOR} attempts, waits of 10, 20, 40 "
-                    "and 80 seconds, each bounded by the read's own timeout. One definition, no "
-                    "copies.")
+                    f"this read goes straight to urllib.request. Every `urlopen` read in a CI "
+                    f"script's Python goes through {PYTHON_READER_FILE}'s {PYTHON_READER}(), "
+                    f"which carries R1's floor in that check's idiom: {ATTEMPT_FLOOR} attempts, "
+                    "waits of 10, 20, 40 and 80 seconds, each bounded by the read's own timeout. "
+                    "One definition, no copies.")
 
 # ---------------------------------------------------------------- the Dockerfiles
 
@@ -4415,10 +4508,12 @@ for path in DOCKERFILES:
         opens = flat.startswith(CANONICAL)
         if "retry()" in flat and not opens:
             problem(path, line,
-                    "this RUN defines a retry loop of its own text. Every network RUN of the "
-                    "Dockerfiles this check reads opens with one canonical definition, byte for "
-                    "byte, so a reader sees one loop and not a family of them. The text is in "
-                    ".github/scripts/check-download-retry.sh's CANONICAL.")
+                    "this RUN defines a retry loop of its own text, or the canonical one after "
+                    "other commands: it holds `retry()` and does not open with the canonical "
+                    "definition. Every network RUN of the Dockerfiles this check reads opens with "
+                    "one canonical definition, byte for byte, so a reader sees one loop and not a "
+                    "family of them. The text is in .github/scripts/check-download-retry.sh's "
+                    "CANONICAL.")
         elif not opens and any(site.retry == "retry" for site in found):
             problem(path, line,
                     "this RUN calls `retry` and does not open with the canonical definition of it. "
@@ -5260,6 +5355,11 @@ UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its lit
 # gets the rewrite that passes (dispatch://INFRA-1545, round 37).
 HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, and this check "
                  "follows neither to the program they name")
+# The fifth is a shell, `.` or `source` handed a top-level `.py` or `.jq` of .github/scripts/,
+# which runs that file as shell text: the reading set leaves those files unread, so the text a
+# shell runs there would be read by no rule (data_operand; dispatch://INFRA-1545, round 37).
+DATA_RUN = ("which is or may be a `.py` or a `.jq` directly in .github/scripts/, a file this "
+            "check does not read as shell text")
 REASON_CURES = {
     "a file this text writes before it runs it": (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -5277,6 +5377,11 @@ REASON_CURES = {
         "Name the command this text runs literally, `.github/scripts/<name>.sh …` or `grep …`, "
         "with what varies as its arguments; a wrapper that runs the words it is handed is read "
         "only as a function this text defines and calls with literal words, `run grep …`"),
+    DATA_RUN: (
+        "Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq filter "
+        "with `jq -f .github/scripts/<name>.jq …`; a shell script goes in "
+        ".github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and runs by "
+        "that path"),
 }
 
 
@@ -5413,12 +5518,7 @@ def unnamed_target(word: str, action: str | None) -> str | None:
     `action`."""
     if HANDED_ON.fullmatch(word):
         return None
-    if action is not None:
-        word = re.sub(r"^\$\{?GITHUB_ACTION_PATH\}?(?=/)", action, word)
-    word = re.sub(r"^\$\{?GITHUB_WORKSPACE\}?(?=/)", ".", word)
-    spans = expansions_in(word)
-    cut = max((at for at, char in enumerate(word)
-               if char == "/" and not any(start <= at < end for start, end in spans)), default=-1)
+    word, spans, cut = target_parts(word, action)
     last = word[cut + 1:]
     last_spans = expansions_in(last)
     if not last_spans:
@@ -5435,6 +5535,44 @@ def unnamed_target(word: str, action: str | None) -> str | None:
     if inside:
         return f"which names a file under {SCRIPTS}/ through an expansion"
     return None
+
+
+def target_parts(word: str, action: str | None) -> tuple[str, list[tuple[int, int]], int]:
+    """A run's target as unnamed_target and data_operand read it: the word with
+    `$GITHUB_WORKSPACE/` written as the repository's root and, in a composite action,
+    `$GITHUB_ACTION_PATH/` as the action's own directory, `action`; its expansions; and where its
+    last `/` outside them is, -1 where it has none."""
+    if action is not None:
+        word = re.sub(r"^\$\{?GITHUB_ACTION_PATH\}?(?=/)", action, word)
+    word = re.sub(r"^\$\{?GITHUB_WORKSPACE\}?(?=/)", ".", word)
+    spans = expansions_in(word)
+    cut = max((at for at, char in enumerate(word)
+               if char == "/" and not any(start <= at < end for start, end in spans)), default=-1)
+    return word, spans, cut
+
+
+def data_operand(word: str, action: str | None) -> str | None:
+    """DATA_RUN where `word`, what a shell, `.` or `source` runs, is or may be a `.py` or a `.jq`
+    directly in .github/scripts/, which that shell runs as shell text this check does not read,
+    or None (dispatch://INFRA-1545, round 37). A word whose last path element is literal names
+    one where its directory is literal and, normalised, ends in .github/scripts/, as
+    `../../.github/scripts/x.py` from a step's working directory does, and where its directory
+    holds an expansion, `"$script_dir/x.py"`, or it has none, which bash finds through the
+    working directory or PATH, and that element is the name of such a file of the tree, read by
+    its name as SCRIPT_CALL reads a script's. One whose last element holds an expansion and ends
+    in `.py` or `.jq` may be one. `python3 .github/scripts/x.py` and `jq -f
+    .github/scripts/x.jq` hand the file to no shell, and are not read here."""
+    word, spans, cut = target_parts(word, action)
+    last = word[cut + 1:]
+    if not last.endswith(SCRIPT_DATA):
+        return None
+    if expansions_in(last):
+        return DATA_RUN
+    if cut >= 0 and not spans:
+        inside = f"/{os.path.normpath(word[:cut] or '/')}/".endswith(f"/{SCRIPTS}/")
+    else:
+        inside = str(SCRIPTS / last) in script_data
+    return DATA_RUN if inside else None
 
 
 def written_files(scanner: CallScanner, commands: list[Command],
@@ -5520,14 +5658,17 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
     first and the last line of its command, what the command does, why it is refused, the form
     to write instead), UNNAMED_RUN's three parts (dispatch://INFRA-1545, round 37). One class,
     refused by its route rather than modelled shape by shape:
-      - a target, the operand of `bash`, `sh`, `dash`, `zsh`, `.` or `source`, the text of a
-        shell's `-c` where it is no single-quoted text, or a command word, refused where
+      - a target, the operand of `bash`, `sh`, `dash`, `zsh`, `ksh`, `.` or `source`, the text
+        of a shell's `-c` where it is no single-quoted text, or a command word, refused where
         unnamed_target says it could be such a script; where it names a script with no
         directory, `bash x.sh` or `x.sh`, which bash finds through the working directory or
         PATH, so after a `cd` into .github/scripts/ or with PATH reaching it; and where it is a
         file this body writes (written_files), by any name, compared by its path and, where the
         body holds a `cd` or a `pushd`, by its name alone, since this reading does not follow
-        the directory. A command word holding no `/` is a name PATH finds, and no such file;
+        the directory. A command word holding no `/` is a name PATH finds, and no such file. The
+        operand of a shell, `.` or `source` is refused too where it is or may be a `.py` or a
+        `.jq` directly in .github/scripts/ (data_operand), files this check leaves unread, which
+        the shell would run as shell text;
       - a shell reading its program from its standard input, a here-string, a file redirected
         into it or a process substitution, and a `.` or `source` of a process substitution; a
         heredoc's body is read by unread_heredocs, and a shell a pipe feeds is refused at the
@@ -5681,7 +5822,8 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
             elif kind == "script":
                 does = (f"sources `{target}`" if head in (".", "source")
                         else f"runs `{target}` with `{head}`")
-                why = unnamed_target(target, action) or unseen(target, True)
+                why = (unnamed_target(target, action) or unseen(target, True)
+                       or data_operand(target, action))
         elif not (VARIABLE_CALL.fullmatch(reduced[0])
                   and (sees_fetching or handed_in(command, reduced[0]))):
             target = reduced[0]
