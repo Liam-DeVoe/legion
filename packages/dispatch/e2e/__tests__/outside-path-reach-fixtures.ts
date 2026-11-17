@@ -12,7 +12,8 @@
  *  `Bun.listen` for a target, each on a port the kernel picks and held for the whole run. A closed
  *  port is one taken from below the kernel's ephemeral range and found refusing: a port a listener
  *  held and gave back can be handed by the kernel to the next listener any concurrent row, or any
- *  other test file, starts, and the closed target would then read REACHED.
+ *  other test file, starts, and the closed target would then read REACHED. A target that a row
+ *  closes is held on such a port from the moment the row learns it (`closedRangeHoldingTarget`).
  *  The script lets `http` through only with `OUTSIDE_PATH_ALLOW_HTTP=1` and a `127.0.0.1` origin,
  *  which these rows set. HOME is a directory of the run's own, so no `~/.curlrc` of the host's
  *  reaches the script's curl unless a row writes one.
@@ -173,11 +174,34 @@ export function closingTarget() {
   });
 }
 
-/** A target that accepts, speaks first and holds the connection open, as NATS does, on `port`. */
-export function holdingTarget(port = 0) {
+/** A target that accepts, speaks first and holds the connection open, as NATS does. */
+export function holdingTarget() {
+  return listenHolding(0, false);
+}
+
+/** A holding target on a port of the closed range, for a row that closes it to leave a port that no
+ *  `port: 0` listener is handed: the next port of the range that a listen of its own takes. The
+ *  listen is the test of the port, so no other program can take the port between the test and the
+ *  bind, as it could between `closedPort`'s refused connect and a later listen. It is exclusive, so
+ *  that no kernel lets another socket share the port while it holds it. */
+export function closedRangeHoldingTarget() {
+  while (closedIssued < closedRange.span) {
+    const port = closedRange.low + ((closedStart + closedIssued++) % closedRange.span);
+    try {
+      return listenHolding(port, true);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
+    }
+  }
+  throw new Error(`no free port between ${closedRange.low} and the ephemeral range`);
+}
+
+/** A holding target's listener on `port`, exclusive or not. */
+function listenHolding(port: number, exclusive: boolean) {
   return Bun.listen({
     hostname: "127.0.0.1",
     port,
+    exclusive,
     socket: {
       open(socket) {
         socket.write("INFO {}\r\n");

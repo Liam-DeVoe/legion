@@ -14,11 +14,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
-import type { TCPSocketListener } from "bun";
 import {
   bash,
   blackhole,
   closedPort,
+  closedRangeHoldingTarget,
   closingTarget,
   fakeDispatch,
   holdingTarget,
@@ -31,6 +31,26 @@ import {
 } from "./outside-path-reach-fixtures";
 
 const { scratch, drive, targets, written, list, pathOf, pathWithCurl, v6Only } = reachFixtures();
+
+// The second program of the row whose path to the hub is down at first: it binds 127.0.0.1 at
+// RIVAL_PORT, as any Node server does, prints `bound` or the error's code, and lets a port it bound
+// go again at once.
+const rivalSource = [
+  'const server = require("node:net").createServer();',
+  'server.once("error", (error) => { console.log(error.code); process.exit(0); });',
+  'server.listen(Number(process.env.RIVAL_PORT), "127.0.0.1", () => { console.log("bound"); server.close(); });',
+].join("\n");
+
+/** What another program's bind of 127.0.0.1:`port` meets: `bound`, or the error's code. */
+async function bindFromAnotherProcess(port: number): Promise<string> {
+  const rival = Bun.spawn([process.execPath, "-e", rivalSource], {
+    env: { RIVAL_PORT: String(port) },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const [said] = await Promise.all([new Response(rival.stdout).text(), rival.exited]);
+  return said.trim() || "said nothing";
+}
 
 describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
@@ -114,10 +134,13 @@ describe.concurrent("outside-path-reach.sh", () => {
     "reads the same holding target as unreachable once it is closed, and passes",
     async () => {
       const origin = fakeDispatch();
-      const holding = holdingTarget(await closedPort());
+      const holding = closedRangeHoldingTarget();
       const { port } = holding;
-      holding.stop(true);
       try {
+        // The target holds its port from the moment the row knows it, so a second program's bind
+        // of it fails until the row closes it.
+        expect(await bindFromAnotherProcess(port)).toBe("EADDRINUSE");
+        holding.stop(true);
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
           OUTSIDE_PATH_TARGETS: await list(`nats 127.0.0.1 ${port}`),
@@ -127,6 +150,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(run.code).toBe(0);
       } finally {
         origin.stop(true);
+        holding.stop(true);
       }
     }
   );
@@ -397,41 +421,48 @@ describe.concurrent("outside-path-reach.sh", () => {
 
   // A tunnel that lost its first handshake packet stays down until WireGuard sends it again, after
   // its RekeyTimeout of 5 s plus up to 334 ms; probes started together would all fall inside that.
-  // The hub's port refuses until 3.5 s after the first probe of it, which the fake curl marks with a
-  // builtin and a watch here sees, so the row needs nothing of the shell's and runs on any bash. The
-  // hub's listener stamps each connect with this process's own clock, and the row reads the gaps
-  // between those stamps alone, each stamped the same way: rounds 4 s apart would give 4 s gaps,
-  // so 5 s leaves a second for this host's scheduling. The 3.5 s is on the real clock on purpose:
-  // the script is another process, timed by its own sleep, so no fake timer here can stand in.
+  // The path to the hub is down until 3.5 s after the first probe of it: until then the fake curl
+  // answers each probe of the hub as a refused connect (exit 7) and dials nothing. The watch here
+  // sees the first probe, which the fake curl marks with a builtin, and 3.5 s later writes the file
+  // whose presence the fake curl tests with a builtin too, so the row needs nothing of the shell's
+  // and runs on any bash. The hub listens from the start, on a port the kernel chose, so no other
+  // program can take the port while the path is down: a second program's bind of it must fail.
+  // The hub's listener stamps each connect with this process's own clock, and the row reads the
+  // gaps between those stamps alone, each stamped the same way: rounds 4 s apart would give 4 s
+  // gaps, so 5 s leaves a second for this host's scheduling. The 3.5 s is on the real clock on
+  // purpose: the script is another process, timed by its own sleep, so no fake timer here can
+  // stand in.
   row(withoutTools)(
     "starts its five rounds 6 s apart, so a path down for the first 3.5 s cannot hide a target",
     async () => {
       const origin = fakeDispatch();
       const stamps = join(scratch, `stamps-${randomUUID()}`);
       mkdirSync(stamps);
-      const port = await closedPort();
+      const up = join(stamps, "up");
       const connects: number[] = [];
       let first: number | undefined;
-      let hub: TCPSocketListener | undefined;
-      const up = () => {
-        hub = Bun.listen({
-          hostname: "127.0.0.1",
-          port,
-          socket: {
-            open(socket) {
-              connects.push(performance.now());
-              socket.write("INFO {}\r\n");
-            },
-            data() {},
+      // Exclusive, so that no kernel lets another socket share the port: Bun's default leaves that
+      // to the operating system's own rules.
+      const hub = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        exclusive: true,
+        socket: {
+          open(socket) {
+            connects.push(performance.now());
+            socket.write("INFO {}\r\n");
           },
-        });
-      };
+          data() {},
+        },
+      });
+      const { port } = hub;
       const watcher = watch(stamps, (_, name) => {
         if (name !== "first" || first !== undefined) return;
         first = performance.now();
-        setTimeout(up, 3500);
+        setTimeout(() => writeFileSync(up, ""), 3500);
       });
       try {
+        expect(await bindFromAnotherProcess(port)).toBe("EADDRINUSE");
         const run = await drive(
           {
             OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -439,7 +470,8 @@ describe.concurrent("outside-path-reach.sh", () => {
           },
           {
             path: pathWithCurl(
-              `case "$*" in *telnet://127.0.0.1:${port}) : >>${stamps}/first ;; esac`
+              `case "$*" in *telnet://127.0.0.1:${port}) : >>${stamps}/first; ` +
+                `[ -e ${up} ] || { printf '0.000010 0.000000'; exit 7; } ;; esac`
             ),
           }
         );
@@ -458,7 +490,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       } finally {
         watcher.close();
         origin.stop(true);
-        hub?.stop(true);
+        hub.stop(true);
       }
     }
   );
