@@ -449,12 +449,13 @@ route's alone: a message published straight onto a role lane is always kept. Dis
 role-routed events do not cross the lane: the outbox keeps its own copies on the kept lane (below).
 
 A released Legion role gets the copies kept for it when it comes back. The release ends the
-role's process. A stop that finishes gives back each role claim the process holds, and then
-deletes the session's record (`releaseRoleClaims`, `packages/pi-envoy/extensions/envoy.ts`). Once
-the claims are given back the role has no claim, so a message to it is kept as `unclaimed` at
-once. A stop that gives back nothing leaves the claim standing. An older plugin's stop gives back
-nothing, and so may a stop whose request to give the claims back is not answered within its share
-of the stop (250 ms), since the stop goes on without the answer. Such a stop still deletes the
+role's process. A pi-envoy stop that finishes gives back each role claim the process holds, and
+then deletes the session's record (`releaseRoleClaims`, `packages/pi-envoy/extensions/envoy.ts`).
+Once the claims are given back the role has no claim, so a message to it is kept as `unclaimed`
+at once. A stop that gives back nothing leaves the claim standing. claude-envoy's stop gives back
+nothing and only deletes the record, an older pi-envoy's stop gives back nothing, and so may a
+pi-envoy stop whose request to give the claims back is not answered within its share of the stop
+(250 ms), since the stop goes on without the answer. Such a stop still deletes the
 record when its DELETE reaches the listener, and the holder then reads `gone`. A message to the
 role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the
 claim, at its first pass after the claim's last renewal is older than the live window

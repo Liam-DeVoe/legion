@@ -3575,10 +3575,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A released Legion role gets the copies kept for it when it comes back.
   The release ends the role's process.
-  A stop that finishes gives back each role claim the process holds, and then deletes the session's record (`releaseRoleClaims`, `shutDownSession`, `packages/pi-envoy/extensions/envoy.ts`).
+  A pi-envoy stop that finishes gives back each role claim the process holds, and then deletes the session's record (`releaseRoleClaims`, `shutDownSession`, `packages/pi-envoy/extensions/envoy.ts`).
   Once the claims are given back the role has no claim, so a message to it is kept as `unclaimed` at once.
   A stop that gives back nothing leaves the claim standing.
-  An older plugin's stop gives back nothing, and so may a stop whose request to give the claims back is not answered within its share of the stop (`SHUTDOWN_RELEASE_MS`, 250 ms), since the stop goes on without the answer.
+  claude-envoy's stop gives back nothing and only deletes the record (`shutdown`, `packages/claude-envoy/src/envoy-channel-server.ts`), an older pi-envoy's stop gives back nothing, and so may a pi-envoy stop whose request to give the claims back is not answered within its share of the stop (`SHUTDOWN_RELEASE_MS`, 250 ms), since the stop goes on without the answer.
   Such a stop still deletes the record when its DELETE reaches the listener, and the holder then reads `gone`.
   A message to the role is then kept as `holder_lapsed`.
   It is kept as `unclaimed` once the role claim reaper releases the claim, at its first pass after the claim's last renewal is older than the live window (`ReapRoleClaims`, `internal/store/reaper.go`).
@@ -4833,7 +4833,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   On a 503, envoy-client's `setRole` makes its two attempts, 250 ms apart, and rejects, and a rejected claim stops a Legion pane relaunched with `--resume` (`stopAfterRegistration`).
   Both harnesses wait out a 409 that names their own session as the holder, as they wait out a standing claim of another process.
   claude-envoy waits no longer than `ROLE_CLAIM_WAIT_MS`, the live window and 10 s, so a refusal that outlasts that wait still stops its pane.
-  A renewal failure is a claim read or write that did not answer or failed, a malformed claim and a key the bus refuses included, or a registration whose store work failed before its renewal ran (`store.Registry.RecordRenewalFailures`, from `subscribeHandler`);
+  A renewal failure is a claim read or write that did not answer or failed, a malformed claim and a key the bus refuses included, or a registration that failed before its renewal ran, at its store work or at a consumer call that met a NATS reconnect (`store.Registry.RecordRenewalFailures`, from `subscribeHandler`);
   a renewal of that claim for that holder that writes clears it, so a failure of the process the claim names refuses until that process's next registration renews the claim.
   The record is kept by role and holder session, not by process, though:
   a failure another process of the session recorded - a restarted one whose registration or claim read failed while the claim still names the stopped process before it - is cleared by no renewal, since none of that claim can land, and refuses until it is one live window old.
@@ -4904,7 +4904,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   a release that hands one role back and may not free its claim marks the claim instead (`store.RoleClaim.HandedBack`, `POST /v1/interests/unsubscribe` below), no registration renews a marked claim, and the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval, about ten minutes with the shipped defaults.
   A registration carrying no topic list at all is no case of its own, a lane topic a hand-back left on the row renews nothing, and a claim its holder gave up is renewed by nobody, its own process included.
   The renewal runs last, after the records this route owns are written, and can never fail the registration: a claim read or write that did not answer or failed, a claim record this build cannot read and a renewal that lost its compare-and-swap are each logged and passed over, since a heartbeat refused for any of them would take down the very sessions whose claims it keeps alive.
-  Passed over is not forgotten: a claim read or write that did not answer or failed is recorded against its role and session (`store.Registry.RenewalFailedWithin`), and so is every role the session may hold when the registration fails before its renewal runs, at the interest record's read or write or the session entry's write (`store.Registry.RecordRenewalFailures`, over the copy's roles and the cached row's role topics, with no bucket call).
+  Passed over is not forgotten: a claim read or write that did not answer or failed is recorded against its role and session (`store.Registry.RenewalFailedWithin`), and so is every role the session may hold when the registration fails before its renewal runs, at its store work or at a consumer call that met a NATS reconnect (`store.Registry.RecordRenewalFailures`, over the copy's roles and the cached row's role topics, with no bucket call).
   That record is what `/v1/roles/set` refuses on (above), for one live window at most, after which the role claim reaper prunes it, and a renewal of that claim that writes clears it, which no renewal can do while the claim names a process of the session that has stopped.
   A lost compare-and-swap, a claim another session or process holds, a handed-back claim and a role with no claim record are no failure: the claim record said what stands.
   A refused renewal buys the session's claims nothing: the claim keeps the renewal it already carries, and the reaper weighs it exactly as it weighs any other.
@@ -4961,7 +4961,9 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - An unsubscribe of a session whose entry records consumer delivery sets the consumer's filter to the topics left before it answers (`sessionDelivery.refollow`), within `routeConsumerCallTimeout` of the request's arrival.
   A failure there is logged, and the plugin drops a frame no followed topic matches.
-  A failure because NATS is reconnecting is answered the bus-outage `503` instead, and the client's retry removes the same topics again and sets the filter.
+  A failure because NATS is reconnecting is answered the bus-outage `503` instead, after the record is written.
+  envoy-client's retry removes the same topics again and sets the filter.
+  A caller whose retry finds the topics already gone, as Dispatch's `unsubscribeSession` does, calls the listener no more, so the filter waits for the session's next registration, and the plugin drops a frame no followed topic matches.
 
 - An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
 

@@ -1301,8 +1301,8 @@ const legionReleaseRecord = z.object({
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
- * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
+ * no release row is recorded for it), the role it was for, what woke it, when the daemon took the
+ * wake, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
  * that went ten minutes with no turn of the woken role. */
 const legionResumeRecord = z.object({
   id: z.number().int().positive(),

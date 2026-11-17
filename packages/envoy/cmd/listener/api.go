@@ -3410,7 +3410,9 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// so the record a publish counts its recipients by never waits on a consumer. A filter
 		// update that failed because NATS is reconnecting is answered as store work the bus did
 		// not answer, as a registration's consumer call is (refollow); the topics are out of the
-		// record already, and the client's retry removes them again and sets the filter.
+		// record already. envoy-client's retry removes them again and sets the filter; a caller
+		// whose retry finds them gone (Dispatch's unsubscribeSession) leaves the filter to the
+		// session's next registration.
 		recordFollowedTopics(ctx, d, body.SessionID, logger)
 		if err := d.consumers.refollow(consumerCtx, d, body.SessionID); err != nil {
 			writeStoreError(ctx, w, err, http.StatusServiceUnavailable)

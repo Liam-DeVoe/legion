@@ -970,9 +970,11 @@ func (m *sessionDelivery) granted() {
 // The one failure it returns is a write that failed because NATS is reconnecting
 // (bus.ErrReconnecting, storedFilterWrite). The route answers it as store work the bus did not
 // answer (writeStoreError), as a registration's consumer call that fails the same way is answered
-// (deliveryRefusal.unanswered): the client reads the reconnect, and its retry, which removes the
-// same topics again, sets the filter. ctx bounds the write (routeConsumerCallTimeout, from when
-// the route took the request).
+// (deliveryRefusal.unanswered): the client reads the reconnect. envoy-client's retry removes the
+// same topics again and sets the filter; a caller whose retry finds the topics already gone, as
+// Dispatch's unsubscribeSession does, calls this route no more, and the filter waits for the
+// session's next registration. ctx bounds the write (routeConsumerCallTimeout, from when the
+// route took the request).
 //
 // The topics are read from the bucket, not from the cache, and under the session's lock, as
 // register's consumer call is made under it: the lock orders this listener's own calls, so a
