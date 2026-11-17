@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317 # cleanup is trap-invoked
+# shellcheck disable=SC2317,SC2329 # cleanup is trap-invoked (SC2329 is the half of SC2317 that
+# version 0.11 of shellcheck split out)
 # e2e-refill.sh — Proves on the real listener and a real NATS server that the listener keeps its
 # copy of a bucket while it reads the bucket again, and refuses its two list routes, with no
 # active-sessions sample, while it cannot stand behind that copy (INFRA-261).
@@ -326,9 +327,11 @@ start_nats() {
 }
 
 # stop_front ends natsd's front and every connection through it (its whole session's process
-# group: socat forks one process per connection). The front lives only while NATS does, so it never
-# forwards to a port NATS released, which another program could bind; until the next front starts,
-# the kept port queues each connection, and a client sees a hang rather than a refusal.
+# group: socat forks one process per connection). The front lives only while NATS does: stop_nats
+# stops it before NATS, and the awaiter that kills NATS in the interrupt scenario kills it first
+# (run_interrupt), so it never forwards to a port NATS released, which another program could bind;
+# until the next front starts, the kept port queues each connection, and a client sees a hang
+# rather than a refusal.
 stop_front() {
   if [[ -n "$front_pid" ]] && kill -0 "$front_pid" 2>/dev/null; then
     kill -- -"$front_pid" 2>/dev/null || true
@@ -596,9 +599,12 @@ run_reread() {
 # run_interrupt interrupts the read of a recreated 41,000-record session bucket the moment it
 # begins: the listener is stopped while the rig recreates and fills the bucket, and the read its
 # watcher begins once it runs again is the one interrupted, by SIGSTOP (mode stop) or SIGKILL and a
-# restart (mode restart) of NATS, sent the moment that read's install line appears.
+# restart (mode restart) of NATS, sent the moment that read's install line appears. Before its
+# SIGKILL the awaiter kills NATS's front and waits until the front has exited (refillrig await
+# -front), as stop_nats stops the front before NATS.
 run_interrupt() {
   local mode=$1 n=$interrupt_count side=$interrupt_side_count offset line interrupted signal=STOP
+  local -a front_first=()
   fresh "interrupt-${mode}"
   start_listener
   wait_ready
@@ -619,9 +625,12 @@ run_interrupt() {
     verdict "interrupt(${mode})" "INVALID the rig could not recreate the session bucket"
     return 0
   fi
-  [[ "$mode" == stop ]] || signal=KILL
+  [[ "$mode" == stop ]] || {
+    signal=KILL
+    front_first=(-front "$front_pid")
+  }
   await_start "${run_dir}/read.await" -offset "$offset" -match 'session registry bucket was recreated;' \
-    -timeout 75s -signal "$signal" -pid "$nats_pid"
+    -timeout 75s -signal "$signal" -pid "$nats_pid" "${front_first[@]}"
   sleep 0.2
   kill -CONT "$listener_pid"
   if await_finish; then
@@ -642,11 +651,12 @@ run_interrupt() {
       say "interrupt (stop): NATS continued $((($(date +%s%N) - interrupted) / 1000000)) ms after it was stopped"
       ;;
     restart)
-      # A run whose read never began killed nothing: kill NATS here, so the wait cannot hang.
+      # A run whose read never began killed nothing: stop the front and kill NATS here, in that
+      # order, so the wait cannot hang.
+      stop_front
       kill -KILL "$nats_pid" 2>/dev/null || true
       wait "$nats_pid" 2>/dev/null || true
       nats_pid=""
-      stop_front
       say "interrupt (restart): NATS killed; starting it again in 2 s"
       sleep 2
       start_nats
