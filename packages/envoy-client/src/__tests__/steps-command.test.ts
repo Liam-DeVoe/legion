@@ -271,6 +271,64 @@ describe("dispatch steps", () => {
     );
   });
 
+  // An issue a draw put in an experiment names the experiment and the variant drawn on each of its
+  // records, and the read prints them once, above its steps; an issue whose records name none
+  // prints no such line (the first row above).
+  test("an issue in an experiment prints its variant once, above its steps", async () => {
+    const drawn = { experiment: "planning", variant: "b" };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          steps: [
+            { ...implementer, ...drawn },
+            { ...tester, ...drawn },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 2 steps in 1 tasks",
+        "Experiment planning: variant b.",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+        "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+      ].join("\n")
+    );
+  });
+
+  // The variant is the one the records of the issue's newest run name: a run of an older
+  // generation that names another, and a record of the newest that names none yet, change nothing.
+  test("the variant printed is the one the newest run's records name", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          steps: [
+            { ...implementer, experiment: "planning", variant: "a" },
+            { ...tester, generation: 2 },
+            {
+              ...implementer,
+              id: "8e2c4a6b-1d3f-5b7a-9c0e-2f4a6c8e0b13",
+              generation: 2,
+              experiment: "planning",
+              variant: "b",
+            },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[1]).toBe("Experiment planning: variant b.");
+  });
+
   // The line keeps its columns and prints no rating; the details a host is handed are the
   // records as Dispatch answered them, so a retro's rating and its reason reach it.
   test("a retro's rating and its reason reach the details, and its line keeps the columns", async () => {

@@ -254,6 +254,21 @@ describe("dispatch plans", () => {
     expect(result.details).toEqual({ project: "INFRA", issues: [ratedOnce, unrated] });
   });
 
+  // An issue a draw put in an experiment names the experiment and the variant its newest run's
+  // records name, at the end of its line; an issue that names none prints nothing more.
+  test("an issue in an experiment prints its variant on its line, and another prints none", async () => {
+    const drawn: FinishedIssue = { ...ratedOnce, experiment: "planning", variant: "b" };
+    const answer: ProjectPlans = { project: "INFRA", issues: [drawn, unrated] };
+
+    const { result } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(result.text.split("\n")).toEqual([
+      "INFRA: 2 finished issues",
+      'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1 variant planning/b',
+      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+    ]);
+  });
+
   test("an issue with three ratings lists each in the order the retros ran, each reason one JSON string", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [ratedThrice] };
 
