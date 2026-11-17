@@ -24,8 +24,6 @@ import {
   awaitReady,
   buildGoBinaries,
   envoyStackEnabled,
-  natsdHealthy,
-  natsdPorts,
   stopProcess,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
@@ -453,9 +451,29 @@ interface CalloutHub {
   stop(): Promise<void>;
 }
 
+/** The ports natsd bound, read from its log; undefined until it has logged both. natsd is started
+ *  with `-p -1 -m -1`, so the kernel picks each port as natsd binds it: a port chosen beforehand
+ *  and let go can be taken by another process before natsd binds it, and natsd then exits with
+ *  "address already in use" (seen on this repository's dev box under load). */
+function natsdPorts(
+  log: string
+): { readonly natsPort: number; readonly monitorPort: number } | undefined {
+  const text = readFileSync(log, "utf8");
+  const client = /Listening for client connections on 127\.0\.0\.1:(\d+)/.exec(text);
+  const monitor = /Starting http monitor on 127\.0\.0\.1:(\d+)/.exec(text);
+  if (client === null || monitor === null) return undefined;
+  return { natsPort: Number(client[1]), monitorPort: Number(monitor[1]) };
+}
+
+/** Whether the natsd that logs to `log` has bound its ports and answers its health check. */
+async function natsdHealthy(log: string): Promise<boolean> {
+  const ports = natsdPorts(log);
+  if (ports === undefined) return false;
+  return (await fetch(`http://127.0.0.1:${ports.monitorPort}/healthz`)).ok;
+}
+
 /** Starts a {@link CalloutHub} in its own directory under the stack directory, from the binaries
- *  the describe's `beforeAll` built. natsd binds kernel-chosen ports (`-p -1 -m -1`), read from
- *  its log by the stack's `natsdPorts`. */
+ *  the describe's `beforeAll` built. */
 async function startCalloutHub(name: string, brokerUrl: string): Promise<CalloutHub> {
   const work = path.join(stackDirectory, name);
   const bin = path.join(stackDirectory, "bin");
