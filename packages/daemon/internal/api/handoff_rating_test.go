@@ -170,7 +170,8 @@ func TestAnArchitectsCompletionInTheRetroIsNotTheRetros(t *testing.T) {
 // characters that are not all blank; the two come together. Each other shape is refused
 // PLAN_RATING_INPUT naming what is wrong, with nothing recorded. The bounds themselves are taken:
 // 1, and 5 with a reason of exactly planReasonMax characters of two bytes each, which a count of
-// bytes would refuse.
+// bytes would refuse. Each is the completion that ends the retro of an issue of its own, since the
+// workflow moves an issue on to merging at its retro's first completion taken.
 func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
@@ -204,18 +205,20 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 		t.Fatalf("facts after the refusals = %#v, want none applied", got)
 	}
 
-	for _, taken := range []struct {
-		commit string
+	for i, taken := range []struct {
 		rating int
 		reason string
 	}{
-		{commit: "c0ffee01", rating: 1, reason: "The plan cost the work."},
-		{commit: "c0ffee05", rating: 5, reason: strings.Repeat("é", planReasonMax)},
+		{rating: 1, reason: "The plan cost the work."},
+		{rating: 5, reason: strings.Repeat("é", planReasonMax)},
 	} {
-		completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: taken.commit,
+		key := fmt.Sprintf("LEGION-%d", 300+i)
+		seedIssueAt(t, h, key, phase.Retro)
+		rater := newLiveClaim(t, h, key, claim.RoleImplementer)
+		completion(t, h.complete(HandoffCompleteRequest{GrantID: rater.grant(t), Summary: "retro done", Commit: "c0ffee",
 			PlanRating: new(taken.rating), PlanReason: new(taken.reason)}))
-		if fact := lastCompletion(t, facts); !ratedAs(fact, taken.rating, taken.reason) {
-			t.Fatalf("the retro's fact at %s carries no rating %d with its reason of %d bytes", taken.commit, taken.rating, len(taken.reason))
+		if fact := lastCompletion(t, facts); fact.Issue != key || !ratedAs(fact, taken.rating, taken.reason) {
+			t.Fatalf("the retro's fact is %s's, rated %t, want %s's carrying the rating %d with its reason of %d bytes", fact.Issue, fact.PlanRating != nil, key, taken.rating, len(taken.reason))
 		}
 	}
 }
@@ -531,19 +534,16 @@ type planRatingCase struct {
 // again in TypeScript, where blank is Go's set written out by hand: goBlankPattern, whose comment
 // in `packages/contracts/src/go-blank.ts` names the characters JavaScript's trim and Go's
 // strings.TrimSpace part on. So the cases a rule of the scale, of the pair, of blank or of length
-// can part on are a golden. Each is posted as its raw body to the completion that ends a retro,
-// from a plugin at PlanRatingContract, and the route's answer is the verdict Go writes
-// (`-update`), never one typed here; `packages/contracts` and the plugin hold
-// their own verdicts to the file. An answer that is neither a 200 nor a 400 of the rating fails
-// the test, so no trouble of the harness is written down as a verdict, and an accepted case's fact
-// carries the rating and the reason as they were sent.
+// can part on are a golden. Each is posted as its raw body, from a plugin at PlanRatingContract, to
+// the completion that ends the retro of an issue of its own: the workflow moves an issue on to
+// merging at the first completion of its retro it takes, so each case is that first completion.
+// The route's answer is the verdict Go writes (`-update`), never one typed here;
+// `packages/contracts` and the plugin hold their own verdicts to the file. An answer that is
+// neither a 200 nor a 400 of the rating fails the test, so no trouble of the harness is written
+// down as a verdict, and an accepted case's fact is its issue's and carries the rating and the
+// reason as they were sent.
 func TestPlanRatingCasesGolden(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
-	seedIssueAt(t, h, "LEGION-208", phase.Retro)
-	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
-		t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
-	}
 
 	rated := func(name string, rating int, reason string) planRatingCase {
 		return planRatingCase{Name: name, PlanRating: new(rating), PlanReason: new(reason)}
@@ -575,9 +575,13 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 
 	for i := range cases {
 		c := &cases[i]
-		// Each case at a commit of its own, since the commit is in the completion's key and the
-		// rating is not: an accepted case is a completion of its own, never a retry of the last.
-		body := map[string]any{"grantId": implementer.grant(t), "summary": "retro done", "verdict": "", "commit": fmt.Sprintf("c0ffee%02d", i)}
+		key := fmt.Sprintf("LEGION-%d", 300+i)
+		seedIssueAt(t, h, key, phase.Retro)
+		implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
+		if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
+			t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+		}
+		body := map[string]any{"grantId": implementer.grant(t), "summary": "retro done", "verdict": "", "commit": "c0ffee"}
 		if c.PlanRating != nil {
 			body["planRating"] = *c.PlanRating
 		}
@@ -589,8 +593,8 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 		switch recorder.Code {
 		case http.StatusOK:
 			fact := lastCompletion(t, facts)
-			if len(facts.recorded()) != before+1 || c.PlanRating == nil || c.PlanReason == nil || !ratedAs(fact, *c.PlanRating, *c.PlanReason) {
-				t.Fatalf("%s was taken with the fact %+v, want one new fact carrying the rating and the reason as sent", c.Name, fact)
+			if len(facts.recorded()) != before+1 || fact.Issue != key || c.PlanRating == nil || c.PlanReason == nil || !ratedAs(fact, *c.PlanRating, *c.PlanReason) {
+				t.Fatalf("%s was taken with the fact %+v, want one new fact of %s carrying the rating and the reason as sent", c.Name, fact, key)
 			}
 			c.Verdict = "accepted"
 		case http.StatusBadRequest:
