@@ -75,7 +75,8 @@ func readAgain(t *testing.T, clock *recheckWaits, n int) {
 // repository it maps is left out (noRepositoryServed). That holds at boot, and on a read of the
 // mapping that unmaps the last served repository or leaves out every one, and the reads of its
 // own it then makes on its backoff say nothing more. Serving one again ends the episode, so the
-// next one logs again; a new cause while it serves none is a new line. A project that serves a
+// next one logs again; a new cause while it serves none is no transition and logs nothing (its
+// cause is in legion state and the refresher's waiting reason). A project that serves a
 // repository logs no ERROR, whatever it leaves out beside it.
 func TestEveryPathIntoServingNoneLogsOneErrorLineWithItsCause(t *testing.T) {
 	noneMapped, noneServed := api.NoRepositoryMapped("LEGION"), noRepositoryServed("LEGION")
@@ -120,7 +121,10 @@ func TestEveryPathIntoServingNoneLogsOneErrorLineWithItsCause(t *testing.T) {
 		w, client, _, logged, _ := servingNoneLogRig(t, &installations{missing: map[string]bool{"review acme/widgets": true}}, withNoRepositoryMapped)
 		client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
 		readNow(t, w)
-		wantServingNone(t, logged, "once a repository lacking its App is mapped", noneMapped, noneServed)
+		if waiting := w.repositories.awaitingRead(); len(waiting) != 1 || waiting[0] != noneServed {
+			t.Fatalf("awaiting a read = %q, want the new cause %q", waiting, noneServed)
+		}
+		wantServingNone(t, logged, "once a repository lacking its App is mapped, still serving none", noneMapped)
 	})
 	t.Run("a project that serves a repository", func(t *testing.T) {
 		w, client, installs, logged, _ := servingNoneLogRig(t, &installations{})

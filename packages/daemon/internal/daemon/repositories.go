@@ -51,10 +51,10 @@ type repositories struct {
 	refused           map[string]refusedRepository
 	unverified        []string
 	withoutWebhookApp []webhookAppGap
-	// saidNone is the serving-none cause the daemon last logged (sayServingNone), cleared while
-	// it serves a repository, so each episode of serving none, and each new cause within one, is
-	// logged once.
-	saidNone string
+	// saidNone is whether the daemon has said it serves no repository (sayServingNone) since it
+	// last served one: the line is written once per transition into serving none, whatever the
+	// cause becomes while it stays serving none.
+	saidNone bool
 }
 
 // mappedRepository is a repository Legion serves, as GitHub names it, and whether it is the
@@ -364,17 +364,20 @@ func (r *repositories) servingNoneLocked() string {
 	}
 }
 
-// servingNoneToSay is the cause the mapping as last read serves no repository for when it is not
-// the one last said, recorded as said now, and "" otherwise; a mapping that serves a repository
-// clears what was said.
+// servingNoneToSay is the cause the mapping as last read serves no repository for when this
+// mapping is a transition into serving none, the first since the daemon last served one (or
+// booted), and "" otherwise: while it stays serving none a new cause is no transition, and
+// `legion state` and the refresher's waiting reason name the cause it serves none for now. A
+// mapping that serves a repository ends the episode.
 func (r *repositories) servingNoneToSay() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cause := r.servingNoneLocked()
-	if cause == r.saidNone {
+	if cause == "" || r.saidNone {
+		r.saidNone = cause != ""
 		return ""
 	}
-	r.saidNone = cause
+	r.saidNone = true
 	return cause
 }
 
@@ -385,9 +388,9 @@ const servingNoneLine = "workflow: the daemon serves no repository, so it admits
 // sayServingNone is the one place the daemon says it serves no repository: after each
 // publication of the mapping (the boot's load and naming, and every read again), one ERROR line
 // naming the project and the cause (repositories.servingNoneLocked), when the mapping just
-// published serves none and the cause is not the one already said. So every path into serving
-// none logs it the same way (no repository mapped at boot or unmapped while it runs, every
-// repository left out for an App it lacks or a read GitHub did not answer), once per episode,
+// published is a transition into serving none (repositories.servingNoneToSay). So every path into
+// serving none logs it the same way (no repository mapped at boot or unmapped while it runs,
+// every repository left out for an App it lacks or a read GitHub did not answer), once per episode,
 // and the reads of its own the refresher then makes on its backoff say nothing more. refused is
 // the publication's refusals in the order they were read: the first one a read GitHub did not
 // answer made is the line's error.
