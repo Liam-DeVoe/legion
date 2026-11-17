@@ -160,7 +160,7 @@ export function presetView(
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
   // A view's rows carry the states its own answer gives them, and a node it holds by its id alone
-  // those the outline's node of that id carries (dispatch://INFRA-4063 R1).
+  // those the outline's node of that id carries.
   if (held !== undefined) {
     const view = heldFilterView(root, preset, held, wanted, named);
     return { ...view, root: closeOvertaken(view.root, held, heldBy, root) };
@@ -462,7 +462,7 @@ function lineOfParent(node: TreeNode): ParentLine {
     id: node.id,
     line: parentLineOf(node),
     // The parent's marks, as the outline's stamp left them on it, so a filter's parent line says
-    // what its row would (dispatch://INFRA-4063 R2, R7).
+    // what its row would.
     ...(node.life === undefined ? {} : { life: node.life }),
     ...(node.onlyYou === true ? { onlyYou: true as const } : {}),
     ...(node.readId === undefined ? {} : { readId: node.readId }),
@@ -500,8 +500,8 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   const walk = (node: TreeNode): void => {
     // No flag counts a node at or under an overtaken one, since a later node took its place, nor
     // a proposed check, which is only put forward; what hangs under a proposed check is walked
-    // all the same, and a proposed decision that waits is still counted (dispatch://INFRA-4063
-    // R3). The view's own count, `matches`, keeps both: it counts the query's every node.
+    // all the same, and a proposed decision that waits is still counted. The view's own count,
+    // `matches`, keeps both: it counts the query's every node.
     if (node.closed === true) return;
     if (outOfCounts(node)) {
       for (const child of node.children) walk(child);

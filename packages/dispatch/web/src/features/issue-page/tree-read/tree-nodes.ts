@@ -291,13 +291,13 @@ export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: strin
 }
 
 /**
- * What the tree read says of one node beside its kind, in the page's terms
- * (dispatch://INFRA-4063 R1, R2, R7): its life where its `state` is `proposed` or `overtaken`,
- * and `onlyYou` where its `visibility` is `author`, which the reader's own tree holds only for a
- * node reserved for them. A live, settled or gone node that every reader may see has neither,
- * and so has a node the read gives neither value for. The read's own values are read here and
- * nowhere else, so a place that is handed them as the tree read gives them - W's chips, which
- * carry their target's `state` and `visibility` - draws what the node's own row draws.
+ * What the tree read says of one node beside its kind, in the page's terms: its life where its
+ * `state` is `proposed` or `overtaken`, and `onlyYou` where its `visibility` is `author`, which
+ * the reader's own tree holds only for a node reserved for them. A live, settled or gone node that
+ * every reader may see has neither, and so has a node the read gives neither value for. The read's
+ * own values are read here and nowhere else, so a place that is handed them as the tree read gives
+ * them - a lens line's chips, which carry their target's `state` and `visibility` - draws what the
+ * node's own row draws.
  */
 export function statesOfRead({
   state,
@@ -314,10 +314,10 @@ export function statesOfRead({
 
 /**
  * The marks the tree read gives each node of `answer` that carries one (`statesOfRead`), by the
- * read's own id, which `TreeNode.readId` and `ParentLine.readId` hold (dispatch://INFRA-4063 R1):
+ * read's own id, which `TreeNode.readId` and `ParentLine.readId` hold:
  * what `node-states.ts` puts on the tree drawn from `answer`. It reads the answer alone, so the
  * states cost no read of their own, and a node the answer does not hold has no entry: the read
- * answers nothing of a node reserved for another reader (R8).
+ * answers nothing of a node reserved for another reader.
  */
 export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates> {
   const states = new Map<string, NodeStates>();

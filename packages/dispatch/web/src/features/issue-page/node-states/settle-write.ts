@@ -14,21 +14,21 @@ import { CONTROL_LABELS } from "../page-words";
 import { issueTreeQuery } from "../tree-read/tree-read";
 
 /**
- * What the page writes and reads around a node's life (dispatch://INFRA-4063 R3, R4, R6): the
- * settle of a proposed node; the words filter's words, by which the outline opens each line of
- * overtaken nodes that holds a match; and what the tree read the page already holds says of the
- * overtaken nodes, for an address the Decisions view draws nowhere.
+ * What the page writes and reads around a node's life: the settle of a proposed node; the words
+ * filter's words, by which the outline opens each line of overtaken nodes that holds a match; and
+ * what the tree read the page already holds says of the overtaken nodes, for an address the
+ * Decisions view draws nowhere.
  */
 
 /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: a person settles the proposed node `reference`
- *  names, under the issue `key` (R4). `{id}` is the node's whole `dispatch://` address, which
+ *  names, under the issue `key`. `{id}` is the node's whole address, scheme and all, which
  *  `routeUrl` percent-encodes as one path segment. It carries no body: a cookie proves a person,
  *  so the settle names no actor. */
 export function settleRequest(key: string, reference: string) {
   return writeRequest("post", "/api/v1/issues/{key}/nodes/{id}/settle", { id: reference, key });
 }
 
-/** The issue a node's own `dispatch://` address names, which its settle goes under; undefined for
+/** The issue a node's own address names, which its settle goes under; undefined for
  *  an address that names none. The address says it with no context of the page's: Settle needs
  *  no writer, so it is drawn where no `OutlineWriterProvider` holds the issue's key. */
 export function settleKeyOf(reference: string): string | undefined {
@@ -37,7 +37,7 @@ export function settleKeyOf(reference: string): string | undefined {
 }
 
 /**
- * The settle of the proposed node `reference` names, under the issue `key` (R4): one keyed write
+ * The settle of the proposed node `reference` names, under the issue `key`: one keyed write
  * per press, which the act that makes it shows refused itself (`inline`), so the shell's
  * indicator names it only while it is out, and the settles of one node go in press order. A 5xx
  * is made again under its key, so the write stays out while it is tried again.
@@ -45,7 +45,7 @@ export function settleKeyOf(reference: string): string | undefined {
  * A landing - a 200, or `null` for `409 KEY_COMMITTED` - tells `landed` first, so the act puts
  * the focus on its row before anything is read again, then reads the coverage again, and the
  * write stays out until it is answered. The coverage read is under `["issue", key]`, so its
- * invalidation is what T's `subscribeTreeFreshness` hears, which the page's `ViewReadProvider`
+ * invalidation is what `subscribeTreeFreshness` hears, which the page's `ViewReadProvider`
  * holds: it reads the tree again, drops the view reads held for the load and reads the open view
  * again. The tree is not invalidated here as well, since that would read it twice. A refusal
  * reads nothing again.
@@ -77,10 +77,10 @@ export function useFilterWords(): string {
 }
 
 /**
- * The outline's tree as the reads the page already holds build it (`buildIssueTree`): T's tree
+ * The outline's tree as the reads the page already holds build it (`buildIssueTree`): the tree
  * read (`issueTreeQuery`) of the issue `key`, with `issue`, so each node carries its state and
  * its reference as the outline's does. The read is watched by an observer that is never enabled,
- * so it sends no request and holds what the page read (R1). Undefined until the tree read is
+ * so it sends no request and holds what the page read. Undefined until the tree read is
  * held, and while the caller hands no `issue`, which builds nothing.
  */
 function useHeldTree(key: string, issue: IssueDetails | undefined): TreeNode | undefined {
@@ -93,9 +93,9 @@ function useHeldTree(key: string, issue: IssueDetails | undefined): TreeNode | u
 
 /**
  * The address of an overtaken node, or of a node under one, under the Decisions view, which draws
- * such a node nowhere (dispatch://INFRA-1196 decisions 115 and 118): it is replaced by the same
- * address under no filter, its search and its fragment kept, so the outline draws it, opens the
- * line that holds it and focuses it, and the stage, the filter row and the outline agree (R6).
+ * such a node nowhere: it is replaced by the same address under no filter, its search and its
+ * fragment kept, so the outline draws it, opens the line that holds it and focuses it, and the
+ * stage, the filter row and the outline agree.
  * The address's target is read as the outline reads it (`issueAddress`, `pathToTarget`), in the
  * tree the page's held reads build (`useHeldTree`), so it costs no request; that tree is built
  * only for an address under Decisions that names a node, and nothing is replaced until the tree

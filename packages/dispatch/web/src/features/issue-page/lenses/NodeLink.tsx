@@ -51,7 +51,7 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
       )}
       {/* The marks of the node the chip names, from its state and its visibility as the tree
           read gives them, or, for a chip that carries neither, from the tree's node at its
-          address; after its words in the chip's own size (dispatch://INFRA-4063 R1, R2, R7). */}
+          address; after its words in the chip's own size. */}
       <NodeMarks
         compact
         marks={

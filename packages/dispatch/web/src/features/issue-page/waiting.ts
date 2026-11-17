@@ -24,10 +24,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * (`decisionNodeChanges`): its Change is a comment the tree read (`tree`) hangs under its node,
  * so the count matches no quote and reads no block of a document.
  *
- * Nothing at or under an overtaken node of the tree read waits on anybody (dispatch://INFRA-4063
- * R3): a later node took its place, and the tree draws none of them in the waiting tone. A node
- * is under another where the read's `parent` chain reaches it, so an open ask or a decision
- * there is not counted. A proposed one still is: no node took its place yet.
+ * Nothing at or under an overtaken node of the tree read waits on anybody: a later node took its
+ * place, and the tree draws none of them in the waiting tone. A node is under another where the
+ * read's `parent` chain reaches it, so an open ask or a decision there is not counted. A proposed
+ * one still is: no node took its place yet.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -99,10 +99,10 @@ function nodeKey(node: TreeAnswer["nodes"][number]): string {
 }
 
 /**
- * The key (`nodeKey`) of each node of `tree` at or under an overtaken one (dispatch://INFRA-4063
- * R3): an overtaken node, and each node whose `parent` is one of these. The read answers a parent
- * before its children (`TreeAnswer.nodes`), so one pass in its order finds them all. None while
- * the tree read has not answered.
+ * The key (`nodeKey`) of each node of `tree` at or under an overtaken one: an overtaken node, and
+ * each node whose `parent` is one of these. The read answers a parent before its children
+ * (`TreeAnswer.nodes`), so one pass in its order finds them all. None while the tree read has not
+ * answered.
  */
 function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
   const closed = new Set<string>();

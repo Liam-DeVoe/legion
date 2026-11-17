@@ -15,7 +15,7 @@ import type { DrawnRow, OpenedBranches } from "./tree-fold";
  *  sharing a key would move together. */
 export function rowKeyOf(row: DrawnRow): string {
   // A node's line of overtaken children is keyed by the path down to that node, apart from the
-  // node's own row and from its deeper branch's (dispatch://INFRA-4063 R5).
+  // node's own row and from its deeper branch's.
   if (row.kind === "overtaken") return `overtaken:${[...row.trail, row.of.id].join(">")}`;
   const path = [...row.trail, row.kind === "deeper" ? row.of.id : row.node.id].join(">");
   return row.kind === "deeper" ? `deeper:${path}` : path;

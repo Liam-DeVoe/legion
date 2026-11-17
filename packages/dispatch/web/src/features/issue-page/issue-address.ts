@@ -285,12 +285,11 @@ export function pathToTarget(
 
 /**
  * The node whose line of overtaken children must be open for the node at the end of `path` to
- * be drawn (dispatch://INFRA-4063 R6): the node before the first overtaken node the path runs
- * through, which is that node's parent. An overtaken node is no row until its parent's line is
- * opened (`tree-fold.ts`'s `OvertakenRow`), so an address, a chip or a key that names it, or a
- * node under it, opens that line. `pathToTarget` runs through an overtaken node like any
- * other, so the path alone says which line it is. Undefined where the path holds no overtaken
- * node, and for no path at all.
+ * be drawn: the node before the first overtaken node the path runs through, which is that
+ * node's parent. An overtaken node is no row until its parent's line is opened (`tree-fold.ts`'s
+ * `OvertakenRow`), so an address, a chip or a key that names it, or a node under it, opens that
+ * line. `pathToTarget` runs through an overtaken node like any other, so the path alone says which
+ * line it is. Undefined where the path holds no overtaken node, and for no path at all.
  */
 export function overtakenLineOf(path: readonly TreeNode[] | undefined): string | undefined {
   // The path's first node is where it starts, which no line in the path stands above.

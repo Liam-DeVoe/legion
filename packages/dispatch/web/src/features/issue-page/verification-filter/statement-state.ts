@@ -149,8 +149,8 @@ export function verificationReading({
  */
 function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean {
   // A proposed statement carries no check, and a proposed check, or one at or under an
-  // overtaken node, covers no statement (dispatch://INFRA-4063 R3). The coverage read's count
-  // below still counts a proposed check: leaving it out there is the server's.
+  // overtaken node, covers no statement. The coverage read's count below still counts a proposed
+  // check: leaving it out there is the server's.
   if (outOfCounts(node)) return false;
   const counted = inCounts(checks);
   if (counted.length < checks.length) return carriesCheck(node, counted);
@@ -198,7 +198,7 @@ export function statementStandings(
  */
 export function statementState(checks: readonly CheckReading[]): StatementState {
   // A proposed check, and one at or under an overtaken node, serves no statement: it is neither
-  // evidence for it nor against it (dispatch://INFRA-4063 R3).
+  // evidence for it nor against it.
   const counted = inCounts(checks);
   if (counted.length < checks.length) return statementState(counted);
   if (checks.length === 0) return "unknown";
@@ -211,8 +211,7 @@ export function statementState(checks: readonly CheckReading[]): StatementState 
 export function statementCounts(
   statements: readonly StatementReading[]
 ): Readonly<Record<StatementState, number>> {
-  // A proposed statement, and one at or under an overtaken node, is in none of the three
-  // (dispatch://INFRA-4063 R3).
+  // A proposed statement, and one at or under an overtaken node, is in none of the three.
   const counted = inCounts(statements);
   if (counted.length < statements.length) return statementCounts(counted);
   const counts: Record<StatementState, number> = { met: 0, not_met: 0, unknown: 0 };
@@ -220,8 +219,8 @@ export function statementCounts(
   return counts;
 }
 
-/** What a count reads of `readings` (dispatch://INFRA-4063 R3): each one but those whose node is
- *  a proposed statement or check or sits at or under an overtaken node (`outOfCounts`). */
+/** What a count reads of `readings`: each one but those whose node is a proposed statement or
+ *  check or sits at or under an overtaken node (`outOfCounts`). */
 function inCounts<Reading extends { readonly node: TreeNode }>(
   readings: readonly Reading[]
 ): readonly Reading[] {

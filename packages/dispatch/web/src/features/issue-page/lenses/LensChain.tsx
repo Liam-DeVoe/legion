@@ -109,7 +109,7 @@ function ChainEntries({
   tabStops: boolean;
 }): ReactNode {
   // The marks of the tree's nodes, by reference: an entry carries those of the tree's node at its
-  // lens's address, never the lens read's own state and visibility (dispatch://INFRA-4063 R1).
+  // lens's address, never the lens read's own state and visibility.
   const states = useNodeStatesByReference();
   if (chain === undefined) return null;
   const stoppedAt = chain.stopped_at;
@@ -142,7 +142,7 @@ function ChainEntries({
                 </span>
               )}
               {/* After the lens's name, in the chain's own size; none where the tree holds no
-                  node at that address (dispatch://INFRA-4063 R2, R7). */}
+                  node at that address. */}
               <NodeMarks compact marks={marksAt(states, entry.address) ?? {}} />
               {filled(onLine) ? (
                 <span className="min-w-0 break-words" data-lens-chain-line="" {...authorText}>

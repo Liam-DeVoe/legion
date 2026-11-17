@@ -12,7 +12,7 @@ import { settleKeyOf, useSettle } from "./settle-write";
  *  close an import cycle. */
 const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
 
-/** The sentence a refused settle draws after the act (R4), read from the refusal's status and
+/** The sentence a refused settle draws after the act, read from the refusal's status and
  *  code, never from its text: every refusal the page names no sentence for - a 403 with no code,
  *  a 400 `INVALID_JSON`, a page's own error - is the one that says it could not. */
 function refusalWords(refusal: Error): string {
@@ -35,13 +35,12 @@ function focusRowOf(control: HTMLElement | null): void {
 }
 
 /**
- * Settle, among the acts of a focused proposed row (`NodeRow.tsx`'s `RowActs`,
- * dispatch://INFRA-4063 R4). No key of its own presses it: it carries `data-row-act`, which
- * `useTreeKeymap.ts`'s `KEYED_CONTROLS` names only for Reply and Answer, so `f` reaches it as it
- * reaches each control no key presses, and Enter or a press sends the settle
- * (`settle-write.ts`). It needs no writer: a cookie proves a person, so every reader of the page
- * gets it. It is drawn for a node whose own address names its issue, which every proposed node
- * of the tree read has.
+ * Settle, among the acts of a focused proposed row (`NodeRow.tsx`'s `RowActs`). No key of its own
+ * presses it: it carries `data-row-act`, which `useTreeKeymap.ts`'s `KEYED_CONTROLS` names only
+ * for Reply and Answer, so `f` reaches it as it reaches each control no key presses, and Enter or
+ * a press sends the settle (`settle-write.ts`). It needs no writer: a cookie proves a person, so
+ * every reader of the page gets it. It is drawn for a node whose own address names its issue,
+ * which every proposed node of the tree read has.
  *
  * A pointer's press leaves the focus where it is, as the row's other acts do; a press of the act
  * holding the focus (Enter after `f`) moves it to the row first, since the act takes no press

@@ -653,17 +653,17 @@ test("a commit is drawn in the short form the picture draws", () => {
   expect(shortCommit("abc")).toBe("abc");
 });
 
-/** What the model says of a node put forward and not yet settled (dispatch://INFRA-4063 R2). */
+/** What the model says of a node put forward and not yet settled. */
 const PROPOSED = { life: "proposed" } as const;
 
-/** What the model says of a node a later one took the place of (dispatch://INFRA-4063 R5); each
- *  node under it is `closed` too. */
+/** What the model says of a node a later one took the place of; each node under it is `closed`
+ *  too. */
 const OVERTAKEN = { closed: true, life: "overtaken" } as const;
 
-// dispatch://INFRA-4063 R3: a proposed check is only put forward, so it is no evidence for its
-// statement or against it, and neither is a check an overtaken one replaced. Each statement
-// stands on its other checks, and one whose only check is proposed is Unknown and not covered;
-// every check is still read under its statement, as the body draws it.
+// A proposed check is only put forward, so it is no evidence for its statement or against it, and
+// neither is a check an overtaken one replaced. Each statement stands on its other checks, and one
+// whose only check is proposed is Unknown and not covered; every check is still read under its
+// statement, as the body draws it.
 test("a proposed check serves no statement", () => {
   const passed = passing("c-one");
   const failedAt = (blockId: string) =>
@@ -702,10 +702,10 @@ test("a proposed check serves no statement", () => {
   expect(statementCounts(read.statements)).toEqual({ met: 2, not_met: 0, unknown: 1 });
 });
 
-// dispatch://INFRA-4063 R3, c-unit: the Spec filter's mark is `statementStandings` over the whole
-// tree and the Verification filter's is this reading over its view. On a statement whose only
-// check is proposed both say it carries no check and stands on none: not covered, and Unknown.
-// The same statement with that check live is covered and Met in both.
+// The Spec filter's mark is `statementStandings` over the whole tree and the Verification filter's
+// is this reading over its view. On a statement whose only check is proposed both say it carries
+// no check and stands on none: not covered, and Unknown. The same statement with that check live
+// is covered and Met in both.
 test("the Spec and Verification views agree on a statement whose only check is proposed", () => {
   const block = passing("c-one");
   const issueOf = (statement: TreeNode) =>
@@ -729,10 +729,9 @@ test("the Spec and Verification views agree on a statement whose only check is p
   expect(reading([live], [block]).covered).toBe(1);
 });
 
-// dispatch://INFRA-4063 R3: a proposed statement is put forward and not yet settled, and a
-// statement at or under an overtaken node was replaced, so none of them is in the covered count
-// or in Met, Not met and Unknown, though the check under each passed; each one's standing says
-// it is not covered.
+// A proposed statement is put forward and not yet settled, and a statement at or under an
+// overtaken node was replaced, so none of them is in the covered count or in Met, Not met and
+// Unknown, though the check under each passed; each one's standing says it is not covered.
 test("a proposed statement is neither covered nor counted", () => {
   const passed = passing("c-one");
   // The passed check drawn again under another statement, with `extra` over it.
@@ -777,9 +776,10 @@ test("a proposed statement is neither covered nor counted", () => {
   ]);
 });
 
-// dispatch://INFRA-4063 R3 leaves the rows alone: the Verification filter draws every row of its
-// query, so the reading hands the body each statement, check and other row the filter kept,
-// proposed and overtaken ones among them. Only the counts leave them out.
+// What leaves proposed and overtaken nodes out of the counts leaves the rows alone: the
+// Verification filter draws every row of its query, so the reading hands the body each statement,
+// check and other row the filter kept, proposed and overtaken ones among them. Only the counts
+// leave them out.
 test("the reading keeps every row, proposed and overtaken ones included", () => {
   const proposedCheck = passing("c-one");
   const replacedCheck = passing("c-two");

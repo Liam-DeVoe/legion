@@ -165,8 +165,7 @@ export function PlanFilterBody({
         return node === undefined ? [] : [node];
       });
     // The view's overtaken tasks have no place in the order (`planOrder`), so they stand after
-    // every step, each once, and I's tree draws them as the one line they fold to there
-    // (dispatch://INFRA-4063 R5).
+    // every step, each once, and the tree draws them as the one line they fold to there.
     rows.push(...[...inView.values()].filter(isOvertaken));
     return { ...root, children: rows, held: heldBy(rows) };
   }, [entries, inView, root]);
@@ -189,8 +188,8 @@ export function PlanFilterBody({
     }`;
   const empty = root.children.length === 0;
   // An address naming an overtaken task opens the steps' line that holds it and lands on the
-  // task there (dispatch://INFRA-4063 R6): the line hangs under the steps' own root, wherever the
-  // outline holds the task, so the path to it is the root's.
+  // task there: the line hangs under the steps' own root, wherever the outline holds the task, so
+  // the path to it is the root's.
   const addressed = tree.reveal?.at(-1);
   if (addressed !== undefined && isOvertaken(addressed)) {
     tree = { ...tree, reveal: [ordered, addressed] };
@@ -353,11 +352,11 @@ const CHART_ROW = "[data-plan-bar-row], [data-plan-cycle-row]";
 
 /** The key of the chart's one line of overtaken tasks among its places (`DrawnPlace.key`, the
  *  focus and the tab stop), and, before a task's id, the key of that task's row under it: no
- *  node's id begins so, and a cycle's key is its tasks' ids (dispatch://INFRA-4063 R5). */
+ *  node's id begins so, and a cycle's key is its tasks' ids. */
 const OVERTAKEN_KEY = "overtaken:";
 
 /** The chart's line of overtaken tasks and each task's row it holds open: places the keys walk,
- *  drawn after every bar and cycle (dispatch://INFRA-4063 R5). */
+ *  drawn after every bar and cycle. */
 const LINE_ROWS = "[data-overtaken-line], [data-plan-overtaken-row]";
 
 /** What the reader does that ends the hold of the address's row on screen: a key, a press, a
@@ -437,7 +436,7 @@ function PlanChart({
   /** Says the address's node has taken the focus. */
   onLanded: (id: string) => void;
   /** The view's overtaken tasks, which have no place in the order: the one line after every bar
-   *  holds them (dispatch://INFRA-4063 R5). */
+   *  holds them. */
   overtaken: readonly TreeNode[];
   /** The node the address names: the task a cycle's row stands for where it is one of its own. */
   reveal: string | undefined;
@@ -469,11 +468,10 @@ function PlanChart({
   const tabStop = rows.some((place) => place.key === stop)
     ? stop
     : (rows.find((place) => place.row.kind === "bar") ?? rows[0])?.key;
-  // The line the view's overtaken tasks fold to, after every bar (dispatch://INFRA-4063 R5,
-  // R6): closed until the reader opens it. While the words filter holds words the view holds
-  // only its matches, so the line holds one and is drawn open, less a line the reader closed
-  // under them, which stays closed until they open it again, as the outline's lines do
-  // (`IssueTree.tsx`'s `linesOpen`).
+  // The line the view's overtaken tasks fold to, after every bar: closed until the reader
+  // opens it. While the words filter holds words the view holds only its matches, so the line holds
+  // one and is drawn open, less a line the reader closed under them, which stays closed until they
+  // open it again, as the outline's lines do (`IssueTree.tsx`'s `linesOpen`).
   const holdsWords = useFilterWords().trim() !== "";
   const [fold, setFold] = useState({ closed: false, open: false });
   const lineOpen = fold.open || (holdsWords && !fold.closed);
@@ -546,8 +544,7 @@ function PlanChart({
     hold.signal.addEventListener("abort", () => grown.disconnect());
   }, [land, onLanded, rows]);
   // An address naming an overtaken task opens the line, then puts the focus on the task's row
-  // under it once that is drawn and holds it on screen until the reader acts, as for a bar's row
-  // (dispatch://INFRA-4063 R6).
+  // under it once that is drawn and holds it on screen until the reader acts, as for a bar's row.
   useEffect(() => {
     if (land === undefined || !overtaken.some((task) => task.id === land)) return;
     if (!lineOpen) {
@@ -941,7 +938,7 @@ function CycleRow({
 }
 
 /**
- * The chart's one line of overtaken tasks, after every bar and cycle (dispatch://INFRA-4063 R5),
+ * The chart's one line of overtaken tasks, after every bar and cycle,
  * as the outline draws its own (`node-states/OvertakenLine.tsx`): a treeitem with
  * `aria-expanded`, `[data-overtaken-line]`, that says how many it holds in one text node
  * ("1 overtaken"). A task a later one took the place of has no position (`planOrder`), so it is
@@ -1021,7 +1018,7 @@ function OvertakenTasks({
 }
 
 /** One overtaken task under the chart's open line (`OvertakenTasks`): its first line and its
- *  marks, Overtaken among them, and no bar, since it has no position (dispatch://INFRA-4063 R5).
+ *  marks, Overtaken among them, and no bar, since it has no position.
  *  It is a row of the chart as a bar's is: its focus gives its task to Details, it places itself
  *  on screen, and Enter on it goes to its task in the conversation. */
 function OvertakenTask({
@@ -1214,7 +1211,7 @@ function BarRow({
               ))}
             </>
           )}
-          {/* After the step's facts, in that line's grey (dispatch://INFRA-4063 R2, R7). */}
+          {/* After the step's facts, in that line's grey. */}
           <NodeMarks marks={task} />
         </p>
       </div>
@@ -1240,7 +1237,7 @@ function BarRow({
           // first word wraps inside the column rather than run past it (R5).
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
           // The marks of the statement it names, as its parent line or its chip carries them,
-          // after its words in the chip's own size (dispatch://INFRA-4063 R2, R7).
+          // after its words in the chip's own size.
           const marks =
             (one.reference === task.parentLine?.reference ? task.parentLine : undefined) ??
             task.alsoUnder.find((chip) => chip.ref === one.reference) ??

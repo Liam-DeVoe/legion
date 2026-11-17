@@ -45,7 +45,7 @@ function node(
 
 /** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
-  // A node's line of overtaken children reads as `line:<id>` (dispatch://INFRA-4063 R5).
+  // A node's line of overtaken children reads as `line:<id>`.
   if (!rows.every((row) => row.kind !== "overtaken"))
     return rows.flatMap((row) => (row.kind === "overtaken" ? `line:${row.of.id}` : idsOf([row])));
   return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
@@ -401,7 +401,7 @@ function lineOf(rows: readonly DrawnRow[], id: string) {
   return line?.kind === "overtaken" ? line : undefined;
 }
 
-/** What the model says of a node a later one took the place of (dispatch://INFRA-4063 R5). */
+/** What the model says of a node a later one took the place of. */
 const OVERTAKEN = { closed: true, life: "overtaken" } as const;
 
 /** An issue whose one document holds a live requirement between two overtaken ones, the second
@@ -415,8 +415,8 @@ function withOvertaken(): TreeNode {
   return node("CORE-1", "issue", [node("spec", "document", children, { held: heldBy(children) })]);
 }
 
-// dispatch://INFRA-4063 R5: under a parent that holds overtaken nodes, one line after its other
-// children says how many it holds directly, and is a row of the tree, which the keys reach.
+// Under a parent that holds overtaken nodes, one line after its other children says how many it
+// holds directly, and is a row of the tree, which the keys reach.
 // Opened, each overtaken node is a row one level below the line, folded with its subtree.
 test("overtaken children are one focusable line that counts them", () => {
   const root = withOvertaken();
@@ -448,9 +448,8 @@ test("overtaken children are one focusable line that counts them", () => {
   expect(holding?.kind === "node" ? holding.folded : undefined).toBe(1);
 });
 
-// dispatch://INFRA-4063 R5: an open question under an overtaken node opens no path, so neither
-// that node nor its parent unfolds because of it, and opened by the reader the overtaken node
-// still arrives folded.
+// An open question under an overtaken node opens no path, so neither that node nor its parent
+// unfolds because of it, and opened by the reader the overtaken node still arrives folded.
 test("the frontier never passes into an overtaken node", () => {
   const question = node("spec#b-q1", "ask", [], { question: true, state: "open" });
   const issueWith = (life: Partial<TreeNode>): TreeNode =>
@@ -473,8 +472,8 @@ test("the frontier never passes into an overtaken node", () => {
   expect(overtaken?.kind === "node" ? overtaken.expanded : undefined).toBe(false);
 });
 
-// dispatch://INFRA-4063 R5: a folded branch's count counts its line of overtaken children as one
-// row and nothing under it, which is the number of rows the branch draws opened, its line closed.
+// A folded branch's count counts its line of overtaken children as one row and nothing under it,
+// which is the number of rows the branch draws opened, its line closed.
 test("a folded count counts the line as one row", () => {
   const root = withOvertaken();
   const folded = rowOf(treeRows(root), "spec");
@@ -484,9 +483,9 @@ test("a folded count counts the line as one row", () => {
   expect(idsOf(opened).slice(2)).toEqual(["spec#b-r2", "line:spec"]);
 });
 
-// dispatch://INFRA-4063 R2: a proposed node is only put forward until a person settles it, so a
-// proposed statement no check serves and a proposed check that has not passed open no path; a
-// proposed question and a proposed decision waiting for review still ask the reader.
+// A proposed node is only put forward until a person settles it, so a proposed statement no check
+// serves and a proposed check that has not passed open no path; a proposed question and a proposed
+// decision waiting for review still ask the reader.
 test("a proposed statement no check serves and a proposed check that has not passed open no path", () => {
   const issueWith = (life: Partial<TreeNode>): TreeNode =>
     node("CORE-1", "issue", [

@@ -56,9 +56,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * where today's read holds the decision's `shaped` ties, so the ask's entry carries the
  * statements they name: the person's decision reaches every statement it shaped.
  *
- * No part holds an overtaken node or a node under one (`TreeNode.closed`; dispatch://INFRA-4063
- * R3, decision 115 of dispatch://INFRA-1196): a later node took its place, so the view draws it
- * nowhere, and none of them waits on the reader (`waitingOrder`).
+ * No part holds an overtaken node or a node under one (`TreeNode.closed`): a later node took its
+ * place, so the view draws it nowhere, and none of them waits on the reader (`waitingOrder`).
  *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
@@ -407,7 +406,7 @@ function placements(root: TreeNode): ReadonlyMap<string, Placement> {
                 id: above.id,
                 line: lineOf(above),
                 type: above.type,
-                // The parent's marks, which its line draws (dispatch://INFRA-4063 R2, R7).
+                // The parent's marks, which its line draws.
                 ...(above.life === undefined ? {} : { life: above.life }),
                 ...(above.onlyYou === undefined ? {} : { onlyYou: above.onlyYou }),
               },

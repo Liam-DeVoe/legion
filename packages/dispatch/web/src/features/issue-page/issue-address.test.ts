@@ -351,8 +351,8 @@ test("the children's address names the first row of their group, and the documen
   expect(documents.target).toBeUndefined();
 });
 
-// R6: an address that names an overtaken node, or a node under one, opens the line its parent
-// folds its overtaken children to, which the path to it runs through. Each kind of address
+// An address that names an overtaken node, or a node under one, opens the line its parent folds
+// its overtaken children to, which the path to it runs through. Each kind of address
 // names that parent: a `#b-` block, an item's own route (`/asks/<id>`), and a node under an
 // overtaken one; an address whose path runs through no overtaken node opens no line.
 test("a path through an overtaken node opens its line", () => {

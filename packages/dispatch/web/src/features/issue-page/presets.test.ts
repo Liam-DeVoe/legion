@@ -42,7 +42,7 @@ function node(
 
 /** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
-  // A node's line of overtaken children reads as `line:<id>` (dispatch://INFRA-4063 R5).
+  // A node's line of overtaken children reads as `line:<id>`.
   if (!rows.every((row) => row.kind !== "overtaken"))
     return rows.flatMap((row) => (row.kind === "overtaken" ? `line:${row.of.id}` : idsOf([row])));
   return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
@@ -382,9 +382,9 @@ function readAsIds(root: TreeNode): TreeNode {
   return { readId: root.id, ...root, children: root.children.map(readAsIds) };
 }
 
-// dispatch://INFRA-4063 R3 and root c-presets: a filter control's count counts its query's own
-// nodes, a proposed one and one at or under an overtaken node among them, under a words filter
-// too. Only what asks something of the reader leaves them out (the next row).
+// A filter control's count counts its query's own nodes, a proposed one and one at or under an
+// overtaken node among them, under a words filter too. Only what asks something of the reader
+// leaves them out (the next row).
 test("a filter's count counts proposed and overtaken query nodes", () => {
   const root = stamped(
     node("CORE-1", "issue", [
@@ -426,11 +426,11 @@ test("a filter's count counts proposed and overtaken query nodes", () => {
   expect(filterSignals(root, "b-t").plan.count).toBe(2);
 });
 
-// dispatch://INFRA-4063 R3: no count treats a proposed check as failing, nor a node at or under an
-// overtaken one as open: the failing flag counts neither a proposed failed check nor one under an
-// overtaken statement, and the to-review flag no overtaken decision that waits, nor one under an
-// overtaken comment, which the Decisions filter lifts out from under it. The same tree with no
-// states raises both flags, so the states are what take them away.
+// No count treats a proposed check as failing, nor a node at or under an overtaken one as open:
+// the failing flag counts neither a proposed failed check nor one under an overtaken statement,
+// and the to-review flag no overtaken decision that waits, nor one under an overtaken comment,
+// which the Decisions filter lifts out from under it. The same tree with no states raises both
+// flags, so the states are what take them away.
 test("no flag counts them", () => {
   const live = node("CORE-1", "issue", [
     node("spec#b-r1", "requirement", [node("verification#b-c1", "check", [], { state: "failed" })]),
@@ -461,8 +461,8 @@ test("no flag counts them", () => {
   });
 });
 
-// dispatch://INFRA-4063 R3: what asks the reader stays. A proposed decision that waits for review
-// is on the review list as today, so the to-review flag counts it.
+// What asks the reader stays. A proposed decision that waits for review is on the review list as
+// today, so the to-review flag counts it.
 test("a proposed decision waiting for review is still on the to-review flag", () => {
   const root = stamped(
     node("CORE-1", "issue", [
@@ -477,9 +477,8 @@ test("a proposed decision waiting for review is still on the to-review flag", ()
   });
 });
 
-// dispatch://INFRA-4063 R2, R7: a filter that draws a node's parent as one line on its row, with
-// no view read held, draws that parent's marks there too, as its own row would carry them. A
-// parent with no mark carries none.
+// A filter that draws a node's parent as one line on its row, with no view read held, draws that
+// parent's marks there too, as its own row would carry them. A parent with no mark carries none.
 test("a filter's parent line carries the marks of the parent it names", () => {
   const root = stamped(
     node("CORE-1", "issue", [

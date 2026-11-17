@@ -668,12 +668,11 @@ test("what waits is each open question of the reader's, then each decision to re
   expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
-// dispatch://INFRA-4063 R3, decision 115 of dispatch://INFRA-1196: an overtaken decision is in
-// none of the parts, though the decisions view answers it waiting for review and tied to a
-// statement, and neither is any node under it - a question whose turn is the reader's, a decision
-// the read hangs under it: a later node took their place, so the Decisions view draws them
-// nowhere and none of them waits on the reader. The live decision beside it is still on the
-// review list, and the same tree with nothing overtaken holds all of them.
+// An overtaken decision is in none of the parts, though the decisions view answers it waiting for
+// review and tied to a statement, and neither is any node under it - a question whose turn is the
+// reader's, a decision the read hangs under it: a later node took their place, so the Decisions
+// view draws them nowhere and none of them waits on the reader. The live decision beside it is
+// still on the review list, and the same tree with nothing overtaken holds all of them.
 test("an overtaken decision waiting for review is in no part", () => {
   const tied = { links: [shaped(specRef("s1"))] };
   // The tree as the page stamps it (`node-states.ts`): the overtaken decision and each node

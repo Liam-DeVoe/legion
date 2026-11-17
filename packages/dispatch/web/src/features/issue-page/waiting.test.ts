@@ -615,9 +615,8 @@ function countedAndDrawn(tree: TreeAnswer, about: IssueDetails) {
   };
 }
 
-// dispatch://INFRA-4063 R3: no reader is waited on for an open question at or under an overtaken
-// node, since a later node took its place: the count leaves it out, as the tree draws it in no
-// waiting tone.
+// No reader is waited on for an open question at or under an overtaken node, since a later node
+// took its place: the count leaves it out, as the tree draws it in no waiting tone.
 // That holds for a question that is itself overtaken, for one the read hangs under an overtaken
 // decision, and for one asked in a block of the spec that is overtaken. The approval request,
 // which is no node of the tree, still waits, and so does each question nothing overtook.
@@ -669,10 +668,9 @@ test("no reader is waited on for an overtaken ask", () => {
   });
 });
 
-// dispatch://INFRA-4063 R3: a decision at or under an overtaken node waits on nobody: one waiting
-// for review and tied to a statement is on no review list once it is overtaken, nor once the node
-// the read hangs it under is, in the count as in the tree. The decision nothing overtook still
-// waits.
+// A decision at or under an overtaken node waits on nobody: one waiting for review and tied to a
+// statement is on no review list once it is overtaken, nor once the node the read hangs it under
+// is, in the count as in the tree. The decision nothing overtook still waits.
 test("an overtaken decision waits on nobody", () => {
   const decided = (old: Partial<TreeAnswerNode>) =>
     answerOf([
@@ -686,9 +684,9 @@ test("an overtaken decision waits on nobody", () => {
   expect(waits(decided({ state: "overtaken" }), coverage)).toEqual([1, ["spec#b-waits"]]);
 });
 
-// dispatch://INFRA-4063 R3 and the plan's "What stays counted": a proposed node is no overtaken
-// one, since no node took its place yet, so a proposed question whose turn is the reader's and a
-// proposed decision waiting for review still wait on the reader, in the count as in the tree.
+// A proposed node is no overtaken one, since no node took its place yet, so a proposed question
+// whose turn is the reader's and a proposed decision waiting for review still wait on the reader,
+// in the count as in the tree.
 test("a proposed ask and a proposed decision still wait on the reader", () => {
   const tree = answerOf([
     statement,

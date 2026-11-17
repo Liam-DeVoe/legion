@@ -28,7 +28,7 @@ import { rowKeyOf } from "./tree-keys";
  * what it is. A row below the levels the fold drew is one line saying how many nodes it holds
  * and opening them in place.
  * A node's overtaken children fold to one line of their own after its other children, which
- * takes the focus and opens them in place (`OvertakenLine`, dispatch://INFRA-4063 R5).
+ * takes the focus and opens them in place (`OvertakenLine`).
  */
 export function TreeRows({
   artifacts,
@@ -66,12 +66,11 @@ export function TreeRows({
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
   onOpenDeeper: (id: string) => void;
-  /** Opens or closes the line a node's overtaken children fold to, by that node's id
-   *  (dispatch://INFRA-4063 R5). */
+  /** Opens or closes the line a node's overtaken children fold to, by that node's id. */
   onOvertaken?: (id: string, open: boolean) => void;
   onPin: (row: string) => void;
   /** Makes the line of overtaken nodes `key` names the tree's one tab stop as it takes the
-   *  focus, which a row's own `onFocus` does for a row (dispatch://INFRA-4063 R5). */
+   *  focus, which a row's own `onFocus` does for a row. */
   onStop?: (key: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
   /** The node whose body the preset opens without being asked (R7). */
@@ -115,7 +114,7 @@ export function TreeRows({
         {rows.map((row) => {
           const key = rowKeyOf(row);
           // A node's overtaken children fold to one line, which takes the focus as a row does and
-          // opens them in place (dispatch://INFRA-4063 R5).
+          // opens them in place.
           if (row.kind === "overtaken") {
             return (
               <OvertakenLine

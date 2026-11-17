@@ -86,8 +86,8 @@ export interface NodeChip {
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
   /** The life of the node this chip names, where it has one (`TreeNode.life`), which the chip
-   *  draws after its name (dispatch://INFRA-4063 R2). Absent for a target that is live or
-   *  settled, and for one the tree does not hold. */
+   *  draws after its name. Absent for a target that is live or settled, and for one the tree does
+   *  not hold. */
   readonly life?: NodeLife;
   /** The words shown for the target (`treeContext`): a block's first line, as a row draws one
    *  (R1), cut from the first block of the server's reading of its words (`lineWords`); where the
@@ -100,7 +100,7 @@ export interface NodeChip {
    *  for every link beside the tree to draw (`targetNames`). */
   readonly name: string;
   /** Whether the node this chip names is reserved for its author, who is the reader
-   *  (`TreeNode.onlyYou`, dispatch://INFRA-4063 R7). Absent for every other target. */
+   *  (`TreeNode.onlyYou`). Absent for every other target. */
   readonly onlyYou?: true;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -155,19 +155,18 @@ export interface NodeOption {
 export interface ParentLine {
   readonly id: string;
   /** The parent's life, where it has one (`TreeNode.life`), which the line draws after the
-   *  parent's words (dispatch://INFRA-4063 R2). Absent for a parent that is live or settled. */
+   *  parent's words. Absent for a parent that is live or settled. */
   readonly life?: NodeLife;
   /** The parent's own first line, cut by R1's rule (`firstLineOf`) from the words of its
    *  reading's first block (`lineWords`) and drawn as `drawnLine` reads it: an ellipsis only
    *  where the cut ended inside a sentence. */
   readonly line: string;
-  /** Whether the parent is reserved for its author, who is the reader (`TreeNode.onlyYou`,
-   *  dispatch://INFRA-4063 R7). Absent for every other parent. */
+  /** Whether the parent is reserved for its author, who is the reader (`TreeNode.onlyYou`).
+   *  Absent for every other parent. */
   readonly onlyYou?: true;
   /** The id the tree read gives the parent (`TreeNode.readId`), by which the line takes the
-   *  parent's states (dispatch://INFRA-4063 R1, R2): the parent's own where the tree holds it,
-   *  and the id a view's answer names it by where the view holds it only by that id. Absent for
-   *  a parent drawn from another read. */
+   *  parent's states: the parent's own where the tree holds it, and the id a view's answer names it
+   *  by where the view holds it only by that id. Absent for a parent drawn from another read. */
   readonly readId?: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
@@ -178,8 +177,8 @@ export interface ParentLine {
 /**
  * A node's life, where it has one: its `state` in the tree read where that is `proposed` (put
  * forward and not yet settled by a person) or `overtaken` (a later node took its place); a live
- * or settled node has none and draws nothing (dispatch://INFRA-4063 R1). The page reads it
- * through `isProposed` and `isOvertaken` (`tree-fold.ts`) and draws it in its own words.
+ * or settled node has none and draws nothing. The page reads it through `isProposed` and
+ * `isOvertaken` (`tree-fold.ts`) and draws it in its own words.
  */
 export type NodeLife = "proposed" | "overtaken";
 
@@ -200,8 +199,7 @@ export interface TreeNode {
   readonly children: readonly TreeNode[];
   readonly chips: readonly NodeChip[];
   /** Whether this node is overtaken or sits under an overtaken one, at any depth: it draws no
-   *  gap, and no count treats it as open or unproved (dispatch://INFRA-4063 R3, R5). Absent on
-   *  every other node. */
+   *  gap, and no count treats it as open or unproved. Absent on every other node. */
   readonly closed?: true;
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
@@ -221,7 +219,7 @@ export interface TreeNode {
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
   /** The node's life, where it has one (`NodeLife`): what its row draws in its state line, and
-   *  every chip and parent line naming it after its name (dispatch://INFRA-4063 R1, R2). */
+   *  every chip and parent line naming it after its name. */
   readonly life?: NodeLife;
   /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
    *  a statement a constraint names (dispatch://INFRA-4065 R1 to R5); absent on every other node. */
@@ -232,8 +230,8 @@ export interface TreeNode {
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
   /** Whether this node is reserved for its author, who is the reader: its `visibility` in the
-   *  tree read is `author`, so every place that draws it says so (dispatch://INFRA-4063 R7). No
-   *  other reader's tree holds the node at all. */
+   *  tree read is `author`, so every place that draws it says so. No other reader's tree holds
+   *  the node at all. */
   readonly onlyYou?: true;
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
@@ -542,8 +540,7 @@ function namingContext(reads: IssueTreeReads): TreeContext {
  * (`IssueTreeReads.tree`), the tree is the issue alone, since a node the read places under one
  * not yet read would otherwise be drawn in the wrong place.
  * Each node carries the life and visibility the tree read answers for it, and a node at or
- * under an overtaken one is closed (`node-states.ts`'s `closeOvertaken`, dispatch://INFRA-4063
- * R1, R5).
+ * under an overtaken one is closed (`node-states.ts`'s `closeOvertaken`).
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = namingContext(reads);
@@ -598,7 +595,7 @@ export function ambiguousTargets(reads: IssueTreeReads): ReadonlySet<string> {
 /** How many nodes a branch holds below `children`, at any depth. */
 export function heldBy(children: readonly TreeNode[]): number {
   // A parent's overtaken children fold to one line under it, so they count as that one row and
-  // nothing under them (dispatch://INFRA-4063 R5).
+  // nothing under them.
   if (children.some(isOvertaken))
     return heldBy(children.filter((child) => !isOvertaken(child))) + 1;
   return children.reduce((held, child) => held + child.held + 1, 0);

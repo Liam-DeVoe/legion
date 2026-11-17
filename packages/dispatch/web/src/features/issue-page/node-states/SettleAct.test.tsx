@@ -21,12 +21,12 @@ import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
 import { issueTreeQuery, subscribeTreeFreshness, viewQuery } from "../tree-read/tree-read";
 
 /**
- * Settle on a focused proposed row (dispatch://INFRA-4063 R4), drawn by G's `RowActs` in the row
- * as the page draws it, beside the reads the page holds while the row is drawn: the tree read,
- * the coverage read and the one view a slot has on (Verification), each under T's own query
- * options, with the Spec view's read held from the load and read by nobody now, and T's
- * subscription (`subscribeTreeFreshness`) keeping them fresh as the page does. Each read and
- * each write is answered here, so the test reads which went out.
+ * Settle on a focused proposed row, drawn by `NodeRow.tsx`'s `RowActs` in the row as the page
+ * draws it, beside the reads the page holds while the row is drawn: the tree read, the coverage
+ * read and the one view a slot has on (Verification), each under the query options `tree-read.ts`
+ * gives it, with the Spec view's read held from the load and read by nobody now, and the
+ * tree read's subscription (`subscribeTreeFreshness`) keeping them fresh as the page does. Each
+ * read and each write is answered here, so the test reads which went out.
  */
 
 const KEY = "CORE-1";
@@ -35,7 +35,7 @@ const REFERENCE = `dispatch://${KEY}/artifact/spec-md#b-r7`;
 const SETTLE_PATH =
   "/api/v1/issues/CORE-1/nodes/dispatch%3A%2F%2FCORE-1%2Fartifact%2Fspec-md%23b-r7/settle";
 /** The Spec view's read, held from the load and read by nobody now, and the Verification view's,
- *  which a slot has on: each under T's key (`viewKey`), as `viewQuery` gives it. */
+ *  which a slot has on: each under its key (`viewKey`), as `viewQuery` gives it. */
 const HELD_VIEW = viewQuery(KEY, "spec").queryKey;
 const OPEN_VIEW = viewQuery(KEY, "verification").queryKey;
 
@@ -188,9 +188,9 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-// R4: Enter or a press sends one `POST /api/v1/issues/{key}/nodes/{id}/settle`, `{id}` the
-// node's `dispatch://` address percent-encoded as one segment, and no body: a cookie proves a
-// person, so the act names no actor.
+// Enter or a press sends one `POST /api/v1/issues/{key}/nodes/{id}/settle`, `{id}` the node's
+// whole address percent-encoded as one segment, and no body: a cookie proves a person, so the act
+// names no actor.
 test("Settle sends the address and no body", async () => {
   const user = userEvent.setup();
   const drawn = drawRow(async () => settled());
@@ -208,7 +208,7 @@ test("Settle sends the address and no body", async () => {
   }
 });
 
-// R4: on 200 the tree read and the coverage read are read again, the view read held for the
+// On 200 the tree read and the coverage read are read again, the view read held for the
 // load is dropped, and the open view is read again; the focus is on the row before any of them.
 test("a 200 drops the held views and reads the open one again", async () => {
   const user = userEvent.setup();
@@ -241,7 +241,7 @@ test("a 200 drops the held views and reads the open one again", async () => {
   }
 });
 
-// R4: a refusal sends no read, leaves the row as drawn, its mark included, and draws one
+// A refusal sends no read, leaves the row as drawn, its mark included, and draws one
 // sentence after the act with the role `status`, read from the refusal's status and code and
 // never from its text: the 403 with no code says, in its text, what a `SETTLE_NOT_PERMITTED`
 // would, and draws the sentence of every other refusal.
@@ -281,8 +281,8 @@ test("each refusal says its sentence and leaves the mark", async () => {
   }
 });
 
-// R4 and the plan's "Settle": `null` (`409 KEY_COMMITTED`) is a landing, as a 200 is: no
-// sentence, the focus on the row, the same reads, and the held view dropped.
+// `null` (`409 KEY_COMMITTED`) is a landing, as a 200 is: no sentence, the focus on the row, the
+// same reads, and the held view dropped.
 test("a 409 KEY_COMMITTED lands as a 200", async () => {
   const user = userEvent.setup();
   const drawn = drawRow(() =>
@@ -305,7 +305,7 @@ test("a 409 KEY_COMMITTED lands as a 200", async () => {
   }
 });
 
-// R4: while the write is out the act says "Settling…" and takes no press; a 5xx is made again
+// While the write is out the act says "Settling…" and takes no press; a 5xx is made again
 // under the write's key, so the act goes on saying it while it is tried again. Pressed from the
 // keyboard - `f` leaves the focus on it, and Enter presses it - the act hands the focus to its
 // row first, so its taking no press drops no focus out of the tree.
@@ -336,7 +336,7 @@ test("Settling… is said while the write is out", async () => {
   }
 });
 
-// R4: the sentence stands until the reader's next act - a key, a press, a wheel or a touch, the
+// The sentence stands until the reader's next act - a key, a press, a wheel or a touch, the
 // four of the tree's `READER_ACTS` - and a pointer passing over the page is none.
 test("the refusal's sentence goes at the reader's next act", async () => {
   const user = userEvent.setup();

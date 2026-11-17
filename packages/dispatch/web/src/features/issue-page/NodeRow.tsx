@@ -693,7 +693,7 @@ function Bullet({
  * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
  * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
  * After the state, on that line, stand the node's marks - proposed or overtaken, then reserved
- * for its author - each by a word and a shape (`NodeMarks`, dispatch://INFRA-4063 R2, R7), on a
+ * for its author - each by a word and a shape (`NodeMarks`), on a
  * line of their own where the node has no state.
  */
 export function RowMargin({
@@ -780,8 +780,7 @@ export function RowMargin({
         )}
       </div>
       {/* A node's marks stand where a state stands, on its own line where it has no state, so a
-          proposed statement's mark is never drawn between its bullet and its words
-          (dispatch://INFRA-4063 R2, R7). */}
+          proposed statement's mark is never drawn between its bullet and its words. */}
       {node.state === undefined &&
       node.unsure !== true &&
       (node.life !== undefined || node.onlyYou === true) ? (

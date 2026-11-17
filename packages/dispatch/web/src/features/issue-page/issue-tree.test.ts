@@ -3125,9 +3125,9 @@ function counted(
   };
 }
 
-// dispatch://INFRA-4063 R5: a parent's overtaken children fold to one line after its other
-// children, so its folded count counts them as that one row and nothing under them, whether it
-// holds one of them or several, and whatever each of them holds.
+// A parent's overtaken children fold to one line after its other children, so its folded count
+// counts them as that one row and nothing under them, whether it holds one of them or several, and
+// whatever each of them holds.
 test("an overtaken child is one row of its parent's folded count", () => {
   const overtaken = (id: string, children: readonly TreeNode[]): TreeNode =>
     counted(id, children, { life: "overtaken" });

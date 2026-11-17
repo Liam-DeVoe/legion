@@ -6,7 +6,7 @@ import { nodeStatesOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer } from "../tree-read/tree-read";
 
 /**
- * A node's life and who may read it, on the issue's tree (dispatch://INFRA-4063 R1, R2, R5, R7).
+ * A node's life and who may read it, on the issue's tree.
  * Pure, over the tree `issue-tree.ts` assembles, which holds neither: the tree read answers each
  * node's state and visibility by the read's own id (`TreeNode.readId`), and `closeOvertaken`
  * puts them on every placement of that node and on every chip and parent line that names it, and
@@ -58,20 +58,20 @@ function carriesMarks(root: TreeNode): boolean {
 }
 
 /**
- * `root` with the states the tree read gives its nodes, by the read's own id (R1): a node takes
+ * `root` with the states the tree read gives its nodes, by the read's own id: a node takes
  * the entry of its `readId`, a parent line that of its own `readId`, and a node or a line with
  * none takes no states. Each takes the marks its entry holds and no other, whatever it carried
  * before, so a tree stamped again - a view's, whose rows are the outline's nodes - carries the
  * new states alone: a live or settled node has none. A node that is overtaken is `closed`, and so
- * is every node under it in `root` (R5), and no other node is. A proposed node and a closed one
- * draw no gap, the page's own included (R2, R5): a gap says what the issue's work still lacks,
+ * is every node under it in `root`, and no other node is. A proposed node and a closed one
+ * draw no gap, the page's own included: a gap says what the issue's work still lacks,
  * and neither is part of that work. No reader is waited on for a closed node either: a later
  * node took its place, so the page opens on none of them and draws none in the waiting tone,
- * though an open question among them is still a `question`, which `q` reaches (R3, R6). A gap
+ * though an open question among them is still a `question`, which `q` reaches. A gap
  * or a wait an earlier stamp took from a node is not given back. Each chip, in `chips` and in
  * `alsoUnder`, carries the marks of the node of `root` whose reference it names, whatever
  * version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
- * wherever it is drawn (R2, R7). Every node's `held` is counted again by `heldBy` over its new
+ * wherever it is drawn. Every node's `held` is counted again by `heldBy` over its new
  * children, which counts a parent's overtaken children as the one row that folds them.
  *
  * With no states, over a tree that carries no mark, it answers `root` itself.
@@ -120,7 +120,7 @@ export function stampStates(
 
 /**
  * `root`, a tree drawn from the tree read's `answer`, with the states that answer gives its nodes
- * (`nodeStatesOf`, R1), through `stampStates`: the outline, drawn from the read with no view,
+ * (`nodeStatesOf`), through `stampStates`: the outline, drawn from the read with no view,
  * and a view's tree, drawn from that view's own answer, so a view's rows carry their own state.
  * A view's tree is handed the outline's as `outline`: a node or a parent line of the view whose
  * read id the view's answer holds no node for - a parent the view answers by its id, kind and
@@ -163,7 +163,7 @@ export function closeOvertaken(
 
 /** The marks of each node of `root` that has a reference and a mark, by that reference without
  *  the version it pins (`tree-keys.ts`'s `withoutVersion`): what a place naming a node by its
- *  address draws beside it (R2, R7). An address that pins a version is read through `marksAt`,
+ *  address draws beside it. An address that pins a version is read through `marksAt`,
  *  which takes the version off as the map's keys have it off. */
 export function statesByReference(root: TreeNode): ReadonlyMap<string, NodeStates> {
   const found = new Map<string, NodeStates>();
@@ -188,7 +188,7 @@ export function marksAt(
 }
 
 /**
- * `opened` with the line of every overtaken node `path` runs through opened (R6), so the node
+ * `opened` with the line of every overtaken node `path` runs through opened, so the node
  * at its end is drawn as a row: an address, a chip, a Contents entry, `q` or `w` that names an
  * overtaken node or a node under one opens the line that holds it. An overtaken node under
  * another is behind two lines, and both open. `opened` itself where the path runs through no
@@ -206,9 +206,9 @@ export function withLine(
 }
 
 /** The id of each node of `root` that holds an overtaken child, in reading order: each node a
- *  line of overtaken nodes is drawn under (`tree-fold.ts`'s `OvertakenRow`, R5). Under the words
+ *  line of overtaken nodes is drawn under (`tree-fold.ts`'s `OvertakenRow`). Under the words
  *  filter the view holds only its matches and the chain above each, so each of these lines in
- *  that view holds a match, which the outline draws open (R6). */
+ *  that view holds a match, which the outline draws open. */
 export function linesIn(root: TreeNode): readonly string[] {
   const parents: string[] = [];
   const walk = (node: TreeNode): void => {

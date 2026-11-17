@@ -308,10 +308,10 @@ export const CONTENTS_MARK_WORDS = freeze({
 export type ContentsMark = keyof typeof CONTENTS_MARK_WORDS;
 
 /**
- * The marks a row carries beside its state where the model holds them (dispatch://INFRA-4063
- * R2, R5, R7): a proposal nobody has settled yet, what a later version of the issue overtook,
- * and what only its author may read. Each is drawn as its shape and this word, in the row's
- * margin and in the compact form after a chip's name, and the word names that shape (R9).
+ * The marks a row carries beside its state where the model holds them: a proposal nobody has
+ * settled yet, what a later version of the issue overtook, and what only its author may read. Each
+ * is drawn as its shape and this word, in the row's margin and in the compact form after a chip's
+ * name, and the word names that shape.
  */
 export const ROW_MARK_WORDS = freeze({
   only_you: "Only you",
@@ -827,9 +827,8 @@ export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
 
 /**
  * What Settle says while its write is out, and the one sentence it draws after itself when
- * Dispatch refuses the write (dispatch://INFRA-4063 R4), in place of the server's message: the
- * act reads the refusal's status and code, never its text. It is the fifth table
- * `ANSWER_SOURCES` gathers.
+ * Dispatch refuses the write, in place of the server's message: the act reads the refusal's status
+ * and code, never its text. It is the fifth table `ANSWER_SOURCES` gathers.
  */
 export const SETTLE_ANSWERS = freeze({
   /** Every refusal the three below do not name: a refusal of any other status or code. */
@@ -1082,8 +1081,7 @@ export const CONTROL_LABELS = freeze({
   /** Opens the Contents pane's list below 1024 px, where the pane is not drawn (R14). */
   outline: "Outline",
   /** What the one line that folds a parent's overtaken children says after their count:
-   *  "1 overtaken", "3 overtaken" (dispatch://INFRA-4063 R5). The line opens them in place and
-   *  closes them again. */
+   *  "1 overtaken", "3 overtaken". The line opens them in place and closes them again. */
   overtaken_count: "overtaken",
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
@@ -1145,8 +1143,8 @@ export const CONTROL_LABELS = freeze({
   serving_plan_tasks: "Plan tasks serving it",
   /** Gives an issue with no parent one (R11, row one). */
   set_parent: "Set parent issue",
-  /** Makes a proposed row the issue's own, among the focused row's acts (dispatch://INFRA-4063
-   *  R4): its mark goes, and the row draws its gaps and is counted. */
+  /** Makes a proposed row the issue's own, among the focused row's acts: its mark goes, and the
+   *  row draws its gaps and is counted. */
   settle: "Settle",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
@@ -1389,7 +1387,7 @@ export const GLYPH_TOKENS = freeze({
   },
   /** One shape per mark a row carries beside its state (`ROW_MARK_WORDS`), each named by its
    *  mark's word, so a proposed, an overtaken and a reserved row are told apart by a word and a
-   *  shape (dispatch://INFRA-4063 R9). */
+   *  shape. */
   marks: {
     only_you: "mark-only-you",
     overtaken: "mark-overtaken",

@@ -267,7 +267,7 @@ export function SpecFilterBody({
   const [report, setReport] = useState<{ readonly line: string; readonly row: string }>();
   const reportHere = useCallback((line: string) => {
     // A key pressed on a group's line of overtaken statements, which is no row, reports at the
-    // line, under the line's own key (dispatch://INFRA-4063 R5).
+    // line, under the line's own key.
     const lined =
       document.activeElement?.closest<HTMLElement>("[data-spec-line]")?.dataset.specLine;
     if (line !== "" && lined !== undefined) {
@@ -424,12 +424,11 @@ export function SpecFilterBody({
   // never to a cell: a cell can carry the answered ask's id, which a Contents entry names.
   const takeRequest = useTakeOutlineRequest();
   // The statements at or under an overtaken node fold to lines, one after the other statements
-  // of each group that holds any, which the reader opens in place (dispatch://INFRA-4063 R5,
-  // `foldedRows`): the lines the reader opened, and those they closed while the words filter
-  // holds words, by each line's own key. While the words filter holds words each line is drawn
-  // open, since the view then holds only the query's matches, so each line holds one; a line
-  // the reader closed under the words stays closed, as the outline's do (`IssueTree.tsx`'s
-  // `linesOpen`, R6).
+  // of each group that holds any, which the reader opens in place (`foldedRows`): the lines the
+  // reader opened, and those they closed while the words filter holds words, by each line's own
+  // key. While the words filter holds words each line is drawn open, since the view then holds only
+  // the query's matches, so each line holds one; a line the reader closed under the words stays
+  // closed, as the outline's do (`IssueTree.tsx`'s `linesOpen`).
   const holdsWords = useFilterWords().trim() !== "";
   const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
   const openOvertaken = useCallback(
@@ -454,7 +453,7 @@ export function SpecFilterBody({
     [groups, holdsWords, lines, others, root]
   );
   // A request from the Contents list or a chip that names a folded statement opens the line
-  // that holds it, and the statement's row takes the focus once it is drawn (R6). The request is
+  // that holds it, and the statement's row takes the focus once it is drawn. The request is
   // taken here, before the taking below, which would look for a row not drawn yet.
   const lineFocus = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -488,7 +487,7 @@ export function SpecFilterBody({
     if (goTo(reveal)) taken.current = reveal;
   }, [goTo, reveal, statements]);
   // An address that names a folded statement opens the line that holds it, and puts the focus
-  // on the statement once it is drawn, once per address (R6).
+  // on the statement once it is drawn, once per address.
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
     const line = folds.holding.get(reveal);
@@ -499,7 +498,7 @@ export function SpecFilterBody({
   // The focus on a group's line of overtaken statements makes the line the tree's one tab stop,
   // under the line's own key, as a statement's focus makes the statement; while it holds the
   // stop no statement takes Tab. It releases the statement the reader left, and a report drawn
-  // anywhere else goes (dispatch://INFRA-4063 R5).
+  // anywhere else goes.
   const takeLine = useCallback(
     (key: string) => {
       leave();
@@ -541,7 +540,7 @@ export function SpecFilterBody({
     oneNodeAtATime: false,
     rows,
     // Where a statement at or under an overtaken node folds, the keys step through the rows as
-    // the body draws them, its lines among them (dispatch://INFRA-4063 R5).
+    // the body draws them, its lines among them.
     ...(folds.rows === undefined ? {} : { rows: folds.rows }),
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
     // statement for the decision behind it (`tree-keys.ts`'s `decisionBehind`).
@@ -552,7 +551,7 @@ export function SpecFilterBody({
   // A statement folded under a line is no row, so the tree's one tab stop never rests on one: a
   // statement that held it hands it to the line that folds it, and where it rests nowhere yet,
   // it goes to the first statement the body draws, or, where it draws none, to the first line;
-  // a line the reader is on keeps it (dispatch://INFRA-4063 R5).
+  // a line the reader is on keeps it.
   if (folds.rows !== undefined && !lineHolds) {
     const drawn = folds.rows.flatMap((row) => (row.kind === "node" ? [row.node.id] : []));
     const resting = stop ?? statements[0]?.id;
@@ -623,7 +622,7 @@ export function SpecFilterBody({
         onFocus={(event) => {
           if (event.target !== event.currentTarget) return;
           // A line of overtaken statements that holds the stop takes the focus as a statement
-          // would (dispatch://INFRA-4063 R5).
+          // would.
           if (lineHolds) {
             event.currentTarget
               .querySelector<HTMLElement>('[data-overtaken-line][tabindex="0"]')
@@ -677,7 +676,7 @@ export function SpecFilterBody({
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
             known={held !== undefined}
             line={folds.lines.get(group)}
-            // A line that holds the stop holds it alone (dispatch://INFRA-4063 R5).
+            // A line that holds the stop holds it alone.
             lineStop={lineHolds ? stop : undefined}
             marked={marked}
             onCellFocus={focusCell}
@@ -755,7 +754,7 @@ interface GroupLine {
 }
 
 /** The lines the reader opened, and those they closed while the words filter held words, which
- *  stay closed while it does (dispatch://INFRA-4063 R5, R6), each by its key (`GroupLine`). */
+ *  stay closed while it does, each by its key (`GroupLine`). */
 interface OvertakenLines {
   readonly closed: ReadonlySet<string>;
   readonly open: ReadonlySet<string>;
@@ -765,23 +764,23 @@ interface OvertakenLines {
 const NO_LINES: OvertakenLines = { closed: new Set(), open: new Set() };
 
 /** Whether the line `key` names is drawn open: where the reader opened it, and, while the words
- *  filter holds words (`words`), where they did not close it under them (R5, R6). */
+ *  filter holds words (`words`), where they did not close it under them. */
 function lineIsOpen(lines: OvertakenLines, words: boolean, key: string): boolean {
   return lines.open.has(key) || (words && !lines.closed.has(key));
 }
 
 /**
- * The lines the body folds its statements at or under an overtaken node to
- * (dispatch://INFRA-4063 R5), and the rows the keys step through in the order the body draws
- * them. A statement folds with the topmost overtaken node it stands at or under: under the line
- * of the group that node's own statement is drawn in, where the view draws it, so a statement
- * under an overtaken statement is drawn after it; and where the view draws that node as no row -
- * a comment, a question, a statement the query left out - under the line of its own group. Each
- * group that holds folded statements draws one line after its other statements, keyed by the
- * group's first statement (`line:` and its id), so two groups under one parent draw two lines,
- * and the line counts the overtaken nodes its statements fold with: "1 overtaken", "N
- * overtaken". Its row carries the key as its `of`'s id too, which the keys hand back to open or
- * close it (`useTreeKeymap.ts`'s `onOvertaken`). `open` says whether a line is open, by its key.
+ * The lines the body folds its statements at or under an overtaken node to, and the rows the keys
+ * step through in the order the body draws them. A statement folds with the topmost overtaken node
+ * it stands at or under: under the line of the group that node's own statement is drawn in, where
+ * the view draws it, so a statement under an overtaken statement is drawn after it; and where the
+ * view draws that node as no row - a comment, a question, a statement the query left out - under
+ * the line of its own group. Each group that holds folded statements draws one line after its other
+ * statements, keyed by the group's first statement (`line:` and its id), so two groups under one
+ * parent draw two lines, and the line counts the overtaken nodes its statements fold with:
+ * "1 overtaken", "N overtaken". Its row carries the key as its `of`'s id too, which the keys hand
+ * back to open or close it (`useTreeKeymap.ts`'s `onOvertaken`). `open` says whether a line is
+ * open, by its key.
  *
  * `lines` holds each line by the group that draws it, `holding` each line by the id of every
  * statement it holds, and `rows` each group's other statements, its line, and, where the line is
@@ -1109,11 +1108,10 @@ function Group({
   /** Whether the Spec view read the decisions come from has answered, which is when a run with
    *  no decision can say that none shaped it. */
   known: boolean;
-  /** The line the group's overtaken statements fold to, where it holds any
-   *  (dispatch://INFRA-4063 R5). */
+  /** The line the group's overtaken statements fold to, where it holds any. */
   line?: GroupLine;
   /** The key of the line of overtaken statements that holds the tree's one tab stop, where one
-   *  does: no statement takes Tab then (dispatch://INFRA-4063 R5). */
+   *  does: no statement takes Tab then. */
   lineStop?: string;
   /** Whether the reads a mark comes from hold an answer, which is when a statement can carry
    *  how it stands. */
@@ -1141,14 +1139,14 @@ function Group({
    *  no line of their own, and every statement drawn. */
   underLine?: boolean;
 }): ReactNode {
-  // A line that holds the tree's one tab stop holds it alone (dispatch://INFRA-4063 R5).
+  // A line that holds the tree's one tab stop holds it alone.
   if (lineStop !== undefined) tabStop = lineStop;
-  // Each statement at or under an overtaken node folds out of its run (dispatch://INFRA-4063
-  // R5): the line drawn after the group's other statements holds it, with every other statement
-  // that folds with the same overtaken node, and draws them under it, run by run as their
-  // decisions shaped them, once it is open (`foldedRows`).
+  // Each statement at or under an overtaken node folds out of its run: the line drawn after the
+  // group's other statements holds it, with every other statement that folds with the same
+  // overtaken node, and draws them under it, run by run as their decisions shaped them, once it is
+  // open (`foldedRows`).
   // The marks of the node the statements hang under, which its heading's line carries: each of
-  // its statements names it by that line (dispatch://INFRA-4063 R2, R7).
+  // its statements names it by that line.
   const parentLine = group.runs[0]?.statements[0]?.node.parentLine;
   if (underLine !== true) {
     group = {
@@ -1170,8 +1168,7 @@ function Group({
       role="presentation"
     >
       {group.parent === undefined ? null : <GroupHeading parent={group.parent} />}
-      {/* The marks of the node the statements hang under, compact after its heading's line
-          (dispatch://INFRA-4063 R2, R7). */}
+      {/* The marks of the node the statements hang under, compact after its heading's line. */}
       {group.parent === undefined ||
       parentLine === undefined ||
       (parentLine.life === undefined && parentLine.onlyYou !== true) ? null : (
@@ -1217,7 +1214,7 @@ function Group({
         </div>
       ))}
       {/* The line the group's overtaken statements fold to, after its other statements, and,
-          once the reader opened it, those statements under it (dispatch://INFRA-4063 R5). */}
+          once the reader opened it, those statements under it. */}
       {line === undefined ? null : (
         <div
           className="ml-[300px] min-w-0 max-[901px]:ml-0"
@@ -1509,8 +1506,8 @@ function Statement({
 }): ReactNode {
   const node = statement.node;
   // A proposed statement draws no gap, nor does one at or under an overtaken node, so neither
-  // draws the mark "No check" (dispatch://INFRA-4063 R2, R5): no count reads them, which is why
-  // they read as served by no check, and the row draws no mark in its place.
+  // draws the mark "No check": no count reads them, which is why they read as served by no check,
+  // and the row draws no mark in its place.
   if (outOfCounts(node) && statement.mark === "no_check") marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
@@ -1617,7 +1614,7 @@ function Statement({
           </p>
         ) : null}
         {/* Its marks, on a line of their own under its words: the row has no state line, and
-            its words follow its bullet (dispatch://INFRA-4063 R2, R7). */}
+            its words follow its bullet. */}
         {node.life === undefined && node.onlyYou !== true ? null : (
           <p className="flex min-w-0 items-center leading-5" data-spec-marks="">
             <NodeMarks marks={node} />
@@ -1686,7 +1683,7 @@ function OtherRow({
     >
       <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome}>
         {NODE_TYPE_NAMES[node.type]}
-        {/* After the kind's word, in that line's own size (dispatch://INFRA-4063 R2, R7). */}
+        {/* After the kind's word, in that line's own size. */}
         <NodeMarks compact marks={node} />
       </p>
       <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>

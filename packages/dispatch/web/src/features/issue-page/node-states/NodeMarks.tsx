@@ -7,11 +7,10 @@ import { GLYPH_TOKENS, ROW_MARK_WORDS, type RowMark } from "../page-words";
 import type { NodeStates } from "./node-states";
 
 /**
- * The marks a node carries, each as its word and its shape (dispatch://INFRA-4063 R2, R5, R7,
- * R9): its life first - proposed or overtaken - then whether it is reserved for its author, who
- * is the reader. Each is `[data-node-mark]`, named by its mark's own token, in the grey of a
- * row's state line, and it keeps its word and its shape with forced colours: the shape is drawn
- * in the text's own colour.
+ * The marks a node carries, each as its word and its shape: its life first - proposed or
+ * overtaken - then whether it is reserved for its author, who is the reader. Each is
+ * `[data-node-mark]`, named by its mark's own token, in the grey of a row's state line, and it
+ * keeps its word and its shape with forced colours: the shape is drawn in the text's own colour.
  *
  * A row draws them in its margin's state line, at that line's size. `compact` is the form a
  * place that names a node inside another's row draws after the node's name - a chip, a parent
@@ -57,9 +56,9 @@ const NodeStatesByReference = createContext<ReadonlyMap<string, NodeStates>>(new
 
 /**
  * Hands the marks of the outline's nodes, by reference, to each place under it that names a node
- * by its address alone, with no node or chip of the tree to read them from: an entry of part W's
- * chain of lenses (dispatch://INFRA-4063 R1, R2, R7). `IssueTree` wraps its rows in it, with
- * `statesByReference` of the tree it draws, so the entry draws what the node's own row draws.
+ * by its address alone, with no node or chip of the tree to read them from: an entry of a lens's
+ * chain. `IssueTree` wraps its rows in it, with `statesByReference` of the tree it draws, so the
+ * entry draws what the node's own row draws.
  */
 export function NodeStatesProvider({
   children,

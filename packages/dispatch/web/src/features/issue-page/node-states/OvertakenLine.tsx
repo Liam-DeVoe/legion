@@ -7,9 +7,9 @@ import type { OvertakenRow } from "../tree-fold";
 
 /**
  * The one line a node's overtaken children fold to, after its other children and at their level
- * (dispatch://INFRA-4063 R5, `tree-fold.ts`'s `OvertakenRow`): how many it holds directly, in
- * one text node ("1 overtaken", "2 overtaken"), under the guides of the levels above it, as
- * `TreeRows.tsx`'s line of a deeper branch draws them.
+ * (`tree-fold.ts`'s `OvertakenRow`): how many it holds directly, in one text node ("1 overtaken",
+ * "2 overtaken"), under the guides of the levels above it, as `TreeRows.tsx`'s line of a deeper
+ * branch draws them.
  *
  * Unlike that line it takes the focus as a row does, a `treeitem` with `aria-expanded`, and it
  * is no `[data-branch-more]` and holds no button, so nothing that opens every deeper branch or

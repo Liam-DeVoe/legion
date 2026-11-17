@@ -25,8 +25,7 @@ import { ViewVerificationSlot } from "./view-verification";
  * the row being edited in takes onto its own stage (`document-stage.tsx`).
  *
  * Under Decisions, an address naming an overtaken node, or a node under one, which that view
- * draws nowhere, is replaced by the same address under no filter (`useOvertakenTarget`,
- * dispatch://INFRA-4063 R6).
+ * draws nowhere, is replaced by the same address under no filter (`useOvertakenTarget`).
  */
 export function StageSlot(props: SlotProps): ReactNode {
   const { hash, search } = useLocation();

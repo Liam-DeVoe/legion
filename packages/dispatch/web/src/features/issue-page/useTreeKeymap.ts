@@ -57,8 +57,7 @@ export interface TreeKeyboard {
   readonly onFold: (id: string, open: boolean) => void;
   /** Draws a branch that sits below the drawn levels where it stands. */
   readonly onOpenDeeper: (id: string) => void;
-  /** Opens or closes the line a node's overtaken children fold to, by that node's id
-   *  (dispatch://INFRA-4063 R5). */
+  /** Opens or closes the line a node's overtaken children fold to, by that node's id. */
   readonly onOvertaken?: (id: string, open: boolean) => void;
   /** Keeps one row's body open, or lets it close. */
   readonly onPin: (row: string) => void;
@@ -88,9 +87,9 @@ export interface TreeKeyboard {
  *  no node and takes no focus, so the keys step from the row above it to the row below. */
 type NodeRow = Extract<DrawnRow, { kind: "node" }>;
 
-/** The one line a node's overtaken children fold to (dispatch://INFRA-4063 R5). It stands for
- *  no node, but unlike a deeper branch's line it takes the focus as a row does: the keys step
- *  onto it, and Enter and the arrows open and close it in place. */
+/** The one line a node's overtaken children fold to. It stands for no node, but unlike a deeper
+ *  branch's line it takes the focus as a row does: the keys step onto it, and Enter and the arrows
+ *  open and close it in place. */
 type LineRow = Extract<DrawnRow, { kind: "overtaken" }>;
 
 /** Every row the keys step through: a node's own row, and a line of overtaken nodes. */
@@ -276,7 +275,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (row === undefined) return;
         // A line of overtaken nodes opens and closes in place from 1024 px up, as a row's
         // branch does; below, where the right arrow zooms into a row, there is nothing on a
-        // line to zoom into (dispatch://INFRA-4063 R5).
+        // line to zoom into.
         if (row.kind === "overtaken") {
           if (tree.oneNodeAtATime) return;
           tree.onReport("");
@@ -310,10 +309,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const on = at(elements);
         const row = rows[on];
         if (row === undefined) return;
-        // An open line of overtaken nodes closes at every width (dispatch://INFRA-4063 R5); a
-        // closed one does what a row at its level does, its parent being the node whose
-        // children it folds: below 1024 px the tree zooms to that node, and from 1024 px up the
-        // key moves to its row, the nearest row above at the level above.
+        // An open line of overtaken nodes closes at every width; a closed one does what a row at
+        // its level does, its parent being the node whose children it folds: below 1024 px the tree
+        // zooms to that node, and from 1024 px up the key moves to its row, the nearest row above
+        // at the level above.
         if (row.kind === "overtaken") {
           tree.onReport("");
           const parent = rows
@@ -550,8 +549,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const on = onRowItself(elements);
         const row = rows[on];
         if (row === undefined) return;
-        // Enter on a line of overtaken nodes opens or closes it, at every width
-        // (dispatch://INFRA-4063 R5): it holds no text to put a caret in.
+        // Enter on a line of overtaken nodes opens or closes it, at every width: it holds no text
+        // to put a caret in.
         if (row.kind === "overtaken") {
           tree.onReport("");
           tree.onOvertaken?.(row.of.id, !row.open);

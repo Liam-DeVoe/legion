@@ -265,7 +265,7 @@ export function DecisionsRow({
                   {entry.parent.line}
                 </span>
               )}
-              {/* After the parent's words, in the line's own size (dispatch://INFRA-4063 R2). */}
+              {/* After the parent's words, in the line's own size. */}
               <NodeMarks compact marks={entry.parent} />
             </p>
           )}
@@ -304,7 +304,7 @@ export function DecisionsRow({
                       chip the entry's own node holds for the same tie, found by the statement's
                       address in the conversation, which is how its shape names it. A decision's
                       ties are its node's chips (`tree-drafts.ts`), and each carries the marks of
-                      the node it names (dispatch://INFRA-4063 R2, R7). */}
+                      the node it names. */}
                   <NodeMarks
                     compact
                     marks={
@@ -515,8 +515,7 @@ function RowMargin({
         )}
       </div>
       {/* The node's marks stand where its state stands, on a line of their own where it has
-          none, as the outline's row draws them (`NodeRow.tsx`'s `RowMargin`;
-          dispatch://INFRA-4063 R2, R7). */}
+          none, as the outline's row draws them (`NodeRow.tsx`'s `RowMargin`). */}
       {standing === undefined && !unsure && (node.life !== undefined || node.onlyYou === true) ? (
         <div className={NODE_ROW_LAYOUT.marginState}>
           <NodeMarks marks={node} />

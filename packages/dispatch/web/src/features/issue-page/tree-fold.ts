@@ -34,9 +34,9 @@ import type { TreeNode } from "./issue-tree";
  * ## What is proposed or overtaken
  *
  * A proposed statement or check opens no path, since it is only put forward until a person
- * settles it (dispatch://INFRA-4063 R2). An overtaken node opens none either, and is no row of
- * its own: a node's overtaken children fold to one line after its other children, which counts
- * them and which the reader opens in place (`OvertakenRow`, dispatch://INFRA-4063 R5).
+ * settles it. An overtaken node opens none either, and is no row of its own: a node's overtaken
+ * children fold to one line after its other children, which counts them and which the reader opens
+ * in place (`OvertakenRow`).
  */
 
 /** How many levels below the node it is rooted at the outline draws from 1024 px up (R16): a
@@ -60,8 +60,8 @@ export interface OpenedBranches {
   /** The nodes whose branch below `DRAWN_LEVELS` the reader opened in place. */
   readonly deeper: ReadonlySet<string>;
   /** The nodes whose line of overtaken children the reader opened (`OvertakenRow`), which draws
-   *  each of those children as a row under the line (dispatch://INFRA-4063 R5). Absent, as
-   *  empty, where the reader opened none. */
+   *  each of those children as a row under the line. Absent, as empty, where the reader opened
+   *  none. */
   readonly overtaken?: ReadonlySet<string>;
 }
 
@@ -94,10 +94,10 @@ export interface DeeperRow {
   readonly trail: readonly string[];
 }
 
-/** The one row standing for a node's overtaken children, after its other children
- *  (dispatch://INFRA-4063 R5): a later node took each one's place, so none is a row of its own
- *  until the reader opens this line. Unlike a `DeeperRow` it takes the focus and opens and
- *  closes in place, and the frontier never opens it. */
+/** The one row standing for a node's overtaken children, after its other children: a later node
+ *  took each one's place, so none is a row of its own until the reader opens this line.
+ *  Unlike a `DeeperRow` it takes the focus and opens and closes in place, and the frontier
+ *  never opens it. */
 export interface OvertakenRow {
   /** How many overtaken children `of` holds directly, which the line says; the nodes under
    *  them are not counted. The children themselves are `of`'s children that `isOvertaken`
@@ -118,7 +118,7 @@ export interface OvertakenRow {
  *  the drawn levels folds to. */
 export type DrawnRow =
   | ({ readonly kind: "node" } & TreeRow)
-  // The one line a node's overtaken children fold to (dispatch://INFRA-4063 R5).
+  // The one line a node's overtaken children fold to.
   | ({ readonly kind: "overtaken" } & OvertakenRow)
   | ({ readonly kind: "deeper" } & DeeperRow);
 
@@ -129,26 +129,25 @@ export const NOTHING_OPENED: OpenedBranches = {
   deeper: new Set(),
 };
 
-/** Whether the node is proposed: put forward and not yet settled by a person
- *  (dispatch://INFRA-4063 R2). The page draws it with its mark and no gap, and it opens no
- *  path of the fold as an open statement or check would. */
+/** Whether the node is proposed: put forward and not yet settled by a person. The page draws it
+ *  with its mark and no gap, and it opens no path of the fold as an open statement or check
+ *  would. */
 export function isProposed(node: TreeNode): boolean {
   return node.life === "proposed";
 }
 
-/** Whether the node is overtaken: a later node took its place (dispatch://INFRA-4063 R5). It is
- *  no row until the reader opens its parent's line, and it and every node under it are
- *  `closed`. */
+/** Whether the node is overtaken: a later node took its place. It is no row until the reader
+ *  opens its parent's line, and it and every node under it are `closed`. */
 export function isOvertaken(node: TreeNode): boolean {
   return node.life === "overtaken";
 }
 
 /**
- * Whether no count of the page reads the node (dispatch://INFRA-4063 R3). No count treats a
- * proposed statement, check or plan task as done or owed, since it is only put forward until a
- * person settles it; and no count treats a node at or under an overtaken one as open or
- * unproved, since a later node took its place (`closed`). A proposed question and a proposed
- * decision are not out of the counts: what asks the reader stays counted.
+ * Whether no count of the page reads the node. No count treats a proposed statement, check or plan
+ * task as done or owed, since it is only put forward until a person settles it; and no count
+ * treats a node at or under an overtaken one as open or unproved, since a later node took its
+ * place (`closed`). A proposed question and a proposed decision are not out of the counts: what
+ * asks the reader stays counted.
  */
 export function outOfCounts(node: TreeNode): boolean {
   if (node.closed === true) return true;
@@ -166,8 +165,7 @@ export function outOfCounts(node: TreeNode): boolean {
 function unanswered(node: TreeNode): boolean {
   // A proposed statement or check is only put forward until a person settles it, so it opens
   // no path as a statement no check serves or a check that has not passed would; a proposed
-  // question and a proposed decision still ask the reader, and answer below as any other does
-  // (dispatch://INFRA-4063 R2).
+  // question and a proposed decision still ask the reader, and answer below as any other does.
   if (isProposed(node) && (node.type === "requirement" || node.type === "check")) return false;
   switch (node.type) {
     // A question nobody has answered. `question` is the ask's own `state === "open"`
@@ -249,8 +247,7 @@ function unanswered(node: TreeNode): boolean {
  * is in it, as that one's ancestor.
  *
  * Nothing at or under an overtaken node opens a path, since a later node took its place: the
- * line its parent folds it to stays closed until the reader opens it (dispatch://INFRA-4063
- * R5).
+ * line its parent folds it to stays closed until the reader opens it.
  */
 export function frontier(root: TreeNode): ReadonlySet<string> {
   const path = new Set<string>();
@@ -280,10 +277,10 @@ export function frontier(root: TreeNode): ReadonlySet<string> {
  * `levels` is how many levels below `root` one opening draws (R16): `DRAWN_LEVELS` from
  * 1024 px up and `NARROW_LEVELS` below.
  *
- * A node's overtaken children are no rows of their own (dispatch://INFRA-4063 R5): they fold
- * to one line after its other children (`OvertakenRow`), which counts them and which the
- * reader opens in place (`OpenedBranches`'s `overtaken`). Opened, each is a row one level
- * below the line, folded until the reader opens it, since the frontier never passes into one.
+ * A node's overtaken children are no rows of their own: they fold to one line after its other
+ * children (`OvertakenRow`), which counts them and which the reader opens in place
+ * (`OpenedBranches`'s `overtaken`). Opened, each is a row one level below the line, folded until
+ * the reader opens it, since the frontier never passes into one.
  */
 export function treeRows(
   root: TreeNode,

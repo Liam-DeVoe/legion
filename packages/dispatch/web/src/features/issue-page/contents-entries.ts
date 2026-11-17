@@ -33,8 +33,8 @@ export function contentsEntries(node: TreeNode, viewer: string | undefined): num
   let entries = 0;
   for (const child of node.children) {
     if (child.transcluded) continue;
-    // A node at or under an overtaken one is no entry: a later node took its place
-    // (dispatch://INFRA-4063 R3). A proposed ask is still one, since it asks the reader.
+    // A node at or under an overtaken one is no entry: a later node took its place. A proposed
+    // ask is still one, since it asks the reader.
     if (child.closed === true) continue;
     if (isContentsEntry(node, child, viewer)) entries += 1;
     entries += contentsEntries(child, viewer);

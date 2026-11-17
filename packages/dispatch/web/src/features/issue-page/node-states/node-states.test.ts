@@ -91,16 +91,13 @@ import { OvertakenLine } from "./OvertakenLine";
 import { useOvertakenTarget } from "./settle-write";
 
 /**
- * A node's life and who may read it, put on a tree built by hand (dispatch://INFRA-4063 R1, R2,
- * R5, R7, `dispatch://INFRA-4063/artifact/plan-md#b-t3`): the states arrive by the read's own
- * id, which each node built here carries as its id (`TreeNode.readId`), and every place that
+ * A node's life and who may read it, put on a tree built by hand: the states arrive by the read's
+ * own id, which each node built here carries as its id (`TreeNode.readId`), and every place that
  * draws a node, and every count over the tree, reads them from the one tree. The lines a path
- * opens, and the marks and the line as a row draws them, are read here too
- * (`dispatch://INFRA-4063/artifact/plan-md#b-t6`), and so are the tree's keys and its opening
- * on a line, over `IssueTree` drawn under the page's keymap (`renderTree`); the rows of a whole
- * page are the browser's. The states the tree read's answers give, with no view and with one,
- * are read over trees `buildIssueTree` and `presetView` build (`dispatch://INFRA-4063/artifact/
- * plan-md#b-t8`).
+ * opens, and the marks and the line as a row draws them, are read here too, and so are the tree's
+ * keys and its opening on a line, over `IssueTree` drawn under the page's keymap (`renderTree`);
+ * the rows of a whole page are the browser's. The states the tree read's answers give, with no
+ * view and with one, are read over trees `buildIssueTree` and `presetView` build.
  */
 
 const KEY = "CORE-1";
@@ -157,7 +154,7 @@ function readAsIds(root: TreeNode): TreeNode {
   return { readId: root.id, ...root, children: root.children.map(readAsIds) };
 }
 
-// R5: the negative control's assertion. An overtaken node and every node under it, at any
+// The negative control's assertion. An overtaken node and every node under it, at any
 // depth, draw no gap, though each drew one before; a live sibling keeps its own.
 test("no node at or under an overtaken one draws a gap", () => {
   const root = node(KEY, "issue", [
@@ -194,7 +191,7 @@ test("no node at or under an overtaken one draws a gap", () => {
   expect(nodeOf(tree, "spec#b-r2")).toStrictEqual(nodeOf(root, "spec#b-r2"));
 });
 
-// R3, R6: a node at or under an overtaken one waits on nobody, since a later node took its
+// A node at or under an overtaken one waits on nobody, since a later node took its
 // place: the page opens on none of them and draws none in the waiting tone. An open question
 // among them is still a question, which `q` reaches; a live one keeps waiting.
 test("no node at or under an overtaken one waits on the reader", () => {
@@ -215,7 +212,7 @@ test("no node at or under an overtaken one waits on the reader", () => {
   expect(nodeOf(tree, "ask-3")).toStrictEqual(nodeOf(root, "ask-3"));
 });
 
-// R1: a node's marks are its entry's and no other. A settled node's entry holds none, and a
+// A node's marks are its entry's and no other. A settled node's entry holds none, and a
 // live node visible to everyone has no entry at all: neither carries a mark or is closed, and
 // each is the node it was before, key for key.
 test("a live or settled node has no mark", () => {
@@ -238,7 +235,7 @@ test("a live or settled node has no mark", () => {
   }
 });
 
-// R2: a proposed node draws no gap, the page's own included: a plan task that serves nothing
+// A proposed node draws no gap, the page's own included: a plan task that serves nothing
 // draws no "No reason given", a check citing no statement none either, and a statement two
 // sources disagree on none. A proposed node closes nothing under it, and a live one keeps its gap.
 test("a proposed node draws no gap the page made", () => {
@@ -262,7 +259,7 @@ test("a proposed node draws no gap the page made", () => {
   expect(nodeOf(tree, "plan-md#b-t2")?.gaps).toEqual(["nobody_asked"]);
 });
 
-// R2, R7: a chip names a node by its reference, whatever version it pins, and a parent line by
+// A chip names a node by its reference, whatever version it pins, and a parent line by
 // its id, and each carries that node's marks, in `chips` and in `alsoUnder` alike; one naming an
 // unmarked node carries none. A parent line's node need not be in the tree at all: a view draws
 // it as no row.
@@ -310,7 +307,7 @@ test("a tree given no states is answered as it is", () => {
   expect(stampStates(root, new Map(), heldBy)).toBe(root);
 });
 
-// R5: a parent's overtaken children fold to one line, so its folded count counts that line as
+// A parent's overtaken children fold to one line, so its folded count counts that line as
 // one row and nothing under it, while each overtaken node still counts what it holds itself.
 test("a parent's overtaken children are one row of its held count", () => {
   const root = node(KEY, "issue", [
@@ -332,7 +329,7 @@ test("a parent's overtaken children are one row of its held count", () => {
   expect(stamped(root, { "spec#b-r3": { life: "overtaken" } }).held).toBe(6);
 });
 
-// R6: an address, a chip, a Contents entry, `q` or `w` that names an overtaken node, or a node
+// An address, a chip, a Contents entry, `q` or `w` that names an overtaken node, or a node
 // under one, opens the line that holds it - each line, where an overtaken node stands under
 // another - and a path through no overtaken node leaves the fold as it was.
 test("a path opens the line of each overtaken node it runs through, and none for a path through none", () => {
@@ -361,7 +358,7 @@ test("a path opens the line of each overtaken node it runs through, and none for
   expect(withLine(opened, undefined)).toBe(opened);
 });
 
-// R6: under the words filter each line of the view holds a match, so each is drawn open: the
+// Under the words filter each line of the view holds a match, so each is drawn open: the
 // lines are the nodes that hold an overtaken child, at any depth, and no other.
 test("each node that holds an overtaken child holds a line, in reading order", () => {
   const root = node(KEY, "issue", [
@@ -380,7 +377,7 @@ test("each node that holds an overtaken child holds a line, in reading order", (
   expect(linesIn(node(KEY, "issue"))).toEqual([]);
 });
 
-// R2, R7, R9: a node's marks are its words and its shapes, its life first, in every place that
+// A node's marks are its words and its shapes, its life first, in every place that
 // draws it; a node that has none draws nothing at all, not even an empty box.
 test("a proposed node is marked Proposed with its shape, and a node with no mark draws none", () => {
   const proposed = render(createElement(NodeMarks, { marks: { life: "proposed" } }));
@@ -411,7 +408,7 @@ test("a proposed node is marked Proposed with its shape, and a node with no mark
   }
 });
 
-// R5: a parent's overtaken children fold to one line after its other children, which says how
+// A parent's overtaken children fold to one line after its other children, which says how
 // many it holds in one text node, takes the focus with `aria-expanded`, and opens and closes in
 // place. It is no line of a deeper branch and holds no Unfold, so nothing that opens every
 // branch opens it.
@@ -564,7 +561,7 @@ function commentAndLine(): TreeNode {
   });
 }
 
-// R5, R9: the line takes the focus as a row does, so it is the tree's one tab stop once the
+// The line takes the focus as a row does, so it is the tree's one tab stop once the
 // reader is on it: Shift+Tab comes back to it, and the row they left takes no Tab of its own.
 test("the overtaken line is the tree's tab stop once the reader is on it", async () => {
   readWide();
@@ -585,7 +582,7 @@ test("the overtaken line is the tree's tab stop once the reader is on it", async
   }
 });
 
-// R5, R9: a key pressed on the line that answers in words - `w` there has no decision behind
+// A key pressed on the line that answers in words - `w` there has no decision behind
 // it, since the line stands for no node - is drawn at the line, and the next move lets it go.
 test("a key's report on the overtaken line is drawn at the line", async () => {
   readWide();
@@ -611,7 +608,7 @@ test("a key's report on the overtaken line is drawn at the line", async () => {
   }
 });
 
-// R5, R9: a key's report on one line of overtaken nodes is that line's: a press on another line
+// A key's report on one line of overtaken nodes is that line's: a press on another line
 // takes the reader there, and the report does not follow them to it.
 test("a key's report on one overtaken line does not move to another line pressed after it", async () => {
   readWide();
@@ -654,7 +651,7 @@ test("a key's report on one overtaken line does not move to another line pressed
   }
 });
 
-// R5: the cycle key's last state draws every branch, and a line the reader opens there opens:
+// The cycle key's last state draws every branch, and a line the reader opens there opens:
 // the lines are no branch, so that state keeps the ones the reader opened.
 test("in the cycle's last state, Enter on the overtaken line opens it", async () => {
   readWide();
@@ -678,7 +675,7 @@ test("in the cycle's last state, Enter on the overtaken line opens it", async ()
   }
 });
 
-// R3, R5: an overtaken question that waited on the reader waits no more, so the page opens on
+// An overtaken question that waited on the reader waits no more, so the page opens on
 // the outline's first row, with the line that holds the question closed.
 test("the page does not open on an overtaken question", async () => {
   readWide();
@@ -701,7 +698,7 @@ test("the page does not open on an overtaken question", async () => {
   }
 });
 
-// R6: `q` and `w` take the reader to an overtaken question and an overtaken decision, which are
+// `q` and `w` take the reader to an overtaken question and an overtaken decision, which are
 // no rows while their line is closed: each key opens the line and focuses the node's row.
 test("`q` and `w` reach an overtaken question and decision", async () => {
   readWide();
@@ -807,7 +804,7 @@ function drawVerification(root: TreeNode, checks: readonly CheckBlock[], query =
   );
 }
 
-// R2, R3: under Verification a proposed check carries its mark in its row's state line, and no
+// Under Verification a proposed check carries its mark in its row's state line, and no
 // count of the summary reads it: not the covered count, not the "of M" that count is out of (a
 // proposed statement is out of both), and not the legend's count of how the checks stand. The
 // table still draws every statement and every check.
@@ -869,7 +866,7 @@ test("the Verification view marks a proposed check and leaves it out of its summ
   }
 });
 
-// R5: under Verification a statement's overtaken check is no row until the reader opens the one
+// Under Verification a statement's overtaken check is no row until the reader opens the one
 // line it folds to, the last row of the statement's group of checks, and an overtaken statement
 // folds to one line after every other row. Each line is a row the tree's keys walk, in the order
 // it is drawn, and the tree's one tab stop once the walk is on it. A press, Enter and the arrows
@@ -971,7 +968,7 @@ test("the Verification view folds an overtaken check into one line that a press 
   }
 });
 
-// R5, R9: under Verification a press that closes a line takes the rows it holds off the tree, so
+// Under Verification a press that closes a line takes the rows it holds off the tree, so
 // where one of them held the tree's one tab stop, the line takes it: a statement's line, whose
 // check would hand it back to the issue's row, and the issue's line, whose statements would keep
 // it on a row no longer drawn.
@@ -1036,7 +1033,7 @@ test("a press that closes a Verification line over the tab stop hands the stop t
   }
 });
 
-// R6: under Verification the words filter draws a match that is an overtaken check under its
+// Under Verification the words filter draws a match that is an overtaken check under its
 // open line, and a line the reader closes under the words stays closed.
 test("the Verification view draws an overtaken check the words match under an open line", async () => {
   const user = userEvent.setup();
@@ -1068,7 +1065,7 @@ test("the Verification view draws an overtaken check the words match under an op
   }
 });
 
-// R3: a state chip's count leaves a proposed statement out, and so does what the chip draws: the
+// A state chip's count leaves a proposed statement out, and so does what the chip draws: the
 // chip says one number and draws as many statements.
 test("the Verification view's state chip draws no statement its count leaves out", async () => {
   const user = userEvent.setup();
@@ -1181,7 +1178,7 @@ function drawSpec(
   };
 }
 
-// R2: a proposed statement draws no gap, so under Spec it carries no mark of No check though no
+// A proposed statement draws no gap, so under Spec it carries no mark of No check though no
 // check serves it, and it carries its own mark, Proposed, instead. A live statement no check
 // serves still carries No check, and no mark of a life.
 test("the Spec view draws no No check on a proposed statement and marks it", () => {
@@ -1212,7 +1209,7 @@ test("the Spec view draws no No check on a proposed statement and marks it", () 
   }
 });
 
-// R3, decision 115 A: the Contents list draws no entry for an overtaken question, nor for a
+// The Contents list draws no entry for an overtaken question, nor for a
 // question under one, and its count, the view row's, agrees with what it draws. A live question
 // beside it keeps its entry.
 test("the Contents list draws no entry for an overtaken question", () => {
@@ -1259,7 +1256,7 @@ function statementAndLine(): TreeNode {
   });
 }
 
-// R5, R9: under Spec the line a group's overtaken statements fold to takes the focus as a
+// Under Spec the line a group's overtaken statements fold to takes the focus as a
 // statement does, and with it the tree's one tab stop: the statement the reader left takes no
 // Tab of its own while the line holds it, so Shift+Tab from the line leaves the tree.
 test("the Spec view's overtaken line is its tab stop once the reader is on it", async () => {
@@ -1287,7 +1284,7 @@ test("the Spec view's overtaken line is its tab stop once the reader is on it", 
   }
 });
 
-// R5, R9: a key pressed on the Spec view's line that answers in words - `q` where no question
+// A key pressed on the Spec view's line that answers in words - `q` where no question
 // is open, since the line stands for no node - is drawn at the line, and the next move lets it
 // go.
 test("a key's report on the Spec view's overtaken line is drawn at the line", async () => {
@@ -1321,7 +1318,7 @@ function linesOf(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>("[data-overtaken-line]")];
 }
 
-// R5: two groups of statements can hang under one parent - the issue's statements before a
+// Two groups of statements can hang under one parent - the issue's statements before a
 // question's and after it - and a line is drawn only after the group whose statements it folds,
 // keyed by that group, so one press opens that line alone, and the keys walk the rows as drawn.
 test("the Spec view draws a line only after the group whose statements it folds", async () => {
@@ -1385,7 +1382,7 @@ test("the Spec view draws a line only after the group whose statements it folds"
   }
 });
 
-// R6: an address that names an overtaken statement under Spec opens the line that holds it and
+// An address that names an overtaken statement under Spec opens the line that holds it and
 // puts the focus on it, and so does a request from the Contents list or a chip.
 test("the Spec view opens the line of an overtaken statement an address or a request names", async () => {
   const addressed = drawSpec(statementAndLine(), { reveal: "spec#b-r2" });
@@ -1415,7 +1412,7 @@ test("the Spec view opens the line of an overtaken statement an address or a req
   }
 });
 
-// R6: under Spec the words filter draws a match that is an overtaken statement under its open
+// Under Spec the words filter draws a match that is an overtaken statement under its open
 // line, and a line the reader closes under the words stays closed.
 test("the Spec view draws an overtaken statement the words match under an open line", async () => {
   const user = userEvent.setup();
@@ -1443,7 +1440,7 @@ test("the Spec view draws an overtaken statement the words match under an open l
   }
 });
 
-// R1, R2, R7: the tree read's own `state` and `visibility` are a node's marks where they are a
+// The tree read's own `state` and `visibility` are a node's marks where they are a
 // life or the author's alone, and nothing else is one: a live, settled or gone node and one the
 // read gives no value for carry none.
 test("statesOfRead marks a proposed or overtaken state and the author's visibility, and no other", () => {
@@ -1470,7 +1467,7 @@ const PREMORTEM = "dispatch://lens/0c6f1d2e-2222-4a6b-9c1d-5e2f3a4b5c62";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** `chip` drawn by W's `NodeLink` on this issue's route, so a chip with an id is a link. */
+/** `chip` drawn by `NodeLink` on this issue's route, so a chip with an id is a link. */
 function drawChip(chip: LensChip) {
   return render(
     createElement(
@@ -1497,7 +1494,7 @@ function chipDrawn(container: HTMLElement): (string | null)[] {
   );
 }
 
-// R1, R2, R7: a chip of a lens line carries the marks of the node it names, from the state and
+// A chip of a lens line carries the marks of the node it names, from the state and
 // the visibility its tree read gives, after the chip's words - a link or the words alone - in
 // the chip's own form; a live node every reader may see, or a chip given neither, carries none.
 test("a lens chip carries the marks its tree read gives", () => {
@@ -1676,7 +1673,7 @@ async function showChain(container: HTMLElement): Promise<void> {
   );
 }
 
-// R1, R2, R7: an entry of a lens's chain carries the marks of the tree's node at its lens's
+// An entry of a lens's chain carries the marks of the tree's node at its lens's
 // address, whatever version the address pins, after the lens's name; an entry the tree holds no
 // node for carries none, and so does every entry outside the outline's rows. The lens read's
 // own state and visibility mark nothing. The outline hands its tree's marks to its rows itself.
@@ -1748,7 +1745,7 @@ function stoppedDrawn(container: HTMLElement): (string | null)[] {
   return chipDrawn(more);
 }
 
-// R1, R2, R7: the chip of the lens a cut-short chain stopped at names that lens by its address
+// The chip of the lens a cut-short chain stopped at names that lens by its address
 // alone, with no state of its own, so it carries the marks of the tree's node at that address,
 // after its words; outside the outline's rows it carries none.
 test("the lens a cut-short chain stopped at carries the tree's marks", async () => {
@@ -1773,9 +1770,8 @@ test("the lens a cut-short chain stopped at carries the tree's marks", async () 
   }
 });
 
-/** One node of the tree read's answer as the contract gives it (dispatch://INFRA-1253 R8): live
- *  and visible to every reader unless the case says otherwise, under the issue unless it names
- *  another parent. */
+/** One node of the tree read's answer as the contract gives it: live and visible to every reader
+ *  unless the case says otherwise, under the issue unless it names another parent. */
 function readNode(
   id: string,
   supertag: string,
@@ -1875,7 +1871,7 @@ function eachKind(values: readonly Partial<TreeAnswerNode>[]): TreeAnswerNode[] 
   );
 }
 
-// R1, R5: a node of every kind the outline draws takes its life from the `state` the tree read
+// A node of every kind the outline draws takes its life from the `state` the tree read
 // answers for it, by the read's own id, which a typed block's tree id is not: proposed or
 // overtaken, an overtaken one closed and a proposed one not. A live node and a settled one
 // carry no mark at all.
@@ -1904,7 +1900,7 @@ test("a node of any kind the tree read answers proposed or overtaken has that li
   }
 });
 
-// R1, R7: a node of every kind the outline draws whose `visibility` the tree read answers as
+// A node of every kind the outline draws whose `visibility` the tree read answers as
 // `author` is reserved for its author, the reader, and is marked "Only you", beside "Proposed"
 // where both hold; a node every reader may see carries no such mark.
 test("a node of any kind whose visibility is author is marked Only you", () => {
@@ -1931,7 +1927,7 @@ test("a node of any kind whose visibility is author is marked Only you", () => {
   }
 });
 
-// R1: a view's rows carry the states the view's own answer gives them, where the tree read with
+// A view's rows carry the states the view's own answer gives them, where the tree read with
 // no view answered otherwise: a statement the Spec view answers proposed is marked there though
 // the outline's is live, one it answers live carries no mark though the outline's is proposed,
 // and one it answers reserved for its author is marked "Only you".
@@ -1957,7 +1953,7 @@ test("a view's rows carry their own state", () => {
   ]);
 });
 
-// R1, R2: the Plan view answers a plan task's parent statement by its id, kind and first line
+// The Plan view answers a plan task's parent statement by its id, kind and first line
 // alone (`parent_line`), and nothing of its state. The parent line names the statement by its
 // read id and takes the state the tree read with no view gives it, so statement 7 is marked on
 // plan task 7's line, though the view holds no node of it; the plan task itself carries the
@@ -1998,7 +1994,7 @@ test("a parent line in a view takes its parent's state from the tree when the vi
   ]);
 });
 
-// R1, R5: a statement the Verification view's answer holds live, which the tree read with no
+// A statement the Verification view's answer holds live, which the tree read with no
 // view answered overtaken, is live in the view: its row carries no mark and is not closed, and
 // neither is the check under it, so the view folds neither into a line nor leaves either out
 // of a count. Only a node the view's answer does not hold takes the outline's marks.
@@ -2060,11 +2056,11 @@ function overtakenDecision(): TreeAnswer {
   ]);
 }
 
-// R6, dispatch://INFRA-1196 decision 118: the Decisions view draws an overtaken decision, and
-// each node under one, nowhere, so an address naming one under that view is replaced by the
-// same address under no filter, its search and its fragment kept, where the outline opens the
-// line that holds it. Under another view, or naming a live decision, the address stays. The
-// tree read is the one the page already holds: nothing is read for it.
+// The Decisions view draws an overtaken decision, and each node under one, nowhere, so an address
+// naming one under that view is replaced by the same address under no filter, its search and its
+// fragment kept, where the outline opens the line that holds it. Under another view, or naming a
+// live decision, the address stays. The tree read is the one the page already holds: nothing is
+// read for it.
 test("an address naming an overtaken decision under the Decisions view is replaced by the same address under no filter", async () => {
   const fetched = spyOn(globalThis, "fetch").mockRejectedValue(new Error("no request"));
   const reads = [
@@ -2153,7 +2149,7 @@ function drawDecisions(root: TreeNode, made: readonly TreeAnswerNode[]) {
   );
 }
 
-// R2, R7: under Decisions a proposed decision is marked in its margin, after the word for how it
+// Under Decisions a proposed decision is marked in its margin, after the word for how it
 // stands on that line, and on a line of its own where it stands in none. The line naming its
 // parent carries the parent's marks after the parent's words, and each statement it informs
 // carries that statement's marks after its name, both in the compact form. A live entry, and a
@@ -2332,7 +2328,7 @@ function placesDrawn(container: HTMLElement): string[] {
   );
 }
 
-// R5, root R26: in the Plan view an overtaken task has no position: the plan's order leaves it
+// In the Plan view an overtaken task has no position: the plan's order leaves it
 // out, so no step stands at its place. The steps draw it after every step, as the one line its
 // issue's overtaken tasks fold to, which a press opens: the task is then a row under it, marked
 // Overtaken.
@@ -2363,7 +2359,7 @@ test("the Plan view gives an overtaken step no position and folds it after the s
   }
 });
 
-// R5, R9: the Plan chart draws an overtaken task as no bar, since it has no position: one line
+// The Plan chart draws an overtaken task as no bar, since it has no position: one line
 // after every bar says how many there are, a treeitem with `aria-expanded` that the chart's keys
 // walk to after the last bar, and the chart's one tab stop once the walk is on it. Enter or a
 // press opens it: the task is then a row after it, marked Overtaken, which the walk and End reach
@@ -2427,7 +2423,7 @@ test("the Plan chart folds an overtaken task into one line after the bars", asyn
   }
 });
 
-// R6: an address naming an overtaken task opens the line that holds it and puts the focus on the
+// An address naming an overtaken task opens the line that holds it and puts the focus on the
 // task's row there, in the chart and, where the address moves while the reader reads the steps,
 // in the steps, though the outline holds the task under a statement the view draws as no row.
 // Under the words filter the line that holds a match is drawn open, in both.
@@ -2476,7 +2472,7 @@ test("the Plan view opens the line of an overtaken task an address or the words 
   }
 });
 
-// R2, R7: the Plan chart marks a proposed step after its facts, and names what a step needs and
+// The Plan chart marks a proposed step after its facts, and names what a step needs and
 // what it serves each with the marks of the node named, after its name, in the compact form. A
 // step with no mark of its own draws none in its facts.
 test("the Plan chart marks a proposed step, and what a step needs and serves", () => {
@@ -2517,8 +2513,8 @@ test("the Plan chart marks a proposed step, and what a step needs and serves", (
   }
 });
 
-// R4: the steps are I's rows, so a focused proposed step draws G's acts, Settle among them, and
-// a focused live step draws its acts with no Settle.
+// The steps are the outline's rows, so a focused proposed step draws the row's acts (`RowActs`),
+// Settle among them, and a focused live step draws its acts with no Settle.
 test("a proposed step carries Settle", async () => {
   readWide();
   const user = userEvent.setup();
