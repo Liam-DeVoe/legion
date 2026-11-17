@@ -318,16 +318,19 @@ func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
 // its ancestry before the command runs. It fails, rather than skipping, when an `omp` is still
 // above that shell: a check that cannot see the thing it is for must say so.
 //
-// The orphan cannot be waited on, so it reports through files: its stdout, its stderr and its
-// exit code, the last written under another name and renamed, so a code read is never a partial
-// write.
+// The orphan cannot be waited on, so it reports through files: its pid, its stdout, its stderr
+// and its exit code. The test polls for the pid and the code, so each of those two is written
+// under another name and renamed into place: a redirect creates its file before the shell writes
+// to it, and a read in between would find the file empty. The stdout and stderr are read only
+// once the code is there, after the command that wrote them has exited.
 func runWithNoLauncherAbove(t *testing.T, binary string, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "orphan.sh")
 	const body = `d=$1
 shift
-printf '%s\n' "$$" > "$d/shell.pid"
+printf '%s\n' "$$" > "$d/shell.pid.tmp"
+mv "$d/shell.pid.tmp" "$d/shell.pid"
 i=0
 while [ ! -e "$d/go" ]; do
 	if [ -e "$d/stop" ]; then exit 1; fi
