@@ -11,9 +11,11 @@ import type {
 import { compareTimestamps } from "../../lib/timestamps";
 import { activityDescription, dateKey, dayLabel } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
+import { askResolutionReason } from "../refs/actor";
 import { sessionOfAddress } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import { CONTROL_LABELS, issueStatusWord } from "./page-words";
+import { plainWords } from "./tree-drafts";
 
 /**
  * The issue's history, as the panel draws it (dispatch://INFRA-1196 R15, R20): every event that
@@ -306,6 +308,11 @@ function threadsOf(
       threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn), seqOf)
     );
   }
+  // A thread stands at its first turn's time (`threadEntry`), so one whose first turn is older
+  // than every event read so far is left out whole, its replies too however recent, until the
+  // page that reaches back to that turn is read: drawn before, it would stand among days the log
+  // has not read, and a day drawn with it alone would count one entry where it holds many. The
+  // address of one of its turns reads the log on until it is in (`IssueHistory.tsx`).
   const from = input.loadedFrom;
   return from === undefined
     ? threads
@@ -332,7 +339,11 @@ function threadEntry(
  * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
  * line names by a token in the page's words (dispatch://INFRA-3948 D6, R22 of
  * dispatch://INFRA-1196): a delivery's target by the agent it went to, never its address or
- * `session:<id>`, and the status a reopened issue went into by its word.
+ * `session:<id>`; the status a reopened issue went into by its word; and a stored text it
+ * quotes, an approval request's question or the reason it was resolved with, by its plain words,
+ * as the outline names an ask (`plainWords`, decision 95), never the markup its author typed or a
+ * bare `dispatch://` address, which reads as its short form. Every other text a line of the
+ * history holds is a name, a key or the server's own words, none of which is markdown.
  */
 function historyLine(event: DispatchEvent, previousStatus: string | undefined): AgentPart[] {
   const line = activityDescription(event, previousStatus);
@@ -358,6 +369,17 @@ function historyLine(event: DispatchEvent, previousStatus: string | undefined): 
       return previousStatus === "done" && event.payload.status !== "done"
         ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
         : line;
+    // Every ask event the history keeps is an approval request's (`ofOutlineRow`), whose
+    // question is markdown its agent wrote, citing addresses.
+    case "ask.opened":
+    case "ask.anchor_refreshed":
+    case "ask.edited":
+    case "ask.handed_back":
+    case "ask.asked_of":
+    case "ask.answered":
+      return withWords(line, event.payload.question);
+    case "ask.resolved":
+      return withWords(line, askResolutionReason(event.payload.resolution));
     default:
       return line;
   }
@@ -373,6 +395,13 @@ function withPart(line: AgentPart[], token: string | undefined, part: AgentPart)
       ? [piece]
       : [piece.slice(0, at), part, piece.slice(at + token.length)].filter((one) => one !== "");
   });
+}
+
+/** `line` with the stored text `stored` it quotes drawn by its plain words (`plainWords`). */
+function withWords(line: AgentPart[], stored: string | undefined): AgentPart[] {
+  if (stored === undefined) return line;
+  const words = plainWords(stored);
+  return words === stored ? line : withPart(line, stored, words);
 }
 
 /** Who a delivery went to, as the page names an agent (`AgentName`): the session the attempt

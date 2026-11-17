@@ -552,3 +552,58 @@ test("the entry of one author's uploads has Pin, as every other line of the hist
     restoreReads();
   }
 });
+
+// Details is reached by Tab, so a control of the history that goes away under the focus leaves
+// the focus in the history rather than on the page, as Details' Unpin does (IssueMargin.test.tsx):
+// Load older, gone once the log has ended, hands it to the last control of the list, beside the
+// entries it added; the Retry of a failed read, gone once the read lands, to the history's
+// heading.
+test("a control of the history that goes away under the focus leaves the focus in the history", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  let down = false;
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (down) throw new Error("the log is down");
+      return options?.before === undefined ? [...firstPage] : [...olderPage];
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    (await screen.findByRole("button", { name: CONTROL_LABELS.load_older })).focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
+    );
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const controls = [...list.querySelectorAll<HTMLElement>("a[href], button")];
+    expect(
+      document.activeElement,
+      "Load older went away with the log's end and the focus fell to the page"
+    ).toBe(controls.at(-1) ?? null);
+
+    down = true;
+    await act(async () => {
+      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
+    });
+    (await screen.findByRole("button", { name: CONTROL_LABELS.retry })).focus();
+    down = false;
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the Retry of the failed read went away once it landed and the focus fell to the page"
+    ).toBe(screen.getByRole("heading", { name: CONTROL_LABELS.history }));
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
