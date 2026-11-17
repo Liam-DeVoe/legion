@@ -7,9 +7,9 @@
 //
 // The Legion daemon writes a run twice, at its start and at its end, under one id, and the two
 // writes can arrive in either order, or more than once. So a write never refuses for its order: it
-// sets each field the node does not hold yet, leaves each field it holds, and makes the node when
-// none exists (PutStep). The read of an issue (IssueSteps) answers each run with its attempt,
-// which no write stores.
+// sets each field the node does not hold yet, leaves each field it holds, but returned_to, which
+// only the write that sets the result sets, and makes the node when none exists (PutStep). The
+// read of an issue (IssueSteps) answers each run with its attempt, which no write stores.
 //
 // The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
 // does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's
