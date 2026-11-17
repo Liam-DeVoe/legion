@@ -101,23 +101,35 @@ func seenReferences(ctx context.Context, q queryer, who model.Actor, named refer
 	if seesEveryObject(who) || named.empty() {
 		return named, nil
 	}
-	arguments := make([]any, 0, len(referenceKinds)+1)
-	for _, kind := range referenceKinds {
-		arguments = append(arguments, slices.Sorted(maps.Keys(named[kind])))
-	}
-	rows, err := q.Query(ctx, seenReferencesSQL, append(arguments, refs.VisibilityArg(who))...)
+	rows, err := q.Query(ctx, seenReferencesSQL, seenReferencesArgs(who, named)...)
 	if err != nil {
 		return nil, fmt.Errorf("read which named objects the reader sees: %w", err)
 	}
 	seen := references{}
-	var kind, id string
-	if _, err := pgx.ForEachRow(rows, []any{&kind, &id}, func() error {
-		seen.name(referenceKind(kind), id)
-		return nil
-	}); err != nil {
+	if err := scanSeenReferences(rows, seen); err != nil {
 		return nil, fmt.Errorf("read which named objects the reader sees: %w", err)
 	}
 	return seen, nil
+}
+
+// seenReferencesArgs is what seenReferencesSQL binds for named and who: the ids of each kind,
+// sorted, in referenceKinds' order, then who's viewer (refs.VisibilityArg).
+func seenReferencesArgs(who model.Actor, named references) []any {
+	arguments := make([]any, 0, len(referenceKinds)+1)
+	for _, kind := range referenceKinds {
+		arguments = append(arguments, slices.Sorted(maps.Keys(named[kind])))
+	}
+	return append(arguments, refs.VisibilityArg(who))
+}
+
+// scanSeenReferences names in seen every (kind, id) the rows of seenReferencesSQL answer.
+func scanSeenReferences(rows pgx.Rows, seen references) error {
+	var kind, id string
+	_, err := pgx.ForEachRow(rows, []any{&kind, &id}, func() error {
+		seen.name(referenceKind(kind), id)
+		return nil
+	})
+	return err
 }
 
 // leaveOutHiddenFollowers is followers, by ask, with every follower whose session who does not see
