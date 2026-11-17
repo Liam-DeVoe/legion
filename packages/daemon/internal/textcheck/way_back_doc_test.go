@@ -119,18 +119,19 @@ func assertTheExtractIsTheGuidesBlock(t *testing.T, extract, mark string) {
 	t.Errorf("%s and %s's way back disagree:\n%s"+
 		"the extract is the copy internal/daemon checks the migration headers against, so the guide "+
 		"answers for the migrations only while the two are equal; change them in one commit",
-		extract, wayBackGuide, wayBackBlockDifference(copied, guide))
+		extract, wayBackGuide, wayBackBlockDifference("the extract", copied, guide))
 }
 
-// wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn).
-// extract is the committed copy of that block, which a failure names. A guide with no such block
-// stops the test rather than skipping it: an absence here would read exactly like a pass, and what
-// this check guards is the copy an operator runs at a rollback.
-func wayBackBlockOfTheGuide(t *testing.T, mark, extract string) string {
+// wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn). held is
+// the text the check holds the guide's block to, which a failure names: a committed extract, or a
+// migration's header. A guide with no such block stops the test rather than skipping it: an
+// absence here would read exactly like a pass, and what this check guards is the copy an operator
+// runs at a rollback.
+func wayBackBlockOfTheGuide(t *testing.T, mark, held string) string {
 	t.Helper()
 	block, err := wayBackBlockIn(wayBackGuide, shippedText(t, wayBackGuide), mark)
 	if err != nil {
-		t.Fatalf("%v; %s is its copy", err, extract)
+		t.Fatalf("%v; the check holds it to %s", err, held)
 	}
 	return block
 }
@@ -175,25 +176,27 @@ func fencedBlockHolding(text, mark string) (string, bool) {
 	return "", false
 }
 
-// wayBackBlockDifference renders the lines the two copies disagree on, each with its number
-// inside the block, so a failing run names the edit to make rather than two blocks to compare by
-// eye. internal/daemon keeps a rendering of the same shape for the header and the copy; this file
-// may not import that package (see wayBackMark above).
-func wayBackBlockDifference(extract, guide string) string {
-	extractLines, guideLines := strings.Split(extract, "\n"), strings.Split(guide, "\n")
+// wayBackBlockDifference renders the lines other, the text label names, and the guide's block
+// disagree on, each with its number inside the block, so a failing run names the edit to make
+// rather than two blocks to compare by eye. internal/daemon keeps a rendering of the same shape
+// for the header and the copy; this file may not import that package (see wayBackMark above).
+func wayBackBlockDifference(label, other, guide string) string {
+	otherLines, guideLines := strings.Split(other, "\n"), strings.Split(guide, "\n")
+	width := max(len(label), len("the guide")) + len(":")
 	var difference strings.Builder
-	for i := range max(len(extractLines), len(guideLines)) {
-		copied, held := "", ""
-		if i < len(extractLines) {
-			copied = extractLines[i]
+	for i := range max(len(otherLines), len(guideLines)) {
+		otherLine, guideLine := "", ""
+		if i < len(otherLines) {
+			otherLine = otherLines[i]
 		}
 		if i < len(guideLines) {
-			held = guideLines[i]
+			guideLine = guideLines[i]
 		}
-		if copied == held {
+		if otherLine == guideLine {
 			continue
 		}
-		fmt.Fprintf(&difference, "line %d:\n\tthe extract: %q\n\tthe guide:   %q\n", i+1, copied, held)
+		fmt.Fprintf(&difference, "line %d:\n\t%-*s %q\n\t%-*s %q\n", i+1, width, label+":", otherLine, width,
+			"the guide:", guideLine)
 	}
 	return difference.String()
 }

@@ -31,13 +31,14 @@ var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where versi
 // the header's and an operator runs the guide's.
 func TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide(t *testing.T) {
 	header := stepRecordsWayBackOfTheHeader(t)
-	guide := wayBackBlockOfTheGuide(t, stepRecordsWayBackMark, "the header of the step records' roll forward")
+	guide := wayBackBlockOfTheGuide(t, stepRecordsWayBackMark,
+		fmt.Sprintf("the header of migration %d", stepRecordsRollForward))
 	if header == guide {
 		return
 	}
 	t.Errorf("the header of migration %d and %s's way back disagree:\n%s"+
 		"the store's test runs the header's block and an operator the guide's; change them in one commit",
-		stepRecordsRollForward, wayBackGuide, wayBackBlockDifference(header, guide))
+		stepRecordsRollForward, wayBackGuide, wayBackBlockDifference("the header", header, guide))
 }
 
 // stepRecordsWayBackOfTheHeader is the block the roll forward's header carries, from its first
