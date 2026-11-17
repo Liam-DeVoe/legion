@@ -42,7 +42,7 @@ Such a 404 means no linked issue, no such document, or a server without the rout
 
 ## A redirect
 
-No request of the client follows a redirect: not a read, not a write, and not the `/healthz` probe.
+No request of the client follows a redirect: not a read, and not a write.
 Dispatch's API routes answer no request with a 3xx, so a 3xx is a refusal of whatever answered in Dispatch's place.
 It is a `DispatchGatewayError`, whatever its body is.
 Its message names the request as for any gateway's answer, then the status and the reason phrase, and the origin that the redirect points at.
@@ -76,7 +76,7 @@ That error is deliberately not a `DispatchServiceError`, because a caller reads 
 Its message gives the last answer and the number of attempts.
 It then says whether an earlier attempt may have reached Dispatch, or whether Dispatch was still running one.
 It says that the write may or may not have taken effect.
-Where the call saw the keyed layer judge the write, the message says that Dispatch finishes an attempt that it received.
+Where an answer named the call's key back, or the call asked again under that key, the message says that Dispatch finishes an attempt that it received.
 It then says to read the write back before you send it again, because a new command sends it under a new key.
 Otherwise it says to check whether the write took effect before you send it again.
 

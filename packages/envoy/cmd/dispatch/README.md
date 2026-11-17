@@ -849,14 +849,14 @@ So the two surfaces a client crosses a roll on, the body it sends and the route 
 **The release that moves live updates to `/ws/live` and keys every write (INFRA-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
 An earlier server ignores the `Idempotency-Key` header and keeps no key, so while both serve one database a write can run twice:
 one an earlier server ran whose answer was lost is run again by its retry on a new server, which holds no key for it, and a retry of one a new server ran runs again on an earlier one.
-The page and the `dispatch` command both retry a write whose answer was lost, and the command's check that Dispatch keeps keys (the key echoed back, or `/healthz`) reads whichever server answered it.
+The page and the `dispatch` command both retry a write whose answer was lost, under its key, against whichever server answers.
 Stop the earlier release, or scale it to zero, before this one serves:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica;
 a deployment running more than one replica, which rolls, is scaled to zero first, as for `0117` (Database migrations, below).
 The compose auto-deployer stops the old container before it starts the new one.
 Releases after this one roll again.
 A rollback to an earlier release brings the same hazard back, the other way:
-a tab still open, and a `dispatch` client that saw this release keep keys within the last five minutes (`KEYED_LAYER_MEMORY_MS`), retry a write whose answer was lost against the earlier server, which runs it again.
+a tab still open, and a `dispatch` client, retry a write whose answer was lost against the earlier server, which runs it again.
 Fix forward instead; if you must roll back, stop this release first, knowing a write in flight at that moment may land twice.
 Once `0141_drop_broadcast_idempotency_keys` has applied, a rollback past this release also loses broadcasts:
 the earlier build's broadcast send reads and writes the table `0141` drops, so every broadcast send fails while the rest of that build keeps working.
@@ -3418,8 +3418,8 @@ A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 
 Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, a request whose caller it could not resolve, or one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
-A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other:
-the agents' client resends a failed write only against a Dispatch whose answer carried the echo in the last five minutes, or whose `/healthz` said so in that time (`packages/envoy-client/README.md`).
+A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other.
+The agents' client asks nothing first: every Dispatch it can meet runs this layer, so it resends a failed write under its key (`packages/envoy-client/README.md`).
 
 ## Access log
 

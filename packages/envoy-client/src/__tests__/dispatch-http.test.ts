@@ -2005,6 +2005,38 @@ describe("a path value that is empty", () => {
     }
     expect(asked).toEqual([]);
   });
+
+  // Only dots and slashes name no step either (`./` is what "./$X" gives with an empty X), and
+  // Go's white space is Dispatch's blank: U+0085, which JavaScript's `trim` keeps, Dispatch trims.
+  test("a value of only dots and slashes, or of Go's white space, is refused the same way", async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    for (const [call, place] of [
+      [() => client.resolveComment("./", actor), '/api/v1/comments/{"./"}/resolve'],
+      [
+        () => client.retractResult("../", { actor, reason: "Wrong commit." }),
+        '/api/v1/results/{"../"}/retract',
+      ],
+      [() => client.sessionAnswers(".//"), '/api/v1/agents/{".//"}/answers'],
+      [() => client.sessionAnswers("\u0085"), '/api/v1/agents/{"\u0085"}/answers'],
+    ] as const) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
+      expect((refusal as Error).message, place).toContain(place);
+    }
+    expect(asked).toEqual([]);
+  });
 });
 
 // fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
@@ -2174,56 +2206,5 @@ describe("a redirect to another origin", () => {
       cancelled: 2,
       atOnce: true,
     });
-  });
-
-  // The /healthz probe carries the credential's proof too, and its answer decides whether a write
-  // is sent again under its key: a probe that followed the redirect would hand the proof to the
-  // other origin, and take that origin's `idempotency_keys` as Dispatch's word.
-  test("the /healthz probe is not followed there, so another origin's answer resends nothing", async () => {
-    const elsewhere: string[] = [];
-    const other = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        elsewhere.push(`${request.method} ${new URL(request.url).pathname}`);
-        return jsonResponse({ status: "ok", idempotency_keys: true });
-      },
-    });
-    const asked: string[] = [];
-    const dispatch = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        const path = new URL(request.url).pathname;
-        asked.push(`${request.method} ${path}`);
-        if (path === "/healthz") {
-          return new Response(null, {
-            status: 302,
-            headers: { Location: `http://127.0.0.1:${other.port}/healthz` },
-          });
-        }
-        return new Response("<html><body>Bad Gateway</body></html>", {
-          status: 502,
-          headers: { "Content-Type": "text/html" },
-        });
-      },
-    });
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
-    };
-    try {
-      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch, {
-        sleep: async () => undefined,
-      });
-      await client.comment("DSP-1", { body: "Review", actor }).catch(() => undefined);
-      expect({ asked, elsewhere }).toEqual({
-        asked: ["POST /api/v1/issues/DSP-1/comments", "GET /healthz"],
-        elsewhere: [],
-      });
-    } finally {
-      dispatch.stop(true);
-      other.stop(true);
-    }
   });
 });

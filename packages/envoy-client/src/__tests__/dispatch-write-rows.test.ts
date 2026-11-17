@@ -317,7 +317,7 @@ function dispatchAnswering(
       }
       return new Response(body, { status, headers });
     },
-    echo === "none" ? { noKeyedLayer: true } : { judged: () => true }
+    echo === "none" ? { namesNoKey: true } : { judged: () => true }
   );
   const fetchImpl = (async (input: Request | string | URL, init?: RequestInit) => {
     const request = new Request(input, init);

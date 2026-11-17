@@ -88,7 +88,7 @@ function standIn(options: {
         if (options.keyed && key !== null) answers.set(key, answer);
         return Response.json(answer, { status: 201 });
       },
-      options.keyed ? {} : { noKeyedLayer: true }
+      options.keyed ? {} : { namesNoKey: true }
     ),
     hostname: "127.0.0.1",
     port: 0,

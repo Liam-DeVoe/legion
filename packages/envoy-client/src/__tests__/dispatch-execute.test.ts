@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -46,7 +46,6 @@ import {
   DispatchEmptyPathError,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
-  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -54,10 +53,6 @@ import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
-
-// Each row is a run of its own, as each command is a process of its own: what an earlier row's
-// Dispatch taught the process of its keyed layer does not carry over.
-beforeEach(forgetKeyedLayerMemory);
 
 /**
  * The executor (`executeDispatchTool` of `dispatch-execute.ts`) against the stand-in of Dispatch
@@ -438,9 +433,9 @@ describe("executeDispatchTool", () => {
       "so the write may or may not have reached Dispatch: check whether it took effect before retrying it."
     );
     expect(write).not.toContain("a retry may succeed");
-    // Nothing here says this Dispatch runs the keyed layer: the gateway answers its /healthz too,
-    // so the write is asked once and reported, and the read goes once.
-    expect(requests).toEqual(["POST /api/v1/issues/DSP-1/messages", "GET /healthz"]);
+    // The write is asked again under its key on the schedule, each attempt answered by the gateway,
+    // and reported after its fifth; the read goes once.
+    expect(requests).toEqual(Array.from({ length: 5 }, () => "POST /api/v1/issues/DSP-1/messages"));
     requests.length = 0;
 
     const read = await run("dispatch_read", { issue: "DSP-1" });
@@ -5206,8 +5201,7 @@ describe("executeDispatchTool", () => {
   /**
    * Records every request; the messages route and the PATCH answer with the given responses, and
    * the issue read before the update answers `closedAt` (null: the issue is open). This
-   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
-   * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
+   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key.
    */
   function closingServer(
     answers: { message: () => Response; patch: () => Response },
@@ -5217,7 +5211,6 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
       const method = init?.method ?? "GET";
-      if (pathname === "/healthz") return response({ status: "ok", idempotency_keys: true });
       requests.push({
         method,
         pathname,
@@ -11442,7 +11435,7 @@ describe("executeDispatchTool", () => {
   // Refusing it here would answer it with --force, which changes nothing for it.
   //
   // R11: that `blank` is Go's `unicode.IsSpace`, which JavaScript's `trim` is not
-  // (goBlankPattern's comment in ../dispatch-execute.ts names the two characters they differ
+  // (the comment of ../go-space.ts names the two characters they differ
   // on). The server empties U+0085, so this create writes no version, and reading `trim` here
   // would refuse it and name --force instead.
   test.each([
@@ -11508,7 +11501,7 @@ describe("executeDispatchTool", () => {
   });
 
   // INFRA-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above
-  // (goBlankPattern's comment names the pair). So this create writes the held document's next
+  // (the comment of ../go-space.ts names the pair). So this create writes the held document's next
   // version over the text it holds, and what answers it is the same held-name refusal
   // "refuses an upload under a name the issue already holds, naming --force" reads for
   // `# Plan\n`. Read with `trim` the create was blank here, skipping both that refusal and the
@@ -11863,7 +11856,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return new Response(page, { status, headers: { "content-type": "text/html" } });
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -11911,7 +11903,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
@@ -11962,9 +11953,7 @@ describe("executeDispatchTool", () => {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
-      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
-      // route is counted here.
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      // Only the upload route is counted here.
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -16377,7 +16366,7 @@ describe("goBlankPattern", () => {
       `goBlankPattern and packages/contracts/fixtures/go-unicode-isspace.json disagree:\n` +
         `${moved.join("\n")}\n` +
         "This test ran the pattern over every scalar from 0 to 10FFFF, so the characters above " +
-        "are where the pattern in ../dispatch-execute.ts stands now; the list is what Go's " +
+        "are where the pattern in ../go-space.ts stands now; the list is what Go's " +
         "unicode.IsSpace reported when the list was written. Which side moved is in the Go test " +
         "that measures the same list (TestUnicodeIsSpaceReportsTheCommittedScalars, " +
         "packages/envoy/internal/dispatch/text): green there and Go has not moved, so the " +
