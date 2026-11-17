@@ -81,14 +81,15 @@
 #      directory it lies in or the directory itself (never a file X, since `**` keeps the `/`
 #      before it), with no later `!` pattern that can drop a change to it but one inside an
 #      exclude of those paths; a push pattern GitHub reads another way than the check's glob
-#      (`?`, `+`, `\`, `{`, `}`) is refused, and so is one with a `.` or `..` segment or a `[!`
-#      class, which GitHub's docs give no meaning. A commit that touches only an uncovered path
-#      runs no release. Free are the if: of a job in neither chain, where it reads no decision; the
-#      values of concurrency:, cache-mode: and timeout-minutes:; and the runner image behind the
-#      label; and so is the decision passed on through the env context or another step's output,
-#      env: or run:; and GitHub's own limit stays: a push whose diff holds more than 3,000 files
-#      runs no filtered workflow when the files its filter matches are not among the first 3,000
-#      (the workflow syntax docs, "paths"), covered or not, so nothing releases until a later push;
+#      (`?`, `+`, `\`, `{`, `}`) is refused, and so is one with a `.`, `..` or empty segment (a
+#      leading `/`, a `//` or a trailing `/`) or a `[!` class, which GitHub's docs give no
+#      meaning. A commit that touches only an uncovered path runs no release. Free are the if: of
+#      a job in neither chain, where it reads no decision; the values of concurrency:, cache-mode:
+#      and timeout-minutes:; and the runner image behind the label; and so is the decision passed
+#      on through the env context or another step's output, env: or run:; and GitHub's own limit
+#      stays: a push whose diff holds more than 3,000 files runs no filtered workflow when the
+#      files its filter matches are not among the first 3,000 (the workflow syntax docs, "paths"),
+#      covered or not, so nothing releases until a later push;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
@@ -857,7 +858,9 @@ def push_paths(path, doc, key, required, excludes):
                 f"write it without them", path)
     for pattern in patterns:
         body = pattern.removeprefix("!")
-        forms = (["a `.` or `..` segment"] if any(part in (".", "..") for part in body.split("/")) else []) + (
+        parts = body.split("/")
+        forms = (["a `.` or `..` segment"] if any(part in (".", "..") for part in parts) else []) + (
+            ["an empty segment (a leading `/`, a `//` or a trailing `/`)"] if "" in parts else []) + (
             ["a `[!` class"] if "[!" in body else [])
         if forms:
             problem(f"{path}'s on.push.paths pattern `{pattern}` holds {' and '.join(forms)}, which GitHub's filter "

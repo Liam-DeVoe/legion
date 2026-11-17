@@ -333,6 +333,23 @@ check "exits 1 on a .. segment in a pattern without !" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "release.yaml's on.push.paths pattern \`packages/\.\./go.work\` holds")"
 check "and nothing else, as ** still covers every path" "$(is "$(grep -c '::error' <<< "$out")" 1)"
 
+# An empty segment has no documented meaning either: minimatch collapses `//` and matches
+# `!packages//daemon/go.sum` against packages/daemon/go.sum, and glob_regex does not (the round-12
+# review's G5 to G8). A leading or trailing `/` is the same form.
+echo "case: a push pattern with an empty segment (G5 to G8)"
+root=$(written paths-empty-segment)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["**", "!packages//daemon/go.sum", "!packages//envoy/alpha/**", "!packages/daemon//go.mod", "!/go.work", "!go.work.sum/"]\n'
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!.github//go-release-targets.json"]\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for pattern in '!packages//daemon/go.sum' '!packages//envoy/alpha/\*\*' '!packages/daemon//go.mod' '!/go.work' '!go.work.sum/'; do
+  check "names $pattern on the listener" \
+    "$(contains "$out" "release-envoy-listener.yaml's on.push.paths pattern \`$pattern\` holds an empty segment (a leading \`/\`, a \`//\` or a trailing \`/\`), $odd_rule")"
+done
+check "names release.yaml's (G6)" "$(contains "$out" "release.yaml's on.push.paths pattern \`!.github//go-release-targets.json\` holds an empty segment")"
+check "and nothing else" "$(is "$(grep -c '::error' <<< "$out")" 6)"
+
 # The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
 # false` there skips every reader of the job at once.
 echo "case: a decision job's own if: false"
