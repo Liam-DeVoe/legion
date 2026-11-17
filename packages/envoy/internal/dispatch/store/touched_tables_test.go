@@ -19,6 +19,7 @@ var thisChildsMigrations = []string{
 	"20261116094059_asks_node_index.up.sql",
 	"20261116094100_ask_followers_node_index.up.sql",
 	"20261116094101_graph_edges_asks.up.sql",
+	"20261116220307_graph_tuples_store_only_index.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations

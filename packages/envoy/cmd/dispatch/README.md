@@ -2928,7 +2928,7 @@ The kinds are:
   A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every block node not `gone` that states a link now of a kind `refs.IndexBlocks` writes into `block_refs`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
   Those kinds are `mentions` and the name of every `block[]` attribute node the store holds, at any state (`refs.BlockRefKindsSQL`), read inside the census's own snapshot rather than from the schema the process installed: a build older than the store installs no attribute above its version, and an attribute node stated `gone` is installed by none, while the `block_refs` rows of that kind stand until their documents are indexed again.
   A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it, such as a requirement's `constrained_by` — is in neither side of `block_ref`.
-  Nor is a `block_refs` row of another kind, a decision's `from_ask` and `decided_by`, or a row an ask's node holds, an ask block's `shaped`: the kinds of dispatch://INFRA-1150 below hold those.
+  Nor is a `block_refs` row of another kind, a decision's `shaped`, `from_ask` and `decided_by`, or a row an ask's node holds, an ask block's `shaped`: the kinds of dispatch://INFRA-1150 below hold those, and `block_ref` holding a decision's `shaped` too would read a correct row of a drifted decision as a difference.
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
 - `person`, `session`, `role` and a role's page, which no table projects.
@@ -2957,24 +2957,29 @@ The kinds are:
   Any count of the three refuses the census, and the first rows of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
   An address past the store's bound is left out, as its writer leaves it out of the store.
 
-- The kinds of dispatch://INFRA-1150, each held by the triple of holding node, tuple kind and far end, so a tuple that reaches the wrong node is a difference and not a count that still matches:
-  `shaped`, `from_ask` and `decided_by` against `block_refs`, each row by the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node) against every such tuple that node states now;
+- The kinds of dispatch://INFRA-1150, each but `ask_answer` held triple by triple — the triple of holding node, tuple kind and far end — so a tuple that reaches the wrong node is a difference and not a count that still matches:
+  `shaped`, `from_ask` and `decided_by` against `block_refs`, each row as the triple of the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node), its kind and its far end, against every such tuple a node not `gone` states now;
   `followed_by` against `ask_followers`, `ask_parent` (the ask's `part_of` and `owned_by`) and `ask_anchor` (its `anchored_to`) against `asks`, each marked row by the ask's node;
-  `reading_parent`, the `document_blocks.parent_block_id` of every reading's node against its `part_of`;
+  `reading_parent`, the `document_blocks.parent_block_id` of every reading's node, or its document's top where it names none, against its `part_of`;
   and `ask_answer`, which sets each marked ask row's answer, selection, answer time and answerer beside the `answer`, `selected` and `answered_at` values and the `answered_by` and `decided_by` its node holds now, character for character (a selection is compared as the labels its JSON holds).
+  A kind held triple by triple prints `census: store kind=<kind> tuples=<n> rows=<n> table=<table> rows_without_a_tuple=<n> tuples_without_a_row=<n> addresses_past_bound=<n>`: the store's count, the projection's count and the difference count of each direction.
+  A row no tuple states is named at the row, `difference at block_ref <block> shaped -> block <address>: a row no tuple states`, and a tuple no row projects at the tuple, `difference at block:<block> shaped -> block:<address>: a tuple no row projects`, so a tuple moved to the wrong far end reads as the row it left and the tuple it became, and the other rows of that node read nothing.
+  A row may name a node at any state but `gone`, as every other read of the store takes a node.
   A `part_of` to an ask's node, which a reading in an answered ask states, is read as the ask's block in the reading's own document, the block `parent_block_id` names — the ask's own block, or a copy's, which keeps its source's id — in `block` and `reading_parent` alike.
-  An `asks` or `ask_followers` row that names no node is a row a process of the release before wrote, which `graph_edges`' old arms answer until the decisions step marks it: it is no difference, and each of those kinds prints the count on a `census: store kind=<kind> unmarked_rows=<n>` line of its own.
-  A deployment holds none of these kinds until somebody writes one, so a kind of them with no row and no node prints `holds no row and no node` and is no refusal.
-  The person and session kinds also read who wrote each decision (its `decided_by` row) and each reading (its node's `authored_by`, which no table projects), every person and session a block's `decided_by` or `authored_by` or an ask's `authored_by` ever named — the last holds the author of an ask past the store's bound, whose row names no node while its writer writes the author's node — with the owner the server proved of each such session; every person an ask's `answered_by` or `decided_by` ever named, so a person whose answer was taken off stays held to their node; and every session an `ask.opened` event named as the asker, so a session whose ask an erase removed is held to its node as a follower is by its `ask.follower_added`.
+  An `asks` or `ask_followers` row that names no node is a row a process of the release before wrote, which `graph_edges`' old arms answer until the decisions step marks it: it is no difference, and each of those kinds prints the count of its own rows of that kind on a `census: store kind=<kind> unmarked_rows=<n>` line of its own.
+  A deployment holds none of these kinds until somebody writes one, so a kind of them with no row, no node and no unmarked row prints `holds no row and no node` (`no tuple` for a kind held triple by triple) and is no refusal; a kind whose rows are all unmarked checked no row while rows stand, and refuses.
+  The person and session kinds also read who wrote each decision (its `decided_by` row) and each reading and each ask (its node's `authored_by`, which no table projects; an ask past the store's bound keeps a row that names no node while its writer writes the author's node), every person and session a block's `decided_by` or `authored_by` ever named, with the owner the server proved of each such session; every person an ask's `answered_by` or `decided_by` ever named, so a person whose answer was taken off stays held to their node; every writer an erase of an ask, a decision or a reading recorded in `graph_erasures` (`writers`), until an erase of that person runs after it; and every session an `ask.opened` event named as the asker, so a session whose ask an erase removed is held to its node as a follower is by its `ask.follower_added`.
+  The writers of decisions, readings and asks are read once a run, in one statement, and bound into every statement that reads the person and session rows, as the roles are; `backfill-graph-store` reads the same definition in its own statement.
 
-- `copied_from` and `moved_to`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n>` lines: how many the store states now and how many of those reach a far end that does not resolve — a `copied_from` to an ask node not `gone`, as every other read of the store takes a node, and a `moved_to` to a block a `document_blocks` row holds, at once or through at most eight more `moved_to` tuples.
-  An unresolved far end refuses the census; a count does not.
+- `copied_from` and `moved_to`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n> left_out=<n>` lines: how many the store states now, how many of those reach a far end that does not resolve — a `copied_from` to an ask node not `gone`, as every other read of the store takes a node, and a `moved_to` to a block a `document_blocks` row holds, at once or through at most eight more `moved_to` tuples — and how many reach a far end in a document that still owes its block index, which holds no row yet for a block its latest version holds and which the census leaves out.
+  An unresolved far end refuses the census; a count does not, and neither does a far end left out.
+  The read takes the two kinds' tuples through `graph_tuples_store_only` (`store/migrations/20261116220307_graph_tuples_store_only_index.up.sql`), a partial index of those two kinds alone, rather than reading `graph_tuples` whole.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
-A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row and no node.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row, no node and no unmarked row.
 A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
 
-Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
 
 `envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
 the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
@@ -3135,6 +3140,8 @@ It takes each once, in the order of their owner keys (`artifact:<id>` before `is
 Which owners those are is read before they are locked, so it is read again under them, and a write that meanwhile moved the node under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row; after three tries it removes nothing and exits 2, naming each such owner.
 
 What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it counted again and the listing's digest, with who ran it (the database role, the account and the host) and when.
+For an ask's node or a block's it also records `writers`: the person or session each `authored_by`, `decided_by` and `answered_by` out of the node it deleted named, the one thing left that names who wrote or answered a decision, a reading or an ask once its rows are gone.
+`census --store` reads them, so the session no erase removes and the person the server proved owns it stay held to their nodes, and a person until an erase of that person runs after this one.
 That row holds no erased text and none of the rows the run left, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
 Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
 A node the store does not hold is exit 2, naming it.
@@ -3878,6 +3885,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/_test/rooms` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   List the documents this process holds a room of now: `{"rooms": [artifact id, ...]}`.
+  Not mounted otherwise.
+
+- `/api/v1/artifacts/{id}/_test/ask-attributes` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  The attributes each ask block of the document holds in this process's live tree, the tree a browser edits, which no rendering filters:
+  `{"blocks": {block id: {attribute: value, ...}}}`, every attribute but the block's id.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/outside-schema` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)

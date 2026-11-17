@@ -765,6 +765,54 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/ask-attributes": {
+      "get": {
+        "description": "Test hook: read the attributes each ask block of a document holds in this process's live tree.",
+        "operationId": "getApiV1ArtifactsByIdTestAskAttributes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveAskAttributes"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true
+      }
+    },
     "/api/v1/artifacts/{id}/_test/hold-persistence": {
       "post": {
         "description": "Test hook: hold this process's appends of a document's browser updates for a duration.",
@@ -23705,6 +23753,24 @@
         },
         "required": [
           "users"
+        ],
+        "type": "object"
+      },
+      "LiveAskAttributes": {
+        "properties": {
+          "blocks": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "blocks"
         ],
         "type": "object"
       },

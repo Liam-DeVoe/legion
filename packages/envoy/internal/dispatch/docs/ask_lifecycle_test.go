@@ -615,9 +615,11 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 	return marked
 }
 
+// documentText is the document as an agent reads it (TextWithAnswers): each ask block carrying
+// its ask's answer state and answer, rendered on read from the ask.
 func documentText(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
-	text, err := service.Text(context.Background(), artifactID)
+	text, _, _, err := service.TextWithAnswers(context.Background(), artifactID, false)
 	if err != nil {
 		t.Fatalf("read the document: %v", err)
 	}

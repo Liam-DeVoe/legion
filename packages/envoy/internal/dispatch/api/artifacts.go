@@ -758,10 +758,11 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		// It carries the document's newest approval when its text is the approved text again and
-		// its decision blocks are as their rows have them, as every version the document service
-		// writes does (docs.carryApproval): an exact undo uploaded is the approved document.
-		carried, err := docs.CarryRestoredApproval(
+		// It carries the document's newest approval as every version the document service writes
+		// does (docs.carryApproval): when its text is the approved text again, or when every
+		// difference from it is a carry case - the server-owned ask attributes an upload drops
+		// among them - and its decision blocks agree with their nodes.
+		carried, err := docs.CarryUploadedApproval(
 			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)
 		if err != nil {
@@ -956,18 +957,16 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 }
 
 // artifactTextBody is the markdown and the token the three text routes answer, with the blocks
-// beside them for a request that asked for them with ?blocks=true. The three come from one
-// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
-// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
+// beside them for a request that asked for them with ?blocks=true. Each ask block carries its
+// ask's answer state and answer, rendered on read from the ask (docs.TextWithAnswers), since the
+// stored bytes hold none of it. The three come from one rendering of one tree, so a write by
+// another session cannot leave a listing's byte ranges indexing markdown they were not computed
+// over; nil blocks for a request that asked for none, which pays for none of that rendering.
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
-		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+	withBlocks := r.URL.Query().Get("blocks") == "true"
+	markdown, token, blocks, err := s.deps.Docs.TextWithAnswers(r.Context(), artifactID, withBlocks)
+	if err != nil || !withBlocks {
 		return markdown, token, nil, err
-	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
-	if err != nil {
-		return "", "", nil, err
 	}
 	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
 		return "", "", nil, err

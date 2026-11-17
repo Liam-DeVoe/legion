@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -575,4 +576,25 @@ func TestAnOpenIssuesSettlementForgetsTheKeptEditor(t *testing.T) {
 	if kept := keptClosedEditSource(t, service, artifactID); kept != nil {
 		t.Fatalf("after the settlement on the open issue the document keeps %+v as its closed edit source, want none", *kept)
 	}
+}
+
+// withoutAskBlocks is a copy of node's tree with every ask block left out, a peer's deletion of
+// them all. A container the deletion empties keeps one empty paragraph, as both parsers read an
+// empty container.
+func withoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
+	if node.Type == "text" || len(node.Children) == 0 {
+		return node
+	}
+	copied := *node
+	copied.Children = make([]*pmdoc.Node, 0, len(node.Children))
+	for _, child := range node.Children {
+		if child.Type == "ask" {
+			continue
+		}
+		copied.Children = append(copied.Children, withoutAskBlocks(child))
+	}
+	if len(copied.Children) == 0 {
+		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
+	}
+	return &copied
 }

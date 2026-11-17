@@ -821,16 +821,17 @@ type heldLink struct{ kind, toKind, toID string }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple
-// into the document's artifact address) and that the store holds live, with every link it states
-// now of a kind a block_refs row is the projection of - a mention or a pointer (BlockRefKindsSQL),
-// or a decision's or an ask block's tie (typedKinds) - read the way the store reads a current
-// relation (graphstore.CurrentTupleRead), in kind and far-end order. A member that states no such
-// link is in the map with none, and one whose address does not start with the document's ref_key
-// is no block the pass addresses and is left out. A tuple of any other kind out of a block is no
-// link the pass's pairs are compared with, since no block_refs row projects it: its membership and
-// its placement, its values, and what another writer states of it - a requirement's
-// constrained_by, a changed_by_run, a decision's authored_by, a copy's copied_from. A gone
-// block's pointers are retractGonePointers' to retract.
+// into the document's artifact address) and that the store holds present (at any state but gone,
+// R12 of dispatch://INFRA-1950), with every link it states now of a kind a block_refs row is the
+// projection of - a mention or a pointer (BlockRefKindsSQL), or a decision's or an ask block's tie
+// (typedKinds) - read the way the store reads a current relation (graphstore.CurrentTupleRead), in
+// kind and far-end order. A member that states no such link is in the map with none, and one
+// whose address does not start with the document's ref_key is no block the pass addresses and is
+// left out. A tuple of any other kind out of a block is no link the pass's pairs are compared
+// with, since no block_refs row projects it: its membership and its placement, its values, and
+// what another writer states of it - a requirement's constrained_by, a changed_by_run, a
+// decision's or a reading's authored_by, a copy's copied_from. A gone block's pointers are
+// retractGonePointers' to retract.
 //
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (standsAtVersion): another release indexed the document after the store last stated its
@@ -850,7 +851,7 @@ func heldDocumentBlocks(ctx context.Context, tx pgx.Tx, refKey string) (map[stri
 			  and t.kind = '`+TupleInDocument+`' and t.from_kind = '`+BlockNodeKind+`'
 		) member
 		join graph_nodes n on n.kind = '`+BlockNodeKind+`' and n.id = member.id
-			and n.state = '`+graphstore.StateLive+`'
+			and n.state <> '`+graphstore.StateGone+`'
 		left join lateral (
 			select current.kind, current.to_kind, current.to_id
 			from (
@@ -888,7 +889,7 @@ func heldDocumentBlocks(ctx context.Context, tx pgx.Tx, refKey string) (map[stri
 	return held, rows.Err()
 }
 
-// goneSinceStated is, in id order, each block the store holds live in the document (held) that
+// goneSinceStated is, in id order, each block the store holds present in the document (held) that
 // the version holds no node of (nodes, its unique blocks) and that the rows did not hold either
 // (deleted, the blocks of the rows the version dropped, which IndexBlocks states gone itself): a
 // block another release's version dropped after the store last stated the document. That release

@@ -67,9 +67,12 @@ func asksOn(t *testing.T, service *Service, document string) int {
 	return count
 }
 
+// requireCopiedStates fails t unless the document, as an agent reads it (TextWithAnswers: each
+// ask block carrying its ask's, or its copy's source's, answer state and answer, rendered on read
+// from the ask, since no stored byte holds them), holds each of want.
 func requireCopiedStates(t *testing.T, service *Service, document string, want ...string) {
 	t.Helper()
-	text, err := service.Text(context.Background(), document)
+	text, _, _, err := service.TextWithAnswers(context.Background(), document, false)
 	if err != nil {
 		t.Fatalf("read copy: %v", err)
 	}
