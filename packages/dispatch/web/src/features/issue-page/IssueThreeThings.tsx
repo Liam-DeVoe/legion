@@ -66,9 +66,8 @@ export function IssueThreeThings({
   look: "contents" | "spec";
   /** The page's name for a reference the sentences cite (`useReferenceNames`). */
   nameOf: (reference: string) => string | undefined;
-  /** Whether the documents' blocks the tree is built from are not held yet (`useIssueTree.ts`'s
-   *  `blocksHeld`, decision 98), which is what says whether the spec holds a summary node at
-   *  all. */
+  /** Whether the spec's blocks, which hold its summary, are not held yet, which is what says
+   *  whether the spec holds a summary node at all. */
   reading: boolean;
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;

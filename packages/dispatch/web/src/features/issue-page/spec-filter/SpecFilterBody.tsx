@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { type QueryStatus, useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -13,6 +13,7 @@ import {
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+import { api } from "../../../api/client";
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
@@ -127,7 +128,6 @@ const NOTHING = (): void => {};
  * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
  */
 export function SpecFilterBody({
-  blocksHeld,
   context,
   emptyLine,
   holdsEscape,
@@ -138,11 +138,6 @@ export function SpecFilterBody({
   root,
   view,
 }: {
-  /** Whether every document's blocks the tree is built from are held (`useIssueTree.ts`'s
-   *  `blocksHeld`, the page's one rule for them, decision 98): until they are, a statement may
-   *  be missing from the tree, a check may not stand under the statement it serves yet, and the
-   *  spec's summary may not have come. */
-  blocksHeld: boolean;
   /** The ids of the rows the filter draws only as context, drawn faint (R2, R32). */
   context: ReadonlySet<string>;
   /** What the body says where the filter's query left no statement. */
@@ -165,48 +160,65 @@ export function SpecFilterBody({
   view: TreeNode;
 }): ReactNode {
   const navigate = useNavigate();
-  // Every read below is judged by the answer it holds, never by its status: a read the page asks
-  // again - on every event that names its key (`event-refresh.ts`) - keeps its answer while it is
-  // out and when it fails, and what the body drew from that answer stands. Only a read that
-  // failed with no answer held says so, with a way to read again (`failedWithNothing`, the
-  // architect's decision 98 on dispatch://INFRA-1196).
-  // The decisions the page already read for its tree, under the key `useIssueTree.ts` reads
-  // them with, so the body costs no request of its own (R20). Until that read holds an answer
-  // the column says nothing of a statement no decision shaped, since it does not know yet.
-  const decisionsRead = useQuery(issueDecisionsQuery(issue.key, true));
-  const decisions = decisionsRead.data;
-  // The statements come from the coverage and the documents' blocks, which the tree is built
-  // from: until the coverage holds an answer and the blocks are held (`blocksHeld`) the body
-  // cannot say the issue holds no statement. The body reads the coverage and the spec's blocks
-  // under the keys the tree reads them with (no request of their own); the spec's blocks only to
-  // say a read of them that failed with nothing held, with a way to read it again, which
-  // `blocksHeld` cannot say: it says whether the blocks are held, and not why they are not.
+  // The body waits on the reads of what it draws, and on no other, so a document it draws
+  // nothing from - the plan, the decisions document's blocks - changes nothing here, whether
+  // its read is out or was refused. Each read is watched under the key the page's tree fills
+  // (`useIssueTree.ts`) by an observer that sends no request of its own (`treeRead`). A read
+  // is held where it holds an answer, never by its status: a read the page asks again - on
+  // every event that names its key (`event-refresh.ts`) - keeps its answer while it is out and
+  // when it fails, and what the body drew from that answer stands. Only a read that failed
+  // with no answer held says so, over the tree, with a Retry that asks that read again
+  // (`failedWithNothing`).
   const spec = primarySpec(issue);
-  const coverageRead = useQuery(issueCoverageQuery(issue.key));
-  const specBlocksRead = useQuery({
-    ...artifactBlocksQuery(spec?.id ?? ""),
-    enabled: spec !== undefined,
-  });
-  const statementsRead = coverageRead.data !== undefined && blocksHeld;
-  const statementsFailed = failedWithNothing(coverageRead) || failedWithNothing(specBlocksRead);
-  // Each statement's mark is how its checks stand, each at the commit the server names for it
-  // (decision 152), as the Verification filter reads it (`statement-state.ts`): from the issue's
-  // results and its coverage, read under the keys the tree reads them with (no request of their
-  // own), and from the checks the tree places under each statement they serve, which come with
-  // the documents' blocks (`blocksHeld`). Before all of them are held a mark would say Unknown
-  // or no check of a statement that is Met, so none is drawn until they are. The body reads the
-  // Verification document's blocks under the tree's key only to say a read of them that failed
-  // with nothing held, with a way to read it again; a failed read of the results or of those
-  // blocks is one line, since either leaves every statement unmarked.
-  const resultsRead = useQuery(issueResultsQuery(issue.key));
-  const results = resultsRead.data;
   const verification = roleDocument(issue, "verification");
-  const checksRead = useQuery({
-    ...artifactBlocksQuery(verification?.id ?? ""),
-    enabled: verification !== undefined,
-  });
-  const marked = results !== undefined && coverageRead.data !== undefined && blocksHeld;
-  const resultsFailed = failedWithNothing(resultsRead) || failedWithNothing(checksRead);
+  // This observer reads the key the tree fills and fetches nothing of its own.
+  const coverageRead = useQuery(treeRead(issueCoverageQuery(issue.key)));
+  // This observer reads the key the tree fills and fetches nothing of its own.
+  const specBlocksRead = useQuery(treeRead(artifactBlocksQuery(spec?.id ?? "")));
+  // This observer reads the key the tree fills and fetches nothing of its own.
+  const resultsRead = useQuery(treeRead(issueResultsQuery(issue.key)));
+  // This observer reads the key the tree fills and fetches nothing of its own.
+  const checksRead = useQuery(treeRead(artifactBlocksQuery(verification?.id ?? "")));
+  // This observer reads the key the tree fills and fetches nothing of its own.
+  const decisionsRead = useQuery(treeRead(issueDecisionsQuery(issue.key, true)));
+  // This observer reads the key the tree fills and fetches nothing of its own.
+  const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
+  const decisions = decisionsRead.data;
+  // The spec's blocks are its statements and its summary; an issue with no spec has none to
+  // wait for.
+  const specHeld = spec === undefined || specBlocksRead.data !== undefined;
+  // The statements come from the spec's blocks and their coverage: until both are held the body
+  // cannot say the issue holds no statement.
+  const statementsHeld = coverageRead.data !== undefined && specHeld;
+  // Each statement's mark is how its checks stand, each at the commit the server names for it,
+  // as the Verification filter reads it (`statement-state.ts`): from the results, the coverage,
+  // and the Verification document's blocks, which put each check under the statement it
+  // serves. Before all three are held a mark would say Unknown or no check of a statement that
+  // is Met, so none is drawn until they are.
+  const marked =
+    resultsRead.data !== undefined &&
+    coverageRead.data !== undefined &&
+    (verification === undefined || checksRead.data !== undefined);
+  // A person's decision is drawn by their answer, which the asks read brings
+  // (`spec-decided-by.ts`): until it is held the column draws nothing for one.
+  const asksHeld = asksRead.data !== undefined;
+  // Whether everything the body draws from is held, which is when `q` and `w` may say there is
+  // nowhere to go (`useTreeKeymap.ts`).
+  const readsHeld = statementsHeld && marked && decisions !== undefined && asksHeld;
+  // Each line of the reads that failed with nothing held, in the page's words: the coverage's and
+  // the spec's blocks' as the statements', the results' and the Verification document's blocks'
+  // as the results', which leave every statement unmarked alike, then the decisions' and the
+  // asks'. A line's Retry asks again the reads of that line that failed, and no other.
+  const unreadable = (
+    [
+      { failed: [coverageRead, specBlocksRead], line: "statements_unreadable" },
+      { failed: [resultsRead, checksRead], line: "results_unreadable" },
+      { failed: [decisionsRead], line: "decisions_unreadable" },
+      { failed: [asksRead], line: "answers_unreadable" },
+    ] as const
+  )
+    .map(({ failed, line }) => ({ failed: failed.filter(failedWithNothing), line }))
+    .filter(({ failed }) => failed.length > 0);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). Only the context's addresses
   // are read here and no chip's name, so the line it names a block by is the whole reading's
@@ -218,7 +230,8 @@ export function SpecFilterBody({
   const { groups, others } = useMemo(
     () =>
       specDecidedBy({
-        checks: results?.checks ?? [],
+        asksHeld,
+        checks: resultsRead.data?.checks ?? [],
         decisions,
         nameOf,
         nodeIdOf,
@@ -226,7 +239,7 @@ export function SpecFilterBody({
         root,
         view,
       }),
-    [decisions, nameOf, nodeIdOf, reader, results, root, view]
+    [asksHeld, decisions, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -380,6 +393,32 @@ export function SpecFilterBody({
     if (reveal === undefined || taken.current === reveal || statements.length === 0) return;
     if (goTo(reveal)) taken.current = reveal;
   }, [goTo, reveal, statements]);
+  // A refused read can leave the view nothing to act on but a Retry: Tab from the tree never
+  // reaches the lines above it. So once the lines are drawn the first line's Retry takes the
+  // focus, where the view's key (`t s`) or the page opened at the view's address left it on
+  // nothing; a reader whose focus is anywhere else keeps it.
+  const box = useRef<HTMLDivElement | null>(null);
+  const firstUnreadable = unreadable[0]?.line;
+  useEffect(() => {
+    if (firstUnreadable === undefined) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    box.current
+      ?.querySelector<HTMLElement>(`[data-spec-unreadable="${firstUnreadable}"] button`)
+      ?.focus();
+  }, [firstUnreadable]);
+  // Whether the reader pressed a Retry while it held the focus, until the reads are held. The
+  // Retry is drawn no more once its read answers, which leaves the focus on nothing, so the
+  // view's first row - the tree's one tab stop - takes it, unless something else holds it by
+  // then.
+  const retried = useRef(false);
+  useEffect(() => {
+    if (!readsHeld || !retried.current) return;
+    retried.current = false;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    tree.current?.querySelector<HTMLElement>(TAB_STOP_ROW)?.focus({ preventScroll: true });
+  }, [readsHeld]);
 
   useTreeKeymap({
     container: tree,
@@ -408,6 +447,7 @@ export function SpecFilterBody({
     },
     onZoom: NOTHING,
     oneNodeAtATime: false,
+    readsHeld,
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
     // statement for the decision behind it (`tree-keys.ts`'s `decisionBehind`).
@@ -419,31 +459,21 @@ export function SpecFilterBody({
   const tabStop =
     stop !== undefined && statements.some((node) => node.id === stop) ? stop : statements[0]?.id;
   return (
-    <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
-      {statementsFailed ? (
-        <QueryError
-          message={ANSWER_LINES.statements_unreadable}
-          onRetry={() => {
-            if (failedWithNothing(coverageRead)) void coverageRead.refetch();
-            if (failedWithNothing(specBlocksRead)) void specBlocksRead.refetch();
-          }}
-        />
-      ) : null}
-      {failedWithNothing(decisionsRead) ? (
-        <QueryError
-          message={ANSWER_LINES.decisions_unreadable}
-          onRetry={() => void decisionsRead.refetch()}
-        />
-      ) : null}
-      {resultsFailed ? (
-        <QueryError
-          message={ANSWER_LINES.results_unreadable}
-          onRetry={() => {
-            if (failedWithNothing(resultsRead)) void resultsRead.refetch();
-            if (failedWithNothing(checksRead)) void checksRead.refetch();
-          }}
-        />
-      ) : null}
+    <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="" ref={box}>
+      {/* Each line of the reads that failed with nothing held, in the page's words, with a
+          Retry that asks those reads alone again. The lines stand over the tree and never in
+          it: an alert inside a tree would break the tree's own structure of rows. */}
+      {unreadable.map(({ failed, line }) => (
+        <div data-spec-unreadable={line} key={line}>
+          <QueryError
+            message={ANSWER_LINES[line]}
+            onRetry={() => {
+              retried.current = document.activeElement?.closest("[data-spec-unreadable]") != null;
+              for (const read of failed) void read.refetch();
+            }}
+          />
+        </div>
+      ))}
       <Legend />
       <div
         className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}
@@ -459,7 +489,13 @@ export function SpecFilterBody({
       {/* The issue's three sentences, the first group, in the statements' column, as the
           prototype's `renderSpec` puts them after the column heads (ruling 5). */}
       <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
-        <IssueThreeThings look="spec" nameOf={nameOf} reading={!blocksHeld} summary={summary} />
+        <IssueThreeThings
+          look="spec"
+          nameOf={nameOf}
+          // The sentences are the spec's summary, so they wait on the spec's blocks alone.
+          reading={!specHeld}
+          summary={summary}
+        />
       </div>
       {/* The outline the page draws under the Spec filter, which is this body's two columns:
           one tree, named as the tree every other filter draws, so a reader meets one outline
@@ -538,7 +574,7 @@ export function SpecFilterBody({
           />
         ))}
       </div>
-      {statementsRead && statements.length === 0 ? (
+      {statementsHeld && statements.length === 0 ? (
         // What the page says where the filter's query matched nothing under the issue, in the
         // words the outline says it in (`IssueTree.tsx`).
         <p className={`py-1 text-sm ${pageMutedText}`} data-spec-empty="" {...pageChrome}>
@@ -564,13 +600,49 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   k: -1,
 };
 
+/** The row of the view's tree that holds its one tab stop, which takes the focus once the reads
+ *  a pressed Retry asked for are held. */
+const TAB_STOP_ROW = '[data-node-row][tabindex="0"]';
+
 /** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
  *  had, which the body still draws from, so only a read that left nothing to draw says it
- *  failed (the architect's decision 98 on dispatch://INFRA-1196). A read that is off - no
- *  document plays its part - has not failed. */
+ *  failed. A read of a document the issue does not name is never asked, so it has not failed. */
 function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
   return read.isError && read.data === undefined;
 }
+
+/** The issue's asks, under the key and with the request the page's tree reads them by
+ *  (`useIssueTree.ts`), so an observer of it watches the tree's own read. */
+function issueAsksQuery(key: string) {
+  return { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] };
+}
+
+/**
+ * `read` as an observer of the key the page's tree fills (`useIssueTree.ts`), which sends no
+ * request of its own: it is never enabled, so drawing it, drawing it again once its answer has
+ * aged, or the window taking the focus asks for nothing, and the body draws whatever the tree's
+ * own read holds. Its `refetch` still fetches, which is what a Retry asks. Its age and its
+ * fetch on focus are set as the page sets them for a read another surface fills
+ * (`refetchFailedOnFocus`), though TanStack reads neither for an observer it never enables.
+ * The contents slot watches the spec's blocks with it too.
+ */
+export function treeRead<T extends object>(read: T) {
+  return {
+    ...read,
+    enabled: false,
+    refetchOnWindowFocus: refetchFailedOnFocus,
+    staleTime: Number.POSITIVE_INFINITY,
+  } as const;
+}
+
+/**
+ * Window focus fetches a read again only while it is in error, so a read that failed recovers
+ * on the open page while a healthy one stays quiet. A copy of `refs/reference-target.ts`'s own,
+ * which that module keeps to itself; the body imports it in place of this copy once that module
+ * exports it.
+ */
+const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
+  query.state.status === "error" ? "always" : false;
 
 /** How far below the view's column heads a statement or cell is put where it has to be scrolled
  *  to: the clearance `bringOnScreen` leaves below the band (`identity-block.ts`'s private
@@ -832,7 +904,9 @@ function Group({
           <DecisionCell
             decision={run.decision}
             focused={openCell !== undefined && openCell === run.statements[0]?.node.id}
-            known={known}
+            // A run a person's decision shaped that the asks read has not brought yet waits as
+            // a run does before the decisions read answers: its cell says nothing.
+            known={known && run.waiting !== true}
             onFocus={(cell, itself) =>
               onCellFocus(cell, run.decision, itself ? run.statements[0]?.node.id : undefined)
             }
@@ -916,6 +990,8 @@ function DecisionCell({
   /** Whether the cell itself has the focus, which draws its words whole (`SpecFilterBody`'s
    *  `openCell`). */
   focused: boolean;
+  /** Whether the cell knows what shaped its run, which is when a run with no decision can say
+   *  that none shaped it. */
   known: boolean;
   /** Takes a focus anywhere in the cell, which no statement holds any longer: the cell, and
    *  whether the focus is on the cell itself. */

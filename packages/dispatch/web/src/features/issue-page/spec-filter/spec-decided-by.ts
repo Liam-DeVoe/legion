@@ -136,6 +136,9 @@ export interface SpecRun {
   /** The decision that shaped every statement of the run; absent where none did (R35). */
   readonly decision?: SpecDecision;
   readonly statements: readonly SpecStatement[];
+  /** Whether the run has no decision drawn because a person's decision shaped it that waits on
+   *  the asks read (`specDecidedBy`'s `asksHeld`), so its cell cannot say that none did. */
+  readonly waiting?: true;
 }
 
 /** The node a group of statements hangs under, which the filter draws as no row of its own
@@ -179,6 +182,7 @@ export interface SpecReading {
  * statement's mark is read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
+  asksHeld,
   checks,
   decisions,
   nameOf,
@@ -187,6 +191,11 @@ export function specDecidedBy({
   root,
   view,
 }: {
+  /** Whether the asks read holds an answer. A person's decision is drawn by the answer they
+   *  gave, whose question the tree holds once that read is in; until it is, the decision is
+   *  drawn as nothing, rather than as an agent's record of it, which is how a person's decision
+   *  whose question the tree does not hold is drawn. */
+  readonly asksHeld: boolean;
   readonly checks: readonly CheckBlock[];
   readonly decisions: IssueDecisions | undefined;
   readonly nameOf: (reference: string) => string | undefined;
@@ -200,11 +209,19 @@ export function specDecidedBy({
 }): SpecReading {
   const nodes = nodesById(root);
   const asks = asksById(nodes);
-  const shaped = shapedBy({ asks, decisions, nameOf, nodeIdOf, nodes, reader });
+  const { shaped, waiting } = shapedBy({
+    asks,
+    asksHeld,
+    decisions,
+    nameOf,
+    nodeIdOf,
+    nodes,
+    reader,
+  });
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
-    runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
+    runs: { decision?: SpecDecision; statements: SpecStatement[]; waiting?: true }[];
   }[] = [];
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`, decision 152).
@@ -218,6 +235,9 @@ export function specDecidedBy({
       ...(shaped.get(node.id) ?? []).filter((made) => made.id !== under?.id),
     ];
     const decision = ties.at(0);
+    // A statement no decision is drawn for, which a person's decision shaped that waits on the
+    // asks read, stands in a run of its own kind, whose cell says nothing yet.
+    const waits = decision === undefined && waiting.has(node.id);
     const standing = standings.get(node.id);
     const statement: SpecStatement = {
       alsoShapedBy: ties.slice(1),
@@ -227,20 +247,19 @@ export function specDecidedBy({
           : standing.state,
       node,
     };
+    const fresh = {
+      ...(decision === undefined ? {} : { decision }),
+      statements: [statement],
+      ...(waits ? { waiting: true as const } : {}),
+    };
     const group = groups.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
-      groups.push({
-        ...(parent === undefined ? {} : { parent }),
-        runs: [{ ...(decision === undefined ? {} : { decision }), statements: [statement] }],
-      });
+      groups.push({ ...(parent === undefined ? {} : { parent }), runs: [fresh] });
       continue;
     }
     const run = group.runs.at(-1);
-    if (run === undefined || run.decision?.id !== decision?.id) {
-      group.runs.push({
-        ...(decision === undefined ? {} : { decision }),
-        statements: [statement],
-      });
+    if (run === undefined || run.decision?.id !== decision?.id || run.waiting !== fresh.waiting) {
+      group.runs.push(fresh);
       continue;
     }
     run.statements.push(statement);
@@ -296,9 +315,11 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
 }
 
 /** The decisions that shaped each statement, by the statement's node id, in the order the
- *  decisions read answers them. */
+ *  decisions read answers them, and the statements a person's decision shaped while the asks
+ *  read holds no answer (`specDecidedBy`'s `asksHeld`), which is drawn for none of them. */
 function shapedBy({
   asks,
+  asksHeld,
   decisions,
   nameOf,
   nodeIdOf,
@@ -306,30 +327,42 @@ function shapedBy({
   reader,
 }: {
   asks: ReadonlyMap<string, TreeNode>;
+  asksHeld: boolean;
   decisions: IssueDecisions | undefined;
   nameOf: (reference: string) => string | undefined;
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
-}): ReadonlyMap<string, readonly SpecDecision[]> {
+}): {
+  readonly shaped: ReadonlyMap<string, readonly SpecDecision[]>;
+  readonly waiting: ReadonlySet<string>;
+} {
   const shaped = new Map<string, SpecDecision[]>();
+  const waiting = new Set<string>();
   for (const decision of decisions?.decisions ?? []) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
     if (decision.replaced) continue;
     const links = decision.links ?? [];
     if (links.length === 0) continue;
-    const made = decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader });
+    const made =
+      decision.kind === "person" && !asksHeld
+        ? undefined
+        : decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader });
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
+      if (made === undefined) {
+        waiting.add(id);
+        continue;
+      }
       const held = shaped.get(id) ?? [];
       // A decision that names one statement in two of its blocks is one decision of it.
       if (!held.some((one) => one.id === made.id)) held.push(made);
       shaped.set(id, held);
     }
   }
-  return shaped;
+  return { shaped, waiting };
 }
 
 /** One decision as the column draws it: a person's by the answer they gave, an agent's by its

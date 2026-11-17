@@ -1,8 +1,8 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQueries } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueries, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
@@ -17,6 +17,7 @@ import type {
   IssueDetails,
 } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
+import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -110,22 +111,31 @@ function treeDocuments(issue: IssueDetails): string[] {
   ];
 }
 
-/** The body as the Spec view's slot draws it, told whether the documents' blocks are held as
- *  the page's tree tells it (`useIssueTree.ts`'s `blocksHeld`): whether the read of every one of
- *  those documents holds an answer, which a case's reads answer as it says. */
-function HeldBody(props: Omit<ComponentProps<typeof SpecFilterBody>, "blocksHeld">): ReactNode {
-  const blocksHeld = useQueries({
-    combine: (answers) => answers.every((answer) => answer.data !== undefined),
-    queries: treeDocuments(props.issue).map((id) => artifactBlocksQuery(id)),
-  });
-  return <SpecFilterBody {...props} blocksHeld={blocksHeld} />;
+/** The reads the page's tree fills (`useIssueTree.ts`), each by an observer that fetches as the
+ *  tree's own do, under the same keys and with the same requests: the body only watches them,
+ *  so this stands in for the tree above it, which no view takes off the page. */
+function TreeReads({ issue }: { issue: IssueDetails }): ReactNode {
+  useQuery(issueCoverageQuery(issue.key));
+  useQuery(issueDecisionsQuery(issue.key, true));
+  useQuery(issueResultsQuery(issue.key));
+  useQuery({ queryFn: () => api.listIssueAsks(issue.key, "all"), queryKey: ["asks", issue.key] });
+  useQueries({ queries: treeDocuments(issue).map((id) => artifactBlocksQuery(id)) });
+  return null;
 }
 
 /** How one of the page's reads stands when the body is drawn. */
 type ReadState = "answered" | "failed" | "out";
 
+/** A read's answer as `state` says: `value`, a refusal, or none ever. */
+function answerAs<T>(state: ReadState, value: T): Promise<T> {
+  if (state === "answered") return Promise.resolve(value);
+  if (state === "failed") return Promise.reject(new Error("offline"));
+  return new Promise<never>(() => {});
+}
+
 /** The spies on the page's reads that the body reads, so a case can answer one again. */
 interface Reads {
+  readonly asks: Mock<typeof api.listIssueAsks>;
   readonly blocks: Mock<typeof api.getArtifactBlocks>;
   readonly coverage: Mock<typeof api.getIssueCoverage>;
   readonly decisions: Mock<typeof api.getIssueDecisions>;
@@ -143,43 +153,53 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** The body over `tree`, as the Spec view's slot draws it (`HeldBody`), with `made` as the
- *  issue's decisions read and `checks` as its results read. `decisions`, `results`, `coverage`
- *  and `blocks` (every document's but the Verification document's) each say how that read
- *  stands - answered, failed, or still out - and each is answered unless a case says so;
- *  `verification`, where a case names it, gives the issue a Verification document whose blocks
- *  read stands so; `names` is what the page's batched reference read named. The page's provider
- *  of the Contents list's requests stands above the body, so `request` is taken as the page
- *  takes it; `redraw(false)` takes the body off the page and `redraw(true)` draws a new one
- *  under the same provider, as the view turned off and on again does. */
+/** The body over `tree`, as the Spec view's slot draws it, under the reads the page's tree fills
+ *  (`TreeReads`), with `made` as the issue's decisions read and `checks` as its results read.
+ *  `asks`, `decisions`, `results`, `coverage` and `blocks` (every document's blocks but those a
+ *  case names below) each say how that read stands - answered, failed, or still out - and each
+ *  is answered unless a case says so; `verification` and `plan`, where a case names them, give
+ *  the issue that document, whose blocks read stands so, and `decisionBlocks` says how the
+ *  decisions document's blocks read stands; `names` is what the page's batched reference read
+ *  named; `staleTime` is how long an answer stays fresh, which the shell sets to 30 s. The
+ *  page's provider of the Contents list's requests stands above the body, so `request` is taken
+ *  as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)` draws a
+ *  new one under the same provider and reads, as the view turned off and on again does. */
 function drawBody(
   tree: TreeNode,
   made: readonly Decision[] = [],
   {
+    asks = "answered",
     blocks = "answered",
     checks = [],
     context = new Set<string>(),
     coverage = "answered",
+    decisionBlocks,
     decisions = "answered",
     named = [],
     names,
+    plan,
     reader = READER,
     request,
     results = "answered",
     reveal,
+    staleTime = Number.POSITIVE_INFINITY,
     verification,
   }: {
+    asks?: ReadState;
     blocks?: ReadState;
     checks?: readonly CheckBlock[];
     context?: Set<string>;
     coverage?: ReadState;
+    decisionBlocks?: ReadState;
     decisions?: ReadState;
     named?: readonly string[];
     names?: ReadonlyMap<string, string>;
+    plan?: ReadState;
     reader?: string;
     request?: OutlineRequest;
     results?: ReadState;
     reveal?: string;
+    staleTime?: number;
     verification?: ReadState;
   } = {}
 ): {
@@ -188,18 +208,22 @@ function drawBody(
   redraw: (drawn: boolean) => void;
   view: RenderResult;
 } {
-  const issue =
-    verification === undefined
-      ? issueDetails()
-      : {
-          ...issueDetails(),
-          artifacts: [...issueDetails().artifacts, artifact("artifact-ver", "verification-md")],
-          verification_artifact_id: "artifact-ver",
-        };
+  const base = issueDetails();
+  const issue = {
+    ...base,
+    ...(verification === undefined ? {} : { verification_artifact_id: "artifact-ver" }),
+    ...(plan === undefined ? {} : { plan_artifact_id: "artifact-plan" }),
+    artifacts: [
+      ...base.artifacts,
+      ...(verification === undefined ? [] : [artifact("artifact-ver", "verification-md")]),
+      ...(plan === undefined ? [] : [artifact("artifact-plan", "plan-md")]),
+    ],
+  };
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    defaultOptions: { queries: { retry: false, staleTime } },
   });
   const spies = {
+    asks: spyOn(api, "listIssueAsks"),
     blocks: spyOn(api, "getArtifactBlocks"),
     coverage: spyOn(api, "getIssueCoverage"),
     decisions: spyOn(api, "getIssueDecisions"),
@@ -231,30 +255,25 @@ function drawBody(
     client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
     spies.coverage.mockResolvedValue(coverageRead([]));
   });
-  settle(blocks, spies.blocks, () => {
-    // Every document's blocks but the Verification document's, which `verification` answers.
-    for (const id of treeDocuments(issue)) {
-      if (id !== issue.verification_artifact_id) {
-        client.setQueryData(artifactBlocksQuery(id).queryKey, []);
-      }
-    }
-    spies.blocks.mockResolvedValue([]);
+  settle(asks, spies.asks, () => {
+    client.setQueryData(["asks", KEY], []);
+    spies.asks.mockResolvedValue([]);
   });
-  if (verification !== undefined) {
-    // The Verification document's blocks, which the page reads for the checks under each
-    // statement, stand as `verification` says, and every other document's as `blocks` says.
-    if (verification === "answered") {
-      client.setQueryData(artifactBlocksQuery("artifact-ver").queryKey, []);
-    }
-    spies.blocks.mockImplementation((id) => {
-      const state = id === "artifact-ver" ? verification : blocks;
-      return state === "answered"
-        ? Promise.resolve([])
-        : state === "failed"
-          ? Promise.reject(new Error("offline"))
-          : new Promise<never>(() => {});
-    });
+  // Each document's blocks read stands as the case says: the Verification document's as
+  // `verification`, the plan's as `plan`, the decisions document's as `decisionBlocks`, and
+  // every other document's - the spec's - as `blocks`.
+  const blocksOf = (id: string): ReadState =>
+    (id === "artifact-ver"
+      ? verification
+      : id === "artifact-plan"
+        ? plan
+        : id === issue.decisions_artifact_id
+          ? decisionBlocks
+          : undefined) ?? blocks;
+  for (const id of treeDocuments(issue)) {
+    if (blocksOf(id) === "answered") client.setQueryData(artifactBlocksQuery(id).queryKey, []);
   }
+  spies.blocks.mockImplementation((id) => answerAs(blocksOf(id), []));
   const read: Reads = {
     ...spies,
     mockRestore: () => {
@@ -272,8 +291,9 @@ function drawBody(
                   <FocusedNodeProvider>
                     <IssueScope />
                     <FocusedProbe />
+                    <TreeReads issue={issue} />
                     {drawn ? (
-                      <HeldBody
+                      <SpecFilterBody
                         context={context}
                         emptyLine={EMPTY_STATE_LINES.spec}
                         holdsEscape={false}
@@ -1555,5 +1575,182 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
     read.mockRestore();
     scrolls.mockRestore();
     boxes.mockRestore();
+  }
+});
+
+/** How many times each of the reads the body draws from has been asked for. */
+function askedOf(read: Reads): Record<string, number> {
+  return {
+    asks: read.asks.mock.calls.length,
+    blocks: read.blocks.mock.calls.length,
+    coverage: read.coverage.mock.calls.length,
+    decisions: read.decisions.mock.calls.length,
+    results: read.results.mock.calls.length,
+  };
+}
+
+// R5, R17 and R35: the view waits on the reads of what it draws and on no other. A refused read
+// of a document it draws nothing from - the plan, the decisions document's blocks - changes
+// nothing in it: every statement is drawn and marked, and no line says a read failed. Waiting on
+// every document's blocks, the view left every statement unmarked, with no empty line, no
+// sentences and nothing saying why, as two review findings and the tester saw.
+test("a refused read of a document the view draws nothing from leaves every statement drawn and marked", async () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  for (const [refused, document] of [
+    [{ plan: "failed" }, "artifact-plan"],
+    [{ decisionBlocks: "failed" }, issueDetails().decisions_artifact_id],
+  ] as const) {
+    const { client, read, view } = drawBody(tree, [], { checks: [passed], ...refused });
+    try {
+      await waitFor(() =>
+        expect(client.getQueryState(artifactBlocksQuery(document).queryKey)?.status).toBe("error")
+      );
+      expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark"), document).toBe("met");
+      expect(view.container.querySelector('[role="alert"]'), document).toBeNull();
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R5 and R35: a refused decisions read says so in its own line over the tree, and its Retry asks
+// that read alone again, after which each run's cell draws the decision that shaped it.
+test("a refused decisions read says so in its own line, and its Retry asks that read alone again", async () => {
+  const user = userEvent.setup();
+  const made = [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] })];
+  const { read, view } = drawBody(issueTree([statement("r1"), decisionNode("d1")]), made, {
+    decisions: "failed",
+  });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+    expect(view.container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(view.container.querySelector("[data-spec-cell][data-decision-id]")).toBeNull();
+    read.decisions.mockResolvedValue(decisionsRead(made));
+    const before = askedOf(read);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-cell]")?.getAttribute("data-decision-id")
+      ).toBe("decisions-md#b-d1")
+    );
+    expect(askedOf(read)).toEqual({ ...before, decisions: before.decisions + 1 });
+    expect(view.container.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5 and R9: a person's decision is drawn by the answer they gave, whose question the asks read
+// brings. While that read is out the decision is drawn as nothing - never as an agent's record
+// of it - and a refused one says so in its own line.
+test("a person's decision is drawn as nothing while the asks read is out, and a refused asks read says so", async () => {
+  const made = [
+    decision({
+      asks: ["ask-1"],
+      block_id: "d1",
+      kind: "person",
+      links: [shaped(statementRef("r1"))],
+    }),
+  ];
+  // The tree holds no question the asks read has not brought.
+  const tree = issueTree([statement("r1"), decisionNode("d1")]);
+  const out = drawBody(tree, made, { asks: "out" });
+  try {
+    expect(out.view.container.textContent).not.toContain(SPEC_WORDS.said_agent);
+    expect(textsOf(out.view, "[data-spec-said]")).toEqual([]);
+    expect(textsOf(out.view, "[data-spec-nothing]")).toEqual([]);
+    expect(out.view.container.querySelector("[data-spec-because]")).toBeNull();
+    expect(out.view.container.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    out.view.unmount();
+    out.read.mockRestore();
+  }
+  const refused = drawBody(tree, made, { asks: "failed" });
+  try {
+    await waitFor(() => alertSaying(refused.view, ANSWER_LINES.answers_unreadable));
+    expect(refused.view.container.textContent).not.toContain(SPEC_WORDS.said_agent);
+  } finally {
+    refused.view.unmount();
+    refused.read.mockRestore();
+  }
+});
+
+// R5 and R35: a refused read of the spec's blocks says the statements could not be read, in the
+// line the view already says it in, and the issue's sentences say nothing, rather than that the
+// spec has no summary, which the view cannot know.
+test("a refused read of the spec's blocks says the statements could not be read, and the sentences say nothing", async () => {
+  const { read, view } = drawBody(issueTree([]), [], { blocks: "failed" });
+  try {
+    await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.spec_summary);
+    expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R7 and R9: a refused read leaves the view nothing to act on but its Retry, which Tab from the
+// tree never reaches. So the first line's Retry takes the focus where the view's key or its
+// address left it on nothing, and a reader whose focus is anywhere else keeps it; once a Retry
+// the reader pressed brings the read in, the view's first row takes the focus.
+test("a refused read's Retry takes the focus left on nothing, and the first row takes it once a pressed Retry brings the read in", async () => {
+  const user = userEvent.setup();
+  const tree = issueTree([statement("r1"), statement("r2")]);
+  const elsewhere = document.createElement("button");
+  document.body.append(elsewhere);
+  elsewhere.focus();
+  const kept = drawBody(tree, [], { coverage: "failed" });
+  try {
+    await waitFor(() => alertSaying(kept.view, ANSWER_LINES.statements_unreadable));
+    expect(document.activeElement, "a Retry took the focus from elsewhere").toBe(elsewhere);
+  } finally {
+    kept.view.unmount();
+    kept.read.mockRestore();
+    elsewhere.remove();
+  }
+  const { read, view } = drawBody(tree, [], { coverage: "failed" });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+    read.coverage.mockResolvedValue(coverageRead([]));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R20: the view sends no request of its own. Each read it draws from is the page's tree's, which
+// stays on the page, so the view drawn again - turned off and on - after the shell's 30 s have
+// aged every answer asks for none of them again.
+test("the body drawn again after its reads' answers have aged past 30 s sends no request", async () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  const { read, redraw, view } = drawBody(tree, [], { checks: [passed], staleTime: 30_000 });
+  const start = Date.now();
+  const clock = spyOn(Date, "now");
+  try {
+    const before = askedOf(read);
+    redraw(false);
+    clock.mockReturnValue(start + 31_000);
+    redraw(true);
+    // A task's turn, in which a read asked for on the new body's mount would be sent.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(askedOf(read)).toEqual(before);
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met");
+  } finally {
+    clock.mockRestore();
+    view.unmount();
+    read.mockRestore();
   }
 });

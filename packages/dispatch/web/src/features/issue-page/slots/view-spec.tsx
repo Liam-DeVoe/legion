@@ -26,7 +26,9 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksHeld, root } = useIssueTree(issue);
+  // The body watches the reads it draws from itself, under the keys the tree fills, so it waits
+  // on those alone (`SpecFilterBody`).
+  const { root } = useIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
@@ -44,7 +46,6 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           column; on a phone 4 px from the left edge and 10 px from the right, as the outline. */}
       <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">
         <SpecFilterBody
-          blocksHeld={blocksHeld}
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match}
           // The words filter's Escape comes before the view is left; turning the view off with

@@ -1,7 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
+import { artifactBlocksQuery } from "../../../api/queries";
 import { wordsOf } from "../../refs/tree-fragment";
 import { useContentsChosen } from "../contents-chosen";
 import { ContentsList } from "../IssueContents";
@@ -12,6 +14,7 @@ import { useReferenceNames } from "../one-line";
 import { useAskOutline, useFocusBranch } from "../outline-request";
 import { isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { treeRead } from "../spec-filter/SpecFilterBody";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import { useIssueTree } from "../useIssueTree";
@@ -31,11 +34,15 @@ import { useIssueTree } from "../useIssueTree";
  */
 export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
-  const specSlug = primarySpec(issue)?.slug ?? "";
+  const spec = primarySpec(issue);
+  const specSlug = spec?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
-  // Whether the documents' blocks the tree is built from are held, which the head waits on
-  // before it says the spec holds no summary (`blocksHeld`, decision 98).
-  const { blocksHeld, root } = useIssueTree(issue);
+  const { root } = useIssueTree(issue);
+  // The sentences are the spec's summary, so they wait on the spec's blocks alone, which the
+  // head waits on before it says the spec holds no summary. This observer reads the key the
+  // tree fills and fetches nothing of its own.
+  const specBlocks = useQuery(treeRead(artifactBlocksQuery(spec?.id ?? "")));
+  const reading = spec !== undefined && specBlocks.data === undefined;
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
@@ -52,7 +59,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   if (isFilter(address.preset)) return null;
   return (
     <NoTooltips>
-      <IssueThreeThings look="contents" nameOf={nameOf} reading={!blocksHeld} summary={memo} />
+      <IssueThreeThings look="contents" nameOf={nameOf} reading={reading} summary={memo} />
       <ContentsList
         focusBranch={focusBranch}
         nameOf={nameOf}

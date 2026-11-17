@@ -50,8 +50,8 @@ const { nodeIdOf } = treeContext({ issue: issueDetails() }, wordsOf);
  *  is an issue, and else by its short form (`shortForm`, decision 140 of dispatch://INFRA-1196). */
 const NO_NAMES = (): undefined => undefined;
 
-/** The Spec filter's body over `tree`, as the page reads it; `nameOf` is how the page names a
- *  reference a plain line cites (`useReferenceNames`). */
+/** The Spec filter's body over `tree`, as the page reads it once the asks read holds its answer;
+ *  `nameOf` is how the page names a reference a plain line cites (`useReferenceNames`). */
 function bodyOf(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -60,6 +60,7 @@ function bodyOf(
   nameOf: (reference: string) => string | undefined = NO_NAMES
 ): readonly SpecGroup[] {
   return specDecidedBy({
+    asksHeld: true,
     checks,
     decisions: decisionsRead(made),
     nameOf,
@@ -512,6 +513,7 @@ test("a row the filter kept that is no statement is in no run", () => {
     node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
   ]);
   const read = specDecidedBy({
+    asksHeld: true,
     checks: [],
     decisions: decisionsRead([]),
     nameOf: NO_NAMES,
