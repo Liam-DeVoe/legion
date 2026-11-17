@@ -509,7 +509,12 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the server's detached work did not end")
 	}
+	// A server built without its background work (directServer) has no mention sender, and so
+	// holds no send.
 	held := func() int {
+		if srv.mentions == nil {
+			return 0
+		}
 		srv.mentions.mu.Lock()
 		defer srv.mentions.mu.Unlock()
 		return len(srv.mentions.held)

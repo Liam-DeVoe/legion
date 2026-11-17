@@ -689,7 +689,7 @@ and the subjects a measurement binds — the largest project, the heavily linked
 
 Measurements are taken with durability on and memory pinned, and every number is recorded beside those settings:
 `fsync=on`, `synchronous_commit=on`, `full_page_writes=on`, and a `shared_buffers`, `maintenance_work_mem` and `effective_cache_size` the run names.
-A cluster with the write settings off leaves no page all-visible, and a small `shared_buffers` decides a share-of-plan reading on its own.
+A cluster with `synchronous_commit` off can leave a vacuum that runs before the seed's commit is flushed to the write-ahead log with no page all-visible, since a row is marked committed only after that flush, so an index-only plan reads as costly as a bitmap one; and a small `shared_buffers` decides a share-of-plan reading on its own.
 A full run at `--scale 1` takes about an hour and twenty minutes and leaves a database of about 14 GB.
 
 **What the seeded documents do not carry.**
