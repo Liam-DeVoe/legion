@@ -48,15 +48,23 @@ func putProductionCheck(t *testing.T, pool *store.Pool, records record.Store, ch
 	}
 }
 
+// readProductionCheck is issue's newest production check as recorded.
 func readProductionCheck(t *testing.T, pool *store.Pool, records record.Store, issue string) record.ProductionCheck {
+	t.Helper()
+	return readProductionCheckOf(t, pool, records, issue, time.Time{})
+}
+
+// readProductionCheckOf is issue's production check opened at openedAt as recorded, its newest for
+// the zero time.
+func readProductionCheckOf(t *testing.T, pool *store.Pool, records record.Store, issue string, openedAt time.Time) record.ProductionCheck {
 	t.Helper()
 	var check *record.ProductionCheck
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		var err error
-		check, err = records.ProductionCheck(context.Background(), tx, issue)
+		check, err = records.ProductionCheckOf(context.Background(), tx, issue, openedAt)
 		return err
 	}); err != nil || check == nil {
-		t.Fatalf("read production check of %s = %v, %v", issue, check, err)
+		t.Fatalf("read production check of %s opened at %s = %v, %v", issue, openedAt, check, err)
 	}
 	return *check
 }
@@ -378,6 +386,73 @@ func TestTheBoundRowOfTheFirstOfTwoChecksStartsItsLastLook(t *testing.T) {
 	}
 	if len(starts) != 1 || starts[0].CheckLook != 2 || !starts[0].CheckOpenedAt.Equal(first.OpenedAt) {
 		t.Fatalf("the starts queued by the bound row = %+v, want the first check's look 2 alone", starts)
+	}
+}
+
+// twoOpenChecks records two open production checks of root, each at look 1 with the look open:
+// the first opened an hour ago, the second half an hour later. It answers both as recorded.
+func twoOpenChecks(t *testing.T, pool *store.Pool, records record.Store, root record.Issue) (first, second record.ProductionCheck) {
+	t.Helper()
+	first = openCheck(root, "a1b2c3d4")
+	second = openCheck(root, "f00dfeed")
+	second.OpenedAt = first.OpenedAt.Add(30 * time.Minute)
+	putProductionCheck(t, pool, records, first)
+	putProductionCheck(t, pool, records, second)
+	return first, second
+}
+
+// Of two open checks of one issue, the start row of the first check's look 1, which names that
+// check, starts the look: the executor fences the row on the check it names, not on the issue's
+// newest check, and resumes the implementer for it.
+func TestTheStartOfALookOfTheFirstCheckActsWhileASecondIsOpen(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	first, _ := twoOpenChecks(t, pool, records, root)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		handlers: []intake.Handler{&outboxFactHandler{}}, log: quietLogger(), now: time.Now}
+
+	start := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer, Generation: root.Generation,
+		CheckLook: 1, CheckOpenedAt: first.OpenedAt, Task: "Production check of " + root.Key}, time.Now())
+	start.ID = 58
+	if err := runner.execute(context.Background(), start); err != nil {
+		t.Fatalf("the first check's start with a second open = %v, want the implementer resumed", err)
+	}
+	if got := machine.Claim(); got.LastStartRow != 58 || len(rt.CallsOf("Resume")) != 1 {
+		t.Fatalf("implementer after the first check's start = %s with last start %d and %d resumes, want resumed by row 58", got.State, got.LastStartRow, len(rt.CallsOf("Resume")))
+	}
+}
+
+// Of two open checks of one issue, each look's bound row, which names its check, ends that check's
+// look through the executor and the workflow: the first check's row ends the first's look and
+// leaves the second's open, and the second's row then ends the second's.
+func TestTheLookBoundRowOfEachOfTwoChecksEndsThatChecksLook(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	ctx := context.Background()
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	first, second := twoOpenChecks(t, pool, records, root)
+	engine := workflow.New(records, workflow.Config{Project: "legion", Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, log: quietLogger(), now: time.Now}
+
+	for i, check := range []record.ProductionCheck{first, second} {
+		row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt}, time.Now())
+		row.ID = int64(61 + i)
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("the look bound row of the check of %s = %v", check.MergeSHA, err)
+		}
+		if got := readProductionCheckOf(t, pool, records, root.Key, check.OpenedAt); got.LookOpen || !got.Open() {
+			t.Fatalf("the check of %s after its look bound row = look open %t, open %t; want its look ended and the check open", check.MergeSHA, got.LookOpen, got.Open())
+		}
+		if i == 0 {
+			if got := readProductionCheckOf(t, pool, records, root.Key, second.OpenedAt); !got.LookOpen {
+				t.Fatalf("the second check after the first's look bound row = %+v, want its look 1 still open", got)
+			}
+		}
 	}
 }
 

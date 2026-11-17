@@ -2853,14 +2853,15 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
-// none: its issue's production check is open, the one the row names (record.ProductionCheck.NamedBy),
-// at the look the row names, with that look open, and the issue out of the workflow. A check closed
-// since (a report, its last look), a check a later merge replaced, a look its bound or a hold ended,
-// a later look's start, or an issue running again (reopened inside its linger since the row was
-// queued: a look would resume the check's own role and relaunch the Sandbox under the run; the look ends
-// at its own bound) leave the row nothing to start, and it finishes without acting, logged with why.
+// none: the check of its issue the row names (record.SuperviseRequest.CheckOpenedAt; a row naming
+// none reads the issue's newest), open, at the look the row names, with that look open, and the
+// issue out of the workflow. No such check, a check closed since (a report, its last look, a later
+// run's merge), a look its bound or a hold ended, a later look's start, or an issue running again
+// (reopened inside its linger since the row was queued: a look would resume the check's own role
+// and relaunch the Sandbox under the run; the look ends at its own bound) leave the row nothing to
+// start, and it finishes without acting, logged with why.
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {
-	check, err := r.productionCheck(ctx, row.Issue)
+	check, err := r.productionCheck(ctx, row.Issue, payload.CheckOpenedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -2872,8 +2873,6 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
 	case !check.Open():
 		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.CheckOpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
 	case check.Looks != payload.CheckLook:
 		why = fmt.Sprintf("the check is at look %d", check.Looks)
 	case !check.LookOpen:
@@ -2905,12 +2904,12 @@ func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payloa
 // checkLook is a look's bound coming due (record.CheckLook): the look it names ends as one nobody
 // reported (intake.CheckLookEnded, cause `look bound`), which the workflow applies only while the
 // check is open at that look with the look open, so a look reported in time changes nothing. The
-// check is read first: a row of no open check, or of a check a later merge replaced (NamedBy),
-// finishes without acting, and the event is the issue, the check read (record.ProductionCheck.ID)
-// and the look, so the row run again is a duplicate and a later check's look 1 is a fact of its
-// own rather than the replaced check's.
+// check the row names (its OpenedAt; a row naming none reads the issue's newest) is read first: a
+// row of no such check, or of one closed since, finishes without acting, and the event is the
+// issue, the check read (record.ProductionCheck.ID) and the look, so the row run again is a
+// duplicate and one check's look 1 is another fact than another check's.
 func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload record.CheckLook) error {
-	check, err := r.productionCheck(ctx, row.Issue)
+	check, err := r.productionCheck(ctx, row.Issue, payload.OpenedAt)
 	if err != nil {
 		return err
 	}
@@ -2920,8 +2919,6 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 		why = "the issue has no production check"
 	case !check.Open():
 		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.OpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
 	}
 	if why != "" {
 		r.log.Info("outbox check look bound finished without acting", "row", row.ID, "issue", row.Issue, "look", payload.Look, "why", why)
@@ -2952,10 +2949,10 @@ func (r *outbox) checkWake(ctx context.Context, row record.OutboxRow, payload re
 	return nil
 }
 
-// checkBound is the whole check's bound coming due (record.CheckBound): intake.CheckBound, under
-// an event of this row's own rather than the check's, since a bound the workflow defers — a look
-// open at the bound, an earlier check's bound — is queued again as a new row, whose apply must be
-// fresh rather than a duplicate of this one's.
+// checkBound is a check's bound coming due (record.CheckBound, which names no check):
+// intake.CheckBound, under an event of this row's own rather than a check's, since the workflow
+// acts on each open check whose bound came due and queues a bound it defers — a look open at the
+// bound — again as a new row, whose apply must be fresh rather than a duplicate of this one's.
 func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-bound:%s:%d", row.Issue, row.ID),
 		intake.CheckBound{Issue: row.Issue}, r.handlers...); err != nil {
@@ -2964,13 +2961,13 @@ func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 	return nil
 }
 
-// productionCheck is issue's production check as recorded, nil for none, read in a transaction of
-// its own just before the executor acts on a row.
-func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.ProductionCheck, error) {
+// productionCheck is issue's production check opened at openedAt as recorded, its newest for the
+// zero time, nil for none, read in a transaction of its own just before the executor acts on a row.
+func (r *outbox) productionCheck(ctx context.Context, issue string, openedAt time.Time) (*record.ProductionCheck, error) {
 	var check *record.ProductionCheck
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		check, err = r.records.ProductionCheck(ctx, tx, issue)
+		check, err = r.records.ProductionCheckOf(ctx, tx, issue, openedAt)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read the production check of %s: %w", issue, err)

@@ -908,13 +908,15 @@ func seedCheck(t *testing.T, h *harness, key string, role claim.Role, closed, la
 // reads that a pending names one, and the engine, which clamps it, is not in this harness.
 var checkWakeAt = time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
 
-// sameCheckReport says whether got is want, comparing the reports' wake times as instants: the
-// report travels as JSON, so the fact the route applies carries a pointer of its own.
+// sameCheckReport says whether got is want, comparing the reports' wake times and checks as
+// instants: the report travels as JSON, so the fact the route applies carries a pointer of its own,
+// and the check's OpenedAt is read from Postgres, in a location of pgx's choosing.
 func sameCheckReport(got, want intake.CheckReport) bool {
-	if (got.WakeAt == nil) != (want.WakeAt == nil) || (got.WakeAt != nil && !got.WakeAt.Equal(*want.WakeAt)) {
+	if (got.WakeAt == nil) != (want.WakeAt == nil) || (got.WakeAt != nil && !got.WakeAt.Equal(*want.WakeAt)) || !got.OpenedAt.Equal(want.OpenedAt) {
 		return false
 	}
 	got.WakeAt, want.WakeAt = nil, nil
+	got.OpenedAt, want.OpenedAt = time.Time{}, time.Time{}
 	return got == want
 }
 
@@ -947,7 +949,7 @@ func TestHandoffCompleteRecordsACheckReportOfTheOpenLookWithoutACommit(t *testin
 
 	for _, verdict := range []string{"pending", "fail", "pass"} {
 		report := HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked: " + verdict, Verdict: verdict}
-		want := intake.CheckReport{Issue: "LEGION-208", Claim: token, Look: 2, Verdict: verdict, Summary: "looked: " + verdict}
+		want := intake.CheckReport{Issue: "LEGION-208", Claim: token, Look: 2, Verdict: verdict, Summary: "looked: " + verdict, OpenedAt: checkOpenedAt}
 		if verdict == "pending" {
 			report.WakeAt, want.WakeAt = &checkWakeAt, &checkWakeAt
 		}
@@ -1026,7 +1028,7 @@ func TestHandoffCompleteAnswersTheEnginesRefusalOfACheckReport(t *testing.T) {
 // back to todo, a root reopened inside its linger) and its merge opened another — counts its looks
 // from one again, so its implementer's report on look 1 is a new fact, not the first check's
 // report of the same look and verdict: the event a report is recorded under must tell the two
-// checks apart (workflow.openCheck replaces the record; nothing clears processed_events). The
+// checks apart (each check of an issue is a record of its own; nothing clears processed_events). The
 // first check's first look was reported pending, as a first look is; the rerun's must be too.
 func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 	github := newHandoffGitHub(t)
@@ -1072,7 +1074,7 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 	if answer.Code != http.StatusOK {
 		t.Fatalf("the rerun's first look reported pending = %d: %s; want it taken as the second check's own report, not the first check's", answer.Code, answer.Body)
 	}
-	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pending", Summary: "no production carries the rerun's merge yet", WakeAt: &checkWakeAt}
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pending", Summary: "no production carries the rerun's merge yet", WakeAt: &checkWakeAt, OpenedAt: reopened}
 	if got := facts.recorded(); len(got) != 2 || !sameCheckReport(lastCheckReport(t, facts), want) {
 		t.Fatalf("facts after the second check's report = %#v, want the first check's report and then %+v", got, want)
 	}
@@ -1084,7 +1086,7 @@ func recordedCheck(t *testing.T, h *harness, key string) record.ProductionCheck 
 	var check *record.ProductionCheck
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		var err error
-		check, err = record.NewStore().ProductionCheck(context.Background(), tx, key)
+		check, err = record.NewStore().ProductionCheckOf(context.Background(), tx, key, time.Time{})
 		return err
 	}); err != nil || check == nil {
 		t.Fatalf("read the production check of %s = %v, %v", key, check, err)
@@ -1129,7 +1131,7 @@ func TestACheckReportOfAPendingWithoutAWakeIsRefusedAndTheSameReportWithOneIsRec
 	}
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no deploy carries the merge", Verdict: "pending", WakeAt: &checkWakeAt}))
-	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 2, Verdict: "pending", Summary: "no deploy carries the merge", WakeAt: &checkWakeAt}
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 2, Verdict: "pending", Summary: "no deploy carries the merge", WakeAt: &checkWakeAt, OpenedAt: checkOpenedAt}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("the report sent again = %+v, want %+v", got, want)
 	}
@@ -1205,7 +1207,7 @@ func TestACheckReportFromAnotherRoleIsRefusedAndTheChecksOwnRolesIsRecorded(t *t
 	}
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "driven in production", Verdict: "pass"}))
-	want := intake.CheckReport{Issue: "LEGION-208", Claim: tester.token, Look: 2, Verdict: "pass", Summary: "driven in production"}
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: tester.token, Look: 2, Verdict: "pass", Summary: "driven in production", OpenedAt: checkOpenedAt}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("the check's own role's report = %+v, want %+v", got, want)
 	}

@@ -1137,14 +1137,6 @@ func (c ProductionCheck) Open() bool { return c.ClosedAt == nil }
 // one every later read returns spell the same id, whatever location either carries.
 func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixMicro(), 10) }
 
-// NamedBy says whether openedAt names this check instance, as the rows and facts of a check carry
-// its OpenedAt: a zero openedAt names no instance — a row queued before the rows carried one — and
-// so names this one too; another instant names another check of the issue, an earlier one a later
-// merge closed, or a later one, each counting its looks from one.
-func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
-	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
-}
-
 // CheckOutcome is how a production check closed; "" while it is open.
 type CheckOutcome string
 
@@ -1615,12 +1607,10 @@ type Store interface {
 	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
-	// ProductionCheck is issue's newest production check, nil for none; ProductionCheckOf reads
-	// one check of issue by the moment it opened, and the newest for the zero time, the read of a
-	// row or a fact that names no check, nil where no check of issue opened then;
-	// ProductionChecksOf is each check of issue, newest first. PutProductionCheck writes a check,
-	// one for each moment a check of issue opened.
-	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
+	// ProductionCheckOf reads one check of issue by the moment it opened, and the newest for the
+	// zero time, the read of a row or a fact that names no check, nil where no check of issue
+	// opened then; ProductionChecksOf is each check of issue, newest first. PutProductionCheck
+	// writes a check, one for each moment a check of issue opened.
 	ProductionCheckOf(ctx context.Context, tx pgx.Tx, issue string, openedAt time.Time) (*ProductionCheck, error)
 	ProductionChecksOf(ctx context.Context, tx pgx.Tx, issue string) ([]ProductionCheck, error)
 	PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error

@@ -824,7 +824,7 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		for _, want := range []ProductionCheck{fresh, woken, done} {
-			got, err := records.ProductionCheck(ctx, tx, want.Issue)
+			got, err := records.ProductionCheckOf(ctx, tx, want.Issue, time.Time{})
 			must(t, err)
 			if !sameProductionCheck(got, want) {
 				t.Fatalf("production check of %s = %+v, want %+v", want.Issue, got, want)
@@ -833,7 +833,7 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		if !fresh.Open() || done.Open() {
 			t.Fatalf("Open = %v and %v for a check without and with a close, want true and false", fresh.Open(), done.Open())
 		}
-		none, err := records.ProductionCheck(ctx, tx, "LEGION-999")
+		none, err := records.ProductionCheckOf(ctx, tx, "LEGION-999", time.Time{})
 		must(t, err)
 		if none != nil {
 			t.Fatalf("production check of an issue with none = %+v, want nil", none)

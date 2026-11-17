@@ -1528,14 +1528,10 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 const productionCheckColumns = `issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at, role, looks, look_open,
 	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, generation, task`
 
-func (s *Postgres) ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error) {
-	return s.ProductionCheckOf(ctx, tx, issue, time.Time{})
-}
-
 // ProductionCheckOf is the one place of the rule that a row or a fact naming no check acts on the
-// issue's newest check: a zero openedAt reads the check of issue that opened last, as
-// ProductionCheck.NamedBy takes the zero instant for any check, and another reads the check of
-// issue that opened at that instant. It answers nil where issue holds no such check.
+// issue's newest check: a zero openedAt reads the check of issue that opened last, and another
+// reads the check of issue that opened at that instant. It answers nil where issue holds no such
+// check.
 func (s *Postgres) ProductionCheckOf(ctx context.Context, tx pgx.Tx, issue string, openedAt time.Time) (*ProductionCheck, error) {
 	var at any
 	if !openedAt.IsZero() {

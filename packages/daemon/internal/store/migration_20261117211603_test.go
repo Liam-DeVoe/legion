@@ -48,7 +48,7 @@ func TestTheCheckOfTheReleaseBeforeReadsWithGenerationZeroAndNoTask(t *testing.T
 	var check *record.ProductionCheck
 	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
 		var err error
-		check, err = record.NewStore().ProductionCheck(ctx, tx, "LEGION-208")
+		check, err = record.NewStore().ProductionCheckOf(ctx, tx, "LEGION-208", time.Time{})
 		return err
 	}); err != nil {
 		t.Fatalf("read the check of LEGION-208 after the migration: %v", err)
