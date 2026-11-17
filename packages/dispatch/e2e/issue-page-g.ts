@@ -28,7 +28,7 @@ import {
   recordCheckResult,
   userHeaders,
 } from "./api";
-import { blockId } from "./editor";
+import { decisionBlock, decisionsPart, shapedAttribute } from "./issue-layout-seed-text";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
 import { ONE_PIXEL_PNG } from "./sends";
@@ -921,8 +921,8 @@ export const ONE_LINE_WORDS = "The page draws one row per node.";
 /** What the seed wrote, by the ids the page draws its rows under. */
 export interface RowSeed {
   readonly key: string;
-  /** The slug of each document the issue holds: its spec, its notes, its plan, its
-   *  Verification document and its decisions. */
+  /** The slug of each document the issue holds: its spec, its notes, its plan and its
+   *  Verification document; `decisions` is the spec's, whose blocks the decisions are. */
   readonly slugs: {
     readonly decisions: string;
     readonly notes: string;
@@ -990,10 +990,10 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * `blocks.json`); a one-line statement `r-one`; the statement `r-ties`, whose words cite `r-one`'s
  * block by its address (a requirement takes no attribute, so the citation is the tie);
  * a plan task that needs one opening "**1\. Stand"; a check, with a result an untitled session
- * recorded; a decision that shaped a statement, one opening "Unsure:" that cites `t1`, one
- * holding `:::requirement{#r1}` and a block's address, and one a person asked to change; a
- * picture; an open question with two options waiting on the reader, an answered one, and the
- * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * recorded; the spec's decisions: one that shaped a statement, one marked unsure that cites
+ * `t1`, one holding `:::requirement{#r1}` and a block's address, and one a person asked to
+ * change; a picture; an open question with two options waiting on the reader, an answered one,
+ * and the long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
  */
 export async function seedRows(): Promise<RowSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1094,26 +1094,67 @@ export async function seedRows(): Promise<RowSeed> {
     asPlanner
   );
 
-  const headings = {
-    changed: "Name every node from one read",
-    raw: "Keep the source out of the rows",
-    shaping: "Draw a statement on one line",
-    unsure: "Fold to the frontier and not to a depth",
+  // The four decisions are blocks of the spec's `## Decisions` part (dispatch://INFRA-1150), which
+  // the planner writes, so each is an agent's. The unsure one keeps its citation of `t1` in its
+  // words, where a row draws it as a chip, and gives the rest of its `Unsure:` paragraph as its
+  // reason. A decision's content is any block (`blocks.json`), so `raw` holds a requirement.
+  const decided = {
+    changed: "d-changed",
+    raw: "d-raw",
+    shaping: "d-shaping",
+    unsure: "d-unsure",
   };
-  const decisions = await createIssueArtifact(key, {
-    content: [
-      `## ${headings.shaping}\n\nShapes ${spec("r-one")}.`,
-      `## ${headings.changed}\n\n${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
-      `## ${headings.unsure}\n\nUnsure: a reader who never finds the newest question would change this. ` +
-        `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
-      `## ${headings.raw}\n\nIt names ${spec("r-one")}.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::`,
-    ].join("\n\n"),
-    name: "decisions.md",
-  });
+  await editArtifact(
+    issue.primary_artifact_id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart([
+            decisionBlock(
+              decided.shaping,
+              [shapedAttribute(key, ["r-one"])],
+              ["Draw a statement on one line", `Shapes ${spec("r-one")}.`]
+            ),
+            decisionBlock(
+              decided.changed,
+              [shapedAttribute(key, ["r-cites"])],
+              [
+                "Name every node from one read",
+                `${CHANGED_DECISION_WORDS} Shapes ${spec("r-cites")}.`,
+              ]
+            ),
+            decisionBlock(
+              decided.unsure,
+              [
+                'uncertainty="high"',
+                'uncertainty_reason="a reader who never finds the newest question would change this."',
+              ],
+              [
+                "Fold to the frontier and not to a depth",
+                `It follows dispatch://${key}/artifact/${plan.artifact.slug}#b-t1.`,
+              ]
+            ),
+            decisionBlock(
+              decided.raw,
+              [shapedAttribute(key, ["r-one"])],
+              [
+                "Keep the source out of the rows",
+                `It names ${spec("r-one")}.`,
+                ":::requirement{#r1}\nThe page draws no raw source.\n:::",
+              ]
+            ),
+          ]),
+          op: "insert",
+        },
+      ],
+    },
+    asPlanner
+  );
   // A person asks to change one decision, by a comment anchored to its words after they last
-  // changed (decision 45: the anchor names the document by its id).
+  // changed (decision 45: the anchor names the document by its id), which only `changed` holds.
   const change = await createComment(key, {
-    anchor: { artifact: decisions.artifact.id, quote: CHANGED_DECISION_WORDS },
+    anchor: { artifact: issue.primary_artifact_id, quote: CHANGED_DECISION_WORDS },
     body: "Name them from the tree instead.",
   });
 
@@ -1138,17 +1179,13 @@ export async function seedRows(): Promise<RowSeed> {
     body: `The layout at 1440 px:\n\n![The layout at 1440 px](dispatch://${key}/artifact/${picture})`,
   });
 
-  const decisionsSlug = decisions.artifact.slug;
-  // A decision is addressed by its heading block, whose id the server gives.
-  const decision = async (heading: string) =>
-    blockNode(decisionsSlug, await blockId(decisions.artifact.id, `## ${heading}`));
   return {
     answered: answered.id,
     answeredLong: answeredLong.id,
     answerWords,
     blocker: blocker.key,
     change: change.id,
-    changed: await decision(headings.changed),
+    changed: blockNode(specSlug, decided.changed),
     child: child.key,
     childTitle,
     comment: comment.id,
@@ -1159,18 +1196,18 @@ export async function seedRows(): Promise<RowSeed> {
     openQuestion: openQuestion.id,
     picture,
     pictured: pictured.id,
-    raw: await decision(headings.raw),
+    raw: blockNode(specSlug, decided.raw),
     replies,
     result: recorded.result.id,
-    shaping: await decision(headings.shaping),
+    shaping: blockNode(specSlug, decided.shaping),
     slugs: {
-      decisions: decisionsSlug,
+      decisions: specSlug,
       notes: notes.artifact.slug,
       plan: plan.artifact.slug,
       spec: specSlug,
       verification: verification.artifact.slug,
     },
-    unsure: await decision(headings.unsure),
+    unsure: blockNode(specSlug, decided.unsure),
     waitingLong: waitingLong.id,
   };
 }

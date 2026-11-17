@@ -15,6 +15,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { decisionBlock, decisionsPart, shapedAttribute } from "./issue-layout-seed-text";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -577,17 +578,12 @@ test("the approval entries stay in the header and read the document each step ap
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page) => {
     await createProject({ key: "GATED", name: "Gated" });
-    await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
+    await setGatedSteps("GATED", ["criteria", "spec"]);
     await createProject({ key: "PLAIN", name: "Plain" });
 
     // A root of a project that gates steps: one entry per step, in the project's order, each
     // reading its own document.
     const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
-    const decisions = await createIssueArtifact(root.key, {
-      content: "# Decisions\n\nHTTP it is.\n",
-      name: "decisions.md",
-    });
-    await reviewArtifact(decisions.artifact.id, { state: "approved" });
     await requestApproval(root.primary_artifact_id ?? "", { summary: "Read it." });
     await gotoIssue(page, `/issues/${root.key}`);
     await expectHeaderDrawn(page);
@@ -600,9 +596,8 @@ test("the approval entries stay in the header and read the document each step ap
             entries.map((entry) => entry.getAttribute("data-approval-step"))
           )
       )
-      .toEqual(["decisions", "criteria", "spec"]);
+      .toEqual(["criteria", "spec"]);
     const entry = (step: string) => steps.locator(`[data-approval-step="${step}"]`);
-    await expect(entry("decisions").getByRole("button", { name: "Approved v1" })).toBeVisible();
     await expect(entry("criteria")).toContainText(CONTROL_LABELS.not_requested);
     await expect(entry("spec").getByRole("button", { name: "Awaiting approval" })).toBeVisible();
     // The approval the request asks for pins a version of the spec, and that version is the
@@ -965,20 +960,38 @@ test("the count of what waits is a control that opens the Decisions address @pho
       )
     );
 
-    // A decision on the review list is all that waits: the issue's decisions document holds an
-    // agent's decision that names the requirement its spec holds, which the server reads as
-    // waiting for review, and no ask of the issue is open. The count counts it, and its press
-    // opens the Decisions address.
+    // A decision on the review list is all that waits: the issue's spec holds an agent's
+    // decision that shaped the requirement it holds, which the server reads as waiting for
+    // review, and no ask of the issue is open. The count counts it, and its press opens the
+    // Decisions address.
     const decided = await createIssue({
       force: true,
       project: HEADER_PROJECT,
       spec: ":::requirement{#r1}\nThe header counts a decision that waits.\n:::\n",
       title: "Decided",
     });
-    await createIssueArtifact(decided.key, {
-      content: `## The count reads the decisions\n\nThe header counts what the Decisions filter lists for review. It shapes dispatch://${decided.key}/spec#b-r1.\n`,
-      name: "decisions.md",
-    });
+    await editArtifact(
+      decided.primary_artifact_id ?? "",
+      {
+        ops: [
+          {
+            after: "end",
+            markdown: decisionsPart([
+              decisionBlock(
+                "d-count",
+                [shapedAttribute(decided.key, ["r1"])],
+                [
+                  "The count reads the decisions",
+                  `The header counts what the Decisions filter lists for review. It shapes dispatch://${decided.key}/spec#b-r1.`,
+                ]
+              ),
+            ]),
+            op: "insert",
+          },
+        ],
+      },
+      asAgent
+    );
     expect(
       ((await issueDecisions(decided.key)).decisions ?? []).map((decision) => ({
         names: (decision.links ?? []).map((link) => link.to.block_id),

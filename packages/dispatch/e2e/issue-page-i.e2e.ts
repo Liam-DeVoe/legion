@@ -54,16 +54,20 @@ import {
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner, PROJECT } from "./issue-layout-seed-support";
+import { askBlockOf, asPlanner, PROJECT } from "./issue-layout-seed-support";
 import {
+  ANSWERED_ASK_BLOCK_ID,
+  answeredAskShaped,
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
   requirementBlockId,
   requirementText,
   SPINE_ANSWERED_QUESTION,
+  SPINE_ASK_BLOCK_ID,
   SPINE_CHECK_BLOCK_ID,
   SPINE_REQUIREMENTS,
   SPINE_SPEC,
+  specBlockRef,
 } from "./issue-layout-seed-text";
 import { filterRow, gotoIssue, issuePage, phase, presetToggle } from "./issue-page";
 import {
@@ -501,7 +505,7 @@ function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
     check: checks,
     child_issue: seeded.children.keys.length,
     comment: seeded.comments.threads.length + seeded.comments.replies.length + 1,
-    decision: seeded.decisions.length,
+    decision: seeded.decisions.length - 1, // the reading draws no row until part Y
     message: Object.keys(seeded.messages).length,
     plan_task: seeded.planTasks.length,
     requirement: seeded.requirements.length + 1,
@@ -911,25 +915,22 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const decision = blockNodeId(decisionsSlug, seeded.decisionBlockId);
+    const asked = blockNodeId(specSlug, SPINE_ASK_BLOCK_ID);
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
-    // The decision sits under the ask it answers: the question its block names.
-    const stored = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
-      (one) => one.block_id === seeded.decisionBlockId
-    );
-    expect(stored?.asks, "the server holds no ask the decision answers").toEqual([
-      seeded.answeredAskId,
+    // The answered ask's block ties the requirement it shaped, and the reading of its answer
+    // stands inside it; a reading draws no row until part Y.
+    const stored = await askBlockOf(seeded.specArtifactId, SPINE_ASK_BLOCK_ID);
+    expect(stored.shaped, "the answered ask's block ties no requirement it shaped").toEqual([
+      specBlockRef(seeded.key, SPINE_REQUIREMENTS.shapedElsewhere),
     ]);
-    expect(
-      await parentOfRow(page, decision),
-      "the decision is not drawn under the ask it answers"
-    ).toBe(seeded.answeredAskId);
+    expect(stored.readings, "the reading does not stand inside the answered ask").toEqual([
+      seeded.decisionBlockId,
+    ]);
     // A node with no stored parent stands at the outline's top level, under no row: the issue
     // itself is no row (ruling 5).
     expect(
-      await parentOfRow(page, seeded.answeredAskId),
+      await parentOfRow(page, asked),
       "the answered ask is not drawn at the outline's top level"
     ).toBeNull();
 
@@ -987,7 +988,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     ).toBe(fromFirstParent);
 
     // Every edge that is not the spine is a chip naming its target, and the spine is none: the
-    // decision's link to a requirement is its chip, once, and the ask it sits under is not one.
+    // answered ask's `shaped` tie to a requirement is its chip, once, and the ask is not its own.
     // A folded branch draws one line and no chip (ruling 1 on R1), so the tree is read open.
     // A chip names its target by the target's stored words, cut as a title is (G's `Chip`), so
     // each is found by the words the seed stored.
@@ -995,11 +996,11 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const chips = (await drawnRows(page)).flatMap((row) => row.chips);
     expect(
       chipsNaming(chips, seededBlockWords(SPINE_SPEC, SPINE_REQUIREMENTS.shapedElsewhere)).length,
-      `the decision's link is not drawn once as a chip: ${JSON.stringify(chips)}`
+      `the answered ask's tie is not drawn once as a chip: ${JSON.stringify(chips)}`
     ).toBe(1);
     expect(
       chipsNaming(chips, SPINE_ANSWERED_QUESTION),
-      "the ask the decision sits under is drawn as its chip as well"
+      "the answered ask is drawn as its own chip"
     ).toEqual([]);
   });
 
@@ -1007,7 +1008,6 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
     const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const slugs = new Set(((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.slug));
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -1016,11 +1016,15 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const rows = await drawnRows(page);
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
 
-    // The decision that answers the issue's answered ask sits under that ask.
-    expect(
-      parentOf(blockNodeId(decisionsSlug, seeded.decisions[1] ?? "")),
-      "the decision that answers the ask is not drawn under it"
-    ).toBe(seeded.answeredAskId);
+    // The answered ask's block ties the requirements it shaped, and the reading of its answer
+    // stands inside it; a reading draws no row until part Y.
+    const asked = await askBlockOf(seeded.specArtifactId, ANSWERED_ASK_BLOCK_ID);
+    expect(asked.shaped, "the answered ask's block ties no requirement it shaped").toEqual(
+      answeredAskShaped(seeded.key)
+    );
+    expect(asked.readings, "the reading does not stand inside the answered ask").toEqual([
+      seeded.decisions[1],
+    ]);
 
     // Each check under the requirement its `serves` names, and each result under its check.
     for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
