@@ -39,9 +39,11 @@ type projectAccessInput struct {
 	SlackChannels *[]string `json:"slack_channels,omitempty"`
 }
 
-// BusProjects is K7's writer of the private-projects record (busprojects.Writer): one key per
-// private project in the hub's envoy_private_projects bucket, which every listener reads to hold
-// that project's messages back from a token that does not list it.
+// BusProjects writes the private-projects record, the contract K7 names: one key per private
+// project in the hub's envoy_private_projects bucket, which every listener reads to hold that
+// project's messages back from a token that does not list it. No writer of it is in this tree, so
+// cmd/dispatch passes none, and every write that needs the record answers 409
+// PRIVATE_PROJECTS_UNAVAILABLE (ensurePrivate).
 type BusProjects interface {
 	// EnsurePrivate puts project's key, reading what it needs through q, the visibility write's
 	// own transaction, since the pool refuses that write's request a second connection
@@ -135,8 +137,8 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 // repositories shares a GitHub subject lane with another project's (refuseSharedLane).
 // Otherwise its private-projects record is written through the transaction as its last step, so a
 // refused record leaves the project as it was. A switch to public is refused by none of them. The
-// route makes no other bus call: the writer's own pass deletes the key of a project made public,
-// or of one whose commit failed after its record was written (busprojects.Writer.Run).
+// route makes no other bus call: deleting the key of a project made public, or of one whose commit
+// failed after its record was written, is the record writer's own pass (K7), not this route's.
 func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	var input projectAccessInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -211,9 +213,9 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 
 // ensurePrivate writes project key's private-projects record through bus and the write's
 // transaction tx, the write's last step before its commit. It answers
-// errPrivateProjectsUnavailable where it cannot: a deployment with no bus, as busprojects.ErrNoBus
-// answers it, or a hub that refused the write, as a hub without its auth service refuses every
-// one.
+// errPrivateProjectsUnavailable where it cannot: a deployment with no writer (a nil bus, which is
+// every deployment of this build), or a writer that refused the write, as a hub without its auth
+// service refuses every one.
 func ensurePrivate(ctx context.Context, tx pgx.Tx, bus BusProjects, key string) error {
 	if bus == nil {
 		return fmt.Errorf("%w: this deployment has no bus to write it to", errPrivateProjectsUnavailable)
@@ -288,7 +290,7 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 	if !ok {
 		return
 	}
-	if !who.Viewer.All && !slices.Contains(who.Viewer.Sees, key) {
+	if !viewerSees(who.Viewer, key) {
 		s.writeAccessError(w, fmt.Errorf("%w: %s", access.ErrProjectNotFound, key))
 		return
 	}

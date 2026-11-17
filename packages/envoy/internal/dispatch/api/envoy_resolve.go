@@ -194,8 +194,9 @@ func (s *server) roleHolderHidden(ctx context.Context, session string) (bool, er
 
 // roleResolvesWithoutAReader reports whether a role resolved with no reader in ctx must answer as
 // one no session holds: the deployment holds a private project, so the holder could be a session
-// the mention's author may not see. A resolve with a reader, and every resolve of a deployment that
-// holds no private project, answers false at the cost of no read (R9).
+// the mention's author may not see. A resolve with a reader answers false at the cost of no read;
+// a resolve with none reads whether any project is private, one statement, and answers false
+// where none is.
 func (s *server) roleResolvesWithoutAReader(ctx context.Context) (bool, error) {
 	if _, ok := readerFromContext(ctx); ok || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return false, nil

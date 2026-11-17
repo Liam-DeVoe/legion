@@ -228,9 +228,10 @@ var readClasses = map[string]readEntry{
 //   - accessAccount: only a service account DISPATCH_ACCESS_ACCOUNTS names reads the row
 //     (requireAccessAccount); every other caller is 403 ACCESS_ACCOUNT_REQUIRED before anything
 //     is read.
-//   - project, graph, people, agents and deployment need the viewer: the reader is resolved once
-//     (readerOf) and put in the request's context, where every read of the row finds it, so no
-//     handler resolves it a second time. A caller whose credential does not resolve is refused as
+//   - project, graph, people, agents and deployment need the viewer: the caller is resolved once
+//     (withCallerResolved) and its reader once (readerOf), and both are put in the request's
+//     context, where every read of the row finds them, so no handler verifies the credential or
+//     resolves the viewer a second time. A caller whose credential does not resolve is refused as
 //     every gate refuses one.
 //   - deployment besides: what the row reads belongs to the whole deployment and to no project a
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
@@ -252,6 +253,7 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 		return handler
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)
 		if !ok {
 			return
@@ -284,6 +286,10 @@ func scopeReadRefusal(scopes []string, holds func(string) bool) *readRefusal {
 	return nil
 }
 
+// codeDeploymentReadRefused refuses a read of a row of the deployment to a viewer that is not open
+// (deploymentReadRefusal).
+const codeDeploymentReadRefused = "DEPLOYMENT_READ_REFUSED"
+
 // deploymentReadRefusal is the refusal of a read of a row of the deployment (readclass.Deployment
 // among classes) to a viewer that is not open, or nil: 403 DEPLOYMENT_READ_REFUSED, naming the
 // row, which withinReadScope answers over HTTP and the live socket as a view's error frame. A nil
@@ -292,7 +298,7 @@ func deploymentReadRefusal(method, pattern string, classes []readclass.Class, vi
 	if !slices.Contains(classes, readclass.Deployment) || (viewer != nil && viewer.Open) {
 		return nil
 	}
-	return &readRefusal{code: "DEPLOYMENT_READ_REFUSED", message: fmt.Sprintf(
+	return &readRefusal{code: codeDeploymentReadRefused, message: fmt.Sprintf(
 		"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member, or its credential lists the projects it may use",
 		method, pattern)}
 }

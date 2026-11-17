@@ -278,13 +278,13 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// is what this route compares the run's author with, and a credential resolves at a cost -
 	// a token row, the sign-in issuer's confirmation - worth paying once. The reader the run is
 	// read as (readGoingRequest) is resolved from that same resolution, kept in the request's
-	// context as every layer that resolves the caller keeps it.
-	actor, human, err := s.optionalActor(r)
+	// context (withCallerResolved).
+	r = s.withCallerResolved(r)
+	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return

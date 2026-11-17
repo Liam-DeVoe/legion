@@ -383,8 +383,8 @@ func TestAMappingIntoAPrivateProjectReachesTheBusBeforeItCommits(t *testing.T) {
 	if project := mappedTo(t, database, "acme/s"); project != "PRIV" {
 		t.Errorf("the seed of acme/s=PRIV left it mapped to %q, want PRIV", project)
 	}
-	// A deployment with no writer at all answers as busprojects.ErrNoBus: the entry is left out
-	// and logged, naming it and the bucket, and the seed goes on.
+	// A deployment with no writer at all (a nil BusProjects, every deployment of this build): the
+	// entry is left out and logged, naming it and the bucket, and the seed goes on.
 	if err := SeedRepoProjects(context.Background(), database, events.NewBroker(), nil, "acme/n=PRIV,acme/p=PUB"); err != nil {
 		t.Fatalf("seed acme/n=PRIV with no writer: %v, want the entry left out and the seed gone on", err)
 	}

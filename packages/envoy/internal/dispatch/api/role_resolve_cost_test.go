@@ -80,6 +80,9 @@ func TestARoleHeldByAHiddenSessionCostsWhatAnUnheldRoleCosts(t *testing.T) {
 		if heldAnswer != unheldAnswer {
 			t.Errorf("under %s, role:reviewer answers %q and role:idle %q, want one answer", name, heldAnswer, unheldAnswer)
 		}
+		if held == 0 {
+			t.Errorf("under %s, role:reviewer counted no statement, so the comparison measures nothing", name)
+		}
 		if held != unheld {
 			t.Errorf("under %s, role:reviewer, held by a session of PRIV, costs %d statements and role:idle, held by none, %d: want the same", name, held, unheld)
 		}

@@ -79,11 +79,11 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	// The kept answer is filed under what the caller sees beside the owner (keptViewOf): a
+	// The kept answer is filed under what the caller sees beside the owner (commentListViewOf): a
 	// mention or a delivery names a session, which the answer leaves out for a caller that does
 	// not see it (leaveOutHiddenCommentSessions), so an answer kept for one reader is handed only to
 	// a reader who sees what it saw. A reader that sees every object files under the owner alone.
-	key := listAnswerKeyFor(r, commentListRoute, name+keptViewOf(who), etag)
+	key := listAnswerKeyFor(r, commentListRoute, name+commentListViewOf(who), etag)
 	if s.listAnswers.answer(w, key) {
 		return
 	}
@@ -165,6 +165,25 @@ func ownerClause(listOwner owner, keyParam, viewerParam string) string {
 	return access.ItemOwnerClause("null::text", keyParam, viewerParam)
 }
 
+// commentListViewOf is the part of who's viewer a comment list's bytes turn on, which its kept
+// answer is filed under beside the owner. The comments, their reply blocks and their mentions and
+// deliveries are read as everyReader; the one read made for who is which sessions they name it
+// sees (leaveOutHiddenCommentSessions), and access.SessionClause decides that from the viewer's
+// session, whether it is open and what it sees, never from its person. So two people who agree on
+// those three share one kept list, where keptViewOf, which an event feed's backlink counts need,
+// would file each person apart. A reader that sees every object reads every session (R9) and files
+// under the owner alone, as keptViewOf does.
+func commentListViewOf(who model.Actor) string {
+	viewer := who.Viewer
+	switch {
+	case viewer == nil:
+		return "\x00closed"
+	case seesEveryObject(who):
+		return ""
+	}
+	return fmt.Sprintf("\x00%s\x00%t\x00%s", viewer.Session, viewer.Open, strings.Join(viewer.Sees, ","))
+}
+
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
 // write the list shows raises, and the owner's event sequence, closed with the lines both lists'
 // ETags carry (listETag). It is referencesETag's shape - one line per part, then the hash of them
@@ -233,24 +252,26 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, []model.Comment{comment})
+	replies, err := s.scanReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+	// The comment and its replies are hydrated in one pass: one read each of their mentions, their
+	// deliveries and their reply blocks, and one of which sessions those name the reader sees.
+	thread, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, append([]model.Comment{comment}, replies...))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
+	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), thread[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	read := commentRead{Replies: shapedComments(replies, reader)}
-	read.Comment.Comment = comments[0]
+	read := commentRead{Replies: shapedComments(thread[1:], reader)}
+	read.Comment.Comment = thread[0]
 	read.Comment.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, read)
@@ -301,6 +322,16 @@ var inboxAskReplyChainsQuery = `
 // that replies to one of those via reply_to). seedColumn is caller-controlled
 // and never derived from request input.
 func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
+	replies, err := s.scanReplyChain(ctx, q, who, seedColumn, seedValue)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateCommentSideTables(ctx, q, who, replies)
+}
+
+// scanReplyChain is loadReplyChain's comments as their rows hold them, before their side tables
+// are read (hydrateCommentSideTables), for a read that hydrates them with others in one pass.
+func (s *server) scanReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
 	rows, err := q.Query(ctx, replyChainQuery(seedColumn), seedValue, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
@@ -314,10 +345,7 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor,
 		}
 		replies = append(replies, reply)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return s.hydrateCommentSideTables(ctx, q, who, replies)
+	return replies, rows.Err()
 }
 
 // loadComment reads comment id as who may read it (access.ItemOwnerClause): a comment of a project who

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -154,7 +155,7 @@ func (s *server) listHandoffs(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+handoffColumns+`
 		from handoffs
-		where issue_key = $1 and `+issueClause("$1", "$2")+`
+		where issue_key = $1 and `+access.IssueProjectClause("$1", "$2")+`
 		order by created_at desc, phase, version desc
 	`, r.PathValue("key"), refs.VisibilityArg(who))
 	if err != nil {
@@ -186,7 +187,7 @@ func (s *server) getLatestHandoff(w http.ResponseWriter, r *http.Request) {
 	s.writeHandoff(w, r, fmt.Sprintf("issue %s has no %s handoff", issueKey, phase), `
 		select `+handoffColumns+`, body
 		from handoffs
-		where issue_key = $1 and phase = $2 and `+issueClause("$1", "$3")+`
+		where issue_key = $1 and phase = $2 and `+access.IssueProjectClause("$1", "$3")+`
 		order by version desc
 		limit 1
 	`, issueKey, phase, refs.VisibilityArg(who))
@@ -203,7 +204,7 @@ func (s *server) getHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	s.writeHandoff(w, r, "handoff "+id+" not found", `
-		select `+handoffColumns+`, body from handoffs where id = $1 and `+issueClause("handoffs.issue_key", "$2")+`
+		select `+handoffColumns+`, body from handoffs where id = $1 and `+access.IssueProjectClause("handoffs.issue_key", "$2")+`
 	`, id, refs.VisibilityArg(who))
 }
 

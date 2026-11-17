@@ -111,7 +111,7 @@ func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeSubscribers(w, r, viewer, issueSubscriberBase(key), hidden)
+	s.writeSubscribers(w, r, who, issueSubscriberBase(key), hidden)
 }
 
 // otherIssueBase is the subject root of an issue no key names ("-" is no key's spelling): a topic
@@ -145,15 +145,15 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeSubscribers(w, r, refs.VisibilityArg(who), documentSubscriberBase(artifact.Project, artifact.Slug), false)
+	s.writeSubscribers(w, r, who, documentSubscriberBase(artifact.Project, artifact.Slug), false)
 }
 
 // writeSubscribers answers the sessions whose interests deliver an event published under base,
-// each one the viewer may see (seenSessions). hidden says base names an owner of a project the
+// each one who may see (seenSessions). hidden says base names an owner of a project the
 // viewer does not see: every topic scoped to that owner (keyScopedTopics) names it, so it is left
 // out of every row, and a row left with no topic is dropped; the answer is then the one a key
 // nobody holds gets, which lists what the broader wildcards deliver.
-func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer any, base string, hidden bool) {
+func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, who model.Actor, base string, hidden bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
@@ -204,12 +204,16 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer
 		}
 		result = append(result, entry)
 	}
-	seen, err := s.seenSessions(r.Context(), viewer, result)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// A reader that sees every object passes SessionClause on every id, so the read would cut
+	// nothing (R9).
+	if !seesEveryObject(who) {
+		seen, err := s.seenSessions(r.Context(), refs.VisibilityArg(who), result)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		result = slices.DeleteFunc(result, func(entry subscriber) bool { return !seen[entry.SessionID] })
 	}
-	result = slices.DeleteFunc(result, func(entry subscriber) bool { return !seen[entry.SessionID] })
 	sort.SliceStable(result, func(left, right int) bool {
 		if result[left].LastSeen != result[right].LastSeen {
 			return result[left].LastSeen > result[right].LastSeen
@@ -219,9 +223,9 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, viewer
 	WriteJSON(w, http.StatusOK, result)
 }
 
-// seenSessions is which sessions of subscribers the viewer may see (access.SessionClause): every
-// session for an open viewer; for any other, its own and those that have acted in a project it
-// sees. With no subscriber it reads nothing.
+// seenSessions is which sessions of subscribers the viewer may see (access.SessionClause): its
+// own and those that have acted in a project it sees, and, for an open viewer, every session but
+// one that acted in a project it does not see. With no subscriber it reads nothing.
 func (s *server) seenSessions(ctx context.Context, viewer any, subscribers []subscriber) (map[string]bool, error) {
 	seen := map[string]bool{}
 	if len(subscribers) == 0 {

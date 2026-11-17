@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -20,7 +19,6 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 	if len(probes) != len(table) {
 		t.Fatalf("RouteProbes lists %d rows, the table %d", len(probes), len(table))
 	}
-	wildcard := regexp.MustCompile(`\{([^}]+)\}`)
 	for index, route := range table {
 		probe := probes[index]
 		name := route.Method + " " + route.Pattern
@@ -39,7 +37,7 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 			t.Errorf("%s: the body is %s, writeProbes's %s", name, probe.Body, writeProbes[name].Body)
 		}
 		var want []string
-		for _, match := range wildcard.FindAllStringSubmatch(route.Pattern, -1) {
+		for _, match := range patternWildcard.FindAllStringSubmatch(route.Pattern, -1) {
 			want = append(want, match[1])
 		}
 		var got []string
@@ -52,16 +50,23 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 			t.Errorf("%s: the Probe fills %v, the pattern holds %v", name, got, want)
 		}
 	}
-	for _, row := range probes {
-		if row.Method == http.MethodGet && row.Pattern == "/api/v1/issues/{key}" && row.Probe["key"] != string(probeIssue) {
-			t.Errorf("GET /api/v1/issues/{key}: the Probe fills {key} with %q, want %q", row.Probe["key"], probeIssue)
+	spotRow := func(pattern string) RouteProbe {
+		t.Helper()
+		index := slices.IndexFunc(probes, func(row RouteProbe) bool { return row.Method == http.MethodGet && row.Pattern == pattern })
+		if index < 0 {
+			t.Fatalf("RouteProbes holds no GET %s, which the spot checks below read", pattern)
 		}
-		if row.Method == http.MethodGet && row.Pattern == "/api/v1/issues/{key}" && row.TestHook {
-			t.Errorf("GET /api/v1/issues/{key} is marked a test hook, though every deployment mounts it")
-		}
-		if row.Method == http.MethodGet && row.Pattern == "/api/v1/artifacts/_test/rooms" && !row.TestHook {
-			t.Errorf("GET /api/v1/artifacts/_test/rooms is not marked a test hook, though only DISPATCH_TEST_HOOKS mounts it")
-		}
+		return probes[index]
+	}
+	issue := spotRow("/api/v1/issues/{key}")
+	if issue.Probe["key"] != string(probeIssue) {
+		t.Errorf("GET /api/v1/issues/{key}: the Probe fills {key} with %q, want %q", issue.Probe["key"], probeIssue)
+	}
+	if issue.TestHook {
+		t.Errorf("GET /api/v1/issues/{key} is marked a test hook, though every deployment mounts it")
+	}
+	if !spotRow("/api/v1/artifacts/_test/rooms").TestHook {
+		t.Errorf("GET /api/v1/artifacts/_test/rooms is not marked a test hook, though only DISPATCH_TEST_HOOKS mounts it")
 	}
 
 	none, err := json.Marshal(RouteProbe{Method: http.MethodPut, Pattern: "/api/v1/things/{id}"})

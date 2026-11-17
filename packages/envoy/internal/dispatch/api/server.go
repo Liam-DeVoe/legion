@@ -137,9 +137,8 @@ type Deps struct {
 	// PRIVATE_PROJECTS_OFF before anything is read, as every deployment before the setting did.
 	PrivateProjects []string
 	// BusProjects writes the private-projects record the listeners hold a private project's
-	// messages back by (K7): whatever busprojects.New answers, a nil *busprojects.Writer included,
-	// which answers busprojects.ErrNoBus. A nil interface, a server built with no writer at all,
-	// answers as ErrNoBus does: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
+	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
+	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
 	BusProjects BusProjects
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
@@ -904,17 +903,26 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // pooled connections of its own while it admits the socket, so it marks a context of its own for
 // the pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log
 // line, which names the caller the socket was admitted as (accesslog.Detached).
+//
+// With compareGrants, the caller the connection opens as is resolved once, on the request, and
+// kept in its context (withCallerResolved), so the handler admits the caller the heartbeat compares
+// against and verifies the credential no second time
+// (TestTheLiveSocketVerifiesItsCredentialOnceAtOpen). A broker-issued token is decided once a
+// request already (decideBrokerToken), and the heartbeat compares no grant of one
+// (callerStillResolves), so nothing is resolved for it here.
 func (s *server) whileCallerResolves(compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancel(r.Context())
 		defer closeConnection()
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
+		served := r.WithContext(ctx)
 		// What the credential holds as the connection opens, before the handler admits it, so a
 		// change made while it is admitted is a change the first heartbeat sees. A caller that
 		// does not resolve is the handler's to refuse.
 		var admitted model.Actor
-		if compareGrants {
-			admitted, _, _ = s.callerStillResolves(check)
+		if _, presented := brokertoken.Presented(r); compareGrants && !presented {
+			served = s.withCallerResolved(served)
+			admitted, _, _ = s.optionalActor(served)
 		}
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
@@ -937,7 +945,7 @@ func (s *server) whileCallerResolves(compareGrants bool, handler http.HandlerFun
 				}
 			}
 		}()
-		handler(w, r.WithContext(ctx))
+		handler(w, served)
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -237,15 +236,48 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 	if written := served.listAnswers.answered() - answered; written != 1 {
 		t.Errorf("the cache wrote %d answers over the second read of %s, want the one it kept", written, target)
 	}
-	resolved := slices.IndexFunc(counted, func(statement string) bool {
-		return strings.Contains(statement, access.Marker+"VisibleProjectsSQL */")
-	})
+	resolved := slices.IndexFunc(counted, func(statement string) bool { return strings.Contains(statement, viewerResolution) })
 	validated := slices.IndexFunc(counted, func(statement string) bool { return strings.Contains(statement, "comment_watermarks") })
 	if len(counted) != 2 || resolved < 0 || validated < 0 {
 		t.Fatalf("the warm read ran %d statements, want the caller's viewer resolved and the one its validator is read with:\n%s",
 			len(counted), strings.Join(roundTripLines(counted), "\n"))
 	}
 	t.Logf("a warm comment-list read costs %d round trip: %s", len(counted), strings.Join(roundTripLines(counted), "\n"))
+}
+
+// Two people who see the same projects share one kept comment list. Its bytes turn on its reader
+// only through the sessions its mentions and deliveries name (leaveOutHiddenCommentSessions),
+// which access.SessionClause decides from the reader's session, whether it is open and what it
+// sees, never from its person: the comments, their reply blocks and their mentions and deliveries
+// are read as everyReader. So alice and dana, open members who see PUB alone once PRIV is
+// private, read one answer, and the second read is the kept one. bob, who sees PRIV alone, is
+// filed apart and builds his own.
+func TestTwoReadersWhoSeeTheSameShareAKeptCommentList(t *testing.T) {
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, hiddenPerson)
+	issue := seed.issue[seedPublic]
+	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": "A comment both readers read."}, http.StatusCreated)
+	target := commentListOf(issue)
+	first := dispatchRequest(t, seed.handler, http.MethodGet, target, nil, seedAlice)
+	if first.Code != http.StatusOK {
+		t.Fatalf("alice reads %s: %d %s", target, first.Code, first.Body.String())
+	}
+	answered := seed.server.listAnswers.answered()
+	second := dispatchRequest(t, seed.handler, http.MethodGet, target, nil, hiddenPerson)
+	if second.Code != http.StatusOK || second.Body.String() != first.Body.String() {
+		t.Fatalf("dana reads %s: %d %s, want alice's answer %s", target, second.Code, second.Body.String(), first.Body.String())
+	}
+	if kept := seed.server.listAnswers.answered() - answered; kept != 1 {
+		t.Errorf("dana's read of %s was answered from the cache %d times, want once: she sees what alice sees", target, kept)
+	}
+	answered = seed.server.listAnswers.answered()
+	if apart := seed.request(t, callerBob, http.MethodGet, commentListOf(seed.issue[seedPrivate]), nil); apart.Code != http.StatusOK {
+		t.Fatalf("bob reads PRIV's comments: %d %s", apart.Code, apart.Body.String())
+	}
+	if kept := seed.server.listAnswers.answered() - answered; kept != 0 {
+		t.Errorf("bob's first read of PRIV's comments was answered from the cache %d times, want none", kept)
+	}
 }
 
 // No two comment lists of one deploy share a validator: not two issues standing at the same

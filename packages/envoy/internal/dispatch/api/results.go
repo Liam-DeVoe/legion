@@ -600,7 +600,7 @@ func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, who model.
 	resolved := check.SHA256
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check' and `+artifactClause("$1::uuid", "$3")+`
+		where artifact_id = $1::uuid and block_id = $2 and type = 'check' and `+documentVisible("$1::uuid", "$3")+`
 	`, check.ArtifactID, check.BlockID, refs.VisibilityArg(who)).Scan(&check.Version, &check.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return unknownCheck(named)
@@ -729,7 +729,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, 
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
 		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check' and `+artifactClause("$1", "$2")+`
+		from document_blocks where artifact_id = $1 and type = 'check' and `+documentVisible("$1", "$2")+`
 	`, artifact.ID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
@@ -884,7 +884,7 @@ func loadCheckResults(ctx context.Context, q queryer, who model.Actor, artifactI
 	rows, err := q.Query(ctx, `
 		select `+checkResultColumns+`
 		from check_results
-		where check_artifact_id = $1::uuid and `+issueClause("check_results.issue_key", "$2")+`
+		where check_artifact_id = $1::uuid and `+access.IssueProjectClause("check_results.issue_key", "$2")+`
 		order by check_block_id, created_at desc, id desc
 	`, artifactID, refs.VisibilityArg(who))
 	if err != nil {

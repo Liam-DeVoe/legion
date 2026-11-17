@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -324,14 +322,8 @@ func queueAskPersons(b *pgx.Batch, who model.Actor, asks []*model.Ask) reference
 		return nil
 	}
 	seen := references{}
-	b.Queue(seenReferencesSQL, []string{}, []string{}, []string{}, slices.Sorted(maps.Keys(named[personReference])),
-		refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
-		var kind, id string
-		_, err := pgx.ForEachRow(rows, []any{&kind, &id}, func() error {
-			seen.name(referenceKind(kind), id)
-			return nil
-		})
-		return err
+	b.Queue(seenReferencesSQL, seenReferencesArgs(who, named)...).Query(func(rows pgx.Rows) error {
+		return scanSeenReferences(rows, seen)
 	})
 	return seen
 }

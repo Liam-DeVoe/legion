@@ -184,10 +184,14 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registry, registryState := s.issueLegionAgents(ctx, key)
-	registry, err := s.dropUnseenCollaborators(ctx, viewer, people, sessions, registry)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// A reader that sees every object passes PersonClause and SessionClause on every name, so the
+	// read would take nothing out (R9).
+	if !seesEveryObject(who) {
+		var err error
+		if registry, err = s.dropUnseenCollaborators(ctx, viewer, people, sessions, registry); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	agents, err := s.collaboratorAgents(ctx, who, sessions, registry)
 	if err != nil {
@@ -213,7 +217,7 @@ func (s *server) tallyCollaboratorEvents(
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select coalesce(actor->>'kind', ''), coalesce(actor->>'id', ''), type, max(created_at)
 		from events
-		where issue_key = $1 and type = any($2) and `+issueClause("$1", "$3")+`
+		where issue_key = $1 and type = any($2) and `+access.IssueProjectClause("$1", "$3")+`
 		group by 1, 2, 3
 	`, key, collaboratorEventTypes, viewer)
 	if err != nil {
@@ -246,9 +250,9 @@ func (s *server) tallyCollaboratorEvents(
 
 // dropUnseenCollaborators takes out of people, sessions and registry every person and every
 // session the viewer may not see, in one read: a person the rule lets it see
-// (access.PersonClause), and a session that is its own or has acted in a project it sees
-// (access.SessionClause). An open viewer sees every person and every session, so nothing is taken
-// out for it. It answers registry without the entries it took out.
+// (access.PersonClause), and a session that is its own or has acted in a project it sees, or, for
+// an open viewer, every session but one that acted in a project it does not see
+// (access.SessionClause). It answers registry without the entries it took out.
 func (s *server) dropUnseenCollaborators(
 	ctx context.Context, viewer any, people, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
 ) ([]envoy.LegionAgent, error) {

@@ -54,8 +54,9 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// brokertoken.Verifier.Live, and it answers no caller (broker false): a broker-issued token names
-// its one project for its whole life. Nothing is admitted through this, only kept.
+// brokertoken.Verifier.Live, and it answers no caller and broker true, which tells the heartbeat
+// to compare no grant: a broker-issued token names its one project for its whole life. Nothing is
+// admitted through this, only kept.
 func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
 	if _, presented := brokertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {

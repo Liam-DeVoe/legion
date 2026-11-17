@@ -22,12 +22,10 @@ package api
 // on one nobody holds, and holds the two to one answer; undecidableWrites refuses to mount a
 // project's write that walk has no probe for.
 //
-// An earlier check here refused a credential that named one project a target of another,
-// naming both. That refusal told the caller which project an object it could not see belonged
-// to, so it is gone: the target outside the credential's list is now the handler's missing
-// object. The two writes that take their project from the body rather than the path, the issue
-// create and the going request (scopeProjectInBody), still refuse a project outside the list by
-// name, since the name is the caller's own.
+// A target outside a credential's list is the handler's missing object, so no refusal names the
+// project an object it cannot see belongs to. The two writes that take their project from the body
+// rather than the path, the issue create and the going request (scopeProjectInBody), refuse a
+// project outside the list by name, since the name is the caller's own.
 
 import (
 	"context"

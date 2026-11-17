@@ -271,23 +271,23 @@ func TestARefusalOfAHiddenObjectNamesNone(t *testing.T) {
 // (TestADocumentOfAPrivateProjectAnswersAsMissing).
 func TestAGoingRunOfAHiddenProjectAnswersAsOneOfNoProject(t *testing.T) {
 	walk := seedHiddenWrites(t)
-	run := func(project string) (string, *httptest.ResponseRecorder, *httptest.ResponseRecorder) {
+	run := func(project string) (string, *httptest.ResponseRecorder, *httptest.ResponseRecorder, []string) {
 		t.Helper()
-		created, _, _ := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/going/requests",
+		created, _, calls := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/going/requests",
 			map[string]any{"words": "What do the runbook steps say?", "project": project})
 		var request struct {
 			ID string `json:"id"`
 		}
 		_ = json.Unmarshal(created.Body.Bytes(), &request)
 		if created.Code != http.StatusCreated || request.ID == "" {
-			return "", created, nil
+			return "", created, nil, calls
 		}
 		awaitBackgroundWrites(t, walk.server)
-		stream, _, _ := walk.recorded(t, callerAlice, http.MethodGet, "/api/v1/going/requests/"+request.ID+"/stream", nil)
-		return request.ID, created, stream
+		stream, _, streamed := walk.recorded(t, callerAlice, http.MethodGet, "/api/v1/going/requests/"+request.ID+"/stream", nil)
+		return request.ID, created, stream, append(calls, streamed...)
 	}
-	hiddenID, hiddenCreate, hiddenStream := run(seedPrivate)
-	missingID, missingCreate, missingStream := run("NOPE")
+	hiddenID, hiddenCreate, hiddenStream, hiddenCalls := run(seedPrivate)
+	missingID, missingCreate, missingStream, missingCalls := run("NOPE")
 	if hiddenCreate.Code != missingCreate.Code {
 		t.Fatalf("alice asks a run of PRIV: %d %s; of NOPE: %d %s", hiddenCreate.Code, hiddenCreate.Body.String(),
 			missingCreate.Code, missingCreate.Body.String())
@@ -296,10 +296,21 @@ func TestAGoingRunOfAHiddenProjectAnswersAsOneOfNoProject(t *testing.T) {
 		t.Fatalf("alice's run of NOPE was not created: %d %s", missingCreate.Code, missingCreate.Body.String())
 	}
 	written := map[string]string{missingID: hiddenID, `"NOPE"`: `"` + seedPrivate + `"`}
+	if got, want := maskTimes(hiddenCreate.Body.String()), maskTimes(rewritten([]string{missingCreate.Body.String()}, written)[0]); got != want {
+		t.Errorf("alice's run of PRIV is created as %s, and her run of NOPE as %s", got, want)
+	}
 	want := maskTimes(rewritten([]string{missingStream.Body.String()}, written)[0])
 	if got := maskTimes(hiddenStream.Body.String()); hiddenStream.Code != missingStream.Code || got != want {
 		t.Errorf("the stream of alice's run of PRIV answers %d %s, and of her run of NOPE %d %s",
 			hiddenStream.Code, got, missingStream.Code, want)
+	}
+	if len(hiddenCalls) != 0 || len(missingCalls) != 0 {
+		t.Errorf("alice's run of PRIV asked the listener %v, and her run of NOPE %v, want nothing of either", hiddenCalls, missingCalls)
+	}
+	// The recorder sees a call the listener is asked: alice's message to s-pub is delivered through it.
+	if _, _, delivered := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/issues/"+walk.issue[seedPublic]+"/messages",
+		json.RawMessage(`{"body":"An open viewer's message.","target":"session:s-pub","delivery":"btw"}`)); len(delivered) == 0 {
+		t.Errorf("alice's message to s-pub recorded no listener call, so the record above sees nothing")
 	}
 }
 
@@ -380,8 +391,20 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 		method, _, _ := strings.Cut(reference.row, " ")
 		for _, caller := range callers {
 			name := reference.row + " (" + reference.field + ")"
+			// A call refused either way writes nothing: the tables are digested around it, once the
+			// work an earlier call left running (a mention's delivery) has settled.
+			var before map[string]string
+			if !reference.writes {
+				awaitBackgroundWrites(t, walk.server)
+				before = walk.tableDigests(t)
+			}
 			hidden := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.hidden)))
 			missing := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.missing)))
+			if !reference.writes {
+				if changed := changedTables(before, walk.tableDigests(t)); len(changed) > 0 {
+					t.Errorf("%s as %s: a call refused either way changed %v", name, caller, changed)
+				}
+			}
 			got, want := hidden.Body.String(), strings.ReplaceAll(missing.Body.String(), fill.missing, fill.hidden)
 			if reference.writes {
 				got, want = deliveryPart(t, hidden.Body.Bytes()), strings.ReplaceAll(deliveryPart(t, missing.Body.Bytes()), fill.missing, fill.hidden)
@@ -475,6 +498,11 @@ func TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds(t *testing.T) {
 		malformed := walk.request(t, callerAlice, route.Method, fill(notAUUID), body)
 		missing := walk.request(t, callerAlice, route.Method, fill(nobodys), body)
 		walked++
+		if malformed.Code >= http.StatusInternalServerError {
+			t.Errorf("%s: an id that is no uuid answers %d %s: a value Postgres will not read as a uuid is never the database's error",
+				name, malformed.Code, strings.TrimSpace(malformed.Body.String()))
+			continue
+		}
 		var refusal refusalAnswer
 		_ = json.Unmarshal(malformed.Body.Bytes(), &refusal)
 		asMissing := malformed.Code == missing.Code &&
@@ -652,11 +680,12 @@ func (f probeFill) besideValue() string {
 }
 
 // hiddenWriteSeed is the seed the walk calls, with the value of every probe kind, the trace of its
-// store and the record of its listener's calls.
+// store and the record of its listener's calls. digest is the one statement that digests every
+// table (tableDigests), built once from the tables the seed lists, which no call changes.
 type hiddenWriteSeed struct {
 	privateSeed
 	fills  map[probeObject]probeFill
-	tables []string
+	digest string
 	trace  *existenceTrace
 	calls  *listenerCalls
 }
@@ -889,9 +918,20 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	if err != nil {
 		t.Fatalf("list the tables: %v", err)
 	}
-	if walk.tables, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil || len(walk.tables) == 0 {
-		t.Fatalf("list the tables: %v (%d)", err, len(walk.tables))
+	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(tables) == 0 {
+		t.Fatalf("list the tables: %v (%d)", err, len(tables))
 	}
+	parts := make([]string, len(tables))
+	for index, table := range tables {
+		row := "to_jsonb(t)"
+		if column, volatile := volatileColumns[table]; volatile {
+			row += " - " + sqlString(column)
+		}
+		parts[index] = fmt.Sprintf(`select %s, md5(coalesce(string_agg((%s)::text, '|' order by (%s)::text), '')) from %s t`,
+			sqlString(table), row, row, table)
+	}
+	walk.digest = strings.Join(parts, " union all ")
 	return walk
 }
 
@@ -923,16 +963,7 @@ func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, op
 // tableDigests is a digest of every row of every table, by table, less volatileColumns.
 func (w hiddenWriteSeed) tableDigests(t *testing.T) map[string]string {
 	t.Helper()
-	parts := make([]string, len(w.tables))
-	for index, table := range w.tables {
-		row := "to_jsonb(t)"
-		if column, volatile := volatileColumns[table]; volatile {
-			row += " - " + sqlString(column)
-		}
-		parts[index] = fmt.Sprintf(`select %s, md5(coalesce(string_agg((%s)::text, '|' order by (%s)::text), '')) from %s t`,
-			sqlString(table), row, row, table)
-	}
-	rows, err := w.database.Pool.Query(context.Background(), strings.Join(parts, " union all "))
+	rows, err := w.database.Pool.Query(context.Background(), w.digest)
 	if err != nil {
 		t.Fatalf("digest the tables: %v", err)
 	}

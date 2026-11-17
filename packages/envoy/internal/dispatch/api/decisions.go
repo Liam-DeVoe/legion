@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -190,7 +191,7 @@ func (s *server) specOpenQuestions(
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid and `+issueClause("$1", "$3")+`
+		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid and `+access.IssueProjectClause("$1", "$3")+`
 		order by a.created_at, a.id
 	`, key, specID, refs.VisibilityArg(who))
 	if err != nil {
@@ -424,7 +425,7 @@ func (s *server) versionsAtTimes(
 		from unnest($2::timestamptz[]) with ordinality as asked(at, ord)
 		left join lateral (
 			select v.number from artifact_versions v
-			where v.artifact_id = $1::uuid and v.created_at <= asked.at and `+artifactClause("$1::uuid", "$3")+`
+			where v.artifact_id = $1::uuid and v.created_at <= asked.at and `+documentVisible("$1::uuid", "$3")+`
 			order by v.number desc limit 1
 		) version on true
 	`, artifactID, times, viewer)
@@ -461,7 +462,7 @@ func (s *server) decisionSumsAt(
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select number, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[]) and `+artifactClause("$1::uuid", "$3")+`
+		where artifact_id = $1::uuid and number = any($2::int[]) and `+documentVisible("$1::uuid", "$3")+`
 	`, artifactID, numbers, viewer)
 	if err != nil {
 		return nil, err
@@ -714,7 +715,7 @@ func sliceMarkdown(markdown string, from, to int) string {
 func decisionBlockAsks(ctx context.Context, q queryer, viewer any, artifactID string) (map[string][]string, error) {
 	rows, err := q.Query(ctx, `
 		select block_id, to_id from block_refs
-		where artifact_id = $1::uuid and to_kind = 'ask' and kind = 'mentions' and `+artifactClause("$1::uuid", "$2")+`
+		where artifact_id = $1::uuid and to_kind = 'ask' and kind = 'mentions' and `+documentVisible("$1::uuid", "$2")+`
 		order by block_id, to_id
 	`, artifactID, viewer)
 	if err != nil {
@@ -737,7 +738,7 @@ func decisionBlockAsks(ctx context.Context, q queryer, viewer any, artifactID st
 func decisionKeeps(ctx context.Context, q queryer, viewer any, artifactID string) (map[string]model.DecisionKeep, error) {
 	rows, err := q.Query(ctx, `
 		select block_id, text_sha256, changed_version, kept_by, kept_at
-		from decision_keeps where artifact_id = $1::uuid and `+artifactClause("$1::uuid", "$2")+`
+		from decision_keeps where artifact_id = $1::uuid and `+documentVisible("$1::uuid", "$2")+`
 	`, artifactID, viewer)
 	if err != nil {
 		return nil, err
@@ -889,7 +890,7 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	var at *time.Time
 	err = s.deps.Store.Pool.QueryRow(r.Context(), `
 		select version, read_at from user_document_reads
-		where login = $1 and artifact_id = $2::uuid and `+artifactClause("$2::uuid", "$3")+`
+		where login = $1 and artifact_id = $2::uuid and `+documentVisible("$2::uuid", "$3")+`
 	`, model.CanonicalLogin(actor.ID), document.ID, refs.VisibilityArg(who)).Scan(&version, &at)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.writeHandlerError(w, err)

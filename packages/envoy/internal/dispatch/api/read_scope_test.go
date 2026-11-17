@@ -88,7 +88,9 @@ func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 
 // TestTheReadScopePutsTheReaderInTheRequest: a GET row whose classes need the viewer runs its
 // handler with the reader withinReadScope resolved in the request's context, the one readerOf
-// answers; a row that needs none runs it with none, and resolves nothing.
+// answers; a row that needs none runs it with none, and resolves nothing. Each row is read as bob,
+// a restricted member, except a row of the deployment, which refuses him (and is held to that) and
+// is read as alice, an open member who sees PUB.
 func TestTheReadScopePutsTheReaderInTheRequest(t *testing.T) {
 	seed := seedPrivateProject(t)
 	for _, test := range []struct {
@@ -116,20 +118,27 @@ func TestTheReadScopePutsTheReaderInTheRequest(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusNoContent)
 		})
-		recorder := httptest.NewRecorder()
-		handler(recorder, seed.readerRequest(t, callerBob))
-		if recorder.Code == http.StatusForbidden {
-			// bob is a restricted member, so a deployment row is refused him before its handler.
-			if !slices.Contains(test.classes, readclass.Deployment) {
-				t.Errorf("a row of %q refused bob: %s", test.classes, recorder.Body.String())
+		caller, sees := callerBob, []string{seedPrivate}
+		if slices.Contains(test.classes, readclass.Deployment) {
+			refused := httptest.NewRecorder()
+			handler(refused, seed.readerRequest(t, callerBob))
+			if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), codeDeploymentReadRefused) {
+				t.Errorf("a row of %q answered bob, a restricted member, %d %s, want 403 %s", test.classes, refused.Code, refused.Body.String(), codeDeploymentReadRefused)
 			}
+			caller, sees = callerAlice, []string{seedPublic}
+		}
+		held, seen = false, nil
+		recorder := httptest.NewRecorder()
+		handler(recorder, seed.readerRequest(t, caller))
+		if recorder.Code != http.StatusNoContent {
+			t.Errorf("a row of %q answered %s %d %s, want its handler run", test.classes, caller, recorder.Code, recorder.Body.String())
 			continue
 		}
 		if held != test.wants {
 			t.Errorf("a row of %q ran its handler with a reader in the request: %t, want %t", test.classes, held, test.wants)
 		}
-		if test.wants && !slices.Equal(seen, []string{seedPrivate}) {
-			t.Errorf("a row of %q handed its handler bob's viewer seeing %q, want [%s]", test.classes, seen, seedPrivate)
+		if test.wants && !slices.Equal(seen, sees) {
+			t.Errorf("a row of %q handed its handler %s's viewer seeing %q, want %q", test.classes, caller, seen, sees)
 		}
 	}
 }
