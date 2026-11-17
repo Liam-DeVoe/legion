@@ -280,7 +280,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/keyboard-agents-picker.e2e.ts` | each asserts where a send, reply, retry or upload was addressed, and the server's refusals |
 | `e2e/keyboard-agents-pin.e2e.ts` | sends, uploads and read marks in flight across the pin |
 | `e2e/keyboard-agents.e2e.ts` | the upload's target is the server's record; upload and send against the server; the delivered mention is the assertion |
-| `e2e/keyboard-complete.e2e.ts` | the snooze, review, priority, status, answer and dismiss writes each key sends, counted at the server's routes and read back; the live document; the Inbox drawer over another page; two tabs of one browser |
+| `e2e/keyboard-complete.e2e.ts` | the snooze, review, priority, status, assignee, repository, hand-on, answer and dismiss writes each key sends, counted at the server's routes and read back; writes held at the server while a control keeps the focus; the live document; the Inbox drawer over another page; two tabs of one browser |
 | `e2e/keyboard-document.e2e.ts` | comments made from the live document editor |
 | `e2e/keyboard-inbox.e2e.ts` | snooze write; server refusal; server refusals |
 | `e2e/keyboard-issue.e2e.ts` | writes a priority and a pin, then reloads; the server's refusal; asserts what was written |

@@ -5,10 +5,10 @@
  *  at - which is also how the negative control reads: the same rows run on a build of the merge
  *  base, where they fail at the first step the merge base does not do.
  *
- *  The rows write - snoozes, priorities, statuses - and count each write at the server's own
- *  route, so they run on the real stack. They import nothing this tree adds to or changes in
- *  `web/src`: what they need from the app they read off the page or work out in
- *  `e2e/keyboard-complete.ts`. */
+ *  The rows write - snoozes, priorities, statuses, assignees, repositories, hand-ons - and count
+ *  each write at the server's own route, so they run on the real stack. They import nothing this
+ *  tree adds to or changes in `web/src`: what they need from the app they read off the page or
+ *  work out in `e2e/keyboard-complete.ts`. */
 import { setLiveSessions } from "./agents";
 import {
   createArtifactAsk,
@@ -17,6 +17,7 @@ import {
   createProject,
   createProjectDocument,
   patchIssue,
+  putRepoProject,
 } from "./api";
 import { drawer } from "./inbox-drawer";
 import { inboxPane } from "./inbox-pane";
@@ -24,6 +25,8 @@ import { replyRowId, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
   asker,
   contrastOf,
+  handOnControl,
+  handOnWrites,
   holdWrites,
   issueWrites,
   returnMornings,
@@ -646,6 +649,234 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
 });
 
 // ---------------------------------------------------------------------------
+// k-choice-writes-on-enter
+// ---------------------------------------------------------------------------
+
+/** The ids k-choice-writes-on-enter and k-menu-contrast's lists read, and the issue's title. */
+interface ChoiceSeeds {
+  readonly askId: string;
+  readonly issueKey: string;
+  readonly title: string;
+}
+
+/** The seeds of k-choice-writes-on-enter: alice and bob, who have signed in (the reset seeds
+ *  both); CORE, with two repositories mapped to it, acme/widgets its default; an open issue of
+ *  CORE, which alice holds as its creator; and a question on it that waits on her. */
+async function seedChoices(): Promise<ChoiceSeeds> {
+  await createProject({ key: "CORE", name: "Core" });
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject("acme/gadgets", { project: "CORE" });
+  const title = "Ledger rollout";
+  const issue = await createIssue({ project: "CORE", title });
+  const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
+  return { askId: ask.id, issueKey: issue.key, title };
+}
+
+/** The keys k-choice-writes-on-enter presses on a choice control, in order, before the letter
+ *  that starts a choice. */
+const CHOICE_KEYS = ["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"] as const;
+
+/** How many presses of Tab may pass before the focus reaches a control from the page's start. */
+const TAB_PRESSES = 200;
+
+/** One choice control of R6, as k-choice-writes-on-enter drives it. */
+interface ChoiceControl {
+  /** What the failures call it: "the assignee". */
+  readonly what: string;
+  readonly control: Locator;
+  /** Every write the control sends, counted at the server's route. */
+  readonly writes: readonly KeyedWrite<unknown>[];
+  /** A letter that starts a choice other than the item's value. */
+  readonly letter: string;
+  /** The body of the write of the choice the control shows as `choice`. */
+  readonly body: (choice: string) => unknown;
+}
+
+/** What a choice control shows: a native select's own value; else, while its list is open, the
+ *  option the list's text box highlights, and whether that option is the item's value
+ *  (`aria-selected`); else the text of the control itself. */
+interface Shown {
+  readonly open: boolean;
+  readonly text: string;
+  /** A native select's value. */
+  readonly value?: string;
+  /** Whether the option an open list highlights is the one that holds the item's value. */
+  readonly picked?: boolean;
+}
+
+/** Reads what `control` shows now (`Shown`). */
+function shownBy(control: Locator): Promise<Shown> {
+  return control.evaluate((element): Shown => {
+    if (element instanceof HTMLSelectElement) {
+      const text = element.selectedOptions[0]?.textContent ?? "";
+      return { open: false, text: text.trim(), value: element.value };
+    }
+    const expanded = element.getAttribute("aria-expanded") === "true";
+    const panel = expanded
+      ? document.getElementById(element.getAttribute("aria-controls") ?? "")
+      : null;
+    const box = panel?.querySelector('[role="combobox"]');
+    const active = document.getElementById(box?.getAttribute("aria-activedescendant") ?? "");
+    if (active !== null) {
+      return {
+        open: true,
+        picked: active.getAttribute("aria-selected") === "true",
+        text: (active.textContent ?? "").replace("✓", "").trim(),
+      };
+    }
+    return { open: panel !== null, text: (element.textContent ?? "").trim() };
+  });
+}
+
+/** Whether `shown` is a choice other than the item's value, which the control showed as `rest`
+ *  with the focus on it and nothing pressed. */
+function showsOther(shown: Shown, rest: Shown): boolean {
+  if (shown.value !== undefined) return shown.value !== rest.value;
+  if (shown.picked !== undefined) return !shown.picked;
+  return shown.text !== rest.text;
+}
+
+/** Puts the focus on `control` with the keyboard: Tab, press by press from where the focus is,
+ *  until the control holds it. */
+async function tabTo(page: Page, control: Locator, message: string): Promise<void> {
+  for (let press = 0; press < TAB_PRESSES && !(await isActive(control)); press += 1) {
+    await page.keyboard.press("Tab");
+  }
+  expect(await isActive(control), message).toBe(true);
+}
+
+/** Presses `CHOICE_KEYS` and then `choice.letter`, reading after each press that no request went
+ *  out, and that at least one press showed a choice other than the item's value (`rest`). The
+ *  choice shown after the last press is the answer. */
+async function pressChoiceKeys(
+  page: Page,
+  choice: ChoiceControl,
+  rest: Shown,
+  step: string
+): Promise<Shown> {
+  const say = `k-choice-writes-on-enter: ${choice.what}, ${step}`;
+  let shown = rest;
+  let other = false;
+  for (const key of [...CHOICE_KEYS, choice.letter]) {
+    await page.keyboard.press(key);
+    shown = await shownBy(choice.control);
+    other ||= showsOther(shown, rest);
+    expect(choice.writes, `${say}: ${key} sends no request`).toHaveLength(0);
+  }
+  expect(other, `${say}: a key shows a choice other than the item's value, ${rest.text}`).toBe(
+    true
+  );
+  return shown;
+}
+
+/** Reads that `choice` shows the item's value again (`rest`), with its list closed, and that no
+ *  request went out, after the step `step`. */
+async function expectItemValue(choice: ChoiceControl, rest: Shown, step: string): Promise<void> {
+  const say = `k-choice-writes-on-enter: ${choice.what}, ${step}`;
+  await expect
+    .poll(
+      async () => {
+        const shown = await shownBy(choice.control);
+        return !shown.open && (shown.value ?? shown.text) === (rest.value ?? rest.text);
+      },
+      { message: `${say} shows the item's value, ${rest.text}` }
+    )
+    .toBe(true);
+  expect(choice.writes, `${say} sends no request`).toHaveLength(0);
+}
+
+/** Every step of k-choice-writes-on-enter on one choice control, on the page that draws it. */
+async function choiceWritesOnEnter(page: Page, choice: ChoiceControl): Promise<void> {
+  const say = `k-choice-writes-on-enter: ${choice.what}`;
+  await tabTo(page, choice.control, `${say}: Tab reaches the control`);
+  const rest = await shownBy(choice.control);
+
+  // The keys with the focus on the control, then Escape.
+  await pressChoiceKeys(page, choice, rest, "the keys on the focused control");
+  await page.keyboard.press("Escape");
+  await expectItemValue(choice, rest, "Escape after the keys on the focused control");
+
+  // The keys in the list a click opened, then Escape.
+  await choice.control.click();
+  await pressChoiceKeys(page, choice, rest, "the keys in the list a click opened");
+  await page.keyboard.press("Escape");
+  await expectItemValue(choice, rest, "Escape after the keys in the list a click opened");
+
+  // The keys again, then Tab.
+  await expect(choice.control, `${say}: Escape puts the focus back on the control`).toBeFocused();
+  await pressChoiceKeys(page, choice, rest, "the keys before Tab");
+  await page.keyboard.press("Tab");
+  await expectItemValue(choice, rest, "Tab after the keys");
+
+  // The keys again, then Enter: one request, of the choice shown.
+  await expect(choice.control, `${say}: Tab leaves the focus on the control`).toBeFocused();
+  const chosen = await pressChoiceKeys(page, choice, rest, "the keys before Enter");
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => choice.writes.length, { message: `${say}: Enter sends one request` })
+    .toBe(1);
+  expect(choice.writes[0]?.input, `${say}: Enter writes the choice shown, ${chosen.text}`).toEqual(
+    choice.body(chosen.text)
+  );
+}
+
+// SLOW(>=2s): the issue page loaded and its assignee driven through four passes of seven keys.
+// @webkit @firefox: the keys each engine sends to a focused control and to its list's text box,
+// and the Tab that leaves that box.
+test("k-choice-writes-on-enter: on the issue page the assignee's keys only change the choice shown, and only Enter writes @firefox @webkit", async ({
+  page,
+}) => {
+  const { issueKey, title } = await seedChoices();
+  await page.setViewportSize(WIDE);
+  const writes = issueWrites(page, issueKey);
+  await openIssue(page, issueKey, title);
+  await choiceWritesOnEnter(page, {
+    body: (choice) => ({ assignee: choice }),
+    control: page.getByLabel(`Assignee of ${issueKey}`, { exact: true }),
+    letter: "b",
+    what: "the assignee",
+    writes,
+  });
+});
+
+// SLOW(>=2s): the issue page loaded and its repository driven through four passes of seven keys.
+// @webkit @firefox: the keys each engine sends to a focused control and to its list's text box,
+// and the Tab that leaves that box.
+test("k-choice-writes-on-enter: on the issue page the repository's keys only change the choice shown, and only Enter writes @firefox @webkit", async ({
+  page,
+}) => {
+  const { issueKey, title } = await seedChoices();
+  await page.setViewportSize(WIDE);
+  const writes = issueWrites(page, issueKey);
+  await openIssue(page, issueKey, title);
+  await choiceWritesOnEnter(page, {
+    body: (choice) => ({ repo: choice }),
+    control: page.getByLabel(`Repository of ${issueKey}`, { exact: true }),
+    letter: "a",
+    what: "the repository",
+    writes,
+  });
+});
+
+// SLOW(>=2s): the Inbox loaded in card mode and a question's hand-on driven through four passes.
+// @webkit @firefox: the keys each engine sends to a focused control and to its list's text box,
+// and the Tab that leaves that box.
+test("k-choice-writes-on-enter: on a question's card the hand-on's keys only change the choice shown, and only Enter writes @firefox @webkit", async ({
+  page,
+}) => {
+  const { askId } = await seedChoices();
+  const writes = handOnWrites(page, askId);
+  const inbox = await openInboxAt(page, "card mode", 1);
+  await choiceWritesOnEnter(page, {
+    body: (choice) => ({ asked_of: choice }),
+    control: handOnControl(rowOf(inbox, askId), askId),
+    letter: "b",
+    what: "the hand-on control",
+    writes,
+  });
+});
+
+// ---------------------------------------------------------------------------
 // k-menu-contrast (the menus' part; the single-pick lists' part is its own row)
 // ---------------------------------------------------------------------------
 
@@ -705,6 +936,73 @@ test("k-menu-contrast: every choice of the snooze, priority and status menus rea
     );
     await openIssue(page, issue.key, title);
     await readMenuContrast(page, "s", `${theme}, the status menu`, "menuitemradio", OPEN_STATUSES);
+  }
+});
+
+/** Reads the contrast of the choice control `control` and of each choice of its list, failing
+ *  softly for each pair under 4.5:1, and for a native `<select>` or `<option>` whose own
+ *  background is transparent, with the theme, the control and the choice named. A native select
+ *  is read with its options; the shared list's trigger is read on the element that draws its
+ *  text, and its options are read in the list a click on it opens. */
+async function readChoiceContrast(control: Locator, what: string): Promise<void> {
+  const native = await control.evaluate((element) => element instanceof HTMLSelectElement);
+  const measure = async (target: Locator, name: string) => {
+    const reading = await contrastOf(target);
+    const say = `k-menu-contrast: ${what}, ${name}`;
+    if (native) {
+      expect
+        .soft(reading.ownBackgroundAlpha, `${say}: a native ${name} with a transparent background`)
+        .toBeGreaterThan(0);
+    }
+    expect
+      .soft(reading.ratio, `${say}: ${reading.color} on ${reading.background}`)
+      .toBeGreaterThanOrEqual(4.5);
+  };
+  if (native) {
+    await measure(control, "select");
+    const options = control.locator("option");
+    for (let index = 0; index < (await options.count()); index += 1) {
+      const option = options.nth(index);
+      await measure(option, `option ${(await option.textContent()) ?? index}`);
+    }
+    return;
+  }
+  await measure(control.locator("xpath=.//*[text()[normalize-space()]]").first(), "the control");
+  await control.click();
+  const list = control.locator("xpath=id(./@aria-controls)");
+  const options = list.getByRole("option");
+  await expect(options.first(), `k-menu-contrast: ${what}: a click opens its list`).toBeVisible();
+  for (let index = 0; index < (await options.count()); index += 1) {
+    const option = options.nth(index);
+    await measure(option, `the choice ${(await option.innerText()).replace("✓", "").trim()}`);
+  }
+  await control.page().keyboard.press("Escape");
+  await expect(list, `k-menu-contrast: ${what}: Escape closes its list`).toHaveCount(0);
+}
+
+// SLOW(>=2s): two themes, each with the issue page and the Inbox loaded and three lists read.
+test("k-menu-contrast: every choice of the assignee, repository and hand-on lists reads at 4.5:1 or more in the light and the dark theme", async ({
+  page,
+}) => {
+  const { askId, issueKey, title } = await seedChoices();
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    const theme = `the ${colorScheme} theme`;
+    await page.setViewportSize(WIDE);
+    await openIssue(page, issueKey, title);
+    await readChoiceContrast(
+      page.getByLabel(`Assignee of ${issueKey}`, { exact: true }),
+      `${theme}, the assignee`
+    );
+    await readChoiceContrast(
+      page.getByLabel(`Repository of ${issueKey}`, { exact: true }),
+      `${theme}, the repository`
+    );
+    const inbox = await openInboxAt(page, "card mode", 1);
+    await readChoiceContrast(
+      handOnControl(rowOf(inbox, askId), askId),
+      `${theme}, the hand-on control`
+    );
   }
 });
 

@@ -167,11 +167,30 @@ function renderControl(
   };
 }
 
-function select(): HTMLSelectElement {
-  return screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLSelectElement;
+/** The list's trigger: the badge, named for the list and described by what it shows. */
+function trigger(): HTMLElement {
+  return screen.getByRole("button", { name: "Repository of CORE-1" });
 }
 
-/** The visible badge; the select's description repeats its text in a span of its own. */
+/** The open list's choices, in its order. The list is portalled to the body. */
+function offered(): string[] {
+  return screen.getAllByRole("option").map((option) => option.textContent?.replace("✓", "") ?? "");
+}
+
+/** The choice the open list's text box highlights. */
+function highlighted(): string | undefined {
+  const id = screen
+    .getByRole("combobox", { name: "Search repositories" })
+    .getAttribute("aria-activedescendant");
+  return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
+}
+
+/** Resolves once the project's mappings have been read. */
+async function mappingsRead(queryClient: QueryClient): Promise<void> {
+  await waitFor(() => expect(queryClient.getQueryState(["repo-projects"])?.status).toBe("success"));
+}
+
+/** The visible badge; the trigger's description repeats its text in a span of its own. */
 const badge = 'span[aria-hidden="true"]';
 
 test("RepoControl lists the project's mapped repositories, shows the resolved one, and patches repo", async () => {
@@ -191,25 +210,24 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(listRepoProjects).not.toHaveBeenCalled();
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
+    fireEvent.focus(trigger());
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
+    await mappingsRead(queryClient);
     // Inherit first, then CORE's mappings sorted; OTHER's absent.
-    await waitFor(() =>
-      expect(Array.from(select().options).map((option) => option.value)).toEqual([
-        "",
-        "acme/gadgets",
-        "acme/widgets",
-      ])
+    await user.click(trigger());
+    expect(offered()).toEqual(["Inherit", "acme/gadgets", "acme/widgets"]);
+    expect(screen.getByRole("option", { name: "Inherit" })).toHaveAttribute(
+      "aria-selected",
+      "true"
     );
-    expect(select().value).toBe("");
-    await user.selectOptions(select(), "acme/gadgets");
+    await user.click(screen.getByRole("option", { name: "acme/gadgets" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
     );
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(select().value).toBe("acme/gadgets");
+    expect(trigger()).toHaveAccessibleDescription("acme/gadgets");
     expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
   } finally {
@@ -226,9 +244,13 @@ test("RepoControl sends null for Inherit", async () => {
   });
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    // The issue's own repository is selectable before the mapping list has loaded.
-    expect(select().value).toBe("acme/gadgets");
-    await user.selectOptions(select(), "");
+    // The issue's own repository is in the list before the mapping list has loaded.
+    await user.click(trigger());
+    expect(screen.getByRole("option", { name: "acme/gadgets" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await user.click(screen.getByRole("option", { name: "Inherit" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
@@ -239,11 +261,10 @@ test("RepoControl sends null for Inherit", async () => {
   }
 });
 
-// The badge is decoration for sighted readers (aria-hidden); the select names the repository the
-// issue resolves to in its description, so a screen reader hears the target as well as Inherit.
+// The badge is decoration for sighted readers (aria-hidden); the trigger names the repository
+// the issue resolves to in its description, so a screen reader hears the target as well as
+// Inherit.
 test("RepoControl describes the repository the issue resolves to", async () => {
-  const description = () =>
-    document.getElementById(select().getAttribute("aria-describedby") ?? "")?.textContent ?? null;
   for (const [own, want] of [
     [
       { repo: null, resolvedRepo: "acme/widgets" },
@@ -254,8 +275,9 @@ test("RepoControl describes the repository the issue resolves to", async () => {
   ] as const) {
     const { unmount } = renderControl({ ...own });
     try {
-      await screen.findByRole("combobox", { name: "Repository of CORE-1" });
-      expect(description()).toBe(want);
+      expect(
+        await screen.findByRole("button", { name: "Repository of CORE-1" })
+      ).toHaveAccessibleDescription(want);
     } finally {
       unmount();
     }
@@ -287,9 +309,7 @@ test("RepoControl shows nothing for an issue whose project maps no repository", 
       expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
     );
     await act(async () => {});
-    expect(
-      screen.queryByRole("combobox", { name: "Repository of CORE-1" })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Repository of CORE-1" })).not.toBeInTheDocument();
     expect(screen.queryByText("Repository:")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -310,7 +330,8 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
     expect(screen.getByText("Repository:")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.click(await screen.findByRole("button", { name: "Repository of CORE-1" }));
+    expect(offered()).toEqual(["Inherit", "acme/gadgets", "acme/widgets"]);
     expect(
       screen.queryByText("Could not load the repositories mapped to CORE.")
     ).not.toBeInTheDocument();
@@ -327,7 +348,7 @@ test("RepoControl shows a failed mappings read beside a resolved repository", as
   });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
+    fireEvent.focus(trigger());
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -343,19 +364,75 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
       error: "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)",
     })
   );
-  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  const { queryClient, unmount, user } = renderControl({
+    repo: null,
+    resolvedRepo: "acme/widgets",
+  });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "acme/gadgets");
+    fireEvent.focus(trigger());
+    await mappingsRead(queryClient);
+    await user.click(trigger());
+    await user.click(screen.getByRole("option", { name: "acme/gadgets" }));
     expect(
       await screen.findByText(
         "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)"
       )
     ).toBeTruthy();
-    expect(select().value).toBe("");
+    expect(trigger()).toHaveAccessibleDescription(
+      "acme/widgets, inherited or the project's default"
+    );
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R6: a key on the closed badge only moves the list's highlight - a
+// native select would write the next repository on ArrowDown - and Escape and Tab write nothing
+// and leave the badge on the issue's repository. Enter writes the repository highlighted.
+test("RepoControl's keys on its closed badge only move the list's highlight, and only Enter writes", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+  });
+  const { queryClient, unmount, user } = renderControl({
+    repo: null,
+    resolvedRepo: "acme/widgets",
+  });
+  const inherited = "acme/widgets, inherited or the project's default";
+  try {
+    act(() => trigger().focus());
+    await mappingsRead(queryClient);
+    for (const [keys, to] of [
+      ["{ArrowDown}", "acme/gadgets"],
+      ["{ArrowUp}", "acme/widgets"],
+      ["{Home}", "Inherit"],
+      ["{End}", "acme/widgets"],
+      ["{PageDown}", "acme/widgets"],
+      ["{PageUp}", "Inherit"],
+      ["w", "acme/widgets"],
+    ] as const) {
+      await user.keyboard(keys);
+      expect(highlighted(), `${keys} highlights ${to}`).toBe(to);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(trigger()).toHaveFocus();
+      expect(trigger()).toHaveAccessibleDescription(inherited);
+    }
+    await user.keyboard("{ArrowDown}");
+    await user.tab();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger()).toHaveFocus();
+    expect(trigger()).toHaveAccessibleDescription(inherited);
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("{End}{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt);
+    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("acme/widgets"));
   } finally {
     unmount();
     patchIssue.mockRestore();

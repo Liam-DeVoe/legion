@@ -14,7 +14,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, textBoxes } from "../../__tests__/list-picks";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { myRepliesOwnerQuery } from "../../api/queries";
+import { myRepliesOwnerQuery, usersQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
@@ -807,6 +807,76 @@ test("the hand-on list holds a text box that narrows its people, and a pick hand
     expect(page.queryByRole("listbox")).not.toBeInTheDocument();
     expect(within(view.container).getByLabelText("Hand this question to")).toHaveFocus();
   } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R6: a hand-on is written the moment a person is picked, so the closed
+// badge takes the list's keys, as a focused `<select>` does: an arrow or a letter only opens the
+// list and moves its highlight, and never reaches the page's keymap, where `b`, `e` and `j` are
+// the Inbox's own keys. Escape writes nothing and leaves the badge on the person it waits on,
+// and only Enter hands the question on.
+test("the hand-on badge's keys open its list and move the highlight, reach no page key, and only Enter hands the question on", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+    { login: "carol" },
+  ]);
+  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({
+    ...open,
+    asked_of: "bob",
+    waiting_on_person: "bob",
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  const pageKeys: string[] = [];
+  const listen = (event: KeyboardEvent) => {
+    if (!event.defaultPrevented) pageKeys.push(event.key);
+  };
+  window.addEventListener("keydown", listen);
+  const highlighted = () => {
+    const box = document.querySelector('[role="combobox"][aria-label="Search people"]');
+    const id = box?.getAttribute("aria-activedescendant");
+    return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
+  };
+  try {
+    const control = await within(view.container).findByLabelText("Hand this question to");
+    act(() => control.focus());
+    // The people are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(usersQuery().queryKey)?.status).toBe("success")
+    );
+    expect(listUsers).toHaveBeenCalledTimes(1);
+    for (const [keys, to] of [
+      ["{ArrowDown}", "bob"],
+      ["{End}", "carol"],
+      ["b", "bob"],
+    ] as const) {
+      await user.keyboard(keys);
+      expect(highlighted(), `${keys} highlights ${to}`).toBe(to);
+      await user.keyboard("{Escape}");
+      expect(within(document.body).queryByRole("listbox")).not.toBeInTheDocument();
+      expect(control).toHaveFocus();
+      expect(control).toHaveAccessibleDescription("Asked of alice");
+    }
+    expect(pageKeys, "no key on the closed badge reached the page").toEqual([]);
+    expect(handAskTo).not.toHaveBeenCalled();
+
+    await user.keyboard("b{Enter}");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-1", "bob", keyedAttempt));
+    expect(handAskTo).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener("keydown", listen);
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();

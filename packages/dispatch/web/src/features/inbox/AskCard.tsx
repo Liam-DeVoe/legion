@@ -53,7 +53,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import { badgeSelectBadge, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeListTrigger, badgeSelectBadge, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -194,10 +194,6 @@ function useFormRef(): [
   return [formRef, track];
 }
 
-/** The hand-on list's trigger: the badge it shows, filling the wrapper's tap target, whose focus
- *  ring the wrapper draws. */
-const HAND_ON_TRIGGER = "flex cursor-pointer items-center self-stretch rounded-sm outline-none";
-
 /**
  * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
  * card rather than in the Inbox, so every surface that draws an open ask has it: the Inbox row
@@ -209,14 +205,17 @@ const HAND_ON_TRIGGER = "flex cursor-pointer items-center self-stretch rounded-s
  * names), and it is the trigger of the shared list's single pick (`MultiSelect`), whose text box
  * narrows the people as the reader types: a pick of somebody else is the hand-on, in one step,
  * and a pick of the person it already waits on writes nothing, as a `<select>` set to the value
- * it holds fires nothing. Its people are everyone who has signed in (`usersQuery`, read only
- * once the reader reaches for the control and then kept for the session), with the assignee of
- * the ask's own issue offered first where the card has it - `assignee` is the Inbox row's
- * `issue.assignee`, the one read that hydrates the issue, and null on every other surface -
- * since handing the ask back to them is what empties the stored field and lets the ask follow
- * its issue again. Where it is null that person is still in the people list, under their own
- * login: the named choice is a label, not the only way to pick them, and the control's own
- * value comes from the ask itself.
+ * it holds fires nothing. Its closed trigger takes the list's keys (`keysOnTrigger`), so an
+ * arrow, Home, End, Page Up, Page Down or a letter there only opens the list and moves its
+ * highlight - never a write, and never the Inbox's own key for that letter - and only Enter or a
+ * click on a person hands the question on. Its people are everyone who has signed in
+ * (`usersQuery`, read only once the reader reaches for the control and then kept for the
+ * session), with the assignee of the ask's own issue offered first where the card has it -
+ * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and null
+ * on every other surface - since handing the ask back to them is what empties the stored field
+ * and lets the ask follow its issue again. Where it is null that person is still in the people
+ * list, under their own login: the named choice is a label, not the only way to pick them, and
+ * the control's own value comes from the ask itself.
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
@@ -286,6 +285,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
       >
         <MultiSelect
           emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
+          keysOnTrigger
           label="Hand this question to"
           mode="single"
           onOpenChange={setOpen}
@@ -296,7 +296,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
           optionLabel={(login) => (login === assignee ? `${login} (the issue's assignee)` : login)}
           options={options}
           searchLabel="Search people"
-          triggerClassName={HAND_ON_TRIGGER}
+          triggerClassName={badgeListTrigger}
           // The server's own answer, `""` where it names nobody, which only a Dispatch older
           // than every project naming a default answers: no option is that value, and nobody is
           // no pick (the route takes a person's email and refuses anything else), but the badge

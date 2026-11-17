@@ -992,6 +992,7 @@ test("IssuePage retries a failed drained title before sending the queued route",
 });
 
 test("IssuePage mounts the header without reading who has signed in until the assignee control is reached for", async () => {
+  const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
@@ -999,17 +1000,14 @@ test("IssuePage mounts the header without reading who has signed in until the as
   ]);
   const { unmount } = renderIssuePage();
   try {
-    const control = await screen.findByRole("combobox", { name: "Assignee of CORE-1" });
+    const control = await screen.findByRole("button", { name: "Assignee of CORE-1" });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
     // Focus has no user-event form; the control is reached for, never pressed.
     fireEvent.focus(control);
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(
-        [...(control as HTMLSelectElement).options].map((option) => option.textContent)
-      ).toContain("bob")
-    );
+    await user.click(control);
+    expect(await screen.findByRole("option", { name: "bob" })).toBeInTheDocument();
   } finally {
     unmount();
     restore();

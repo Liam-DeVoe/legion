@@ -32,11 +32,13 @@ function Host({ onCreate, options }: { onCreate?: (value: string) => void; optio
 function SingleHost({
   focusOnOpen,
   initial,
+  keysOnTrigger,
   marks,
   options,
 }: {
   focusOnOpen?: boolean;
   initial?: string;
+  keysOnTrigger?: boolean;
   marks?: ListMarks;
   options: string[];
 }) {
@@ -49,6 +51,7 @@ function SingleHost({
       <MultiSelect
         emptyMessage="Nothing here."
         focusOnOpen={focusOnOpen}
+        keysOnTrigger={keysOnTrigger}
         label="Epic"
         marks={marks}
         mode="single"
@@ -497,6 +500,151 @@ test("a close the host makes while the focus is outside the list leaves the focu
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(elsewhere).toHaveFocus();
   } finally {
+    view.unmount();
+  }
+});
+
+/** Every key that reached the window with nothing having handled it - what the page's keymap,
+ *  which listens there and skips a handled key, would read as its own - until `stop`. */
+function keysThePageReads(): { readonly keys: string[]; readonly stop: () => void } {
+  const keys: string[] = [];
+  const listen = (event: KeyboardEvent) => {
+    if (!event.defaultPrevented) keys.push(event.key);
+  };
+  window.addEventListener("keydown", listen);
+  return { keys, stop: () => window.removeEventListener("keydown", listen) };
+}
+
+/** The option the open list's text box highlights, by its row text. */
+function highlighted(): string | null | undefined {
+  const id = screen
+    .getByRole("combobox", { name: "Search epics" })
+    .getAttribute("aria-activedescendant");
+  return id === null ? null : document.getElementById(id)?.textContent?.replace("✓", "");
+}
+
+// dispatch://INFRA-2160, R6: a host that writes the moment a value is picked - the assignee, the
+// repository, an ask's hand-on - takes the keys a `<select>` takes on its closed trigger, and
+// each only moves the list's highlight.
+test("with keysOnTrigger, a move key on the closed trigger opens the list on the value picked and moves the highlight by that key, and the page never reads it", async () => {
+  const user = userEvent.setup();
+  const epics = Array.from({ length: 25 }, (_, index) => `epic-${index + 1}`);
+  const view = render(<SingleHost initial="epic-13" keysOnTrigger options={epics} />);
+  const page = keysThePageReads();
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    act(() => trigger.focus());
+    for (const [key, to] of [
+      ["ArrowDown", "epic-14"],
+      ["ArrowUp", "epic-12"],
+      ["Home", "epic-1"],
+      ["End", "epic-25"],
+      // Ten rows on from the value picked, the thirteenth, and ten back from it.
+      ["PageDown", "epic-23"],
+      ["PageUp", "epic-3"],
+    ] as const) {
+      await user.keyboard(`{${key}}`);
+      expect(
+        screen.getByRole("listbox", { name: "Epic options" }),
+        `${key} opens the list`
+      ).toBeTruthy();
+      expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
+      expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveValue("");
+      expect(highlighted(), `${key} highlights ${to}`).toBe(to);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+      expect(trigger).toHaveTextContent("epic-13");
+    }
+    // Every key was the list's own: the opening keys the trigger's, the Escapes the panel's.
+    expect(page.keys).toEqual([]);
+    expect(screen.getByTestId("handed").textContent).toBe("");
+    expect(screen.getByTestId("closings").textContent).toBe(Array(6).fill("escape").join(","));
+  } finally {
+    page.stop();
+    view.unmount();
+  }
+});
+
+test("with keysOnTrigger, a printable key on the closed trigger opens the list with that key in the search box, whose first match Enter picks", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <SingleHost initial="api" keysOnTrigger options={["api", "docs", "frontend"]} />
+  );
+  const page = keysThePageReads();
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    act(() => trigger.focus());
+    await user.keyboard("d");
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("d");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "docs",
+      "frontend",
+    ]);
+    expect(highlighted()).toBe("docs");
+    // The key is the search's first letter, and the next ones follow it there.
+    await user.keyboard("o");
+    expect(search).toHaveValue("do");
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("handed").textContent).toBe("docs");
+    expect(trigger).toHaveFocus();
+    // The letter that opened the list was the trigger's own; the one typed into the text box
+    // reaches the window, where the keymap reads no letter typed into a text box.
+    expect(page.keys).toEqual(["o"]);
+
+    // A chord is the page's, and Space presses the trigger: the list opens on the value picked,
+    // with an empty search.
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(page.keys).toEqual(["o", "Control", "k"]);
+    await user.keyboard(" ");
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveValue("");
+    expect(highlighted()).toBe("docs");
+  } finally {
+    page.stop();
+    view.unmount();
+  }
+});
+
+// Opt-in: a single pick that does not write the moment it is picked - the Version picker, whose
+// `]` is the page's next tab - leaves every key but Enter and Space on its closed trigger to the
+// page.
+test("without keysOnTrigger, the closed trigger's move keys and printable keys stay the page's", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  const page = keysThePageReads();
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    act(() => trigger.focus());
+    for (const key of [
+      "{ArrowDown}",
+      "{ArrowUp}",
+      "{Home}",
+      "{End}",
+      "{PageDown}",
+      "{PageUp}",
+      "]",
+      "d",
+    ]) {
+      await user.keyboard(key);
+    }
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(page.keys).toEqual([
+      "ArrowDown",
+      "ArrowUp",
+      "Home",
+      "End",
+      "PageDown",
+      "PageUp",
+      "]",
+      "d",
+    ]);
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    page.stop();
     view.unmount();
   }
 });

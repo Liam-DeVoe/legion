@@ -23,6 +23,41 @@ function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
 
+/** How many rows Page Down and Page Up move the highlight, as the WAI-ARIA select-only combobox
+ *  moves it. */
+const PAGE_ROWS = 10;
+
+/** The keys that move the highlight, which a closed trigger that takes the list's keys opens the
+ *  list with (`keysOnTrigger`). */
+const MOVE_KEYS: Readonly<Record<string, true>> = {
+  ArrowDown: true,
+  ArrowUp: true,
+  End: true,
+  Home: true,
+  PageDown: true,
+  PageUp: true,
+};
+
+/** Where `key` moves the highlight in `rows` from `from`, or undefined for a key that moves
+ *  nothing or rows that hold nothing. The arrows wrap at the ends; Home and End go to them, and
+ *  Page Down and Page Up go `PAGE_ROWS` rows on and stop there. From no row, or one the rows do
+ *  not hold, ArrowDown and Page Down count from before the first and ArrowUp from the first. */
+function stepTo(
+  key: string,
+  rows: readonly string[],
+  from: string | undefined
+): string | undefined {
+  if (rows.length === 0) return undefined;
+  const index = from === undefined ? -1 : rows.indexOf(from);
+  if (key === "ArrowDown") return rows[(index + 1) % rows.length];
+  if (key === "ArrowUp") return rows[(Math.max(index, 0) - 1 + rows.length) % rows.length];
+  if (key === "Home") return rows[0];
+  if (key === "End") return rows[rows.length - 1];
+  if (key === "PageDown") return rows[Math.min(index + PAGE_ROWS, rows.length - 1)];
+  if (key === "PageUp") return rows[Math.max(index - PAGE_ROWS, 0)];
+  return undefined;
+}
+
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
  *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
  *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
@@ -98,6 +133,15 @@ interface MultipleProps extends SharedProps {
 
 /** One value: a pick hands it to `onPick`, closes the list and puts the focus on the trigger. */
 interface SingleProps extends SharedProps {
+  /** The closed trigger takes the list's keys, as a focused `<select>` does: ArrowDown, ArrowUp,
+   *  Home, End, Page Down and Page Up open the list on the value picked and move the highlight by
+   *  that key, and a printable key opens it with that key in the text box. Each is the trigger's
+   *  own (`preventDefault`), so the page's keymap, which skips a handled key, never reads it. A
+   *  host whose value is written the moment it is picked passes it (the assignee, the
+   *  repository, an ask's hand-on), so a key moves only the highlight and only Enter or a click
+   *  writes. Without it the closed trigger takes Enter, Space and a click, and every other key
+   *  stays the page's: `]` on the Version picker is the page's next tab. */
+  readonly keysOnTrigger?: boolean;
   readonly mode: "single";
   readonly onPick: (value: string) => void;
   /** The value picked now, which the list marks selected and the trigger shows; absent while
@@ -125,7 +169,9 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * returns the focus to the trigger. Its trigger is named for the list (`label`) whatever it
  * shows, and while a value is picked the trigger's text is its description, so a reader hears
  * the list and the value staged in it, as a `<select>` reads. While the list is open the trigger
- * names the panel holding it (`aria-controls`), the text box and the listbox both.
+ * names the panel holding it (`aria-controls`), the text box and the listbox both. A single pick
+ * that passes `keysOnTrigger` also opens from its closed trigger by the keys a `<select>` takes
+ * there, so those keys, too, only move the highlight.
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
@@ -169,6 +215,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const focusesOnOpen = useRef(focusOnOpen);
   focusesOnOpen.current = focusOnOpen;
   const opensOn = useRef<string | undefined>(undefined);
+  // What a key on the closed trigger opened the list with, read as it opens: the row it
+  // highlights, and the text it puts in the search box. A press of the trigger opens it as a
+  // click does, on the value picked with an empty search.
+  const openedBy = useRef<{ readonly active?: string; readonly query: string } | undefined>(
+    undefined
+  );
+  const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -217,13 +270,16 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     setActiveValue(value);
   };
 
-  // Opening starts a fresh search on the value a single pick holds, and focuses the search unless
-  // the host hands the focus in itself. Closing returns the focus to the trigger when the close
-  // left it nowhere - the list that held it is gone - and leaves a focus that is somewhere.
+  // Opening starts a fresh search on the value a single pick holds - or on what the key that
+  // opened it says - and focuses the search unless the host hands the focus in itself. Closing
+  // returns the focus to the trigger when the close left it nowhere - the list that held it is
+  // gone - and leaves a focus that is somewhere.
   useEffect(() => {
     if (open) {
-      setQuery("");
-      setActiveValue(opensOn.current);
+      const by = openedBy.current;
+      openedBy.current = undefined;
+      setQuery(by?.query ?? "");
+      setActiveValue(by === undefined ? opensOn.current : by.active);
       if (focusesOnOpen.current) inputRef.current?.focus();
     } else if (wasOpen.current && focusOnDocument()) {
       triggerRef.current?.focus();
@@ -231,17 +287,30 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     wasOpen.current = open;
   }, [open]);
 
+  // A key on the closed trigger of a single pick that takes the list's keys: a move key opens the
+  // list on the row it moves to from the value picked, and a printable one opens it with that key
+  // as the search, whose first match is then the active row. A key held with Ctrl, Alt or Meta is
+  // a chord, and Space presses the trigger, so both stay the browser's and the page's.
+  const openFromKey = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!keysOnTrigger || open || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.nativeEvent.isComposing) return;
+    const typed = event.key.length === 1 && event.key !== " ";
+    if (!typed && MOVE_KEYS[event.key] !== true) return;
+    event.preventDefault();
+    openedBy.current = typed
+      ? { query: event.key }
+      : { active: stepTo(event.key, options, opensOn.current), query: "" };
+    if (typed) onQueryChange?.(event.key);
+    onOpenChange(true);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown" && rows.length > 0) {
-      event.preventDefault();
-      const index = activeRow === undefined ? -1 : rows.indexOf(activeRow);
-      setActiveValue(rows[(index + 1) % rows.length]);
-      return;
-    }
-    if (event.key === "ArrowUp" && rows.length > 0) {
-      event.preventDefault();
-      const index = activeRow === undefined ? 0 : rows.indexOf(activeRow);
-      setActiveValue(rows[(index - 1 + rows.length) % rows.length]);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const next = stepTo(event.key, rows, activeRow);
+      if (next !== undefined) {
+        event.preventDefault();
+        setActiveValue(next);
+      }
       return;
     }
     if (event.key === "Enter" && activeRow !== undefined) {
@@ -282,9 +351,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         {...marks?.trigger}
         disabled={disabled}
         onClick={() => {
+          openedBy.current = undefined;
           if (open) onOpenChange(false, "trigger");
           else onOpenChange(true);
         }}
+        onKeyDown={openFromKey}
         ref={triggerRef}
         type="button"
       >

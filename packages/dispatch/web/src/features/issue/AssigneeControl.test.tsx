@@ -2,12 +2,12 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { projectDefaultAssigneesQuery } from "../../api/queries";
+import { projectDefaultAssigneesQuery, usersQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { AssigneeControl } from "./AssigneeControl";
 
@@ -126,7 +126,7 @@ const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
-function CachedControl(): ReactNode {
+function CachedControl({ held }: { held: boolean }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -135,10 +135,10 @@ function CachedControl(): ReactNode {
   if (cached.data === undefined) {
     return null;
   }
-  return <AssigneeControl assignee={cached.data.assignee} issueKey={cached.data.key} />;
+  return <AssigneeControl assignee={cached.data.assignee} held={held} issueKey={cached.data.key} />;
 }
 
-function renderControl() {
+function renderControl({ held = false }: { held?: boolean } = {}) {
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
     { login: "bob" },
@@ -152,7 +152,7 @@ function renderControl() {
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      <CachedControl held={held} />
     </QueryClientProvider>
   );
   return {
@@ -166,33 +166,53 @@ function renderControl() {
   };
 }
 
-function select(): HTMLSelectElement {
-  return screen.getByRole("combobox", { name: "Assignee of CORE-1" }) as HTMLSelectElement;
+/** The list's trigger: the badge, named for the list and described by the person it shows. */
+function trigger(): HTMLElement {
+  return screen.getByRole("button", { name: "Assignee of CORE-1" });
+}
+
+/** The open list's people, in its order. The list is portalled to the body. */
+function offered(): string[] {
+  return screen.getAllByRole("option").map((option) => option.textContent?.replace("✓", "") ?? "");
+}
+
+/** The person the open list's text box highlights. */
+function highlighted(): string | undefined {
+  const id = screen
+    .getByRole("combobox", { name: "Search people" })
+    .getAttribute("aria-activedescendant");
+  return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
+}
+
+/** Opens the list with a click on the badge and picks `name` from it with a click. */
+async function pick(user: UserEvent, name: string): Promise<void> {
+  await user.click(trigger());
+  await user.click(await screen.findByRole("option", { name }));
+}
+
+/** Resolves once who has signed in has been read. */
+async function peopleRead(queryClient: QueryClient): Promise<void> {
+  await waitFor(() =>
+    expect(queryClient.getQueryState(usersQuery().queryKey)?.status).toBe("success")
+  );
 }
 
 test("AssigneeControl reads who has signed in only once the reader reaches for it, then lists Unassigned first", async () => {
-  const { listUsers, unmount } = renderControl();
+  const { listUsers, queryClient, unmount, user } = renderControl();
   try {
     // Mounted with the badge showing, nothing has been requested: a fresh issue load costs no
     // read of who has signed in.
     expect(screen.getByText("alice", { selector: "span" })).toBeTruthy();
-    expect([...select().options].map((option) => option.textContent)).toEqual([
-      "Unassigned",
-      "alice",
-    ]);
+    expect(trigger()).toHaveAccessibleDescription("alice");
     expect(listUsers).not.toHaveBeenCalled();
 
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() =>
-      expect([...select().options].map((option) => option.textContent)).toEqual([
-        "Unassigned",
-        "alice",
-        "bob",
-      ])
-    );
+    fireEvent.focus(trigger());
+    await peopleRead(queryClient);
     expect(listUsers).toHaveBeenCalledTimes(1);
-    expect(select().value).toBe("alice");
+    await user.click(trigger());
+    expect(offered()).toEqual(["Unassigned", "alice", "bob"]);
+    expect(screen.getByRole("option", { name: "alice" })).toHaveAttribute("aria-selected", "true");
   } finally {
     unmount();
   }
@@ -203,10 +223,10 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    await user.hover(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "bob");
-    await waitFor(() => expect(select().value).toBe("bob"));
+    await user.hover(trigger());
+    await peopleRead(queryClient);
+    await pick(user, "bob");
+    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("bob"));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
@@ -225,16 +245,16 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
 
 test("AssigneeControl sends null for Unassigned", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, assignee: null });
-  const { unmount, user } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "");
+    fireEvent.focus(trigger());
+    await peopleRead(queryClient);
+    await pick(user, "Unassigned");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
-    await waitFor(() => expect(select().value).toBe(""));
+    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("Unassigned"));
     expect(screen.getByText("Unassigned", { selector: "span" })).toBeTruthy();
   } finally {
     unmount();
@@ -271,9 +291,9 @@ test.each([
   }
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "");
+    fireEvent.focus(trigger());
+    await peopleRead(queryClient);
+    await pick(user, "Unassigned");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
@@ -308,12 +328,12 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
   const { queryClient, unmount, user } = renderControl();
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "bob");
+    fireEvent.focus(trigger());
+    await peopleRead(queryClient);
+    await pick(user, "bob");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
-    expect(select().value).toBe("alice");
+    expect(trigger()).toHaveAccessibleDescription("alice");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary]);
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
@@ -330,18 +350,21 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     .mockImplementationOnce(() => second.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    select().focus();
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "bob");
+    act(() => trigger().focus());
+    await peopleRead(queryClient);
+    // From the keyboard: Enter opens the list on alice, ArrowDown highlights bob, Enter picks him.
+    await user.keyboard("{Enter}{ArrowDown}{Enter}");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
     );
     // A disabled control drops focus and leaves the tab order for the length of the save.
-    expect(select().disabled).toBe(false);
-    expect(select()).toHaveFocus();
+    expect(trigger()).not.toBeDisabled();
+    expect(trigger()).not.toHaveAttribute("aria-disabled");
+    expect(trigger()).toHaveFocus();
 
-    await user.selectOptions(select(), "");
-    expect(select().value).toBe("");
+    // Home on the closed badge opens the list on Unassigned, and Enter picks it.
+    await user.keyboard("{Home}{Enter}");
+    expect(trigger()).toHaveAccessibleDescription("Unassigned");
     expect(patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => {
       first.resolve({ ...issue, assignee: "bob" });
@@ -349,7 +372,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: null }, keyedAttempt);
-    expect(select().value).toBe("");
+    expect(trigger()).toHaveAccessibleDescription("Unassigned");
     await act(async () => {
       second.resolve({ ...issue, assignee: null });
       await second.promise;
@@ -357,7 +380,72 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
     );
-    expect(select()).toHaveFocus();
+    expect(trigger()).toHaveFocus();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R6: a key on the closed badge only moves the list's highlight - a
+// native select would write the next person on ArrowDown - and Escape and Tab write nothing and
+// leave the badge on the issue's assignee. Enter writes the person highlighted.
+test("AssigneeControl's keys on its closed badge only move the list's highlight, and only Enter writes", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, assignee: "bob" });
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    act(() => trigger().focus());
+    await peopleRead(queryClient);
+    for (const [keys, to] of [
+      ["{ArrowDown}", "bob"],
+      ["{ArrowUp}", "Unassigned"],
+      ["{Home}", "Unassigned"],
+      ["{End}", "bob"],
+      ["{PageDown}", "bob"],
+      ["{PageUp}", "Unassigned"],
+      ["b", "bob"],
+    ] as const) {
+      await user.keyboard(keys);
+      expect(highlighted(), `${keys} highlights ${to}`).toBe(to);
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(trigger()).toHaveFocus();
+      expect(trigger()).toHaveAccessibleDescription("alice");
+    }
+    await user.keyboard("{ArrowDown}");
+    await user.tab();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger()).toHaveFocus();
+    expect(trigger()).toHaveAccessibleDescription("alice");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("{ArrowDown}{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
+    // A pick of the person it already names writes nothing, as a `<select>` set to its own value.
+    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("bob"));
+    await user.keyboard("{Enter}{Enter}");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// `held` is the issue page's other field writes: the badge keeps the focus and its Tab stop and
+// says it is busy, and a pick made then is dropped rather than queued.
+test("a held AssigneeControl keeps its focus and Tab stop and drops a pick", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, assignee: "bob" });
+  const { queryClient, unmount, user } = renderControl({ held: true });
+  try {
+    act(() => trigger().focus());
+    await peopleRead(queryClient);
+    expect(trigger()).toHaveAttribute("aria-disabled", "true");
+    expect(trigger()).not.toBeDisabled();
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(trigger()).toHaveFocus();
+    expect(trigger()).toHaveAccessibleDescription("alice");
+    expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     unmount();
     patchIssue.mockRestore();
