@@ -54,9 +54,10 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // The controller topic follows the deployment's controller mode (heldTopic, review round 15 of
 // #4220). Under `controller: daemon` the launched controller claim is the project's controller, so
 // a controller notice waits while that claim records a session it does not hold: the row is
-// retried as a wait, logged as one rather than as a failure. Under `controller: operator` the topic
-// is the operator's own controller's, so a launched controller claim an earlier boot retired, whose
-// session another claim holds, holds nothing back, and the notice is published.
+// retried as a wait, logged as one rather than as a failure. It is published as before while that
+// claim holds its session (R9). Under `controller: operator` the topic is the operator's own
+// controller's, so a launched controller claim an earlier boot retired, whose session another
+// claim holds, holds nothing back, and the notice is published.
 //
 // The controls (the pull request records the runs): heldTopic mapping the controller topic under
 // either mode, as round 15 first did, holds the notice under `controller: operator` too; and
@@ -79,6 +80,17 @@ func TestTheControllerTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
 		}
 		if got := publisher.topics(); len(got) != 0 {
 			t.Fatalf("published to %v while the daemon's controller claim records a session it does not hold", got)
+		}
+	})
+	t.Run("controller: daemon, its claim holding its session", func(t *testing.T) {
+		_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
+			{Token: controller, Role: claim.RoleController, Session: "ses_controller", State: supervise.StateReady},
+		})
+		if err := runner.execute(ctx, notice(t)); err != nil {
+			t.Fatalf("the controller notice while the daemon's controller claim holds its session = %v, want it published", err)
+		}
+		if got, want := publisher.topics(), []string{notify.ControllerTopic("legion")}; !slices.Equal(got, want) {
+			t.Fatalf("published to %v, want %v: the controller claim holds its own session", got, want)
 		}
 	})
 	t.Run("controller: operator, a retired launched claim not holding its session", func(t *testing.T) {
