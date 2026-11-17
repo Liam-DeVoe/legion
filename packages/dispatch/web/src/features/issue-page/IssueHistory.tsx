@@ -306,14 +306,15 @@ export function IssueHistory({
   };
   // A control of the history that goes away under the reader's focus leaves the focus in the
   // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). Load older, which a
-  // press disables while its page is read and the log's end takes away, hands it to the first
-  // control the page it read added, where Load older stood, else to Load older again where
-  // pages are left, else to the heading, and so does the Retry of a failed next page, which
-  // stands where Load older stood; the Retry of a failed read of the log, gone once the read
-  // lands, hands it to the heading. Each is held from its press, made with the focus on it,
-  // until the reads settle, and only a focus left on the page moves: a reader who has put it
-  // elsewhere by then keeps it there. No such move scrolls Details, whose reader keeps their
-  // place (R3).
+  // press disables while its page is read and the log's end takes away, hands it to a control
+  // the page it read added that the reader can see, where Load older stood first, else to one
+  // out of view, else to Load older again where pages are left, else to the heading, and so
+  // does the Retry of a failed next page, which stands where Load older stood; the Retry of a
+  // failed read of the log, gone once the read lands, hands it to the heading. Each is held
+  // from its press, made with the focus on it, until the reads settle, and only a focus left on
+  // the page moves: a reader who has put it elsewhere by then keeps it there. No such move
+  // scrolls Details, whose reader keeps their place (R3), so a control the page pushed out of
+  // view - under files it added to a run above - takes the focus only when none is in view.
   const pressed = useRef<
     { readonly kind: "older"; readonly before: ReadonlySet<Element> } | { readonly kind: "retry" }
   >(undefined);
@@ -328,20 +329,31 @@ export function IssueHistory({
     pressed.current = undefined;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    // The page it read lands under every control drawn before it, so a new control under them,
-    // where Load older stood, takes the focus before one drawn anew above them - an entry the
-    // page extended and the list drew again - and that one before Load older or the heading.
+    // The page it read lands under every control drawn before it, where Load older stood. Its
+    // entries can push one another out of Details' view: files the page added to a run above
+    // move the entries under that run down, so a new control is in view or not by where it is
+    // drawn once the reader's place is held (`ViewportAnchor` holds it before this runs).
     const before = press.kind === "older" ? press.before : new Set<Element>();
     const lastBefore = [...before].filter((control) => control.isConnected).at(-1);
     const added = controlsOfList().filter((control) => !before.has(control));
-    const below = added.find(
-      (control) =>
-        lastBefore === undefined ||
-        (lastBefore.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
-    );
+    const isBelow = (control: HTMLElement) =>
+      lastBefore === undefined ||
+      (lastBefore.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const view = scroller.current?.getBoundingClientRect() ?? {
+      bottom: window.innerHeight,
+      top: 0,
+    };
+    const inView = (control: HTMLElement) => {
+      const at = control.getBoundingClientRect();
+      return at.height > 0 && at.top >= view.top && at.bottom <= view.bottom;
+    };
     const target =
       press.kind === "older"
-        ? (below ?? added[0] ?? loadOlder.current)
+        ? (added.find((control) => isBelow(control) && inView(control)) ??
+          added.find(inView) ??
+          added.find(isBelow) ??
+          added[0] ??
+          loadOlder.current)
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
   });
