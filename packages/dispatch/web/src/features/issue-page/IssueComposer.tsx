@@ -45,6 +45,12 @@ import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import {
+  type CriterionItem,
+  criterionAnswerLine,
+  useCriterionLine,
+} from "./model-rows/criterion-write";
+import { useRoomFacts } from "./model-rows/room-target";
+import {
   type AnswerTarget,
   type Landing,
   type OutlineWriter,
@@ -119,6 +125,7 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
     held !== undefined ||
     writer.reply !== null ||
     writer.statement !== undefined ||
+    writer.criterion !== undefined ||
     writer.answer !== undefined ||
     writer.editing !== undefined
   );
@@ -137,6 +144,7 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
  * comment on a statement, its target named above the line; an open question's Answer, or one of
  * its options, sets it to answer that question; the reader's own comment's Edit sets it to that
  * comment's words, which Save writes back (`outline-writer.tsx`).
+ * A row's Write a criterion sets it to write a criterion under that row (`CriterionLine`).
  *
  * Once a write lands, the outline takes the reader to it (`Landing`): the row of what they wrote,
  * its branch unfolded, on screen and focused (R4). Under a view no outline is drawn to consume a
@@ -256,10 +264,22 @@ export function IssueComposer({
           writer={writer}
         />
       )}
+      {writer.criterion === undefined ? null : (
+        <CriterionLine
+          // One line per node: what the reader typed is a criterion under that node.
+          key={writer.criterion.id}
+          issueKey={issueKey}
+          place={place}
+          target={writer.criterion}
+          writer={writer}
+        />
+      )}
       {/* Last, so the line that is drawn is the first field of the section, and hidden rather
           than unmounted while the line answers or edits: its draft is the reader's. */}
       <div data-composer-write="" hidden={!writing}>
-        <WriteLine isClosed={isClosed} issueKey={issueKey} place={place} writer={writer} />
+        <div hidden={writer.criterion !== undefined}>
+          <WriteLine isClosed={isClosed} issueKey={issueKey} place={place} writer={writer} />
+        </div>
       </div>
     </section>
   );
@@ -750,6 +770,131 @@ function AnswerForm({
             onRetry={failure.retryable ? send : undefined}
             retrying={pending}
           />
+        )}
+      </fieldset>
+    </form>
+  );
+}
+
+/** The line that writes a criterion under a node, once the issue's tree read names the tree
+ *  artifact it is written into (`useRoomFacts`). With none read it draws nothing, and no row
+ *  offers the act that aims it (`OutlineWriter.takesCriterion`). */
+function CriterionLine({
+  issueKey,
+  place,
+  target,
+  writer,
+}: {
+  issueKey: string;
+  place: LinePlace;
+  target: CriterionItem;
+  writer: OutlineWriter;
+}): ReactNode {
+  const tree = useRoomFacts(issueKey)?.tree;
+  return tree === null || tree === undefined ? null : (
+    <CriterionForm issueKey={issueKey} place={place} target={target} tree={tree} writer={writer} />
+  );
+}
+
+/**
+ * The criterion line (dispatch://INFRA-4066 R2, the plan's decision "The line"): "Criterion
+ * under:" and the node's first line above it, then the field and Send. Enter sends and
+ * Shift+Enter breaks the line; Escape, from any control of the line, and the target line's
+ * control end the aim and take the reader back to the node's row. The text stays in the field
+ * while the write is out and after a refusal, whose sentence is drawn under the line; a landing
+ * lets the text go and takes the reader to their new criterion under the node.
+ *
+ * It is a form of its own beside the answer's, with the line that writes on the issue kept
+ * mounted and hidden, so the page keeps one box (part L's R7). Its words go into the issue's own
+ * text, which tells nobody they name (`document-text`).
+ */
+function CriterionForm({
+  issueKey,
+  place,
+  target,
+  tree,
+  writer,
+}: {
+  issueKey: string;
+  place: LinePlace;
+  target: CriterionItem;
+  tree: string;
+  writer: OutlineWriter;
+}): ReactNode {
+  const form = useRef<HTMLFormElement>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const under: Landing["under"] = { id: target.id, kind: target.kind };
+  const back = () => finish(writer, place, { to: "self", under });
+  const line = useCriterionLine({
+    issueKey,
+    // A write lands whether or not its line is still drawn. One that lands after the reader
+    // took another target while it was out takes them nowhere and ends nothing: the line they
+    // are on now is theirs.
+    onLanded: () => {
+      if (form.current !== null) finish(writer, place, { to: "newest", under });
+    },
+    parent: target.address,
+    tree,
+  });
+  return (
+    <form
+      aria-label={CONTROL_LABELS.criterion_target}
+      className={pageComposer.box}
+      data-criterion-under={target.id}
+      data-issue-composer=""
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        back();
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        line.send();
+      }}
+      ref={form}
+    >
+      {/* Held while the write is out, as the answer's is: the node it names is the criterion's
+          parent, fixed once the send is out. */}
+      <fieldset className="flex min-w-0 flex-col gap-[3px] border-0 p-0" disabled={line.pending}>
+        <OutlineTargetLine clearLabel={CONTROL_LABELS.write_on_issue} onClear={back}>
+          <span {...pageChrome}>{CONTROL_LABELS.criterion_target}</span>{" "}
+          <TargetWords markdown={target.text} source={target.source} tree={target.tree} />
+        </OutlineTargetLine>
+        <div className={`${pageComposer.line} flex-wrap`}>
+          <MentionField
+            body={line.text}
+            disabled={line.pending}
+            issueKey={issueKey}
+            label={CONTROL_LABELS.write_criterion}
+            labelHidden
+            look={pageComposer.field}
+            onChange={(change) => line.setText(change.body)}
+            // Enter sends and Shift+Enter breaks the line, as on the box's other lines.
+            onKeyDown={(event) => sendOnEnter(event, pickerOpen, line.send)}
+            onPickerOpenChange={setPickerOpen}
+            placeholder={
+              place.phone
+                ? CONTROL_LABELS.criterion_placeholder_phone
+                : CONTROL_LABELS.criterion_placeholder
+            }
+            writing={dispatchWritingBox("issue-page-composer", "document-text")}
+          />
+          <div className={pageComposer.controls}>
+            <RefusableButton
+              busy={line.pending ? "Sending…" : undefined}
+              look="page-send"
+              refusal={null}
+              type="submit"
+            >
+              {CONTROL_LABELS.send}
+            </RefusableButton>
+          </div>
+        </div>
+        {line.answer === undefined ? null : (
+          <p data-criterion-answer="" role="status" {...pageChrome}>
+            {criterionAnswerLine(line.answer)}
+          </p>
         )}
       </fieldset>
     </form>

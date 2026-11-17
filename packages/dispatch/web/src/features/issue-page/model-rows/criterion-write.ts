@@ -1,8 +1,10 @@
 import { useState } from "react";
 
 import { ApiError, writeRequest } from "../../../api/client";
+import { parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { type ANSWER_LINES, CONTROL_LABELS } from "../page-words";
+import type { TreeNode } from "../issue-tree";
+import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { RoomFacts } from "./room-target";
 
 /**
@@ -12,8 +14,8 @@ import type { RoomFacts } from "./room-target";
  *
  * The send is one `POST /api/v1/artifacts/{id}/edits` on the tree artifact (R6), a keyed write
  * the line shows the refusal of itself. A refusal is read by its status alone, never by the
- * server's text (the plan's decision "A refusal"), and this file answers the key of
- * `ANSWER_LINES` the line draws, never its sentence.
+ * server's text (the plan's decision "A refusal"): `criterionAnswer` answers the key of
+ * `ANSWER_LINES` the line draws, and `criterionAnswerLine` that key's sentence.
  */
 
 /** Where a criterion is written: the issue it is written into, the node it stands under (`parent`,
@@ -110,6 +112,54 @@ export function criterionAnswer(error: unknown): CriterionAnswer {
   return error instanceof ApiError && error.status === 404
     ? "criterion_gone"
     : "criterion_not_written";
+}
+
+/** The sentence the line draws for a refused criterion (R2): `answer`'s entry of `ANSWER_LINES`,
+ *  so the box reads it from part B's list and holds no word of its own. */
+export function criterionAnswerLine(answer: CriterionAnswer): string {
+  return ANSWER_LINES[answer];
+}
+
+/**
+ * The node a criterion is written under (R2): an ask, a comment or a message of the outline. Its
+ * `id` is the node's own row id, which the line marks (`data-criterion-under`) and a landing
+ * names (`Landing.under`), and `IssueTree.tsx`'s `landingParent` finds the node by it; `kind` is
+ * the conversation item the node is; `address` is the node's whole `dispatch://` address, which
+ * the criterion names as its `parent`; and its words, its reading and its record are what the
+ * line's target line cuts to their first line.
+ */
+export interface CriterionItem extends Pick<TreeNode, "source" | "text" | "tree"> {
+  /** The node's own `dispatch://` address (`TreeNode.reference`): the criterion's `parent`. */
+  readonly address: string;
+  /** The node's row id (`TreeNode.id`). */
+  readonly id: string;
+  /** The item of the conversation the node is, by the kind its address names. */
+  readonly kind: "ask" | "comment" | "message";
+}
+
+/** The node a criterion can be written under, where `node` is one: an ask, a comment or a message
+ *  whose own address names an item of one of those kinds. Undefined for every other node - a
+ *  statement, a check, a decision, the issue itself - and for one with no such address. Whether
+ *  the act is offered on it is the writer's (`OutlineWriter.takesCriterion`), which also asks
+ *  that the address names this issue and that the issue takes a criterion (`criterionOffered`). */
+export function criterionItemOf(
+  node: Pick<TreeNode, "id" | "reference" | "source" | "text" | "tree" | "type">
+): CriterionItem | undefined {
+  if (node.type !== "ask" && node.type !== "comment" && node.type !== "message") return undefined;
+  const address = node.reference;
+  const route = address === undefined ? undefined : parseNodeReference(address);
+  if (address === undefined || route === undefined || !("id" in route)) return undefined;
+  if (route.kind !== "ask" && route.kind !== "comment" && route.kind !== "message") {
+    return undefined;
+  }
+  return {
+    address,
+    id: node.id,
+    kind: route.kind,
+    ...(node.source === undefined ? {} : { source: node.source }),
+    text: node.text,
+    ...(node.tree === undefined ? {} : { tree: node.tree }),
+  };
 }
 
 /** Whether a node of this issue offers the act that writes a criterion (R2): only where the

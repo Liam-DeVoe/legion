@@ -42,6 +42,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
+import { criterionItemOf } from "./model-rows/criterion-write";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
@@ -836,6 +837,11 @@ export function NodeOptions({
  * block (dispatch://INFRA-1253), so it draws none; and with no writer (`OutlineWriterProvider`)
  * the row draws none of the three.
  *
+ * After Reply, Write a criterion on an ask, a comment or a message of this issue, on an issue
+ * that takes one (`OutlineWriter.takesCriterion`, dispatch://INFRA-4066 R2): it aims the line at
+ * the node to write a criterion under it. No key presses it, and `f` reaches it as it reaches
+ * every act (decision 69).
+ *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
@@ -875,6 +881,16 @@ export function RowActs({
       label: CONTROL_LABELS.reply,
       run: () => (item === undefined ? writer.writeOnIssue() : writer.replyTo(item)),
     });
+  }
+  if (writer?.takesCriterion(node) === true) {
+    const under = criterionItemOf(node);
+    if (under !== undefined) {
+      acts.push({
+        act: "criterion",
+        label: CONTROL_LABELS.write_criterion,
+        run: () => writer.criterionUnder(under),
+      });
+    }
   }
   const reference = node.reference;
   if (acts.length === 0 && reference === undefined) return null;

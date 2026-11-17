@@ -12,6 +12,12 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
+import {
+  type CriterionItem,
+  criterionItemOf,
+  criterionOffered,
+} from "./model-rows/criterion-write";
+import { useRoomFacts } from "./model-rows/room-target";
 
 /**
  * Where the reader writes on the issue page (dispatch://INFRA-1196 R16): the one line at the foot
@@ -33,6 +39,14 @@ export interface OutlineWriter {
   readonly changeAnswer: (node: TreeNode) => void;
   /** Sets the line back to a new comment on the issue. */
   readonly clear: () => void;
+  /** The node the line writes a criterion under (`CriterionItem`), where its row's Write a
+   *  criterion aimed it at one (`criterionUnder`); undefined otherwise. Like `statement`, it
+   *  never stands beside a reply, a statement, an answer or an edit. */
+  readonly criterion: CriterionItem | undefined;
+  /** Sets the line to write a criterion under `item` and puts the caret in it
+   *  (dispatch://INFRA-4066 R2): it ends the reply, the statement, the answer and the edit, and
+   *  setting any of them, or `clear`, ends it. */
+  readonly criterionUnder: (item: CriterionItem) => void;
   /** Asks the outline to take the reader to what a write from the line just landed
    *  (`Landing`), once its read has drawn it. */
   readonly land: (landing: Landing) => void;
@@ -42,6 +56,9 @@ export interface OutlineWriter {
   readonly landing: Landing | undefined;
   /** Puts the caret in the line, once it is drawn. */
   readonly focus: () => void;
+  /** The issue the page is of: only its own nodes take a criterion (`takesCriterion`), and a row
+   *  is edited in the room of its tree read (`useNodeEditing.ts`). */
+  readonly issueKey: string;
   /** What the line writes with no reply set: a comment, or a question. */
   readonly kind: WriterKind;
   /** Picks `label` of `node`'s options, or lets it go, and sets the line to answer `node`. */
@@ -62,6 +79,11 @@ export interface OutlineWriter {
    *  a reply, an answer or an edit: setting it ends them, and setting any of them, or `clear`,
    *  ends it. */
   readonly statement: StatementTarget | undefined;
+  /** Whether `node` carries the act that writes a criterion under it (dispatch://INFRA-4066 R2):
+   *  an ask, a comment or a message (`criterionItemOf`) whose own address names this issue, on
+   *  an issue whose tree read answers a tree and no `view_of` (`criterionOffered`). False for
+   *  every node while the cache holds no tree read of the issue (`useRoomFacts`). */
+  readonly takesCriterion: (node: TreeNode) => boolean;
   /** Picks `label` of the options of the question the line answers, or lets it go. */
   readonly toggle: (label: string) => void;
   /** Sets the line back to a new comment on the issue and puts the caret in it: the issue's own
@@ -167,6 +189,13 @@ export function OutlineWriterProvider({
   // and ended by every other target the line takes and by `clear`, so no path holds it beside a
   // reply, an answer or an edit.
   const [statement, setStatement] = useState<StatementTarget>();
+  // The node the line writes a criterion under, if it does: set by a row's Write a criterion
+  // alone, and ended, as the statement is, by every other target and by `clear`.
+  const [criterion, setCriterion] = useState<CriterionItem>();
+  // Whether the issue takes a criterion at all (R2): its tree read answers a tree, and no
+  // `view_of`, which no node of a view of another issue takes.
+  const facts = useRoomFacts(issueKey);
+  const offersCriterion = criterionOffered(facts);
   const agentText = useAgentText();
   // The reads the outline is drawn from, under the keys it reads them by (`useIssueTree.ts`), so
   // a reply's target costs no request of its own.
@@ -209,6 +238,7 @@ export function OutlineWriterProvider({
         setReply(null);
         setAnswer(undefined);
         setEditing(undefined);
+        setCriterion(undefined);
         setStatement({ ...item, quote: item.tree === undefined ? item.text : wordsOf(item.tree) });
         focus();
         return;
@@ -217,6 +247,7 @@ export function OutlineWriterProvider({
       setAnswer(undefined);
       setEditing(undefined);
       setStatement(undefined);
+      setCriterion(undefined);
       setReply(redirectedReplyTarget(store, sendKey, target));
       focus();
     },
@@ -237,6 +268,7 @@ export function OutlineWriterProvider({
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
+      setCriterion(undefined);
       setAnswer((held) => (held?.askId === target.askId ? held : target));
       focus();
     },
@@ -252,6 +284,7 @@ export function OutlineWriterProvider({
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
+      setCriterion(undefined);
       setAnswer({
         ...target,
         replacing: { at: recorded.at, text: recorded.text ?? "" },
@@ -269,6 +302,7 @@ export function OutlineWriterProvider({
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
+      setCriterion(undefined);
       setAnswer((held) => picked(held?.askId === target.askId ? held : target, label));
       focus();
     },
@@ -283,6 +317,7 @@ export function OutlineWriterProvider({
     setAnswer(undefined);
     setEditing(undefined);
     setStatement(undefined);
+    setCriterion(undefined);
   }, [sendKey, setReply, store]);
   const writeOnIssue = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
@@ -295,10 +330,34 @@ export function OutlineWriterProvider({
       setReply(null);
       setAnswer(undefined);
       setStatement(undefined);
+      setCriterion(undefined);
       setEditing({ body, id });
       focus();
     },
     [focus, sendKey, setReply, store]
+  );
+  const criterionUnder = useCallback(
+    (item: CriterionItem) => {
+      // Refused while a send of the line's own is out, as every other target is.
+      if (store.sendingNow(sendKey)) return;
+      setReply(null);
+      setAnswer(undefined);
+      setEditing(undefined);
+      setStatement(undefined);
+      setCriterion(item);
+      focus();
+    },
+    [focus, sendKey, setReply, store]
+  );
+  const takesCriterion = useCallback(
+    (node: TreeNode) => {
+      // A node of another issue - a borrowed check's parent - is read here and written in its
+      // own issue, so only an address naming this issue takes one.
+      const item = offersCriterion ? criterionItemOf(node) : undefined;
+      const route = item === undefined ? undefined : parseNodeReference(item.address);
+      return route !== undefined && "key" in route && route.key === issueKey;
+    },
+    [issueKey, offersCriterion]
   );
   const writer = useMemo<OutlineWriter>(
     () => ({
@@ -306,9 +365,12 @@ export function OutlineWriterProvider({
       answerNode,
       changeAnswer,
       clear,
+      criterion,
+      criterionUnder,
       edit,
       editing,
       focus,
+      issueKey,
       kind,
       land: setLanding,
       landed,
@@ -320,6 +382,7 @@ export function OutlineWriterProvider({
       setKind,
       setReply,
       statement,
+      takesCriterion,
       toggle,
       writeOnIssue,
     }),
@@ -328,9 +391,12 @@ export function OutlineWriterProvider({
       answerNode,
       changeAnswer,
       clear,
+      criterion,
+      criterionUnder,
       edit,
       editing,
       focus,
+      issueKey,
       kind,
       landed,
       landing,
@@ -340,6 +406,7 @@ export function OutlineWriterProvider({
       sendKey,
       setReply,
       statement,
+      takesCriterion,
       toggle,
       writeOnIssue,
     ]

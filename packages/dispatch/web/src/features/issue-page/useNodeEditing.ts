@@ -6,6 +6,7 @@ import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { roomTarget, useRoomFacts } from "./model-rows/room-target";
 import { caretInBlock } from "./node-caret";
+import { useOutlineWriter } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
@@ -67,9 +68,9 @@ export function useNodeEditing({
   const leaving = useRef<string | undefined>(undefined);
   const { documentBridge } = useMargin();
   // The room of the issue's tree read (dispatch://INFRA-4066 R5), read through a ref so `edit`
-  // keeps its dependencies. The writer names no issue on this branch, so the key is the one each
-  // document of the issue carries; an issue with no document is edited as it is without a room.
-  const room = useRoomFacts(artifacts.values().next().value?.issue_key ?? undefined);
+  // keeps its dependencies, by the issue the page's writer is of (`OutlineWriter.issueKey`); with
+  // no writer there is none, and a row is edited as it is without a room.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
   const roomNow = useRef(room);
   roomNow.current = room;
 

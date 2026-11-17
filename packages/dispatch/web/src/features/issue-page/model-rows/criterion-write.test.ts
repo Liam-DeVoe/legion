@@ -6,7 +6,9 @@ import { createElement, type ReactNode } from "react";
 
 import { answerRequests } from "../../../__tests__/network";
 import { whoAmIQuery } from "../../../api/queries";
+import type { TreeNode } from "../issue-tree";
 import {
+  criterionItemOf,
   criterionMarkdown,
   criterionOffered,
   criterionRequest,
@@ -239,6 +241,53 @@ test("the act needs view_of null and a tree", () => {
   expect(criterionOffered(facts(TREE, "CORE-2"))).toBe(false);
   expect(criterionOffered(facts(null, null))).toBe(false);
   expect(criterionOffered(undefined)).toBe(false);
+});
+
+test("a conversation node is a criterion's parent and no other is", () => {
+  const node = (
+    type: TreeNode["type"],
+    reference: string | undefined,
+    id = `row-${type}`
+  ): Pick<TreeNode, "id" | "reference" | "text" | "type"> => ({
+    id,
+    ...(reference === undefined ? {} : { reference }),
+    text: TEXT,
+    type,
+  });
+  expect(criterionItemOf(node("comment", PARENT))).toEqual({
+    address: PARENT,
+    id: "row-comment",
+    kind: "comment",
+    text: TEXT,
+  });
+  const message = `dispatch://${KEY}/message/message-1`;
+  expect(criterionItemOf(node("message", message))?.kind).toBe("message");
+  // An ask indexed from a block of a document keeps its row's id, the block's node id, which a
+  // landing finds it by, and names the ask's own address as the parent.
+  const ask = `dispatch://${KEY}/ask/ask-1`;
+  expect(criterionItemOf(node("ask", ask, "spec#b-q1"))).toEqual({
+    address: ask,
+    id: "spec#b-q1",
+    kind: "ask",
+    text: TEXT,
+  });
+  // Its record and its reading go with it, for the target line to draw its first line.
+  const source = { id: "comment-1", issue: KEY, kind: "comment" } as const;
+  const tree: NonNullable<TreeNode["tree"]> = { children: [], type: "root" };
+  expect(criterionItemOf({ ...node("comment", PARENT), source, tree })).toMatchObject({
+    source,
+    tree,
+  });
+  // A node of another issue is one too: whether the act is offered there is the writer's.
+  expect(criterionItemOf(node("comment", "dispatch://CORE-2/comment/comment-2"))?.address).toBe(
+    "dispatch://CORE-2/comment/comment-2"
+  );
+  // No address, an address that names no item, and a node of any other kind are none.
+  expect(criterionItemOf(node("comment", undefined))).toBeUndefined();
+  expect(criterionItemOf(node("comment", `dispatch://${KEY}/spec#b-r1`))).toBeUndefined();
+  expect(criterionItemOf(node("comment", `dispatch://${KEY}`))).toBeUndefined();
+  expect(criterionItemOf(node("requirement", PARENT))).toBeUndefined();
+  expect(criterionItemOf(node("issue", `dispatch://${KEY}`, KEY))).toBeUndefined();
 });
 
 test("a send carries the tree's edits route and one insert at the end", async () => {

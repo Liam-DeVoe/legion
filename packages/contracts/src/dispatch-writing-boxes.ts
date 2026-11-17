@@ -324,6 +324,16 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Answer",
     write: "ask-answer",
   },
+  // Its criterion line writes into the issue's own text, which tells nobody (INFRA-4066 R2, R8).
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "document-text",
+  },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.
   {
     box: "inbox-thread-reply",
