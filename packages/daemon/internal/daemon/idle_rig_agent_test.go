@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +28,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+
+	"github.com/sjawhar/envoy/sessiontiming"
 )
 
 // idleRigURLVariable names the rig's own service in the environment of every process the rig's
@@ -312,7 +315,7 @@ func TestIdleRigRoleProcess(t *testing.T) {
 	if rig == "" {
 		return
 	}
-	process, err := newIdleRigRoleProcess(rig)
+	process, err := newIdleRigRoleProcess(rig, os.Args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "idle rig role process:", err)
 		os.Exit(1)
@@ -390,8 +393,14 @@ type idleRigRoleProcess struct {
 	session    string
 	// epoch is this process's one NATS connection, as a plugin's registration names it: a new
 	// one tells the listener to restart the session's relay at its consumer's ack floor.
-	epoch          string
-	bus            *nats.Conn
+	epoch string
+	bus   *nats.Conn
+	// client makes every call of this process, with no deadline of its own. A call takes what the
+	// machine's load makes the server take: the listener, the daemon and the rig are processes and
+	// goroutines of the same machine, and on a loaded one an answer came after the 20 s a fixed
+	// deadline here gave it, which ended the process before it registered and left its pod never
+	// ready. The process's own life is the bound: its pod's launcher ends it, with SIGKILL once its
+	// stop grace is over, and the test's wait for the pod fails naming what it waited for.
 	client         *http.Client
 	unregisterOnce sync.Once
 
@@ -415,8 +424,8 @@ type idleRigRoleProcess struct {
 	taken    bool
 }
 
-func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
-	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}, recorded: map[uint64]bool{}}
+func newIdleRigRoleProcess(rig string, argv []string) (*idleRigRoleProcess, error) {
+	p := &idleRigRoleProcess{rig: rig, client: &http.Client{}, recorded: map[uint64]bool{}}
 	p.pod = os.Getenv("LEGION_SANDBOX")
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")
@@ -430,7 +439,6 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 		return nil, fmt.Errorf("LEGION_GENERATION %q: %w", os.Getenv("LEGION_GENERATION"), err)
 	}
 	p.generation = generation
-	argv := os.Args
 	for i, arg := range argv {
 		if i+1 >= len(argv) {
 			break
@@ -708,7 +716,7 @@ func (p *idleRigRoleProcess) subscribe(topics []string) error {
 			Reason  string `json:"reason"`
 		} `json:"delivery"`
 	}
-	if err := p.post(p.envoy+"/v1/interests/subscribe", map[string]any{
+	if err := p.postListener(p.envoy+"/v1/interests/subscribe", map[string]any{
 		"session_id": p.session, "dir": "/legion/workspaces/" + p.pod, "topics": topics,
 		"host": "127.0.0.1", "title": p.role, "self_subscribed": true,
 		"capabilities": []string{"prompt_async"}, "plugin": "idle-rig", "plugin_version": "0",
@@ -729,7 +737,7 @@ func (p *idleRigRoleProcess) subscribe(topics []string) error {
 // claimRole takes the role topic of this claim, which is what makes a message published to it
 // reach this session and what makes its absence the listener's wake report.
 func (p *idleRigRoleProcess) claimRole() error {
-	return p.post(p.envoy+"/v1/roles/set", map[string]any{
+	return p.postListener(p.envoy+"/v1/roles/set", map[string]any{
 		"role": string(p.claimToken), "session_id": p.session,
 	}, nil)
 }
@@ -894,6 +902,46 @@ func (p *idleRigRoleProcess) next(within time.Duration) (shimwire.Frame, error) 
 	return shimwire.Decode(line)
 }
 
+// postListener is post for a registration call to the Envoy listener, made as a plugin's
+// registration is: a call the listener did not answer, or answered 5xx, is made again until it is
+// answered 2xx or refused 4xx. The listener answers 503 with Retry-After when its bus does not
+// answer within its own budget (cmd/listener's writeStoreError), which is an answer to call
+// again, and a plugin does: envoy-client's request retries an unanswered call or a 5xx, and
+// registerSession subscribes again on every heartbeat (packages/envoy-client/src/transport.ts).
+// The wait between two calls is the listener's Retry-After, else the client's own retry delay
+// (sessiontiming.CallRetryDelay). The process's own life bounds the calls, as it bounds each one.
+func (p *idleRigRoleProcess) postListener(url string, body, answer any) error {
+	for {
+		err := p.post(url, body, answer)
+		var refused *idleRigStatusError
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &refused) && refused.status < http.StatusInternalServerError:
+			return err
+		}
+		wait := sessiontiming.CallRetryDelay
+		if errors.As(err, &refused) && refused.retryAfter > 0 {
+			wait = refused.retryAfter
+		}
+		fmt.Fprintf(os.Stderr, "idle rig role process: %v; calling again in %s\n", err, wait)
+		time.Sleep(wait)
+	}
+}
+
+// idleRigStatusError is an answer of a status of 300 or above: its method, path, status and body,
+// and the Retry-After it carried, in whole seconds as the listener writes it.
+type idleRigStatusError struct {
+	method, path string
+	status       int
+	body         []byte
+	retryAfter   time.Duration
+}
+
+func (e *idleRigStatusError) Error() string {
+	return fmt.Sprintf("%s %s = %d %s", e.method, e.path, e.status, e.body)
+}
+
 func (p *idleRigRoleProcess) post(url string, body, answer any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -926,7 +974,11 @@ func (p *idleRigRoleProcess) do(request *http.Request, answer any) error {
 		return err
 	}
 	if response.StatusCode >= 300 {
-		return fmt.Errorf("%s %s = %d %s", request.Method, request.URL.Path, response.StatusCode, read)
+		refused := &idleRigStatusError{method: request.Method, path: request.URL.Path, status: response.StatusCode, body: read}
+		if seconds, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && seconds > 0 {
+			refused.retryAfter = time.Duration(seconds) * time.Second
+		}
+		return refused
 	}
 	if answer == nil || len(bytes.TrimSpace(read)) == 0 {
 		return nil
