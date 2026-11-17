@@ -22,8 +22,8 @@ import (
 const changesBody = "Name the rollback path."
 
 // returnEngine is stepEngine with the hook a deployment that writes no `hooks:` key runs
-// (config.DefaultHooks), as the daemon hands it over (its runningHooks), so a return fires it as
-// it would in production.
+// (config.DefaultHooks), as the daemon hands it over (engineHooks in the daemon package), so a
+// return fires it as it would in production.
 func returnEngine() *Engine {
 	engine := stepEngine(nil)
 	for _, hook := range config.DefaultHooks() {
