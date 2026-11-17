@@ -1653,21 +1653,7 @@ func seedClaimSession(t *testing.T, pool *pgxpool.Pool, token claim.Token, sessi
 // reviewerDecision is LEGION-208's reviewer row's recorded decision, nil until a review decides.
 func reviewerDecision(t *testing.T, pool *pgxpool.Pool) *record.ReviewDecision {
 	t.Helper()
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(context.Background())
-	phases, err := record.NewStore().Phases(context.Background(), tx, "LEGION-208")
-	if err != nil {
-		t.Fatalf("read phases: %v", err)
-	}
-	for _, p := range phases {
-		if p.Role == claim.RoleReviewer {
-			return p.Decision
-		}
-	}
-	return nil
+	return phaseRowOf(t, pool, claim.RoleReviewer).Decision
 }
 
 // The controller now holds the review App's token too, so its own reviews, and a sibling tree's or
