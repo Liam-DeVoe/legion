@@ -453,9 +453,13 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 		listed[i] = intake.ListedIssue(summary)
 	}
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped, settle := intake.OpenSettlers(scoped, admission)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			t.Fatalf("Reconcile: %v", err)
+		}
+		if err := settle(scoped, tx); err != nil {
+			t.Fatalf("settle the reconcile: %v", err)
 		}
 	})
 	committed()

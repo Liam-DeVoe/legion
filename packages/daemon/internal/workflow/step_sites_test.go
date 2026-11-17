@@ -84,10 +84,11 @@ func holdFrom(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase) {
 	seedIssue(t, pool, *held)
 }
 
-// onStored runs write in one transaction on key's record as the store holds it.
+// onStored runs write in one transaction on key's record as the store holds it, as a fact applies
+// it (applyInTx).
 func onStored(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, write func(ctx context.Context, tx pgx.Tx, issue record.Issue) error) {
 	t.Helper()
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
@@ -322,10 +323,10 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		if err := engine.EndRunningStep(ctx, tx, issue); err != nil {
+		if err := engine.endStep(ctx, tx, issue, stepStopped); err != nil {
 			return err
 		}
-		return engine.EndRunningStep(ctx, tx, issue)
+		return engine.endStep(ctx, tx, issue, stepStopped)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
 		onStored(t, pool, engine, key, endTwice)
@@ -710,9 +711,10 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 // A parked tree hands over only an unheld member with an open pull request. The close of its
 // linger retires the other merge workers too, and ends the merge of one whose pull request can no
 // longer land: its record ends rather than staying running. A held merger's open pull request
-// can still land, so its merge stays open until it does, and ends passed (C1's one exception), or
-// until the pull request closes unmerged, which ends it stopped, once. A member handed over keeps
-// its merge open for its readmit to end, whatever its pull request does.
+// can still land, so its merge stays open until it does, and ends passed (the one end no move of
+// the table writes that is not stopped), or until the pull request closes unmerged, which ends it
+// stopped, once. A member handed over keeps its merge open for its readmit to end, whatever its
+// pull request does.
 func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"}
 	closed := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"}
@@ -769,7 +771,7 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 					t.Fatalf("merge end id %s differs from its start %s", writes[2].ID, writes[1].ID)
 				}
 			}
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				handover, err := engine.store.Handover(ctx, tx, "LEGION-209")
 				if err == nil && (handover != nil) != tc.handed {
 					t.Fatalf("handover = %+v, want a handover only for the open, unheld merger", handover)
@@ -907,7 +909,7 @@ func TestAReenteredChildEndsItsOldRun(t *testing.T) {
 	child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
 	child.Status = "todo"
 	engine := stepEngine(nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.ReenterChild(ctx, tx, child, RecordedFact(child))
 	})
 	writes := stepWrites(t, pool, "LEGION-209")
@@ -929,7 +931,7 @@ func TestAnAdoptedMemberEndsItsOldRun(t *testing.T) {
 		Title: "queued", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "W", LastDispatchSeq: 1}
 	seedIssue(t, pool, member)
 	engine := stepEngine(nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.moveIntoTree(ctx, tx, member, root, intake.AdoptedChild{})
 	})
 	writes := stepWrites(t, pool, "LEGION-300")
@@ -1019,8 +1021,8 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.EndRunningStep(ctx, tx, root); err != nil {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		if err := engine.endStep(ctx, tx, root, stepStopped); err != nil {
 			return err
 		}
 		return engine.StartStepRecord(ctx, tx, root)

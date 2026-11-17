@@ -36,9 +36,10 @@ function bodyRows(table: HTMLElement): string[][] {
     );
 }
 
-// One table per task, in the server's order, each run one row with the nine columns the plan
-// names. A review that failed says where it sent the task back to, a run that has not ended says
-// it runs, and a field the record does not hold reads as a dash rather than as an empty cell.
+// One table per task, in the server's order, each run one row with nine columns: step, role,
+// type, agent, model, attempt, start, end and result. A review that failed says where it sent the
+// task back to, a run that has not ended says it runs, and a field the record does not hold reads
+// as a dash rather than as an empty cell.
 test("the Steps tab draws each task's runs as a table, a running run as running", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
@@ -66,6 +67,8 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
             result: "",
             started_at: "2026-11-16T10:31:00Z",
           }),
+          // A merge GitHub had already made, which started under the release before this one: that
+          // release counted no start, so the end names no agent, no model and no start.
           record({
             agent: "",
             id: "merge-1",
@@ -100,7 +103,7 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
     // The running run: no model yet, and no end.
     expect(rows[2]?.[4]).toBe("—");
     expect(rows[2]?.[7]).toBe("—");
-    // The merge GitHub made: no type, no agent, no model and no start.
+    // That merge: no type, no agent, no model and no start.
     expect([rows[3]?.[2], rows[3]?.[3], rows[3]?.[4], rows[3]?.[6]]).toEqual(["—", "—", "—", "—"]);
     // Each time the record holds is the record's own instant, whatever the relative words say.
     expect(

@@ -54,7 +54,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			secondRun := stepClock.Add(time.Hour)
 			if tc.open {
 				engine := stepEngine(nil)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.recordPass(ctx, tx, "LEGION-208", phase.Testing, phase.Implementing, nil)
 				})
 			}

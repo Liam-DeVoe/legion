@@ -82,14 +82,15 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 			}
 			return nil
 		},
-		// The result of a run and the step it returned to are one fact, so only the write that
-		// sets the result sets returned_to.
+		// A run's result and the step it returned to are one fact, so the write takes returned_to
+		// only where the node holds no result. attributes() admits returned_to only beside a
+		// failed or stopped result, so the write that states it states a result too.
 		sets: func(held map[string]json.RawMessage, name string) bool {
 			if name != AttributeReturnedTo {
 				return true
 			}
 			_, ended := held[AttributeResult]
-			return !ended && write.Result != nil && *write.Result != ""
+			return !ended
 		},
 		relations: func(setting map[string]string) []tuple {
 			if report, sets := setting[AttributeReport]; sets {
@@ -451,9 +452,6 @@ type tuple struct {
 // order the write states them, which is the order their seq is drawn in. Every tuple of the write
 // has one writer, one moment and no event, and asserts its fact.
 func appendTuples(ctx context.Context, tx pgx.Tx, fromKind string, tuples []tuple, writer []byte, at time.Time) error {
-	if len(tuples) == 0 {
-		return nil
-	}
 	fromIDs := make([]string, len(tuples))
 	kinds := make([]string, len(tuples))
 	toKinds := make([]string, len(tuples))

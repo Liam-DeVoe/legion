@@ -269,9 +269,13 @@ func mountedPatterns(t *testing.T, handler http.Handler) []string {
 	if !ok {
 		t.Fatalf("the server's handler is %T, want trackTransactions' over the API's mux", handler)
 	}
-	mux, ok := tracking.next.(*routeMux)
+	noting, ok := tracking.next.(requesterNoting)
 	if !ok {
-		t.Fatalf("the server's mux is %T, want the routeMux NewServer mounts every route on", tracking.next)
+		t.Fatalf("the handler trackTransactions serves is %T, want noteRequesters' over the API's mux", tracking.next)
+	}
+	mux, ok := noting.next.(*routeMux)
+	if !ok {
+		t.Fatalf("the server's mux is %T, want the routeMux NewServer mounts every route on", noting.next)
 	}
 	if len(mux.patterns) == 0 {
 		t.Fatal("the server's mux records no pattern: this walk would prove nothing")

@@ -15,9 +15,9 @@
 // stores, and the read of a project (ProjectPlans) answers each of its finished issues with its
 // plan, its ratings, its time and its count of failed steps.
 //
-// The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
-// does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's
-// tables column for column the day it lands.
+// The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
+// internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
+// the day it lands.
 package workflowstore
 
 import (
@@ -38,8 +38,8 @@ const (
 	KindHandoff = "handoff"
 )
 
-// KindValue is the ToKind of an attribute tuple: its ToID holds the value itself rather than an
-// address.
+// KindValue is the to_kind of an attribute tuple (tuple.toKind): its to_id (tuple.toID) holds the
+// value itself rather than an address.
 const KindValue = "value"
 
 // The two relations a node states. RelationPartOf is written once, by the write that makes the
@@ -57,7 +57,7 @@ const (
 	StateLive         = "live"
 )
 
-// NoEvent is the SourceEvent of every row this store writes: a step write appends no event, since
+// NoEvent is the source_event of every row this store writes: a step write appends no event, since
 // an event would feed the daemon's intake with facts it caused. `events.id` is a bigserial, so no
 // event ever carries 0.
 const NoEvent int64 = 0

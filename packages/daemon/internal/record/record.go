@@ -1745,6 +1745,15 @@ type Store interface {
 	// count its record takes and true: 0 for a place with no row, the next count for one that
 	// reads RunUncounted. False where another end of that run came first.
 	EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (int64, bool, error)
+	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start
+	// of this release counted, at the count its end would take — 0 for a place with no row, the
+	// next count for one that reads RunUncounted — keeping the write run builds from that count as
+	// a start keeps its own, and answers true; it queues nothing (workflow's OpenUncountedRuns).
+	// False, and nothing written, where the place's row is open or ended.
+	OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error)
+	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
+	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
+	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

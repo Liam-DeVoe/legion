@@ -123,8 +123,8 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	seedIssue(t, pool, readmitted)
 	openTheGate := func() {
 		t.Helper()
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-			engine := stepEngine(nil)
+		engine := stepEngine(nil)
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			issue, err := engine.store.Issue(ctx, tx, root.Key)
 			if err != nil {
 				return err

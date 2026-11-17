@@ -185,6 +185,23 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	return intake.Result{Refusal: refusal}, a.wakeForFreeSlot(ctx, tx, released)
 }
 
+// OpenFact and SettleFact are the engine's (intake.Settler): admission writes issues through it —
+// a re-admission's new generation, a promotion's starts — so the runs those writes end are settled
+// whichever of the two a fact applies through, once.
+func (a *Admission) OpenFact(ctx context.Context) context.Context {
+	if a.engine == nil {
+		return ctx
+	}
+	return a.engine.OpenFact(ctx)
+}
+
+func (a *Admission) SettleFact(ctx context.Context, tx pgx.Tx) error {
+	if a.engine == nil {
+		return nil
+	}
+	return a.engine.SettleFact(ctx, tx)
+}
+
 // applyFact is Apply's work, and reports the issues whose slots it released and the refusal of a
 // release's adoption.
 func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) ([]string, *intake.Refusal, error) {
@@ -1300,13 +1317,6 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed, carry bool) error {
 	if stored.Generation == ^uint64(0) {
 		return fmt.Errorf("re-admit %s: generation overflows", stored.Key)
-	}
-	// The new generation ends the run of the step the issue stood in, on the record as read: a
-	// carried hand-over's or orphan's, which keeps its phase. A run another write ended already
-	// (the linger's, for every member but one that awaits its merge) gets no second end, and a
-	// root re-admitting itself stands at done, which runs no step (workflow's EndRunningStep).
-	if err := a.engine.EndRunningStep(ctx, tx, stored); err != nil {
-		return fmt.Errorf("end the running step of re-admitted %s: %w", stored.Key, err)
 	}
 	orphan := carry && !claim.IsTreeRoot(stored.Key, stored.Tree)
 	oldTree, oldGeneration := stored.Tree, stored.Generation
@@ -2626,7 +2636,6 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 		}
-		promoted := false
 		for _, held := range standing.roles {
 			run := runs[held.token]
 			if held.role != standing.owner {
@@ -2645,30 +2654,19 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			// The linger left the merge step of a member that awaits its merge open (workflow's
-			// beginLinger), and the start below begins a new run of it at the member's unchanged
-			// generation, so the open run ends first, stopped. The promoted root's own run ended
-			// at its readmit, which raised its generation: an end here would be of a run of the new
-			// generation that no start began.
-			if member.Key != root.Key && record.StandsIn(member, phase.Merging) {
-				if err := a.engine.EndRunningStep(ctx, tx, member); err != nil {
-					return err
-				}
-			}
 			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
 				return err
 			}
-			promoted = true
 		}
-		// The member's step starts again with the tree even where the promotion starts no phase
-		// worker of it: accepting's, whose role is the tree's architect, a held member's, whose
-		// hold starts none, and a role workflow.StartFor finds already started. A run still open
-		// goes on and gets no second start (workflow's StartStepRecord): the merge step of a member
-		// held from merging, which the linger left open and the hold's retry goes on with.
-		if !promoted {
-			if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
-				return err
-			}
+		// The member's step starts again with the tree, whatever the promotion starts of it: a
+		// phase worker's start above began its run already, and accepting's (whose role is the
+		// tree's architect), a held member's (whose hold starts none) and a role workflow.StartFor
+		// finds already started begin it here. The store's run mark decides (workflow's
+		// StartStepRecord): a run still open goes on and gets no second start — the one a start
+		// above began, and the merge step of a member held from merging, which the linger left
+		// open and the hold's retry goes on with.
+		if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
+			return err
 		}
 	}
 	return nil

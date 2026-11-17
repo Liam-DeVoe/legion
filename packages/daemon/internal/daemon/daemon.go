@@ -492,14 +492,25 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
 		plan.nats.log(log)
-		// The three probes, and the cutover repair after them, run one after another on this
-		// goroutine, so they share one hold mark (a sequential flow); whether the daemon is stopping
-		// is still read from ctx.
+		// The open of the uncounted runs, the three probes and the cutover repair after them run
+		// one after another on this goroutine, so they share one hold mark (a sequential flow);
+		// whether the daemon is stopping is still read from ctx.
 		probing := store.WithTransactionTracking(ctx)
-		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
-			readinessAttempt(func(attempt context.Context) error {
-				return workflow.connect(attempt, cfg, plan.nats)
-			}, bootTimeout, natsauth.Unreachable))
+		// The runs no start of this release counted, which an earlier release began, get their
+		// open row first (openUncountedRuns): before the listing's reconcile, the boot's first
+		// admission pass, and before any fact, so the settle of each fact ends such a run as an
+		// open run, and a fact its agent's request applies waits for that agent's stream. It is
+		// one Postgres transaction with a bound of its own, and a failure of it stops the boot as
+		// the reconcile's own transaction's does.
+		opening, cancelOpening := context.WithTimeout(probing, bootTimeout)
+		err := workflow.openUncountedRuns(opening)
+		cancelOpening()
+		if err == nil {
+			err = bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
+				readinessAttempt(func(attempt context.Context) error {
+					return workflow.connect(attempt, cfg, plan.nats)
+				}, bootTimeout, natsauth.Unreachable))
+		}
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))

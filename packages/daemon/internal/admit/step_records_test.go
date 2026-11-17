@@ -94,13 +94,19 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 }
 
 // countStart writes the start of the step key stands in, as the transition or the promotion that
-// started it would have (workflow.Engine.StartStepRecord): its count raised and its start queued.
+// started it would have (workflow.Engine.StartStepRecord), in a fact of its own: its count raised
+// and its start queued.
 func countStart(t *testing.T, pool *pgxpool.Pool, engine intake.Handler, key string) {
 	t.Helper()
 	stored := issue(t, pool, key)
+	workflowEngine := engine.(*workflow.Engine)
+	ctx := workflowEngine.OpenFact(context.Background())
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := engine.(*workflow.Engine).StartStepRecord(context.Background(), tx, stored); err != nil {
+		if err := workflowEngine.StartStepRecord(ctx, tx, stored); err != nil {
 			t.Fatalf("start the step of %s: %v", key, err)
+		}
+		if err := workflowEngine.SettleFact(ctx, tx); err != nil {
+			t.Fatalf("settle the start of %s: %v", key, err)
 		}
 	})
 }
@@ -209,7 +215,7 @@ func TestALingeringMemberThatNeverMergesEndsItsMergeStepOnce(t *testing.T) {
 }
 
 // The linger leaves a member's merge step open, and only one of three writes ends it before any
-// new start of it (B3-1): the promotion of the tree admitted again, which starts the member's merger
+// new start of it: the promotion of the tree admitted again, which starts the member's merger
 // again; the merge, landing between the root's readmit and that promotion; or the hand-over at the
 // linger's close, where readmit ends it and the promotion of the new root ends nothing more.
 func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *testing.T) {

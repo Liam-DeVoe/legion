@@ -704,10 +704,6 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
-	// The new run ends the step the old one stood in, read before the clear below empties it.
-	if err := e.endStep(ctx, tx, child, stepStopped); err != nil {
-		return err
-	}
 	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
 	}
@@ -1550,9 +1546,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr)); err != nil {
 		return err
 	}
-	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
-	// and before the start below writes the step it moves into.
-	if err := e.endStep(ctx, tx, issue, endOfTransition(trigger, issue, row.To, handoff)); err != nil {
+	// The move names the end of the step the issue stood in, on the issue as it stood, before the
+	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
+	// below ends that run before it begins its own (startStep), and a move that starts nothing
+	// leaves it to the fact's settle (SettleFact).
+	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
 		return err
 	}
 	from := issue.Phase
@@ -1618,8 +1616,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		// to merge, and accepting's role is the tree's architect, which start skips. The step starts
 		// all the same, under the agent it names (startNamedStep): nobody for the merge, whose close
 		// ends it, and the tree's architect for accepting.
-		if err := e.startNamedStep(ctx, tx, issue); err != nil {
-			return err
+		if step, ok := standingStep(issue); ok {
+			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
+				return err
+			}
 		}
 	default:
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {

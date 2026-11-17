@@ -123,8 +123,8 @@ func newStepRecordRig(t *testing.T, answer func(int) error) *stepRecordRig {
 	return newStepRecordRigOf(t, stepRecordOf(), answer)
 }
 
-// newStepRecordRigOf is the rig with rec queued as the issue's step record row.
-func newStepRecordRigOf(t *testing.T, rec record.StepRecord, answer func(int) error) *stepRecordRig {
+// newStepRecordRigOf is the rig with rec queued as the issue's row on the record lane.
+func newStepRecordRigOf(t *testing.T, rec record.OutboxPayload, answer func(int) error) *stepRecordRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	logs := &syncBuffer{}

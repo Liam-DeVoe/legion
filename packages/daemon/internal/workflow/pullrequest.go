@@ -477,9 +477,9 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return nil, err
 	}
-	// The merge ends the merge step the linger left open (beginLinger), passed: no transition runs
-	// in a lingering tree, so this write is the step's end.
-	if err := e.endStep(ctx, tx, issue, StepEnd{Result: ResultPassed}); err != nil {
+	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
+	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
+	if err := e.nameMoveEnd(ctx, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
 		return nil, err
 	}
 	issue.Phase, issue.Hold = row.To, nil
@@ -502,13 +502,9 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the architect, whose decision it is whether the work is reopened, reassigned, or cancelled, as the
 // shipped daemon routes it. It records the head the close carries, which every synchronize before
 // it left, and keeps the close's clock when it is the later one, so a reopen or a synchronize older
-// than the close, redelivered late, changes nothing. A close that finds the pull request already
-// closed records its head and clock too. When it is newer than the record, it is a second close
-// whose reopen has not been delivered yet, and the architect is told; at the record's clock or with
-// no clock it is a redelivery, and it tells the architect nothing more. A close of a merged pull
-// request changes nothing: GitHub never closes one, so the close is older than the merge, which
-// carries no clock to fence it. The first close also ends the merge step its tree's linger close
-// left open (endMergeOfAClosedTree).
+// than the close, redelivered late, changes nothing. A close of a merged pull request changes
+// nothing: GitHub never closes one, so the close is older than the merge, which carries no clock to
+// fence it.
 func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestClosed) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged || classify.LateLifecycle(fact.UpdatedAt, pr.HeadUpdatedAt) {
@@ -527,34 +523,8 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if err := e.endMergeOfAClosedTree(ctx, tx, *issue); err != nil {
-		return intake.Result{}, err
-	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("pull request #%d closed without merging while %s was in %s", pr.Number, issue.Key, issue.Phase)})
-}
-
-// endMergeOfAClosedTree ends, stopped, the merge step of issue, whose pull request has just closed
-// unmerged, where the close of its tree's linger left that step open: the close ends no merge whose
-// pull request is open (lingerExpired), and once that pull request closes no write is left to end
-// the merge. The deadline of the linger is what tells the close's side from the linger's: a pull
-// request that closes inside the linger can open again and land there, and the close ends that
-// merge itself if it does not. A member the close handed over keeps its step open for its readmit
-// to end (admit's readmit), and an issue that awaits no merge, or whose tree does not linger, ends
-// nothing here.
-func (e *Engine) endMergeOfAClosedTree(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if !awaitsMerge(issue) {
-		return nil
-	}
-	root, err := e.store.Issue(ctx, tx, issue.Tree)
-	if err != nil || root == nil || !root.Lingers() || record.Lingering(*root, e.now()) {
-		return err
-	}
-	handover, err := e.store.Handover(ctx, tx, issue.Key)
-	if err != nil || handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation {
-		return err
-	}
-	return e.endStep(ctx, tx, issue, stepStopped)
 }
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge

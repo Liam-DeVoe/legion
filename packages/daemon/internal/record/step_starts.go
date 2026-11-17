@@ -79,16 +79,26 @@ func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string,
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	write := run(starts)
+	if err := keepStart(ctx, tx, issue, place, write); err != nil {
+		return StepRecord{}, err
+	}
+	return write, nil
+}
+
+// keepStart keeps write, the record of the latest start of place on issue, on the place's row: the
+// agent and the moment it names, which the run's end writes again, and the write itself, which the
+// roll forward of a rollback ends the record under where an earlier release ended the run.
+func keepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, write StepRecord) error {
 	identity, err := json.Marshal(write)
 	if err != nil {
-		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7
 		where issue = $1 and task = $2 and kind = $3 and place = $4`,
 		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity); err != nil {
-		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	return write, nil
+	return nil
 }
 
 // StepStarts is the count of starts of place on issue, with the agent, the moment and the run of
@@ -161,6 +171,39 @@ func (s *Postgres) EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string
 		return 0, false, fmt.Errorf("end the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	return 0, tag.RowsAffected() == 1, nil
+}
+
+// OpenUncountedStep opens, at the daemon's boot, the run at place on issue that no start of this
+// release counted, as a start opens a run: marked open at the count its end would otherwise take
+// (EndUncountedStep) — 0 for a place with no row, a step that started under the release before
+// this one deployed, and the count after the one its row holds for a row that reads RunUncounted,
+// a step an earlier release started after a rollback — with the write run gives at that count
+// kept as a start keeps its own (keepStart): its agent, its moment and its identity. The run's end
+// is then the end of an open run (EndStepStart), under the id of that count, and the next start of
+// the place counts one more. It queues nothing. It answers false, and writes nothing, where the
+// place's row is open or ended: a start of this release counted that run, or a boot before this
+// one opened it.
+func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error) {
+	var starts int64
+	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open'
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'uncounted'
+		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		tag, err := tx.Exec(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 0, '', 'open')
+			on conflict (issue, task, kind, place) do nothing`, issue, place.Task, place.Kind, place.Place)
+		if err != nil {
+			return false, fmt.Errorf("open the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return false, nil
+		}
+	} else if err != nil {
+		return false, fmt.Errorf("open the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	if err := keepStart(ctx, tx, issue, place, run(starts)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // scanStepStart reads one step_starts row's starts, agent, started_at and run.

@@ -73,9 +73,10 @@ type Options struct {
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
 	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
-	// the daemon had read when it was called (the daemon's awaitStream). A route that applies an
-	// agent's own request ending the agent's step calls it first, so the record of that step names
-	// the model whose answer the stream read ahead of the request. Nil waits for nothing.
+	// the daemon had read when it was called (the daemon's awaitStream). apply calls it before a
+	// fact of an agent's own request where the record names that agent the agent of a run the fact
+	// may end, so the record of that step names the model whose answer the stream read ahead of
+	// the request. Nil waits for nothing.
 	AwaitStream func(ctx context.Context, token claim.Token)
 	// PodUpdateRounds answers what the daemon's last pod-update sweep decided, which the claim
 	// listing carries beside the claims (the daemon's podUpdateRoundsView). Nil answers the zero
@@ -309,7 +310,7 @@ type server struct {
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
-	// awaitStream is Options.AwaitStream (awaitStreamOf).
+	// awaitStream is Options.AwaitStream (apply).
 	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
@@ -482,21 +483,15 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	for _, route := range s.routes() {
 		mux.handle(route.pattern, route.handler)
 	}
-	// The catch-all answers every unrouted request, including a known path asked for with the
-	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
-	// script needs.
-	mux.handle("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
-	})
-
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           trackTransactions(mux),
+		Handler:           trackTransactions(noteRequesters(mux)),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 }
 
-// route is one route of the daemon's API: its ServeMux pattern and the handler that serves it.
+// route is one route the API serves: the pattern http.ServeMux matches a request against, and the
+// handler that answers it.
 type route struct {
 	pattern string
 	handler http.HandlerFunc
@@ -521,17 +516,14 @@ func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mux.ServeHTTP(w, r)
 }
 
-// routes is every route the daemon's API serves but the catch-all, in the one table NewServer
-// mounts. A route is mounted through routeMux.handle and nowhere else, and a test of a rule every
-// route keeps walks what the server's mux recorded (TestNoRouteTakesABodyStringHoldingANul) rather
-// than a list of its own that a new route never joins, so a route mounted beside the table is
-// walked too.
+// routes is every route the API serves, the one table NewServer mounts. A route is mounted through
+// routeMux.handle and nowhere else, and a test of a rule every route keeps walks what the server's
+// mux recorded (TestNoRouteTakesABodyStringHoldingANul) rather than a list of its own that a new
+// route never joins, so a route mounted beside the table is walked too.
 func (s *server) routes() []route {
 	return []route{
 		{"GET /legion/v1/state", s.stateRoute},
-		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		}},
+		{"GET /healthz", healthz},
 		{"GET /readyz", s.readyz},
 
 		{"POST /legion/v1/claims/register", s.register},
@@ -567,7 +559,20 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+
+		// The catch-all answers every unrouted request, including a known path asked for with the
+		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
+		// script needs.
+		{"/", noRoute},
 	}
+}
+
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func noRoute(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
 }
 
 // trackTransactions marks every request's context for the daemon's pool, in this one place
@@ -581,7 +586,8 @@ func trackTransactions(handler http.Handler) http.Handler {
 }
 
 // transactionTracking is the handler trackTransactions returns: next serves each request, its
-// context marked. It is a type of its own so a test can reach the mux it serves (routeMux).
+// context marked. It is a type of its own so a test can reach the mux below it (noteRequesters'
+// handler, then routeMux).
 type transactionTracking struct{ next http.Handler }
 
 func (t transactionTracking) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -67,7 +67,10 @@ const tester: StepRecord = {
   rating_reason: null,
 };
 
-/** A merge GitHub already made: no merger started, so no agent, no model and no start. */
+/**
+ * A merge GitHub had already made, which started under the release before this one: that release
+ * counted no start, so the end names no agent, no model and no start.
+ */
 const mergedByGitHub: StepRecord = {
   id: "7c3e1a5b-9d4f-5a2c-b6e8-0a2c4e6f8a03",
   issue: "LEG-1",
@@ -284,7 +287,7 @@ describe("dispatch steps", () => {
     const stored: readonly StepRecord["result"][] = ["", "passed", "failed", "stopped"];
     // @ts-expect-error - a word Dispatch never stores is no result.
     const notStored: StepRecord["result"] = "skipped";
-    expect(stored).not.toContain(notStored);
+    void notStored;
 
     // The implementer's run as each end leaves it: passed, naming its report; failed, sent back to
     // step 1 by the architect's backward move, which names no report of the implementer's; and
@@ -314,7 +317,7 @@ describe("dispatch steps", () => {
     const kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
     // @ts-expect-error - a kind Dispatch never stores is no kind.
     const notStored: StepRecord["kind"] = "pause";
-    expect(kinds).not.toContain(notStored);
+    void notStored;
     // The implementer runs the retro, at place 0 and of no type, and names no report.
     const retro: StepRecord = {
       ...implementer,

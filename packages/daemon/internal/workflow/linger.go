@@ -78,13 +78,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			}
 			return e.leaveUnderOperator(ctx, tx, issue, status)
 		}
-		// The departure stops the root's step, a held one's included (record.StandsAt), where the
-		// root's close writes it done: not for a root that already lingers, which left once, nor
-		// for a root the operator's tree holds, whose phases the workflow never ran. A root a
-		// transition took to done stands in no step any more, and writes nothing here.
-		if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
-			return err
-		}
 		if err := e.beginLinger(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -95,10 +88,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return nil
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
-	}
-	// A child's departure stops its step the same way, before its phase is written done.
-	if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
-		return err
 	}
 	if issue.Phase != phase.Done {
 		issue.Phase, issue.Hold = phase.Done, nil
@@ -317,18 +306,6 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 		return err
 	}
 	for _, member := range members {
-		// The linger stops every member's step, the root's being leave's. A member that awaits its
-		// merge keeps its merge step open: the merge that lands ends it passed (closeMerged), the
-		// hand-over at the linger's close or the promotion of the tree again stops it (admit's
-		// readmit, startMidPhaseMembers), the linger's close stops one it hands over to nobody whose
-		// pull request is not open (lingerExpired), and the unmerged close of a pull request after
-		// the linger's close stops one that close left open (closed), so Dispatch never holds a
-		// stopped merge that landed, nor an open one.
-		if member.Key != root.Key && !awaitsMerge(member) {
-			if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
-				return err
-			}
-		}
 		if err := e.everyClaim(ctx, tx, member, "suspend", fmt.Sprintf("the tree of %s lingers", root.Key), ""); err != nil {
 			return err
 		}
@@ -495,28 +472,11 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The close retires every member. One that still awaits its merge and is not handed over
-	// (unfinishedHandOvers: under a parked root, a member held from merging, or one whose pull
-	// request is not open) has its merge step open still, which the linger left open for the
-	// merge to end (beginLinger). Its step ends here, stopped, where its pull request is not open:
-	// that merge can no longer land. Where it is open, the merge can still land, and its close in
-	// the lingering tree ends the step passed (closeMerged), or the pull request closes unmerged
-	// and that close ends it, stopped (closed's endMergeOfAClosedTree). A member handed over keeps
-	// the step open for its readmit to end (admit's readmit).
-	for _, member := range members {
-		if member.Key == issue.Key || !awaitsMerge(member) || slices.ContainsFunc(handed, func(h record.Issue) bool { return h.Key == member.Key }) {
-			continue
-		}
-		pr, err := e.store.PullRequest(ctx, tx, member.Key)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if pr != nil && pr.State == record.PullRequestOpen {
-			continue
-		}
-		if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
-			return intake.Result{}, err
-		}
+	// The close ends the merge of each member it neither hands over nor leaves an open pull request:
+	// that merge can no longer land, and the record keeps no mark of the close for the fact's settle
+	// to read (closeLinger, mergeCanLand).
+	if err := e.closeLinger(ctx, issue.Tree); err != nil {
+		return intake.Result{}, err
 	}
 	if err := e.warnKeptDecisionsOfAClosedTree(ctx, tx, *issue, handed); err != nil {
 		return intake.Result{}, err

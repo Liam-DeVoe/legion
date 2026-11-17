@@ -76,7 +76,7 @@ var stepRecordsTen = []stepWant{
 	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
 }
 
-// v-records, the read by issue: one issue walks to done with one failed review, and the read of the
+// The read of an issue's steps: one issue walks to done with one failed review, and the read of the
 // issue lists its ten steps, each with its role, type, agent, attempt, start, end and result, and
 // each record of kind step with the model that answered it. The control deletes the failed review's
 // record from Dispatch's store, its node and its tuples, and the same assertion must then name the
@@ -110,7 +110,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	})
 }
 
-// Review focus 2: Dispatch does not answer while step records are due, and no phase waits for it.
+// Dispatch does not answer while step records are due, and no phase waits for it.
 // The handoff records of planning, implementing and testing are Dispatch's own, which the daemon
 // reads at each of those completions, so Dispatch stops once the issue is in reviewing, with the
 // record of every step from there on still to be written; the review, the acceptance, the retro
@@ -150,7 +150,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	t.Logf("the seven records reached Dispatch %s after its start", time.Since(started).Round(time.Second))
 }
 
-// Review focus 1: the daemon restarts in the middle of a step. It stops while the issue is in
+// The daemon restarts in the middle of a step. It stops while the issue is in
 // testing, with the tester at work, and boots again on the same store and the same Dispatch; each
 // pane outlives the daemon, as a tmux pane does, and its shim connects to the new daemon with the
 // boot token it holds. The tester answers again and completes, the walk ends at done, and the read
@@ -1413,7 +1413,7 @@ func (g *stepRecordsGitHub) pullRequest(number int) string {
 		number, state, merged, "merge-"+stepRecordsHead, mergeable, g.branches[number], stepRecordsHead)
 }
 
-// v-records on a member of a tree: a child's acceptance is its tree's work, so the record of its
+// The record of a member of a tree: a child's acceptance is its tree's work, so the record of its
 // step 5 names the architect of the tree's root, with the session that architect's claim holds and
 // the model that answered it, and never an architect of the child's own, whom no claim serves. The
 // child stands in reviewing under the walk's root, on a pull request of its own; a person's
@@ -1451,7 +1451,7 @@ func (r *stepRecordsRig) childInAccepting() string {
 	return child
 }
 
-// v-records through the daemon's own wiring: the planner's completion reaches the daemon on its
+// A step's record, by the daemon's own wiring: the planner's completion reaches the daemon on its
 // HTTP request while the answer its model gave last has been read by the stream and not yet
 // decided by the claim's machine (heldRequest). The completion route waits for that machine
 // (api.Options.AwaitStream, which serve gives the daemon's awaitStream), so the record of planning
@@ -1481,7 +1481,7 @@ func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 	})
 }
 
-// v-records on the architect's own step: a move back out of accepting ends the acceptance, the
+// The record of the architect's own step: a move back out of accepting ends the acceptance, the
 // tree architect's step, as its sign-off does, so its record names the model whose answer the
 // architect's stream read ahead of the request, though the claim's machine has not decided that
 // answer yet when the request arrives (heldRequest). The architect answers with one model and then
@@ -1507,6 +1507,38 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 		switch got := read.find("step", 5, 1); {
 		case got.ID == "" || got.EndedAt == nil || got.Result != "failed" || got.ReturnedTo == nil || *got.ReturnedTo != 2:
 			return fmt.Errorf("the acceptance of %s is %+v, want it ended failed, returned to step 2", child, got)
+		case got.Agent != string(tree) || got.Session != architect.session || got.Model != "stand-in/architect-second":
+			return fmt.Errorf("the acceptance of %s names agent %q, session %q and model %q; want %s, %s and the model that answered last, stand-in/architect-second",
+				child, got.Agent, got.Session, got.Model, tree, architect.session)
+		}
+		return nil
+	})
+}
+
+// A park of a child in accepting ends the acceptance, the tree architect's own step, as a move
+// back out of accepting does, so its record names the model whose answer the architect's stream
+// read ahead of the request (heldRequest). The child leaves the workflow, and its acceptance ends
+// stopped, returned nowhere, with the architect's session and the second model.
+func TestAParkOfAChildInAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
+	r := newStepRecordsRig(t)
+	child := r.childInAccepting()
+	architect := r.worker(claim.RoleArchitect)
+	architect.model = "stand-in/architect-first"
+	architect.answer()
+	architect.send(shimwire.AgentStart{})
+	architect.waitState(supervise.StateWorking)
+	grant := architect.grant()
+	if status, body := r.heldRequest(architect, "stand-in/architect-second", "/legion/v1/children/park", map[string]any{
+		"grantId": grant, "issue": child,
+	}); status != http.StatusOK {
+		t.Fatalf("the tree architect's park of %s = %d %s, want 200", child, status, body)
+	}
+	r.waitPhaseOf(child, phase.Done)
+	tree := r.token(claim.RoleArchitect)
+	r.waitStepsOf(child, "the acceptance the architect's park ended", func(read stepRecordsRead) error {
+		switch got := read.find("step", 5, 1); {
+		case got.ID == "" || got.EndedAt == nil || got.Result != "stopped" || got.ReturnedTo != nil:
+			return fmt.Errorf("the acceptance of %s is %+v, want it ended stopped, returned nowhere", child, got)
 		case got.Agent != string(tree) || got.Session != architect.session || got.Model != "stand-in/architect-second":
 			return fmt.Errorf("the acceptance of %s names agent %q, session %q and model %q; want %s, %s and the model that answered last, stand-in/architect-second",
 				child, got.Agent, got.Session, got.Model, tree, architect.session)
@@ -1638,7 +1670,7 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 	})
 }
 
-// v-records, whose record is whose: each role's agent answers with a model of its own, and the
+// Whose record is whose: each role's agent answers with a model of its own, and the
 // implementer, the tester and the reviewer with another on each later attempt, so a record that
 // took another claim's session or model, or an earlier attempt's model, names the wrong one. The
 // read names, for each of the walk's ten records, the claim token of its agent, that claim's

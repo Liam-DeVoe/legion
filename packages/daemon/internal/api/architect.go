@@ -264,7 +264,7 @@ func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID strin
 		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, fact, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, fact)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
 		return
@@ -561,7 +561,7 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree str
 		}
 		observed = prepared
 	}
-	if _, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("waves/release"), observed, s.handlers...); err != nil {
+	if _, err := s.apply(r.Context(), "api", requestFactID("waves/release"), observed); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record %s", child.Key))
 		return "", false
 	}
@@ -1173,7 +1173,7 @@ func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, t
 	if len(outside) == 0 {
 		return true
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not adopt the released children")
 		return false
@@ -1207,8 +1207,7 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 // tree architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
 // accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
 // move it applies ends the requester's own step — the worker's phase, or accepting, the tree
-// architect's — and each waits for the requester's stream first (awaitStreamOf), as a completion
-// and a sign-off do.
+// architect's — which apply waits for the requester's stream before.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -1238,7 +1237,6 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		if !ok || !s.architectOwns(w, r, architect, recorded, "request_backward_move") {
 			return
 		}
-		s.awaitStreamOf(r.Context(), architect.Claim)
 		s.applyFact(w, r, requestFactID("phase/backward"),
 			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
 		return
@@ -1251,7 +1249,6 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
-	s.awaitStreamOf(r.Context(), grant.Claim)
 	s.applyFact(w, r, requestFactID("phase/backward"),
 		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
 }
@@ -1294,7 +1291,6 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.architectOwns(w, r, grant, recorded, "sign_off") {
 		return
 	}
-	s.awaitStreamOf(r.Context(), grant.Claim)
 	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue}, SignOffResponse{})
 }
 
