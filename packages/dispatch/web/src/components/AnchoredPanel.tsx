@@ -51,6 +51,13 @@ const EDGE: CSSProperties = {
  *  (`PANEL_ATTRIBUTE`). */
 const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
 
+/** What dismissed a panel, which `onDismiss` hands its host: Escape, Tab or Shift+Tab past its
+ *  last or first control, a pointer press outside it and its anchor, or its anchor gone from the
+ *  page or drawn nowhere. A host whose next move depends on how the reader left - the Agents
+ *  composer's Issue list, whose Escape is one level out to the row - reads it; any other host
+ *  ignores it. */
+export type PanelDismissal = "escape" | "gone" | "press" | "tab";
+
 /**
  * The one panel that hangs off a control: portalled to the body so no ancestor can clip it,
  * placed under its anchor - over it where the window has no room under it, and cut to the room
@@ -89,6 +96,7 @@ export function AnchoredPanel({
   children,
   className,
   focusOnOpen = true,
+  id,
   label,
   onDismiss,
   role,
@@ -99,9 +107,11 @@ export function AnchoredPanel({
   className: string;
   /** Whether opening moves the focus into the panel. Read once, as the panel opens. */
   focusOnOpen?: boolean;
+  /** The panel element's id, for an anchor that names what it opened (`aria-controls`). */
+  id?: string;
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
-  onDismiss: () => void;
+  onDismiss: (how: PanelDismissal) => void;
   role?: "dialog";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -154,13 +164,13 @@ export function AnchoredPanel({
       // where the anchor used to be. The second half is asked only of an environment that lays
       // anything out at all, so a test DOM with no layout keeps its panels.
       if (anchor === null || anchor === undefined || !anchor.isConnected) {
-        dismiss.current();
+        dismiss.current("gone");
         return;
       }
       if (box === undefined) return;
       const drawn = panelRef.current?.getBoundingClientRect();
       if (box.width === 0 && box.height === 0 && drawn !== undefined && drawn.height > 0) {
-        dismiss.current();
+        dismiss.current("gone");
         return;
       }
       const panel = panelRef.current;
@@ -242,7 +252,7 @@ export function AnchoredPanel({
       // leaving it: it closes, and they are back on the anchor.
       if (inside.current) {
         anchorRef.current?.focus();
-        dismiss.current();
+        dismiss.current("tab");
         return;
       }
       // From the page before the panel, or from what the body draws after it, they are coming
@@ -265,7 +275,7 @@ export function AnchoredPanel({
       }
       if (anchorRef.current?.contains(target)) return;
       for (const held of inner) if (held.contains(target)) return;
-      dismiss.current();
+      dismiss.current("press");
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -283,7 +293,7 @@ export function AnchoredPanel({
       event.preventDefault();
       event.stopPropagation();
       anchorRef.current?.focus();
-      dismiss.current();
+      dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);
     document.addEventListener("pointerdown", outside);
@@ -302,6 +312,7 @@ export function AnchoredPanel({
       <span ref={startEdge} style={EDGE} tabIndex={0} />
       <div
         className={className}
+        id={id}
         ref={panelRef}
         style={{ position: "fixed", zIndex: PANEL_LAYER, ...position }}
         tabIndex={-1}
