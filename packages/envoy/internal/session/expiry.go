@@ -13,11 +13,11 @@ const (
 	// and its final heartbeat stays readable as the lapsed session's last-seen time.
 	expireLive expiryKind = iota
 	// expireLastSeen is the deadline of the id's per-process last-seen record (seenLocal), the
-	// registry's retention (one TTL unless WithLastSeenRetention set longer) after the id left the
-	// cache. At it the record leaves seenLocal. The id's revision fence is not dropped here: the
-	// copy keeps one fence entry per key and every completed read sweeps the entries the bucket no
-	// longer holds (kvwatch.Copy.CompleteRead), which is the one place a fence may be dropped
-	// safely.
+	// registry's retention (WithLastSeenRetention, LastSeenMemory by default, and never less than
+	// one TTL) after the id left the cache. At it the record leaves seenLocal. The id's revision
+	// fence is not dropped here: the copy keeps one fence entry per key and every completed read
+	// sweeps the entries the bucket no longer holds (kvwatch.Copy.CompleteRead), which is the one
+	// place a fence may be dropped safely.
 	expireLastSeen
 )
 

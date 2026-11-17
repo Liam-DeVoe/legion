@@ -30,9 +30,9 @@ func WithLastSeenBucket(kv bus.KeyValue) SessionRegistryOption {
 // LastSeen is sessionID's last registration write, in Unix milliseconds, or 0 when there is none to
 // report. While the session is live it is the live registration's UpdatedAt. Once the session lapsed
 // (its registration expired or was deleted) it is the time its last registration write recorded
-// (recordSeen), for the registry's retention (one TTL unless WithLastSeenRetention set longer)
-// after that registration's expiry, so callers can report why an otherwise durable reference
-// stopped resolving.
+// (recordSeen), for the registry's retention (WithLastSeenRetention, LastSeenMemory by default,
+// and never less than one TTL) after that registration's expiry, so callers can report why an
+// otherwise durable reference stopped resolving.
 //
 // With the listener state bucket (WithLastSeenBucket) that time is the session's `seen.` record
 // alone, the server's timestamp of the write, which every pod reads alike, a pod started after the

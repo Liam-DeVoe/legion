@@ -5046,14 +5046,17 @@ func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucket
 	}
 }
 
-// The listener keeps no last-seen memory of its own: it opens the session registry on
-// session.LastSeenMemory, the package's own value, which must outlast both deadlines the
-// listener reads a departed session's last heartbeat for. The interest reaper can hold a dead
-// session's row until store.InterestReapAllowance after its last write, and /v1/interests/ gives
-// that row's session its real last heartbeat; and a refusal for a session past the gone horizon
-// says when it last registered. A retention shorter than either - the fifteen minutes the
-// listener used to set - leaves a row listed with no heartbeat to give and a gone session's
-// refusal unable to say when it was last seen.
+// The listener sets no last-seen retention of its own: it opens the session registry on
+// session.LastSeenMemory, the package's own value, which must outlast both deadlines a listener
+// without a delivery lease, which keeps last-seen times in process, reads a departed session's
+// last heartbeat for. The interest reaper can hold a dead session's row until
+// store.InterestReapAllowance after its last write, and /v1/interests/ gives that row's session
+// its real last heartbeat; and a refusal for a session past the gone horizon says when it last
+// registered. A retention shorter than either - the fifteen minutes the listener used to set -
+// leaves a row listed with no heartbeat to give and a gone session's refusal unable to say when
+// it was last seen. A listener with a delivery lease reads the time from its state bucket, whose
+// 20 minute age ends the answer before the gone horizon, and before the reaper's deadline unless
+// the session TTL and that allowance fit in those 20 minutes (main.go, where the bucket is wired).
 func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
 	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {
 		t.Fatalf("session.LastSeenMemory is %s and the interest reaper holds a dead session's row for %s, so a row it still lists can have no last heartbeat", session.LastSeenMemory, allowance)
