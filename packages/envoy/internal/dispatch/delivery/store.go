@@ -1115,12 +1115,16 @@ var windowApplyRunsCreated = runCreatedAt + ` >= $2 and ` + runCreatedAt + ` <= 
 			` + firstShipCompletion("$1", "$4", "$5", ">= $3") + `
 		), 'infinity')`
 
+// windowApplyRunsWhere is the filter of a window's apply runs over the alias r: the deploy runs on
+// main of $1 created as windowApplyRunsCreated says.
+var windowApplyRunsWhere = `r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated
+
 // windowApplyRunsQuery is listWindowRuns' read of a window's apply runs alone, each flagged as an
 // apply run and as no deploy of the window, oldest creation first.
 var windowApplyRunsQuery = `
 		select ` + RunColumns + `, true, false
 		from delivery_runs r
-		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated + `
+		where ` + windowApplyRunsWhere + `
 		order by ` + runCreatedAt + `, r.run_id
 		limit $6`
 
@@ -1133,14 +1137,14 @@ var windowRunsQuery = `
 		select ` + RunColumns + `, applies, started from (
 			select ` + RunColumns + `, true as applies, r.started_at >= $2 and r.started_at < $3 as started
 			from delivery_runs r
-			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated + `
+			where ` + windowApplyRunsWhere + `
 			union all
 			select ` + RunColumns + `, ` + runCreatedAt + ` >= $2, true
 			from delivery_runs r
 			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.started_at >= $2 and r.started_at < $3
 				and not (` + windowApplyRunsCreated + `)
-		) runs
-		order by coalesce(created_at, started_at), run_id
+		) r
+		order by ` + runCreatedAt + `, r.run_id
 		limit $6`
 
 // listWindowRuns lists the apply runs of [from, to) of the deploy repository repo, oldest creation

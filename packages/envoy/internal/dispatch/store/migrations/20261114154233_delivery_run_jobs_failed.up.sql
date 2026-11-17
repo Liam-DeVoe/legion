@@ -7,7 +7,7 @@
 -- run holds, so it read every job of every deploy run GitHub created from the window's start,
 -- where the production job each run is judged by is one row of it. It now reads each run's
 -- production jobs by name through the primary key, as every other reader does, and its failed
--- jobs through this index (delivery.runJobsNamedOrFailedForRunsQuery), so the read grows with the
+-- jobs through this index (delivery.runJobsFailedForRunsQuery), so the read grows with the
 -- runs' failures and not with every job they ran.
 --
 -- The predicate is the read's own `conclusion = 'failure'`, written into its statement rather than

@@ -307,11 +307,11 @@ type deliveryPopulation struct {
 	// reads.
 	withWaiting bool
 	waiting     []delivery.WaitingPullRequest
-	// applyRuns is the deploy runs on main GitHub created at or after the window's start that a
-	// pull request merged before its end can ship first with, every one for a window ending at the
-	// present (delivery.ReadWindowRows), oldest creation first, and jobsByRun their jobs: the
-	// production jobs of each, and in the timeline's read (withWaiting), which lists the runs with
-	// their failed jobs, each of their jobs that failed too (readDeliveryRows).
+	// applyRuns is every deploy run on main GitHub created from the window's start up to the bound
+	// past which no run ships a pull request merged before its end first (delivery.ReadWindowRows;
+	// no bound for a window ending at the present), oldest creation first, and jobsByRun their
+	// jobs: the production jobs of each, and in the timeline's read (withWaiting), which lists the
+	// runs with their failed jobs, each of their jobs that failed too (readDeliveryRows).
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
@@ -329,17 +329,23 @@ type deliveryPopulation struct {
 	// read with the window's rows, so a narrowed population judges by the targets it was read with.
 	targetEvals map[string]evals.Entry
 	groups      []delivery.SessionGroup
-	// labels is whether titles, issues and components were read: the session titles, the facts of
-	// the issues the pull requests name and the components of those issues' projects, which label
-	// the timeline's rows and decide which rows a facet or the search selects. A read that lists no
-	// waiting line (the measures, the Pipeline's lead times) and selects nothing shows none of them,
-	// so it reads none (readDeliveryRows), and each is nil.
-	labels     bool
+	// titles, issues and components are the session titles, the facts of the issues the pull
+	// requests name and the components of those issues' projects, read where the population is
+	// labeled and nil elsewhere.
 	titles     map[string]string
 	issues     map[string]deliveryIssue
 	components map[string]delivery.DeliveryComponentView
 	// unfetchable is how many population pull requests can no longer be fetched from GitHub.
 	unfetchable int
+}
+
+// labeled is whether titles, issues and components were read: the session titles, the facts of
+// the issues the pull requests name and the components of those issues' projects, which label
+// the timeline's rows and decide which rows a facet or the search selects. A read that lists no
+// waiting line (the measures, the Pipeline's lead times) and selects nothing shows none of them,
+// so it reads none (readDeliveryRows), and each is nil.
+func (p deliveryPopulation) labeled() bool {
+	return p.withWaiting || parseDeliverySelection(p.query, nil).selects()
 }
 
 // deliveryDerived is what the timeline and the measures compute from a deliveryPopulation: each
@@ -402,7 +408,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// statement on the pool, so each already read its own snapshot), so running them at once
 	// loses no consistency they had. Each takes one connection under a hold mark of its own
 	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
-	// the rest. The run jobs depend on the runs, so they follow the runs in the same goroutine.
+	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
 	//
 	// A timeline request therefore holds up to eight of the shared pool's connections
 	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time (the
@@ -414,11 +420,12 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// any request does.
 	var deploys delivery.Deploys
 	independent := []func(ctx context.Context) error{
-		// The pull requests merged in the window, the deploy runs on main GitHub created at or
-		// after `from` that can ship them first (delivery.MergedRows says why unbounded past
-		// `to`) and, for the measures, the window's deploys with the rows before the window their
-		// shipped sets read, read by the rules the eval registry's day rows read by. Containment
-		// and the measures judge a run by its production jobs alone
+		// The pull requests merged in the window, every deploy run on main GitHub created from
+		// `from` up to the bound past which no run ships a pull request merged before `to` first
+		// (delivery.MergedRows says why not cut at `to`; no bound for a window ending at the
+		// present) and, for the measures, the window's deploys with the rows before the window
+		// their shipped sets read, read by the rules the eval registry's day rows read by.
+		// Containment and the measures judge a run by its production jobs alone
 		// (delivery.Production.JudgedJobNames says why that judges every run as its every job
 		// would); the timeline lists each deploy run it shows with its failed jobs and the job
 		// that failed first, which can be any job the run holds, so its read takes every failed
@@ -478,8 +485,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// the same without them where nothing is selected, so those reads leave them out. They cost
 	// the 84-day compare range's measures 6 to 17 ms of their 69 to 88 ms of database time at
 	// INFRA's size (dispatch://INFRA-2916, R8).
-	pop.labels = withWaiting || parseDeliverySelection(query, nil).selects()
-	if !pop.labels {
+	if !pop.labeled() {
 		return pop, nil
 	}
 	sessionIDs := []string{}

@@ -329,7 +329,8 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 }
 
 // readDeliveryView is a timeline or measures view's read: the delivery settings, the population
-// of its window and facets, and the ancestors of every issue that population names.
+// of its window and facets, and, where that population is labeled, the ancestors of every issue
+// it names.
 func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
@@ -345,14 +346,18 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	}
 	read.issues = map[string]struct{}{}
 	read.sessions = map[string]string{}
+	labeled := read.pop.labeled()
 	name := func(issue *string, sessions []string) {
+		// A population read without its labels (a measures view selecting nothing) shows no fact
+		// of the issues its pull requests name and no session by its title, so no write of those
+		// issues, of their ancestors or of a session's title moves its answer: it records none of
+		// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves
+		// with a P0's write, which showsIssue's p0 rule marks every view showing that list for.
+		if !labeled {
+			return
+		}
 		if issue != nil {
 			read.issues[*issue] = struct{}{}
-		}
-		// A population read without its labels (a measures view selecting nothing) shows no
-		// session by its title, so no session's new title moves its answer.
-		if !read.pop.labels {
-			return
 		}
 		for _, session := range sessions {
 			read.sessions[session] = delivery.SessionTitle(read.pop.titles, session)

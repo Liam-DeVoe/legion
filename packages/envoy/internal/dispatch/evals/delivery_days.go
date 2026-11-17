@@ -16,13 +16,15 @@ import (
 )
 
 // The delivery and CI evals' day rows (dispatch://INFRA-2916, R12, R15, R16 and D1). One UTC day's
-// delivery population is read once (readDeliveryDay), by the reads the delivery routes read their
-// window with (delivery.ReadDeploys, ReadMergedRows and ReadCIRows); each row of it is
-// attributed to the projects it counts for; each project's rows are built into day parts by the
-// measures package's day builders, the builders the delivery routes build their window's parts
-// with (DeliveryDay.Rows); and the refresher writes the parts as that project's rows of the day
-// (refresh.writeDelivery, through WriteProjectDay), which the eval routes and the delivery routes
-// fold through the same folds.
+// delivery population is read once (readDeliveryDay), by the rules the delivery routes read their
+// window by: delivery.ReadDeploys and ReadMergedRows, whose answer the routes' one read of a
+// window, delivery.ReadWindowRows, gives too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds
+// it), and ReadCIRows, which the routes read with; each row of it is attributed to the projects it
+// counts for; each project's rows are built into day parts by the measures package's day
+// builders, the builders the delivery routes build their window's parts with (DeliveryDay.Rows);
+// and the refresher writes the parts as that project's rows of the day (refresh.writeDelivery,
+// through WriteProjectDay), which the eval routes and the delivery routes fold through the same
+// folds.
 //
 // A day holds the population pull requests merged that day (merge-to-production,
 // first-commit-to-production, open-to-production, pr-open-to-merge and rework-share), the deploy
@@ -31,8 +33,8 @@ import (
 // `job:<name>` series), and the deploy workflow's push runs on main started that day with the
 // jobs the deploy cards follow (production-deploy, staging-e2e and staging-deploy, the last two
 // where the settings name their jobs). A pull request's deploy is its first shipping apply
-// (delivery.ContainingRun) among the deploy runs GitHub created from its merge on, unbounded, as
-// the delivery routes read it. A deploy's shipped set is every population pull request whose first
+// (delivery.ContainingRun) among the deploy runs GitHub created from its merge on, the deploy it
+// has on the delivery routes. A deploy's shipped set is every population pull request whose first
 // shipping apply it is, whatever day that pull request merged (delivery.Deploys.ShippedBy): the
 // deploy's own, which counts it as a deploy with pull requests (with_prs), as the delivery routes
 // count it, and names the projects it counts for. Two kinds of row are not settled when their
@@ -196,18 +198,20 @@ type DeliveryDay struct {
 }
 
 // readDeliveryDay reads the delivery and CI rows of the UTC day day is on, under settings, and
-// attributes each to its projects. Its reads are the delivery routes' for a window of that day:
-// the day's deploys and the rows before the day their shipped sets read (delivery.ReadDeploys);
-// the pull requests merged in the day with every deploy run created from the day's start on
-// (delivery.ReadMergedRows); the day's CI runs (delivery.ReadCIRows); the projects of the issues
-// those pull requests name; and repo_projects. Each deploy's shipped pull requests are
-// delivery.Deploys.ShippedBy's, the rule the routes count with_prs by; the pull requests merged
-// before the day are read for them alone. Its deploy runs created from the day's start on are
-// taken from applyRows where it is not nil (delivery.MergedRowsWith): rows a walk read once from
-// the first of its days, which every later day of the walk takes its part of rather than reading
-// every run created from its own start to now again; and its repo_projects from repos where it is
-// not nil, a read the refresher makes once a page (refresh.repos). The deploys, the merged rows
-// and the CI runs depend on none of each other, and are read side by side.
+// attributes each to its projects. Its reads answer what the delivery routes' read of a window of
+// that day answers: the day's deploys and the rows before the day their shipped sets read
+// (delivery.ReadDeploys) and the pull requests merged in the day with every deploy run created
+// from the day's start on (delivery.ReadMergedRows), whose answer the routes' one read,
+// delivery.ReadWindowRows, gives too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds it); the
+// day's CI runs (delivery.ReadCIRows); the projects of the issues those pull requests name; and
+// repo_projects. Each deploy's shipped pull requests are delivery.Deploys.ShippedBy's, the rule
+// the routes count with_prs by; the pull requests merged before the day are read for them alone.
+// Its deploy runs created from the day's start on are taken from applyRows where it is not nil
+// (delivery.MergedRowsWith): rows a walk read once from the first of its days, which every later
+// day of the walk takes its part of rather than reading every run created from its own start to
+// now again; and its repo_projects from repos where it is not nil, a read the refresher makes once
+// a page (refresh.repos). The deploys, the merged rows and the CI runs depend on none of each
+// other, and are read side by side.
 func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, applyRows *delivery.ApplyRows, repos *repoProjects) (DeliveryDay, error) {
 	pool := s.database.Pool
 	day = measures.Midnight(day)
