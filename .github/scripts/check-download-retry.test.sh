@@ -12987,8 +12987,12 @@ for refusal in \
   check "refuses '$step' by name at its run" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, so this check cannot name the script that runs there")"
 done
-check "tells each run to write the script's literal path, or a tool's or a data file's" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*Where a script of this repository runs there, write its literal path at the run")" 11)"
+# The four runs of a file the step wrote get the advice that passes for them, to run no file
+# the text writes; the seven others get the literal-path advice (round 37's class search).
+check "tells each run whose target is data to write the script's literal path, or a tool's or a data file's" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*Where a script of this repository runs there, write its literal path at the run")" 7)"
+check "tells each run of a file the step wrote to run no file the text writes" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "a file this text writes before it runs it, so this check cannot name the script that runs there.*Run no file this text writes")" 4)"
 check "still refuses 12e's path in its assignment" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=34::step 'Assign it to a variable and run the variable' of job 'build' names .github/scripts/r37-c.sh in a variable assignment")"
 for step in "Run a tool by its literal path" "Run a script outside .github/scripts by a variable" \
@@ -13270,6 +13274,17 @@ done
 check "passes the literal commands and the installed tool" \
   "$(is "$(contains "$out" "step 'Literal commands through xargs and find, and an installed tool'")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 14)"
+# The advice each of the three reasons gives is one a reader can follow and pass: the
+# literal-path advice of the other unnamed runs would name a form still refused here
+# (dispatch://INFRA-1545, round 37's class search).
+check "tells a written file's run to run no file the text writes" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'a file this text writes before it runs it, so this check cannot name the script that runs there.*Run no file this text writes: write its commands in the step itself')" 2)"
+check "tells a run after a cd to run no written file from any directory" \
+  "$(contains "$out" 'may make the file it runs, so this check cannot name the script that runs there.*Run no file this text writes, from any directory')"
+check "tells a script named with no directory to write its path from the root" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'neither of which this check follows, so this check cannot name the script that runs there.*Write the script.s path from the repository root')" 2)"
+check "gives none of the three the literal-path advice" \
+  "$(is "$(printf '%s\n' "$out" | grep -E 'writes before it runs it|writes elsewhere|names a script with no directory' | grep -c 'write its literal path at the run')" 0)"
 
 # E4. A call through a variable inside a function's body whose value the function's callers do
 # not hand it is a run like one at the text's top level (dispatch://INFRA-1545, round 37): a

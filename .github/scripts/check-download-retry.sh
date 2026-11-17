@@ -5246,6 +5246,24 @@ UNNAMED_CURE = ("Where a script of this repository runs there, write its literal
 UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its literal name, "
                      "`{name} .github/scripts/<name>.sh …` or `{name} grep …`, and what varies as "
                      "the arguments after it")
+# The three reasons unseen() gives name a file this check could see but cannot follow, and
+# the literal-path advice above does not cure them: a written file is refused by any name, a
+# name a `cd` may move is refused by its bare name, and a bare script name is the refused form
+# itself. Each gets the rewrite that passes (dispatch://INFRA-1545, round 37's class search).
+UNSEEN_CURES = {
+    "a file this text writes before it runs it": (
+        "Run no file this text writes: write its commands in the step itself, or move them "
+        "into a script under .github/scripts/ and run that by its literal path"),
+    "the name of a file this text writes elsewhere, which a `cd` or a `pushd` this check does "
+    "not follow may make the file it runs": (
+        "Run no file this text writes, from any directory: write its commands in the step "
+        "itself, or move them into a script under .github/scripts/ and run that by its literal "
+        "path from the repository root"),
+    "which names a script with no directory, so bash finds it through the working directory "
+    "or `PATH`, neither of which this check follows": (
+        "Write the script's path from the repository root, `.github/scripts/<name>.sh …`, with "
+        "no `cd` and no `PATH` entry standing in for it"),
+}
 
 
 def runners_of(loops: Loops) -> dict[str, tuple[int, bool]]:
@@ -5658,7 +5676,7 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
         ends = [span[1] for span in command.spans if span]
         last = loops.first_line + text.count("\n", 0, max(ends)) if ends else command.line
         if why:
-            found.append((command.line, last, does, why, UNNAMED_CURE))
+            found.append((command.line, last, does, why, UNSEEN_CURES.get(why, UNNAMED_CURE)))
         callee = reduced[0]
         holder = loops.function_of(command.line)
         if callee in runners and holder != callee:
