@@ -23,7 +23,6 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +31,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -137,22 +135,12 @@ func (l *planRatingsLive) readByProject() {
 func (l *planRatingsLive) ratingRequired() {
 	t := l.t
 	l.on(l.issues[3].key)
-	l.plan()
-	l.implement()
-	l.test()
-	l.review("APPROVED", phase.Accepting)
-	l.accept()
+	l.walkToRetro()
 	l.note("planning, implementing, testing, an approving review and the architect's sign-off walked %s to its retro", l.key)
 
 	c := l.worker(claim.RoleImplementer)
 	c.take()
-	if contract := l.d.claim(c.token).PluginContract; contract < api.PlanRatingContract {
-		t.Fatalf("the implementer of %s registered plugin contract %d, below PlanRatingContract %d: this check proves nothing", l.key, contract, api.PlanRatingContract)
-	}
-	status, body := l.complete(c, l.retroCompletion(0, ""))
-	if status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
-		t.Fatalf("the retro's completion of %s with no rating = %d %s, want 400 PLAN_RATING_REQUIRED", l.key, status, body)
-	}
+	status, body := l.unratedRetroRefused(c)
 	if got := string(l.d.state().Issues[l.key].Phase); got != string(phase.Retro) {
 		t.Fatalf("after the refused completion %s is in %s, want retro", l.key, got)
 	}

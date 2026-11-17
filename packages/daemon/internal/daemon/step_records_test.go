@@ -418,6 +418,35 @@ func (r *stepRecordsRig) retroCompletion(rating int, reason string) api.HandoffC
 	return req
 }
 
+// walkToRetro walks the issue through planning, implementing, testing, an approving review and
+// the architect's sign-off, to its retro.
+func (r *stepRecordsRig) walkToRetro() {
+	r.t.Helper()
+	r.plan()
+	r.implement()
+	r.test()
+	r.review("APPROVED", phase.Accepting)
+	r.accept()
+}
+
+// unratedRetroRefused is c's completion of the retro with no rating, refused 400
+// PLAN_RATING_REQUIRED, and answers that status and body. It fails first when c's claim records a
+// plugin contract below api.PlanRatingContract, whose retro the daemon takes unrated, so a pass
+// says the refusal is the contract's.
+func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) (int, string) {
+	t := r.t
+	t.Helper()
+	if contract := r.d.claim(c.token).PluginContract; contract < api.PlanRatingContract {
+		t.Fatalf("the %s of %s registered plugin contract %d, below PlanRatingContract %d: this check proves nothing", c.role, r.key, contract, api.PlanRatingContract)
+	}
+	status, body := r.complete(c, r.retroCompletion(0, ""))
+	if status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
+		t.Fatalf("the retro's completion of %s with no rating from the %s at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
+			r.key, c.role, r.d.claim(c.token).PluginContract, status, body)
+	}
+	return status, body
+}
+
 // work is one role's turn of the walk: it takes the task, answering with stepRecordsModel, and
 // finishes it.
 func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompleteRequest, next phase.Phase) {

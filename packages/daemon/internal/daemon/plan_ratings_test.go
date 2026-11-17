@@ -13,7 +13,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -70,17 +69,10 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 // daemon's own view of the claim after the boot must read the old contract.
 func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 	r := newStepRecordsRig(t)
-	r.plan()
-	r.implement()
-	r.test()
-	r.review("APPROVED", phase.Accepting)
-	r.accept()
+	r.walkToRetro()
 	implementer := r.worker(claim.RoleImplementer)
 	implementer.take()
-	if status, body := r.complete(implementer, r.retroCompletion(0, "")); status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
-		t.Fatalf("the retro's completion with no rating from the implementer at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
-			r.d.claim(implementer.token).PluginContract, status, body)
-	}
+	r.unratedRetroRefused(implementer)
 
 	old := api.PlanRatingContract - 1
 	r.restartWith(func() {
