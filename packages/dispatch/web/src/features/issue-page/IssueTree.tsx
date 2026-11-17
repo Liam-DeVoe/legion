@@ -572,17 +572,25 @@ export function IssueTree({
   // takes the focus where it stands in the frame after it is drawn, and gives it to the question
   // once the question's read has answered. Each focus waits for that frame for the reason an
   // address's node does (`landOnRow`): given in the commit that draws the row, it laid the whole
-  // new page out inside the reader's press. The question is where it stays, and its row is held
-  // on screen while the reads still out draw rows above it: the page scrolls for the question
-  // alone. A tree drawn again zoomed to Focus branch's node (`branchAtMount`) is no page
-  // opening on what waits: it opens on the branch's first row, the node itself, where it stands,
-  // since going to a question would leave the zoom for one outside the branch, drawing every
-  // branch while the toggle read on, and below 1024 px zoom deeper for one inside it.
-  // `row` is the row the opening last focused, and `next` the first row whose focus it has asked
-  // of the next frame and not given yet.
+  // new page out inside the reader's press. The question is where it stays until the reader
+  // acts, waiting on them or answered since, and its row is held on screen while the reads
+  // still out draw rows above it: the page scrolls for the question alone. A read that draws its
+  // row again under another key - a node sits under the issue until its parent's read answers -
+  // takes its old element out of the page, and the browser drops the focus with it: the opening
+  // gives it back to the question's new row, as to the first row before it (`openingMayFocus`),
+  // and an answer arriving for the question moves nothing. A tree drawn again zoomed to Focus
+  // branch's node (`branchAtMount`) is no page opening on what waits: it opens on the branch's
+  // first row, the node itself, where it stands, since going to a question would leave the zoom
+  // for one outside the branch, drawing every branch while the toggle read on, and below 1024 px
+  // zoom deeper for one inside it. `row` is the row the opening last focused, or the question's
+  // row from when it lands there, whose landing (`landing`) tells whose the focus is until its
+  // frame comes; `next` is the first row whose focus it has asked of the next frame and not
+  // given yet, and `question` the question it opened on.
   const opening = useRef<{
     done: boolean;
+    landing?: AbortSignal;
     next?: { readonly frame: number; readonly row: HTMLElement };
+    question?: string;
     row?: HTMLElement;
   }>({ done: false });
   useEffect(() => {
@@ -600,25 +608,44 @@ export function IssueTree({
       held.done = true;
       return;
     }
-    if (!openingMayFocus(body.current, held.row)) {
+    const question =
+      held.question ??
+      (branchAtMount.current === undefined
+        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
+        : undefined);
+    const questionRow =
+      question === undefined
+        ? undefined
+        : body.current?.querySelector<HTMLElement>(
+            `[data-node-row][data-node-id="${CSS.escape(question)}"]`
+          );
+    // The question's row holds the focus the opening gave it, by its landing or in the render
+    // that unfolded the path to it (`goToNode`): it is the row the opening focused.
+    if (questionRow?.contains(document.activeElement) === true) held.row = questionRow;
+    // Until its frame, the landing on the question is what tells whether the focus is still the
+    // page's (`landOnRow`): the row the opening focused before keeps it until then.
+    const landingWaits = held.landing?.aborted === false;
+    if (!landingWaits && !openingMayFocus(body.current, held.row)) {
       held.done = true;
       return;
     }
-    const question =
-      branchAtMount.current === undefined
-        ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)
-        : undefined;
     if (question !== undefined) {
-      held.done = true;
-      const row = body.current?.querySelector<HTMLElement>(
-        `[data-node-row][data-node-id="${CSS.escape(question.id)}"]`
-      );
-      if (row !== null && row !== undefined) {
-        landOnRow(row, onScreenHold);
+      // The first row's focus the next frame was to give is the question's now.
+      if (held.next !== undefined) cancelAnimationFrame(held.next.frame);
+      held.next = undefined;
+      const openedOn = held.question !== undefined;
+      held.question = question;
+      if (questionRow === null || questionRow === undefined) {
+        if (openedOn) return;
+        holdOnFocus.current = question;
+        goToNode(question);
         return;
       }
-      holdOnFocus.current = question.id;
-      goToNode(question.id);
+      // The question's row holds the focus, or its landing still waits for its frame.
+      if (questionRow.contains(document.activeElement)) return;
+      if (landingWaits && questionRow === held.row) return;
+      held.row = questionRow;
+      held.landing = landOnRow(questionRow, onScreenHold).signal;
       return;
     }
     const first = rows.find((row) => row.kind === "node");
