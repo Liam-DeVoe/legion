@@ -1,12 +1,15 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"log/slog"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,9 +43,21 @@ func JSONKeys(t reflect.Type) []string {
 // DecodeKeeping reads data into value, the fields value's type names, and returns the JSON of every
 // key of the object not in known, or nil when there is none: the fields a newer build writes, which
 // EncodeKeeping writes back.
+//
+// The object's keys are read first, with no value decoded (onlyKnownKeys), and the object is
+// decoded into a map only when one of them is not in known, so a record of this build's own -
+// nearly every record - costs value's decode alone. That map's decode is not only work thrown
+// away: each decoder encoding/json pools keeps the strings it made (makeString in
+// encoding/json/v2), so a string many records repeat, such as a session's "aside" capability, is
+// one allocation they share, and the map's keys decoded between two records' values take its
+// place there ("topics" and "aside" share a slot), each record then keeping a copy of its own:
+// 1.6 MB over the 100,000 records session.TestKnownSessionsMemoryForAHundredThousandRecords holds.
 func DecodeKeeping(data []byte, value any, known []string) (map[string]json.RawMessage, error) {
 	if err := json.Unmarshal(data, value); err != nil {
 		return nil, err
+	}
+	if onlyKnownKeys(data, known) {
+		return nil, nil
 	}
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(data, &all); err != nil {
@@ -56,6 +71,50 @@ func DecodeKeeping(data []byte, value any, known []string) (map[string]json.RawM
 	}
 	return all, nil
 }
+
+// onlyKnownKeys reports whether data is a JSON object each of whose keys is written, with no
+// escape, as one of known. It decodes no value and keeps no string, and it answers false for
+// anything else - a key written with an escape, a key the object repeats, text it cannot read - so
+// DecodeKeeping decodes that object whole and decides as it always has.
+func onlyKnownKeys(data []byte, known []string) bool {
+	scanner, held := keyScanners.Get().(*keyScanner)
+	if !held {
+		scanner = &keyScanner{}
+		scanner.decoder = jsontext.NewDecoder(&scanner.reader)
+	}
+	defer keyScanners.Put(scanner)
+	scanner.reader.Reset(data)
+	scanner.decoder.Reset(&scanner.reader)
+	if scanner.decoder.PeekKind() != '{' {
+		return false
+	}
+	if _, err := scanner.decoder.ReadToken(); err != nil {
+		return false
+	}
+	for scanner.decoder.PeekKind() == '"' {
+		name, err := scanner.decoder.ReadValue()
+		if err != nil || !slices.Contains(known, string(name[1:len(name)-1])) {
+			return false
+		}
+		if err := scanner.decoder.SkipValue(); err != nil {
+			return false
+		}
+	}
+	_, err := scanner.decoder.ReadToken()
+	return err == nil
+}
+
+// keyScanner reads one object's keys for onlyKnownKeys. The decoder and the reader under it are
+// kept between reads (keyScanners), as internal/dispatch/api's eventBodyText keeps its payload
+// scanner, since every record a cache decodes is read so and each would otherwise allocate a
+// buffer its size.
+type keyScanner struct {
+	reader  bytes.Reader
+	decoder *jsontext.Decoder
+}
+
+// keyScanners holds those scanners between reads.
+var keyScanners sync.Pool
 
 // EncodeKeeping writes value's fields and the unknown keys it was decoded with (DecodeKeeping) as one
 // object, value's fields winning over an unknown key of the same name.

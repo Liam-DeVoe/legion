@@ -4228,8 +4228,10 @@ A read-only broker token carries no project either, but none of the three checks
   With the bucket, a lapsed session's heartbeat is answered out of the shared record alone, so every pod of the fleet answers one session alike, a pod started after it lapsed included, and a pod that watched the session keeps no answer of its own;
   `LastSeen` answers the same before and after the cache's removal.
   Its read of the bucket waits no longer than the caller's context, and ends at the reconnect of the connection it went out on with `bus.ErrRequestLostWithConnection` (`bus.BoundedOn`), so `GET /v1/interests/` keeps its own 3.5 s budget for the whole list and leaves a row it could not read without a heartbeat.
-  It answers a lapsed session for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL) past that registration's expiry.
-  That default outlasts the gone horizon, so a caller told a session is gone can still say when it was last seen, and it outlasts the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`, `store.InterestReapAllowance`) as well, so `/v1/interests/` can give the last heartbeat of every row that reaper still holds; the listener shortens it to nothing of its own.
+  Without the bucket, it answers a lapsed session for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL) past that registration's expiry.
+  With the bucket, which a listener with a lease opens, the bucket's age ends the answer first: the state bucket drops a `seen.` record 20 minutes after its last write (`listenerStateMaxAge`), and no pod answers once the record is gone (`internal/session/lastseen.go`).
+  So the answer lasts 20 minutes past the last write.
+  That is shorter than the gone horizon (1 hour), so a caller told a session is gone can no longer be told when it was last seen, and it covers the session TTL and the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`, `store.InterestReapAllowance`, 15 minutes) only at the default 5 minute TTL (`cmd/listener/README.md`, "Last seen").
   The state bucket's `MaxAge` (`listenerStateMaxAge`, 20 minutes) bounds how long the shared record itself stands, and every open raises a bucket an earlier build created with a shorter age.
   An id's revision fence leaves with its last-seen record, the retention after the id left the cache, expired or deleted, so the fence map holds only live ids and ids that left within the retention;
   since the retention is at least one TTL, a late delivery of an older revision then has a deadline already passed and is not cached.
@@ -4291,9 +4293,15 @@ A read-only broker token carries no project either, but none of the three checks
   A pass reads the stream (read 1), runs one MetaOnly scan of the bucket, takes the **floor** = the lowest revision that scan delivered as a PUT, reads the stream again (read 2), and sends one unfiltered `STREAM.PURGE` of everything below the floor.
   The floor comes from the stream, never from the cache:
   it is a sequence that scan saw, every live key's latest message is that PUT or a later write with a higher sequence, no value is decoded on the way (so a live key this build cannot decode, which the cache evicts while its message stays in the stream, is protected), and a write after the scan is given a higher sequence and survives.
-  It refuses to purge at DEBUG when there is nothing below the floor or no live key at all, and at WARN when a read of the stream failed, the scan did not complete, the stream was replaced, the sequence space moved backward, or the floor is above the stream's last sequence.
+
+- The collector purges only when the floor's own write is at least 100 s (`interestMarkerPurgeAge`) older than the newest live write that its scan saw, both stamped by the server.
+  Every marker below the floor is older than the floor's write, so a pass purges no marker that is younger than 100 s.
+  A marker refuses a late interest write: a write at revision 0, planned when the key had no row, fails while the key's newest message is the marker, and succeeds after the purge, so it writes again the row that a delete removed after the plan.
+  100 s is ten times the longest time that an interest write runs: 10 s, the `MaxWait` of the bucket's handle, which also bounds a write whose caller holds no deadline.
+  The routes that write wait 3.5 s (`sendRequestBudget`).
+  A pass refuses to purge at DEBUG when there is nothing below the floor, no live key at all, or a floor written less than the purge age before the newest live write, and at WARN when a read of the stream failed, the scan did not complete, the stream was replaced, the sequence space moved backward, or the floor is above the stream's last sequence.
   Every pass logs one line, `interest markers collected` or `interest marker collection refused` with its `reason`, carrying every stream value the decision used
-  — `read1_*` and `read2_*` (both reads come before the purge), `floor`, `live`, `delete_markers` — plus, when it purged, `purged`, `purged_first_seq` and `purged_msgs` from a read after the purge;
+  — `read1_*` and `read2_*` (both reads come before the purge), `floor`, `floor_written`, `newest_written`, `purge_age`, `live`, `delete_markers` — plus, when it purged, `purged`, `purged_first_seq` and `purged_msgs` from a read after the purge;
   a read the pass never took is absent from the line, so an unexpected purge or refusal is diagnosable from the line alone.
   `purged` is the drop in the stream's message count between read 2 and that read, so it is approximate both ways:
   a put in between under-reports it, and a peer listener's purge in between is counted by both passes, so a sum of `purged` across the fleet overstates what was removed.
@@ -5205,8 +5213,11 @@ No session receives from a plain NATS subscription:
 there is no second delivery design and no fallback, and a registration this listener cannot give a consumer is refused by name with nothing written ("No consumer" below).
 This section is the one statement of that rule; every other document points here by path rather than restating it.
 
-The one topic shape a session can follow that is not its own agent subject is a topic the stream captures, `notifications.team.<name>` included (`bus.StreamSubjects`):
-`POST /v1/messages/publish` and `POST /v1/interests/subscribe` refuse every other uncaptured `notifications.` topic by name, since a session would never be delivered it.
+A session can follow its own agent subject and any topic that the stream captures, `notifications.team.<name>` included (`bus.StreamSubjects`).
+`POST /v1/interests/subscribe` also takes a `notifications.` topic that no stream subject captures yet:
+it stores the topic in the interest record, puts it in the session consumer's filter where NATS accepts it as a filter subject, and answers 200 with a warning that names the topic (`contracts.UncapturedTopicWarning`).
+Nothing is delivered to the session on that topic until a stream subject captures it.
+Only `POST /v1/messages/publish` refuses an uncaptured `notifications.` topic by name, since no session would be delivered the message.
 A role lane stays on core NATS and is never a session's subscription:
 the listener forwards a role message to the holder's agent subject, which the stream captures, so the holder's own consumer delivers it (sjawhar/legion#753, 2026-08-26, took the role topics out of the stream).
 
@@ -5343,6 +5354,11 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Every outcome that leaves a registration standing keeps the consumer, since a live registration stands behind it.
   A session whose pane closed or whose box went deregisters nothing, so a sweep deletes the consumer of every session the session registry judges gone, at most 256 a pass (`sessionConsumerSweepCap`), every `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` (5m by default), and only on the task that holds its machine's durable binding and over a session cache that is ready, servable and needs no read (`cmd/listener/session_consumer_sweep.go`).
   The session reaper deletes the consumer of each record its pass deleted through the same body (`session.SessionReaper.DeleteConsumer`, wired in `cmd/listener/main.go`), so a reaped session's slot goes at once rather than at the sweep's next pass.
+  The sweep and the session reaper run on the lease holder alone (`holderLoops`), and the receive term holds each of their deletes, as it holds a relay's restart (`sessionRelays.termContext`):
+  just before the delete, the listener checks the term, and it sends the delete on a context that ends when the term ends or at the lease's loss deadline, whichever comes first.
+  The lease ends a term a short time before the receive loop cancels the context of those loops, so a delete that comes after the lease stepped down, or after another pod can hold the lease, sends nothing and leaves the consumer to the sweep of the next holder.
+  A delete that the listener sent before that end can still land.
+  A deregistration's delete has no term, because every pod answers a deregistration.
   Every one of the three runs under the session's lock, which a registration holds from its consumer call through its entry's `PutWithin`.
   Under that lock it reads the session's record again from the `envoy_sessions` stream's leader (`session.SessionRegistry.RefreshFromLeader`: a `$JS.API.STREAM.MSG.GET.KV_envoy_sessions` with `last_by_subj`, not the KV direct get, which a follower of a replicated bucket can answer before it has applied a write), and deletes only on `nats.ErrKeyNotFound`.
   Then it gives the consumer back to a session whose record is there after all: a record the bucket holds once the consumer is gone was written by a registration that landed between that read and the delete, on this listener or another, and that registration was answered 200 with consumer delivery, so the repair creates the consumer again at the ack floor read before the delete, with the filter the bucket's newest row asks for (`repairRegistered`, "Repairing it" below).

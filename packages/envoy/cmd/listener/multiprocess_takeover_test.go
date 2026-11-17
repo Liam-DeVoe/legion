@@ -841,8 +841,7 @@ func mpLinesMatching(output, needle string) string {
 // The active pod's receive connection is lost again while its reconnect hooks are still running
 // from the reconnect before. The relay drops every JetStream stream-info request of the role claim
 // bucket on that connection, which the listener's KV rewatch hook - the first of its reconnect
-// hooks - makes first, so the hook waits out its 10 s request timeout and fails, and keeps failing
-// on every retry. The connection is cut
+// hooks - makes first, so the hook waits on that request. The connection is cut
 // until the pod notices, then healed, so nats.go reconnects in place and the hooks start; a
 // second later, with the rewatch still waiting, the connection is cut again on a route that drops
 // its packets, its reconnect dials hanging, while the lease connection goes on renewing. The
@@ -851,6 +850,14 @@ func mpLinesMatching(output, needle string) string {
 // and in publish order. At 9c247139 the client ran its reconnect hooks on nats.go's callback
 // goroutine, so the disconnect of the second cut waited behind the hanging rewatch, the receive
 // signal read up for as long as the hooks took, and the take-over came long past 15 s.
+//
+// Since main's 2200c28eae (#4134) a run of the hooks is under a context that ends when its
+// connection leaves CONNECTED, and a run that ends so is superseded, not failed
+// (internal/bus/recovery.go, runReconnectHooks and reportSuperseded): the rewatch no longer waits
+// out its 10 s request timeout to fail, its open of the role bucket is cancelled by the second
+// cut's loss, and the run's INFO line names that open. That line, which no run has written a
+// second after the reconnect, is what proves the rewatch hung through the cut; a build whose
+// hooks return at once writes none, and the row fails there.
 func TestTwoPodsReceiveConnectionLostWhileItsReconnectHooksHangHandsOverWithin15s(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -869,6 +876,14 @@ func TestTwoPodsReceiveConnectionLostWhileItsReconnectHooksHangHandsOverWithin15
 	reconnects := func() int {
 		return strings.Count(mpLinesMatching(a.Output.String(), named), "envoy nats reconnected")
 	}
+	// hungRuns counts the runs of the hooks on the receive connection that its loss superseded
+	// while the rewatch still waited for the dropped stream info: the open of the role bucket is
+	// what the superseded line names as cancelled (2200c28eae).
+	hungRuns := func() int {
+		superseded := mpLinesMatching(mpLinesMatching(a.Output.String(), named),
+			"envoy nats reconnect hooks superseded by a newer connection event")
+		return strings.Count(superseded, "rewatch interest cache: open role KV bucket: context canceled")
+	}
 	hookFailures := func() int {
 		return strings.Count(mpLinesMatching(a.Output.String(), named), "envoy nats reconnect hook failed")
 	}
@@ -886,10 +901,10 @@ func TestTwoPodsReceiveConnectionLostWhileItsReconnectHooksHangHandsOverWithin15
 	})
 	healFirst()
 	mpEventually(t, 10*time.Second, a.instance+" to reconnect in place", func() bool { return reconnects() > before })
-	failedBefore := hookFailures()
+	hungBefore, failedBefore := hungRuns(), hookFailures()
 	time.Sleep(time.Second)
-	if hookFailures() != failedBefore {
-		t.Fatalf("%s's reconnect hooks failed within a second of the reconnect, so the row does not cut while they run:\n%s",
+	if hungRuns() != hungBefore || hookFailures() != failedBefore {
+		t.Fatalf("%s's reconnect hooks ended within a second of the reconnect, so the row does not cut while they run:\n%s",
 			a.instance, mpLinesMatching(a.Output.String(), named))
 	}
 	if record := publisher.stored(t, bus.ListenerStateBucket, bus.ListenerLeaseKey(mpMachine)); record["holder"] != a.instance || record["released"] == true {
@@ -906,8 +921,8 @@ func TestTwoPodsReceiveConnectionLostWhileItsReconnectHooksHangHandsOverWithin15
 	taken := time.Since(cut)
 	time.Sleep(5 * time.Second) // publish on past the take-over
 	stop()
-	if hookFailures() == failedBefore {
-		t.Fatalf("%s's reconnect hooks had not failed by the end of the row, so the rewatch did not hang:\n%s",
+	if hungRuns() == hungBefore {
+		t.Fatalf("%s's reconnect hooks had not failed by the end of the row: no run the second cut superseded names the rewatch's open of the role bucket as cancelled, so the rewatch did not hang:\n%s",
 			a.instance, mpLinesMatching(a.Output.String(), named))
 	}
 

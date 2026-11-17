@@ -1652,13 +1652,15 @@ func main() {
 
 	// A session's last-seen time lives in the listener state bucket beside the lease, so every pod
 	// answers it alike for a lapsed session; a listener with no lease keeps it in process
-	// (session.WithLastSeenBucket). A departed session's last heartbeat is kept for the registry's
-	// own session.LastSeenMemory (2 hours), which this listener does not shorten: it is the one
-	// value, declared once, and it outlasts both the gone horizon, so a caller told a session is
-	// gone can still be told when it last registered, and the interest reaper's allowance
-	// (store.InterestReapAllowance(store.InterestReapGrace), 15 minutes), so /v1/interests/ can
-	// report the real last heartbeat (the row's updated_at lags it by up to
-	// store.InterestRefreshAge) of every row that reaper still lists.
+	// (session.WithLastSeenBucket). The registry would answer a departed session's last heartbeat
+	// for its own session.LastSeenMemory (2 hours), which this listener does not shorten, but the
+	// state bucket drops the seen. record listenerStateMaxAge (20 minutes) after its last write,
+	// and with the bucket that ends the answer (internal/session/lastseen.go). So a caller told a
+	// session is gone, past the one-hour gone horizon, is no longer told when it last registered,
+	// and /v1/interests/ reports the real last heartbeat (the row's updated_at lags it by up to
+	// store.InterestRefreshAge) of every row the interest reaper still lists only where the
+	// session TTL and that reaper's allowance (store.InterestReapAllowance(store.InterestReapGrace),
+	// 15 minutes) fit in those 20 minutes, as they do at the default 5 minute TTL.
 	//
 	// The windows every reader of the registry judges a record's age against. Each defaults to
 	// the compiled constant (session.LiveWindow, session.GoneHorizon). The live window's is the
@@ -2031,13 +2033,14 @@ func main() {
 				// registered on another listener between that read and the delete is given its
 				// consumer back, at the floor the delete recorded, from the record and the
 				// interest row the bucket then holds (sessionDelivery.deleteConsumer,
-				// repairRegistered). That body logs whatever became of the consumer and answers
+				// repairRegistered). The delete is held to this receive term and to the
+				// lease's loss deadline (the relays' term, sessionRelays.termContext), so a
+				// pass that reaches it once the lease has stepped down or another pod may hold
+				// it sends nothing. That body logs whatever became of the consumer and answers
 				// no error, which is why the field carries none: the pass deletes the records
 				// behind this one either way, and the reaper's own log line would say no more
 				// than the delete's.
-				DeleteConsumer: func(ctx context.Context, sessionID string) {
-					delivery.deleteConsumer(ctx, ready, sessionID, nil)
-				},
+				DeleteConsumer: delivery.deleteReaped(ready, relays),
 			}),
 			// The collector removes the interest bucket's delete markers, which the reaper leaves
 			// one of per dead session on a key that is never reused and which nothing else removes,
@@ -2078,7 +2081,10 @@ func main() {
 			// ends between a tick and its pass sweeps nothing and among the pods of one machine
 			// id only the one receiving deletes a consumer (startSessionConsumerSweep,
 			// session_consumer_sweep.go, whose trusted also reads that ownership for a caller
-			// that starts it anywhere else).
+			// that starts it anywhere else). The lease ends the term a moment before that
+			// context ends, so each delete is held to the relays' term and to the lease's loss
+			// deadline besides, and one reached once the lease has stepped down or another pod
+			// may hold it sends nothing (sessionDelivery.deleteConsumer).
 			startSessionConsumerSweep(ctx, &sessionConsumerSweep{
 				delivery: delivery,
 				sessions: sessions,

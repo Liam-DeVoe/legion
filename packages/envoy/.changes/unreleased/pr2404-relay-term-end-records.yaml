@@ -57,6 +57,15 @@ body: |-
     next holder's restart of the session's consumer at its ack floor gives the message to that
     holder. If no restart comes, the server delivers it again after the consumer's 60 s ack wait.
     A frame that the pod forwarded before its term ended keeps the 750 ms settle grace as before.
+    The session reaper and the session consumer sweep follow the same rule when they delete a
+    session's consumer. Each delete is sent on a context that ends at the end of the term or at the
+    lease's loss deadline, and no delete starts after the term ended. Before this change, a delete
+    that the old pod reached after the lease stepped down could remove the consumer that the next
+    holder had just made for a session that came back.
+    The interest marker collector no longer purges a delete marker younger than 100 s, ten times
+    the longest wait of an interest write (the KV handle's 10 s). Before this change it purged
+    every marker below the lowest live revision at once, so an interest write planned before a
+    delete and sent late could find no marker and bring the deleted interest back.
 time: 2026-11-03T09:40:00.000000000Z
 custom:
     Issue: pr2404

@@ -302,8 +302,9 @@ func (l *lease) holdingLocked() bool {
 // unchanged for a full ttl on its own clock (poll). It is zero once term is no longer held:
 // another pod took the record (stepDown), this process released it (letGo, releaseReceiveLost),
 // its validity ran out (a lapse), or a later term began. A relay bounds each restart of a
-// session's consumer by it (sessionRelays.termContext), as a dispatch intake bounds each step of
-// its take-over by its hold's loss deadline (heldDurable.retryHeld).
+// session's consumer by it, and the sweep and the session reaper each delete of one
+// (sessionRelays.termContext, sessionDelivery.deleteConsumer), as a dispatch intake bounds each
+// step of its take-over by its hold's loss deadline (heldDurable.retryHeld).
 func (l *lease) UntilLoss(term uint64) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()

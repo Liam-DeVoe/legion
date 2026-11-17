@@ -296,9 +296,13 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   - **When a session can see a message twice.**
     The listener delivers a stored message to a session through that session's own consumer, relayed as a frame, and the consumer's ack floor
     — not the ledger — is what says the session has it.
-    Every restart of a session's consumer (`bus.SessionConsumers.RestartAtFloor`) deletes it and creates it again at the sequence after its ack floor, so every frame above that floor is sent again.
+    Every restart of a session's consumer (`bus.SessionConsumers.RestartAtFloor`) sends again every frame above the consumer's ack floor.
     That includes a frame the session answered `done` out of order above one it is still holding:
     the server cannot move the floor past a frame still unacked, so the frames acked after it are above the floor and come again.
+    A consumer with a message that awaits an ack is deleted and created again at the sequence after its ack floor.
+    A consumer with nothing that awaits an ack has no frame above its floor, so the restart updates it in place (`keepAtFloor`):
+    the sequence it examines next is already the one after its floor, and the restart sends no delete and no create.
+    The exception is a consumer whose next sequence is past the stream's end, which the restart deletes and creates again too.
     Every repeat carries the message's own event id, and the client's dedupe writes it once
     — it joins a copy of a frame it still holds, and drops one it has already written (`packages/envoy-client`'s consumer delivery).
 

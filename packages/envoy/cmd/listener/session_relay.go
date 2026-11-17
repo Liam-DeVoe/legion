@@ -1026,8 +1026,9 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 }
 
 // termContext is ctx bounded by the receive term this task serves (setOwned), for a restart of a
-// session's consumer (restart): it ends when ctx does, when the term's context does, or at the
-// lease's loss deadline (lease.UntilLoss), whichever comes first, so no restart acts once another
+// session's consumer (restart) and for the delete of one by the sweep or the session reaper
+// (sessionDelivery.deleteConsumer): it ends when ctx does, when the term's context does, or at the
+// lease's loss deadline (lease.UntilLoss), whichever comes first, so neither acts once another
 // pod may hold the lease, as each step of a dispatch intake's take-over ends at its hold's loss
 // deadline (heldDurable.retryHeld). The deadline is the lease's at the check, 3 to 4 s ahead on a
 // holder whose renewals land, so it can also come before the restart's call timeout
@@ -1036,19 +1037,20 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 // a term (stepDown, a release, a lapse, a give-up) a moment before the receive loop hears it and
 // stops this task's relays (durableReceiver.end), and a session event in that moment starts a
 // relay all the same (apply), which this check stops at its restart. The caller calls the
-// returned stop once the restart is over.
+// returned stop once the restart, or the delete, is over.
 //
-// What this leaves is a call the restart had already sent when its context ended: the server can
-// still apply it, since the end of a context stops only what is not sent yet. The pod that takes
-// the lease next is what bounds it, by when it may restart the same consumer. A pod that takes a
-// record this pod released (a graceful stop, a give-up, a receive connection lost) finds this
-// boot released in the record's former_boots, and waits relayFormerSettle (1 s) from its own
-// term's start before any of its relays restarts a session's consumer (lease.FormerSettleWait,
-// relay). A pod that takes the record over by force waits for nothing, but it takes the record no
-// earlier than a full ttl after this pod's last landed renewal, which is leaseMargin (1 s) after
-// the loss deadline that cut this restart (lease.poll), while the two pods' clock rates differ by
-// less than 20 %. So a call still in flight lands within about a second of the cut, or races the
-// next holder's restart: no fence holds it, since a consumer call carries no term.
+// What this leaves is a call the restart or the delete had already sent when its context ended:
+// the server can still apply it, since the end of a context stops only what is not sent yet. The
+// pod that takes the lease next is what bounds it, by when it may act on the same consumer. A pod
+// that takes a record this pod released (a graceful stop, a give-up, a receive connection lost)
+// finds this boot released in the record's former_boots, and waits relayFormerSettle (1 s) from
+// its own term's start before any of its relays restarts a session's consumer
+// (lease.FormerSettleWait, relay). A pod that takes the record over by force waits for nothing,
+// but it takes the record no earlier than a full ttl after this pod's last landed renewal, which
+// is leaseMargin (1 s) after the loss deadline that cut the call (lease.poll), while the two pods'
+// clock rates differ by less than 20 %. So a call still in flight lands within about a second of
+// the cut, or races the next holder's own calls for that consumer: no fence holds it, since a
+// consumer call carries no term.
 func (m *sessionRelays) termContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	term, left := m.currentTerm()
 	if left <= 0 {
@@ -1216,10 +1218,10 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // A message the pull receives once the term is over, before that unsubscribe lands, is not
 // forwarded to the session and is not answered, with no done, nak or progress. The server
 // delivers it again once the session consumer's ack wait has passed, 60 s
-// (bus.SessionConsumerAckWait, internal/bus/session_consumers.go:26, which applySettings sets on
-// every session consumer at :894). The next holder's restart of the consumer at its ack floor
+// (bus.SessionConsumerAckWait, internal/bus/session_consumers.go:27, which applySettings sets on
+// every session consumer at :933). The next holder's restart of the consumer at its ack floor
 // delivers it sooner, since a message that awaits an ack makes that restart a delete and a
-// create (bus.SessionConsumers.KeepListed keeps no consumer with one, :842).
+// create (bus.SessionConsumers.KeepListed keeps no consumer with one, :862).
 //
 // When the pull got a message is what tells the two apart. The pull reads its bound as each
 // message arrives, and again as Next hands the message out, and this run publishes a message as

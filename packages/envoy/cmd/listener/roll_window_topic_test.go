@@ -106,7 +106,15 @@ func TestAPublishOnATopicASubjectAddedInsideTheRereadGapCapturesIsNotRefused(t *
 	if answer := publishOn(rig.mux, uncaptured); answer.Code != http.StatusBadRequest {
 		t.Fatalf("a publish on %s, which no stream captures, was answered %d %s, want 400", uncaptured, answer.Code, answer.Body.String())
 	}
-	read := time.Now()
+	// The gap runs from that read's end (bus.Client.SubjectsRereadEnded), which comes before the
+	// answer, so the guard below times the newer build's subject from the read's end and not from
+	// the answer: a run slow between the two would otherwise take a subject added past the gap for
+	// one inside it, and the publish below would then read the subjects again at once, which proves
+	// nothing of the wait.
+	read := rig.deps.client.SubjectsRereadEnded()
+	if read.IsZero() {
+		t.Fatal("the refused publish ended no read of the stream's subjects; the row needs the read whose end the gap runs from")
+	}
 	addStreamSubject(t, js, rollNewerSubject)
 	if rig.deps.client.DeployedStreamCaptures(rollTopic) {
 		t.Fatalf("the listener judged %s captured before reading the subjects again; the row needs the subjects it read before the newer build's start", rollTopic)

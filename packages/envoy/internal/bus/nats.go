@@ -2112,6 +2112,16 @@ func (c *Client) startRereadLocked(conn *nats.Conn) (chan struct{}, uint64) {
 	return reading, seq
 }
 
+// SubjectsRereadEnded is when the last read of the deployed subjects that a judgement started
+// (startRereadLocked) ended, zero before the first: the moment streamSubjectsRereadGap runs from.
+// It is a seam for tests, which time a stream subject they add inside that gap from it rather than
+// from a moment they noticed after the read, which is later than its end; nothing else calls it.
+func (c *Client) SubjectsRereadEnded() time.Time {
+	c.subjectsRereadMu.Lock()
+	defer c.subjectsRereadMu.Unlock()
+	return c.subjectsRereadAt
+}
+
 // PublishTakesJetStream reports whether a publish of topic takes JetStream rather than core NATS:
 // the judgement PublishReportingDuplicateWithin makes of its transport, for a caller that decides
 // something else of the publish by it too. A topic the subjects the client holds leave core

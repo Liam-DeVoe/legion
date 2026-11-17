@@ -21,9 +21,10 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// lateKeyWrite runs late, once, before the first write through it of key (Put or Update)
+// lateKeyWrite runs late, once, before the first write through it of key (Put, Create or Update)
 // reaches the bucket: what another writer does between a plan's read and its write. late's own
-// writes go through the raw handle and are not hooked again.
+// writes go through the raw handle and are not hooked again. Create is hooked whole: nats.go's
+// Create updates through its own handle, not through this one.
 type lateKeyWrite struct {
 	natsgo.KeyValue
 
@@ -35,6 +36,11 @@ type lateKeyWrite struct {
 func (kv *lateKeyWrite) Put(key string, value []byte) (uint64, error) {
 	kv.before(key)
 	return kv.KeyValue.Put(key, value)
+}
+
+func (kv *lateKeyWrite) Create(key string, value []byte) (uint64, error) {
+	kv.before(key)
+	return kv.KeyValue.Create(key, value)
 }
 
 func (kv *lateKeyWrite) Update(key string, value []byte, revision uint64) (uint64, error) {

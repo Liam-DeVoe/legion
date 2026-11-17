@@ -109,7 +109,7 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 }
 
 // A record a newer build wrote carries a key this build does not name, and each rewrite of it
-// through this build keeps that key with its value (KnownSession.unknown): the registration's and
+// through this build keeps that key with its value (KnownSessions.unknown): the registration's and
 // the interest change's (RecordWithin) and the clean stop's (TouchWithin) alike. Every listener
 // pod writes the records of the sessions it serves, so during a roll pods of two builds take
 // turns writing one session's record, and a rewrite that dropped the newer build's field would
