@@ -268,17 +268,6 @@ type seededIssue struct {
 	closed      *time.Time
 }
 
-// countingQueryer is a Queryer that counts the statements it is sent.
-type countingQueryer struct {
-	Queryer
-	statements int
-}
-
-func (q *countingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	q.statements++
-	return q.Queryer.Query(ctx, sql, args...)
-}
-
 // stepRun writes one run of one step of issue: its identity, and the start and end that are not nil.
 func stepRun(t *testing.T, pool *store.Pool, issue, kind, role string, place int, generation int64,
 	started, ended *time.Time, result string) string {
@@ -371,13 +360,13 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEGX-1", 1), minute(90))
 	stepRun(t, pool, "LEGX-1", StepKindStep, "reviewer", 4, 1, new(minute(90)), new(minute(95)), ResultFailed)
 
-	counted := &countingQueryer{Queryer: pool}
-	read, err := ProjectPlans(context.Background(), counted, "LEG", nil, nil)
+	counter := &storetest.StatementCounter{}
+	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), "LEG", nil, nil)
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
-	if counted.statements != 1 {
-		t.Fatalf("the read sent %d statements, want one for the whole project", counted.statements)
+	if sent := counter.Count(); sent != 1 {
+		t.Fatalf("the read sent %d statements, want one for the whole project", sent)
 	}
 	plan := &Plan{Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
 	want := []IssuePlan{
