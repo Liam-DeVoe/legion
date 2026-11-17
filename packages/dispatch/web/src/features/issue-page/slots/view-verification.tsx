@@ -42,7 +42,11 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // an observer that is never enabled, so it sends no request of its own (R1) and sees whatever
   // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
   // Where the results read holds no check no blocks read is needed, and the observer of no
-  // document never fetches.
+  // document never fetches. It is this one read and not `useIssueTree`'s `blocksHeld`
+  // (decision 98), which counts all four of the tree's documents: a refused plan or decisions
+  // read must not hold this view empty, and the failed line needs this read's own error and
+  // Retry (the architect's decision 148).
+  // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
   const documentId = checks[0]?.artifact_id;
   const blocks = useQuery({ ...artifactBlocksQuery(documentId ?? ""), enabled: false });
   // Each read has answered where it holds data, and not by its status: a background refetch
