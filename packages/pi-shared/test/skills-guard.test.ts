@@ -81,8 +81,9 @@ function reported(page: readonly string[]): string[] {
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. Every row is found by its own pattern alone,
-// so a row whose pattern is taken out of the guard reports nothing and fails.
+// and the line its pattern's first word stands on. The last three rows are the shapes no file
+// carried, in the words a reword would bring them back in. Every row is found by its own pattern
+// alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
   [
     'pr-body.md\'s "no CI lane is rerun as evidence"',
@@ -251,18 +252,33 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     2,
   ],
   [
-    // Brought in from main (cybermonklabs/legion#4211) by the forward merge at 32d06c1c. It tells
-    // the reviewer not to re-run a check the base does not require, which red-at-the-head.md puts
-    // in the counted set, so in k1's world (i), whose base requires nothing, all five reviewers of
-    // the tester's round-5 batch approved over the red with no re-run, citing this rule.
-    'merge-gate.md\'s "You neither wait for it nor re-run it for the approval"',
+    'a reviewer\'s re-run of a check the base does not require, "is yours to re-run once before you approve"',
+    [
+      "The reviewer reads the head's checks on GitHub before it approves the head it reviews.",
+      "A red on a check the base does not",
+      "require is yours to re-run once before you",
+      "approve.",
+    ],
+    2,
+  ],
+  [
+    'main\'s rule turned on a required check, "You neither wait for a required check nor re-run it"',
     [
       "  `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required set is the",
       "  base branch's rulesets' required checks and its branch protection's, when it has any.",
-      "  A check the base does not require holds no approval. You neither wait for it nor",
-      "  re-run it for the approval, and the daemon reads no verdict from it either.",
+      "  You neither wait for a required",
+      "  check nor re-run it for the approval, and the daemon reads no verdict from it either.",
     ],
     3,
+  ],
+  [
+    'a ban of the reviewer\'s re-run of a required red, "You re-run nothing, a required check red at the head included."',
+    [
+      "The reviewer reads the head's checks on GitHub before it approves.",
+      "You re-run",
+      "nothing, a required check red at the head included.",
+    ],
+    2,
   ],
 ];
 
@@ -271,9 +287,10 @@ test.each(retired)("%s is reported at the line it starts on", (_source, page, li
 });
 
 // Each sentence the trees keep near the words of a retired one, which a pattern too wide would
-// refuse, in the words of the file that carries it and the text around it shortened. The one
-// sentence no tree carries is the send-back limited by `only`, which the merge-queue pattern's
-// lookahead lets through.
+// refuse, in the words of the file that carries it and the text around it shortened. The sentences
+// no tree carries are the send-back limited by `only`, which the merge-queue pattern's lookahead
+// lets through, and the tester's re-run of a check the base does not require, which holds no
+// approval.
 const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'merge-gate.md\'s "A merge-group run is never re-run"',
@@ -467,6 +484,38 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     [
       "  cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is",
       "  still in progress: wait for it.",
+    ],
+  ],
+  [
+    // Brought in from main (cybermonklabs/legion#4211) by the forward merge at 32d06c1c. The
+    // architect's decision kept main's rule for a check the base does not require: the reviewer
+    // neither waits for nor re-runs such a check for the approval, and keeps its one re-run for a
+    // red on a check the base requires. So the sentence is the rule, and passes.
+    'merge-gate.md\'s "You neither wait for it nor re-run it for the approval"',
+    [
+      "  `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required set is the",
+      "  base branch's rulesets' required checks and its branch protection's, when it has any.",
+      "  A check the base does not require holds no approval. You neither wait for it nor",
+      "  re-run it for the approval, and the daemon reads no verdict from it either.",
+    ],
+  ],
+  [
+    'red-at-the-head.md\'s "The reviewer neither waits for a check the base does not require nor re-runs it"',
+    [
+      "- The reviewer neither waits for a check the base does not",
+      "  require nor re-runs it for the approval, as `skill://legion-worker/references/merge-gate.md` says.",
+      "  It approves over such a red the change did not make and names the red in its `redAtTheHead`",
+      "  record and its review body, and nowhere else: with no re-run, nothing shows the test fails at",
+      "  random, so the red is no occurrence for the census. The tester and the implementer still",
+      "  re-run such a red once.",
+    ],
+  ],
+  [
+    "a tester's re-run of a check the base does not require, which holds no approval",
+    [
+      "The reviewer approves over a red the change did not make on a check the base does not require.",
+      "The tester re-runs a red on a check the base",
+      "does not require once.",
     ],
   ],
 ];

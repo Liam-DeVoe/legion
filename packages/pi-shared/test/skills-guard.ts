@@ -491,7 +491,52 @@ const RERUN_AMONG_THE_CHOICES =
 const DECISION_FOR_THE_ROLES_TOLD =
   /\b(?:decision|decide)\b[^.]{0,20}?\b(?:for|to)\s+the\s+roles\s+(?:it|they)\s+(?:told|reached)\b|\bfor\s+(?:the|those)\s+roles\b[^.]{0,30}?\bto\s+decide\b/i;
 
-/** The eight rules INFRA-1303 retired, in the order they are written above. */
+/**
+ * The grant of the reviewer's re-run of a check the base does not require, for the approval. The
+ * reviewer's Go overlay (packages/daemon/internal/prompts/go/reviewer.md) and the page gave the
+ * reviewer the re-run of any red the change did not make, while main's merge gate
+ * (skills/legion-worker/references/merge-gate.md, cybermonklabs/legion#4211) says "A check the
+ * base does not require holds no approval. You neither wait for it nor re-run it for the
+ * approval". The architect kept main's rule for such a check and the reviewer's one re-run for a
+ * check the base requires, so a text that has the reviewer re-run the first kind before it
+ * approves holds the approval on a check that holds nothing.
+ *
+ * One sentence, read up to its full stop, holds all three in any order: a check the base does not
+ * require (`check(s) (that) the base (branch) does not require`); a re-run (`re-run`, `re-runs`,
+ * `rerun`) that no `nor`, `not`, `never`, `no` or `neither` just before it negates and that is no
+ * `re-run(s) nothing` or `none`; and the approval (`approv…`). So it refuses "Before you approve,
+ * re-run a check the base does not require once." and "A red on a check the base does not require
+ * is yours to re-run once before you approve." It lets through main's two sentences, which put the
+ * check and the re-run in different sentences; the page's "The reviewer neither waits for a check
+ * the base does not require nor re-runs it for the approval" and the overlay's "A check the base
+ * does not require you neither wait for nor re-run for the approval", whose re-run a `nor` negates;
+ * the overlay's "a red the change did not cause, on a check the base requires, is yours to re-run
+ * once", whose check is a required one; and "The tester re-runs a red on a check the base does not
+ * require once.", which holds no approval, since the tester and the implementer keep that re-run.
+ * The first lookahead puts the hit where one of the three words starts, so a hit names the line
+ * of the sentence's first such word. The negation is a lookbehind, which Bun's JavaScriptCore runs.
+ */
+const UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL =
+  /\b(?=checks?\b|approv|re-?runs?\b)(?=[^.]*?\bchecks?\s+(?:that\s+)?the\s+base(?:\s+branch)?\s+does\s+not\s+require\b)(?=[^.]*?\bapprov)(?=[^.]*?(?<!\b(?:nor|not|never|no|neither)\s+)\bre-?runs?\b(?!\s+(?:nothing|none)\b))/i;
+
+/**
+ * Main's rule turned on a required check: "You neither wait for a required check nor re-run it for
+ * the approval." Main's sentence bans the wait and the re-run for a check the base does not
+ * require, whose red holds no approval. A required check's red holds the merge, so the reviewer
+ * waits for one still running and re-runs once a red of one the change did not make
+ * (`skill://legion-worker/references/red-at-the-head.md`), and a reviewer told to do neither
+ * costs the tree a whole lap for a failure its code never caused.
+ *
+ * The shape is main's own: `neither wait(s) for`, a determiner (`a`, `an`, `any`, `the`),
+ * `required` and a lane noun (`check`, `lane`, `job`, `suite`), then `nor re-run` before the
+ * sentence's full stop. Main's sentence passes, since its object is `it`, and so does the page's
+ * "The reviewer neither waits for a check the base does not require nor re-runs it for the
+ * approval", whose check is no `required` one.
+ */
+const REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN =
+  /\bneither\s+waits?\s+for\s+(?:a|an|any|the)\s+required\s+(?:checks?|lanes?|jobs?|suites?)\b[^.]*?\bnor\s+re-?runs?\b/i;
+
+/** The ten rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
   NO_LANE_IS_RERUN,
   RERUN_NONE_OF_THEM_YOURSELF,
@@ -501,16 +546,20 @@ const RETIRED_RERUN_PROHIBITIONS = [
   NO_WAIT_FOR_A_RUNNING_LANE,
   RERUN_AMONG_THE_CHOICES,
   DECISION_FOR_THE_ROLES_TOLD,
+  UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL,
+  REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN,
 ];
 
 /**
  * Every place in the Markdown files under `roots` that still carries a rule INFRA-1303 retired,
  * each as one `<file>:<line>`: a sentence that forbids the re-run it turned on or the wait on that
- * re-run, gives the wait to the wrong role, or sends the work back on the first `failed_checks`
- * ejection the merger now queues once more, or offers the re-run to every role told of a red. They
- * were deleted from skill files and daemon prompt parts at once, and a forward merge keeps both
- * sides of a deletion in silence, so the rule is written over whole partitions rather than over
- * the files it cleared: another file that acquires one fails here too.
+ * re-run, gives the wait to the wrong role, sends the work back on the first `failed_checks`
+ * ejection the merger now queues once more, offers the re-run to every role told of a red, gives
+ * the reviewer a re-run of a check the base does not require before it approves, or turns main's
+ * ban on that wait and that re-run onto a required check. They were deleted from skill files and
+ * daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence, so
+ * the rule is written over whole partitions rather than over the files it cleared: another file
+ * that acquires one fails here too.
  *
  * Each prohibition is matched against the whitespace-collapsed text `prosePinFaults` reads, both
  * of them the same collapse, because these files are wrapped and a prohibition can cross a line
@@ -687,6 +736,17 @@ const PHASE_HOLDER_PRESSES_THE_RERUN =
   "The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in `reviewing`, the implementer in `implementing`.";
 
 /**
+ * The sentence of `## Who may re-run` that limits the reviewer's re-run, pinned whole and
+ * literally. The grant above gives the reviewer in `reviewing` the re-run of a red, and the merge
+ * gate's "A check the base does not require holds no approval" (cybermonklabs/legion#4211), a rule
+ * the architect kept, takes a check the base does not require out of it. A reviewer that lost
+ * this sentence reads the grant as a re-run of every red the counted set carries, and holds its
+ * approval on a check that holds none.
+ */
+const REVIEWER_LEAVES_AN_UNREQUIRED_CHECK =
+  "The reviewer neither waits for a check the base does not require nor re-runs it for the approval, as `skill://legion-worker/references/merge-gate.md` says.";
+
+/**
  * The merger's merge-queue rule, its two sentences pinned whole and literally. The first is the
  * one re-queue: a role that lost it sends the work back to `implementing` on the first
  * `failed_checks` ejection of a head GitHub itself may queue again, which is the lap this change
@@ -749,6 +809,11 @@ export function redAtTheHeadFaults(pages: {
           sentence: PHASE_HOLDER_PRESSES_THE_RERUN,
           because:
             "a page that grants the re-run to nobody leaves every role that reads a red free to press it",
+        },
+        {
+          sentence: REVIEWER_LEAVES_AN_UNREQUIRED_CHECK,
+          because:
+            "a reviewer reaches the limit on a check the base does not require only through this sentence",
         },
       ]
     ),

@@ -559,7 +559,7 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // lives in its residue rather than its core. R5 is the exception: Compose names core/oracle.md for
 // no role, and it is pinned beside core/common.md to keep one wording of that rule in the prompt
 // tree, which a later core would copy from. R6 sits in the tester's core, the part that tells a
-// phase worker what to do about CI.
+// phase worker what to do about CI, and its limit for the reviewer in the reviewer's Go overlay.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
 	// (packages/pi-legion/src/skills-guard.test.ts).
@@ -622,6 +622,17 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
 		}
+	}
+	// R6's limit for the reviewer: a check the base does not require is neither waited for nor
+	// re-run for the approval, merge-gate.md's rule since cybermonklabs/legion#4211, so the
+	// reviewer's one re-run is of a red on a check the base requires. The sentence is in the
+	// reviewer's Go overlay alone, which rolePart does not read.
+	goReviewer, err := goParts.ReadFile("go/reviewer.md")
+	if err != nil {
+		t.Fatalf("read go/reviewer.md: %v", err)
+	}
+	if want := "A check the base does not require you neither wait for nor re-run for the approval: you approve over its red and record it as that page says."; !strings.Contains(string(goReviewer), want) {
+		t.Errorf("go/reviewer.md does not contain %q", want)
 	}
 	// The replaced sentence said the planner answers such a decision by naming it, which is what
 	// let a plan complete with four decisions open (dispatch://INFRA-206).

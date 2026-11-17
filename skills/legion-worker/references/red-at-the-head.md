@@ -5,13 +5,17 @@ request and a phase of that issue is open. Every path it cites is in cybermonkla
 
 A red the change did not make costs the tree a whole lap today: an implementing round, a new CI
 pass, a new testing round, and often a new review round. The role that already reads that head
-clears such a red where it stands. It writes the failure down first. Then it re-runs the failed
-jobs once.
+clears such a red where it stands. It writes the failure down, then re-runs the failed jobs once.
 
 ## Who may re-run
 
 - The holder of the issue's phase presses the re-run: the tester in `testing`, the reviewer in
   `reviewing`, the implementer in `implementing`.
+- The reviewer neither waits for a check the base does not require nor re-runs it for the approval,
+  as `skill://legion-worker/references/merge-gate.md` says. It approves over such a red the change
+  did not make and names the red in its `redAtTheHead` record and its review body, and nowhere else:
+  with no re-run, nothing shows the test fails at random, so the red is no occurrence for the
+  census. The tester and the implementer still re-run such a red once.
 - The merger, the architect in `accepting` and an implementer that runs retro re-run nothing.
   The merger's own rule for a `failed_checks` ejection is in
   `skill://legion-worker/references/merge-gate.md`, where the guard pins it.
@@ -33,16 +37,15 @@ Before it presses the re-run, the role records on the Dispatch issue all eight o
 A record short of one of the eight is a record the next reader cannot act on, and the eight are
 counted as such.
 
-**The run that holds the check must have ended first.** A lane can fail and read `completed`
-while other lanes of its workflow run still run. Until that run ends,
-`gh run view <run-id> --log-failed` answers `run <id> is still in progress; logs will be available
-when it is complete` and exits 1, and GitHub refuses `gh run rerun` (measured on run 43686474806).
-So before the log read the role reads the run's own status,
-`gh run view <run-id> --json status --jq .status`, and reads the log and presses the re-run only on
-`completed`. Until then it waits for the pull request's checks event, as *The act and the wait*
-says: that settlement comes once every check run of the head has ended. A re-run GitHub refuses
-all the same starts no attempt, so it spends nothing: the role records GitHub's answer and presses
-it again on the next wake.
+**The run that holds the check must have ended first.** A lane can fail and read `completed` while
+other lanes of its workflow run still run. Until that run ends, `gh run view <run-id> --log-failed`
+answers `run <id> is still in progress; logs will be available when it is complete` and exits 1, and
+GitHub refuses `gh run rerun` (measured on run 43686474806). So before the log read the role reads
+the run's own status, `gh run view <run-id> --json status --jq .status`, and reads the log and
+presses the re-run only on `completed`. Until then it waits for the pull request's checks event, as
+*The act and the wait* says: that settlement comes once every check run of the head has ended. A
+re-run GitHub refuses all the same starts no attempt, so it spends nothing: the role records
+GitHub's answer and presses it again on the next wake.
 
 The role reads that first line with `gh run view <run-id> --log-failed`. A read that fails is
 recorded as failed, with the error, and the role makes the re-run all the same. Where the log
@@ -146,13 +149,12 @@ gh api --paginate "repos/<o>/<r>/actions/runs/<run-id>/attempts/<n>/jobs?per_pag
 Count the jobs it returned against `total_count`, because a run can hold more than 100 jobs; a
 count that falls short is a read to make again, never a decision.
 
-The re-run after an earlier attempt spends nothing only when every job of that attempt that did
-not succeed or skip is `cancelled`, or is an aggregate that failed over such a lane. Any other
-conclusion spends it, one this page does not name included. A lane GitHub cancelled at two
-attempts of the same run is read as `failure`, so a cancelled lane gets one re-run that spends
-nothing, and the head's one re-run is still left after it. That bound is what holds a hung job:
-GitHub cancels a job that runs past its `timeout-minutes`, so a lane that hangs again reads
-`cancelled` again
+The re-run after an earlier attempt spends nothing only when every job of that attempt that did not
+succeed or skip is `cancelled`, or is an aggregate that failed over such a lane. Any other
+conclusion spends it, one this page does not name included. A lane GitHub cancelled at two attempts
+of the same run is read as `failure`, so a cancelled lane gets one re-run that spends nothing, and
+the head's one re-run is still left after it. That bound is what holds a hung job: GitHub cancels a
+job that runs past its `timeout-minutes`, so a lane that hangs again reads `cancelled` again
 (<https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes>).
 Measured on run 43330369709 at `94fa9812fd0fcbecf444016d93ff41428dcce523`: attempt 1 ended
 `cancelled`, its job `dispatch-browser / merge` `cancelled` and the aggregate `ci-ok` `failure`,
@@ -171,9 +173,8 @@ and it names the check.
 
 **An empty counted set.** A rollup of `null`, which `gh pr checks` prints as no checks reported,
 means GitHub counts no context at that head. A check with no counted run there has no re-run to
-spend: there is nothing to re-run and nothing is spent. Measured at
-`ebb186ba575924b3a341769ad2168387d056724f`, where the commit endpoint answers 55 runs of a
-by-hand `workflow_dispatch` and the rollup is `null`.
+spend: there is nothing to re-run. Measured at `ebb186ba575924b3a341769ad2168387d056724f`, where the
+commit endpoint answers 55 runs of a by-hand `workflow_dispatch` and the rollup is `null`.
 
 **An unread counted set is not an empty one.** After a push the counted set can lag, so a role
 that reads it at once may find the failing check pending, queued, in progress or absent. The
@@ -285,8 +286,7 @@ again* above) and owes no occurrence.
    a stale key reads exactly like a tracked defect and becomes the resting place: one was carried
    as the remedy for four rounds after it had stopped being one (dispatch://INFRA-1192).
 2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, unless it
-   reads `done`: the test, the job, the head, and both results, the failing run and the green
-   re-run.
+   reads `done`: the test, the job, the head, the failing run and the green re-run.
 3. The message to the controller: an `envoy_publish` to the controller topic the role's
    `Legion addressing` line names, with `expects_reply: false`. When the publish answers that no
    controller took it (`skill://legion-worker/references/findings.md`, *When no controller takes
