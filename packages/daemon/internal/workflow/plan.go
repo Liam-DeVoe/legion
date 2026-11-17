@@ -141,13 +141,12 @@ func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.A
 }
 
 // takesNoPlan says whether group, an issue's row of groupOf, takes no plan from the issue's owner:
-// the arm runs the project's default steps, or the owner does the whole issue itself.
+// the arm runs the project's default steps. It is the one answer the three readers of the group
+// read — the first step (planFirstStep), register_plan (planGiven) and stop_task (taskStopped) —
+// and it holds only the word this release carries out: the loader refuses `owner-alone`
+// (config's readVariants), so no draw of this release writes it.
 func takesNoPlan(group record.Assignment) bool {
-	switch config.PlanGroup(group.Plan) {
-	case config.PlanGroupDefault, config.PlanGroupOwnerAlone:
-		return true
-	}
-	return false
+	return config.PlanGroup(group.Plan) == config.PlanGroupDefault
 }
 
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
@@ -163,9 +162,9 @@ func takesNoPlan(group record.Assignment) bool {
 // telling names (tellPassedOver). A pull request the record already holds, which an earlier run of
 // another plan can have opened, names the task the run walks (nameTaskOnPullRequest).
 //
-// An issue whose group runs the project's default steps (groupOf) takes no plan of its owner: the
-// owner's plans are passed over too (passOverOwners), the run takes the default steps, and the one
-// notice that tells what it passed over names the group (tellNotTaken).
+// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes the default
+// steps: the owner's plans are passed over too (passOverOwners), and the one notice that tells
+// what it passed over names the group (tellNotTaken).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	group, err := e.groupOf(ctx, tx, issue.Key)
 	if err != nil {
@@ -179,10 +178,10 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	runsByDefault := config.PlanGroup(group.Plan) == config.PlanGroupDefault
+	takesNone := takesNoPlan(group)
 	var owners []record.PlanVersion
 	switch {
-	case runsByDefault:
+	case takesNone:
 		if owners, stored, err = e.passOverOwners(ctx, tx, issue, stored); err != nil {
 			return err
 		}
@@ -210,7 +209,7 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err := e.nameTaskOnPullRequest(ctx, tx, issue.Key, w); err != nil {
 		return err
 	}
-	if runsByDefault {
+	if takesNone {
 		return e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...))
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
@@ -309,7 +308,7 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan: %s. %s", issue.Key, strings.Join(described, "; "),
-		intake.GroupClause(issue.Key, group.Experiment, group.Variant, group.Plan))})
+		intake.GroupClause(issue.Key, group.Experiment, group.Variant))})
 }
 
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its
@@ -534,7 +533,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		return intake.Result{}, err
 	}
 	if takesNoPlan(group) {
-		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group.Experiment, group.Variant, group.Plan)}, nil
+		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group.Experiment, group.Variant)}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
@@ -705,7 +704,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 			return intake.Result{}, err
 		}
 		if takesNoPlan(group) {
-			return refuse(intake.PlanNotTaken(issue.Key, group.Experiment, group.Variant, group.Plan))
+			return refuse(intake.PlanNotTaken(issue.Key, group.Experiment, group.Variant))
 		}
 	}
 	stored, err := e.store.Plan(ctx, tx, fact.Issue, fact.Generation)
