@@ -1,9 +1,10 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import type { LensRead, NodeLenses } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
@@ -18,6 +19,9 @@ import { ContentsList } from "../IssueContents";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
 import { overtakenLineOf } from "../issue-address";
 import { heldBy, type NodeChip, type ParentLine, type TreeNode } from "../issue-tree";
+import { LensChain } from "../lenses/LensChain";
+import type { LensChip, LensFacts } from "../lenses/lens-drafts";
+import { NodeLink } from "../lenses/NodeLink";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
@@ -35,6 +39,7 @@ import { ReferenceNamesProvider } from "../reference-names";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { coverageRead, decisionsRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
 import { NOTHING_OPENED, type OpenedBranches, type OvertakenRow, pathTo } from "../tree-fold";
+import { statesOfRead } from "../tree-read/tree-nodes";
 import { VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {
   check,
@@ -42,7 +47,7 @@ import {
   result,
   statementNode,
 } from "../verification-filter/verification-fixtures";
-import { NodeMarks } from "./NodeMarks";
+import { NodeMarks, NodeStatesProvider } from "./NodeMarks";
 import {
   linesIn,
   marksAt,
@@ -1357,5 +1362,335 @@ test("the Spec view draws an overtaken statement the words match under an open l
     expect(rowOf(view.container, "spec#b-r2")).toBeNull();
   } finally {
     view.unmount();
+  }
+});
+
+// R1, R2, R7: the tree read's own `state` and `visibility` are a node's marks where they are a
+// life or the author's alone, and nothing else is one: a live, settled or gone node and one the
+// read gives no value for carry none.
+test("statesOfRead marks a proposed or overtaken state and the author's visibility, and no other", () => {
+  expect(statesOfRead({ state: "proposed" })).toStrictEqual({ life: "proposed" });
+  expect(statesOfRead({ state: "overtaken" })).toStrictEqual({ life: "overtaken" });
+  for (const state of ["settled", "live", "gone", null, undefined]) {
+    expect(statesOfRead({ state }), String(state)).toStrictEqual({});
+  }
+  expect(statesOfRead({ visibility: "author" })).toStrictEqual({ onlyYou: true });
+  for (const visibility of ["project", null, undefined]) {
+    expect(statesOfRead({ visibility }), String(visibility)).toStrictEqual({});
+  }
+  expect(statesOfRead({ state: "proposed", visibility: "author" })).toStrictEqual({
+    life: "proposed",
+    onlyYou: true,
+  });
+  expect(statesOfRead({ state: "live", visibility: "project" })).toStrictEqual({});
+  expect(statesOfRead({})).toStrictEqual({});
+});
+
+/** Four lenses of the issue's node store, by their addresses. */
+const TRADE_OFF = "dispatch://lens/0c6f1d2e-1111-4a6b-9c1d-5e2f3a4b5c61";
+const PREMORTEM = "dispatch://lens/0c6f1d2e-2222-4a6b-9c1d-5e2f3a4b5c62";
+const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
+const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
+
+/** `chip` drawn by W's `NodeLink` on this issue's route, so a chip with an id is a link. */
+function drawChip(chip: LensChip) {
+  return render(
+    createElement(
+      MemoryRouter,
+      { initialEntries: [`/issues/${KEY}`] },
+      createElement(
+        Routes,
+        null,
+        createElement(Route, {
+          element: createElement(NodeLink, { chip, tabStops: false }),
+          path: "/issues/:key/*",
+        })
+      )
+    )
+  );
+}
+
+/** What a chip draws inside `[data-node-chip]`, element by element: its words, then each mark. */
+function chipDrawn(container: HTMLElement): (string | null)[] {
+  const drawn = container.querySelector("[data-node-chip]");
+  if (drawn === null) throw new Error("no chip is drawn");
+  return [...drawn.children].map((child) =>
+    child.hasAttribute("data-chip-name") ? "name" : child.getAttribute("data-node-mark")
+  );
+}
+
+// R1, R2, R7: a chip of a lens line carries the marks of the node it names, from the state and
+// the visibility its tree read gives, after the chip's words - a link or the words alone - in
+// the chip's own form; a live node every reader may see, or a chip given neither, carries none.
+test("a lens chip carries the marks its tree read gives", () => {
+  const statement = `dispatch://${KEY}/spec#b-r7`;
+  const cases: readonly [LensChip, readonly (string | null)[]][] = [
+    [
+      {
+        address: statement,
+        id: "spec#b-r7",
+        state: "proposed",
+        visibility: "project",
+        words: "R7",
+      },
+      ["name", "proposed"],
+    ],
+    [
+      { address: TRADE_OFF, state: "live", visibility: "author", words: "Trade-off analysis" },
+      ["name", "only_you"],
+    ],
+    [
+      {
+        address: statement,
+        id: "spec#b-r7",
+        state: "overtaken",
+        visibility: "author",
+        words: "R7",
+      },
+      ["name", "overtaken", "only_you"],
+    ],
+    [{ address: statement, state: "live", visibility: "project", words: "R7" }, ["name"]],
+    [{ address: TRADE_OFF, words: "Trade-off analysis" }, ["name"]],
+  ];
+  for (const [chip, drawn] of cases) {
+    const view = drawChip(chip);
+    try {
+      expect(chipDrawn(view.container), JSON.stringify(chip)).toEqual([...drawn]);
+      const name = view.container.querySelector("[data-chip-name]");
+      expect(name?.tagName, "a chip with an id is a link").toBe(
+        chip.id === undefined ? "SPAN" : "A"
+      );
+      expect(name?.querySelector("[data-node-mark]") ?? null).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  }
+
+  const proposed = drawChip({ address: statement, state: "proposed", words: "R7" });
+  try {
+    const mark = proposed.container.querySelector('[data-node-mark="proposed"]');
+    expect(mark?.textContent).toBe(ROW_MARK_WORDS.proposed);
+    expect(mark?.querySelector("svg")).toHaveAttribute("data-glyph", GLYPH_TOKENS.marks.proposed);
+  } finally {
+    proposed.unmount();
+  }
+});
+
+/** One lens as the lens read answers it, in the state and the visibility that read gives it. */
+function lensRead(
+  address: string,
+  words: string,
+  state: LensRead["state"],
+  visibility: LensRead["visibility"]
+): LensRead {
+  return {
+    address,
+    author: { id: "alice", kind: "person" },
+    created_at: "2026-11-16T09:00:00Z",
+    findings: [],
+    kind: { id: `kind-${address.slice(-2)}`, words },
+    on: `dispatch://${KEY}/spec#b-r1`,
+    risks: [],
+    state,
+    triggered: [],
+    triggered_by: [],
+    verdict: null,
+    visibility,
+  };
+}
+
+/** The lens read of the pre-mortem: its one chain runs from the trade-off analysis, at an
+ *  address pinned to a version, through the pre-mortem to a lens the tree holds no node for.
+ *  The read says the pre-mortem is proposed and the last lens overtaken, each reserved for its
+ *  author, and the trade-off analysis live for every reader: none of it is what the tree says. */
+function premortemChain(): NodeLenses {
+  return {
+    chains: [
+      {
+        lenses: [
+          lensRead(`${TRADE_OFF}@v2`, "trade-off analysis", "live", "project"),
+          lensRead(PREMORTEM, "pre-mortem", "proposed", "author"),
+          lensRead(ELSEWHERE, "second opinion", "overtaken", "author"),
+        ],
+        stopped_at: null,
+      },
+    ],
+    lens: lensRead(PREMORTEM, "pre-mortem", "proposed", "author"),
+    lenses: [],
+    on: { address: PREMORTEM, kind: "lens", state: "live", visibility: "project" },
+  };
+}
+
+/** The pre-mortem's facts: triggered by the trade-off analysis, so its row draws the chain's
+ *  control. */
+const PREMORTEM_FACTS: LensFacts = {
+  constrainedBy: [],
+  kind: "pre-mortem",
+  preventedBy: [],
+  triggered: [],
+  triggeredBy: [{ address: TRADE_OFF, words: "Trade-off analysis" }],
+};
+
+/** The issue's tree: the pre-mortem, live and the project's, first, and the trade-off analysis,
+ *  which the tree read says is proposed and reserved for its author, the reader. */
+function lensTree(): TreeNode {
+  return stamped(
+    node(KEY, "issue", [
+      node("lens/2222", "lens", [], {
+        lens: PREMORTEM_FACTS,
+        reference: PREMORTEM,
+        text: "Ship it behind a flag",
+      }),
+      node("lens/1111", "lens", [], { reference: TRADE_OFF, text: "Weigh the flag" }),
+    ]),
+    { "lens/1111": { life: "proposed", onlyYou: true } }
+  );
+}
+
+/** The pre-mortem's chain drawn alone, under the tree's marks by reference where `states` is
+ *  given and under no provider where it is not. */
+function drawChain(states: ReadonlyMap<string, NodeStates> | undefined) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const lens = nodeOf(lensTree(), "lens/2222");
+  if (lens === undefined) throw new Error("the tree holds no pre-mortem");
+  const chain = createElement(LensChain, { node: lens, tabStops: false });
+  return render(
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(
+        MemoryRouter,
+        null,
+        states === undefined ? chain : createElement(NodeStatesProvider, { value: states }, chain)
+      )
+    )
+  );
+}
+
+/** Each entry of the drawn chain by its lens's address, element by element: its kind's words,
+ *  then each mark, then the line it stands under. */
+function chainDrawn(container: HTMLElement): Record<string, (string | null)[]> {
+  return Object.fromEntries(
+    [...container.querySelectorAll("[data-lens-chain-entry]")].map((entry) => [
+      entry.getAttribute("data-lens-address") ?? "",
+      [...entry.children].map((child) =>
+        child.hasAttribute("data-lens-chain-kind")
+          ? "kind"
+          : child.hasAttribute("data-lens-chain-line")
+            ? "line"
+            : child.getAttribute("data-node-mark")
+      ),
+    ])
+  );
+}
+
+/** Presses the chain's control and waits for its three entries. */
+async function showChain(container: HTMLElement): Promise<void> {
+  const user = userEvent.setup();
+  const control = await waitFor(() => {
+    const found = container.querySelector<HTMLButtonElement>("[data-lens-show-chain]");
+    if (found === null) throw new Error("the pre-mortem draws no control for its chain");
+    return found;
+  });
+  await user.click(control);
+  await waitFor(() =>
+    expect(container.querySelectorAll("[data-lens-chain-entry]")).toHaveLength(3)
+  );
+}
+
+// R1, R2, R7: an entry of a lens's chain carries the marks of the tree's node at its lens's
+// address, whatever version the address pins, after the lens's name; an entry the tree holds no
+// node for carries none, and so does every entry outside the outline's rows. The lens read's
+// own state and visibility mark nothing. The outline hands its tree's marks to its rows itself.
+test("a chain entry carries the marks of the tree's node at its address", async () => {
+  const read = spyOn(api, "getLenses").mockResolvedValue(premortemChain());
+  try {
+    const marked = {
+      [`${TRADE_OFF}@v2`]: ["kind", "proposed", "only_you"],
+      [PREMORTEM]: ["kind"],
+      [ELSEWHERE]: ["kind"],
+    };
+    const provided = drawChain(statesByReference(lensTree()));
+    try {
+      await showChain(provided.container);
+      expect(chainDrawn(provided.container)).toEqual(marked);
+    } finally {
+      provided.unmount();
+    }
+
+    const alone = drawChain(undefined);
+    try {
+      await showChain(alone.container);
+      expect(chainDrawn(alone.container)).toEqual({
+        [`${TRADE_OFF}@v2`]: ["kind"],
+        [PREMORTEM]: ["kind"],
+        [ELSEWHERE]: ["kind"],
+      });
+    } finally {
+      alone.unmount();
+    }
+
+    readWide();
+    const outline = renderTree(lensTree());
+    try {
+      await waitFor(() => expect(focusedRow(outline.container)).toBe("lens/2222"));
+      await showChain(outline.container);
+      expect(chainDrawn(outline.container)).toEqual(marked);
+    } finally {
+      outline.unmount();
+    }
+  } finally {
+    read.mockRestore();
+  }
+});
+
+/** The pre-mortem's chain as `premortemChain` reads it, cut short at the lens `BEYOND`, which
+ *  the read names by its address alone. */
+function stoppedChain(): NodeLenses {
+  const read = premortemChain();
+  return {
+    ...read,
+    chains: (read.chains ?? []).map((chain) => ({ ...chain, stopped_at: BEYOND })),
+  };
+}
+
+/** The marks of the tree's nodes by reference, from a tree that holds the lens `BEYOND` with
+ *  `marks`, as the tree read gives them, beside the pre-mortem. */
+function statesWithBeyond(marks: NodeStates): ReadonlyMap<string, NodeStates> {
+  const beyond = node("lens/7777", "lens", [], { reference: BEYOND, text: "Look further" });
+  return statesByReference(
+    stamped(node(KEY, "issue", [...lensTree().children, beyond]), { "lens/7777": marks })
+  );
+}
+
+/** What the chip of the lens the chain stopped at draws, element by element. */
+function stoppedDrawn(container: HTMLElement): (string | null)[] {
+  const more = container.querySelector<HTMLElement>("[data-lens-chain-more]");
+  if (more === null) throw new Error("the chain draws no lens it stopped at");
+  return chipDrawn(more);
+}
+
+// R1, R2, R7: the chip of the lens a cut-short chain stopped at names that lens by its address
+// alone, with no state of its own, so it carries the marks of the tree's node at that address,
+// after its words; outside the outline's rows it carries none.
+test("the lens a cut-short chain stopped at carries the tree's marks", async () => {
+  const read = spyOn(api, "getLenses").mockResolvedValue(stoppedChain());
+  try {
+    const cases: readonly [NodeStates | undefined, readonly (string | null)[]][] = [
+      [{ life: "proposed" }, ["name", "proposed"]],
+      [{ onlyYou: true }, ["name", "only_you"]],
+      [undefined, ["name"]],
+    ];
+    for (const [marks, drawn] of cases) {
+      const view = drawChain(marks === undefined ? undefined : statesWithBeyond(marks));
+      try {
+        await showChain(view.container);
+        expect(stoppedDrawn(view.container), JSON.stringify(marks)).toEqual([...drawn]);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    read.mockRestore();
   }
 });

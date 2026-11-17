@@ -3,7 +3,10 @@ import { Link, useParams } from "react-router-dom";
 
 import { pageMutedText } from "../../../theme/classes";
 import { buildIssuePath } from "../../refs/routes";
+import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
+import { marksAt } from "../node-states/node-states";
 import { authorText } from "../page-structure";
+import { statesOfRead } from "../tree-read/tree-nodes";
 import type { LensChip } from "./lens-drafts";
 
 /**
@@ -19,6 +22,9 @@ import type { LensChip } from "./lens-drafts";
  */
 export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
   const { key = "" } = useParams<{ key: string }>();
+  // The marks of the tree's nodes, by reference, for a chip that carries no state of its own: the
+  // lens a cut-short chain stopped at is drawn from the lens facts' own map, which holds none.
+  const states = useNodeStatesByReference();
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
       {chip.id === undefined || key === "" ? (
@@ -36,6 +42,17 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
           {chip.words}
         </Link>
       )}
+      {/* The marks of the node the chip names, from its state and its visibility as the tree
+          read gives them, or, for a chip that carries neither, from the tree's node at its
+          address; after its words in the chip's own size (dispatch://INFRA-4063 R1, R2, R7). */}
+      <NodeMarks
+        compact
+        marks={
+          chip.state === undefined && chip.visibility === undefined
+            ? (marksAt(states, chip.address) ?? {})
+            : statesOfRead(chip)
+        }
+      />
     </span>
   );
 }

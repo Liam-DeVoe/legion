@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { createContext, Fragment, type ReactNode, useContext } from "react";
 
 import { pageQuietText } from "../../../theme/classes";
 import { NodeGlyph } from "../NodeGlyph";
@@ -48,4 +48,32 @@ export function NodeMarks({
       </span>
     </Fragment>
   ));
+}
+
+/** The marks of each node of the tree the outline draws, by its reference without the version
+ *  it pins (`statesByReference`). Empty outside the outline's rows, so a place drawn there marks
+ *  nothing it was not given. */
+const NodeStatesByReference = createContext<ReadonlyMap<string, NodeStates>>(new Map());
+
+/**
+ * Hands the marks of the outline's nodes, by reference, to each place under it that names a node
+ * by its address alone, with no node or chip of the tree to read them from: an entry of part W's
+ * chain of lenses (dispatch://INFRA-4063 R1, R2, R7). `IssueTree` wraps its rows in it, with
+ * `statesByReference` of the tree it draws, so the entry draws what the node's own row draws.
+ */
+export function NodeStatesProvider({
+  children,
+  value,
+}: {
+  children?: ReactNode;
+  /** `statesByReference` of the tree the rows are drawn from. */
+  value: ReadonlyMap<string, NodeStates>;
+}): ReactNode {
+  return <NodeStatesByReference.Provider value={value}>{children}</NodeStatesByReference.Provider>;
+}
+
+/** The marks of the outline's nodes by reference, each read through `marksAt`; empty outside a
+ *  `NodeStatesProvider`. */
+export function useNodeStatesByReference(): ReadonlyMap<string, NodeStates> {
+  return useContext(NodeStatesByReference);
 }

@@ -17,6 +17,7 @@ import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import { inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
+import type { NodeStates } from "../node-states/node-states";
 import {
   blockAttributeLabel,
   type DecisionState,
@@ -311,6 +312,28 @@ export function decisionNodeChanges(answer: TreeAnswer): ReadonlyMap<string, Tre
     }
   }
   return changes;
+}
+
+/**
+ * What the tree read says of one node beside its kind, in the page's terms
+ * (dispatch://INFRA-4063 R1, R2, R7): its life where its `state` is `proposed` or `overtaken`,
+ * and `onlyYou` where its `visibility` is `author`, which the reader's own tree holds only for a
+ * node reserved for them. A live, settled or gone node that every reader may see has neither,
+ * and so has a node the read gives neither value for. The read's own values are read here and
+ * nowhere else, so a place that is handed them as the tree read gives them - W's chips, which
+ * carry their target's `state` and `visibility` - draws what the node's own row draws.
+ */
+export function statesOfRead({
+  state,
+  visibility,
+}: {
+  readonly state?: string | null;
+  readonly visibility?: string | null;
+}): NodeStates {
+  return {
+    ...(state === "proposed" || state === "overtaken" ? { life: state } : {}),
+    ...(visibility === "author" ? { onlyYou: true as const } : {}),
+  };
 }
 
 /**

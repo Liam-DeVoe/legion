@@ -6,6 +6,8 @@ import { ApiError } from "../../../api/client";
 import { pageFailedText, pageQuietText } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
+import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
+import { marksAt } from "../node-states/node-states";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPE_NAMES } from "../page-words";
 import { kindWords, type LensChip, type LensFacts } from "./lens-drafts";
@@ -102,6 +104,9 @@ function ChainEntries({
   lens: LensFacts;
   tabStops: boolean;
 }): ReactNode {
+  // The marks of the tree's nodes, by reference: an entry carries those of the tree's node at its
+  // lens's address, never the lens read's own state and visibility (dispatch://INFRA-4063 R1).
+  const states = useNodeStatesByReference();
   if (chain === undefined) return null;
   const stoppedAt = chain.stopped_at;
   return (
@@ -132,6 +137,9 @@ function ChainEntries({
                   {NODE_TYPE_NAMES.lens}
                 </span>
               )}
+              {/* After the lens's name, in the chain's own size; none where the tree holds no
+                  node at that address (dispatch://INFRA-4063 R2, R7). */}
+              <NodeMarks compact marks={marksAt(states, entry.address) ?? {}} />
               {filled(onLine) ? (
                 <span className="min-w-0 break-words" data-lens-chain-line="" {...authorText}>
                   {onLine}
