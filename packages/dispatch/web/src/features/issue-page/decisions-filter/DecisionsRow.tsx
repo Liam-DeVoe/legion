@@ -114,7 +114,7 @@ export function DecisionsRow({
   body: boolean;
   /** The document the row's decision stands in, which names the issue whose tree read holds the
    *  decision: its Keep and Change write on the decision node's own document
-   *  (`DecisionActions.tsx`'s `decisionDocument`), never this one. */
+   *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. */
   document?: Artifact;
   entry: DecisionsEntry | NamedEntry;
   focused: boolean;

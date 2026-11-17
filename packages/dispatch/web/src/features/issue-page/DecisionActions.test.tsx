@@ -22,9 +22,8 @@ import {
  * The two controls a decision's node draws (dispatch://INFRA-1196 R7). The tree is one tab stop,
  * so neither takes the tab order and the row's own keys press them (`useTreeKeymap.ts`); what
  * this file reads is what the controls themselves do, which is what both a pointer and those
- * keys get. Each case holds the reads the page holds, the tree read's answer and the asks read,
- * under the keys the page reads them by, and the node finds its decision there
- * without a request of its own.
+ * keys get. Each case holds the read the page holds, the tree read's answer, under the key the
+ * page reads it by, and the node finds its decision there without a request of its own.
  */
 
 const KEY = "CORE-1";
@@ -88,9 +87,8 @@ const ONE = decisionNode(
   "One tree, five presets\n\nThe presets are queries over the one tree."
 );
 
-/** A client that holds what the page holds: the tree read's answer of `nodes`, on one page, and
- *  the asks read, which holds no ask. Neither is fresh, so an enabled observer would read it
- *  again as it mounts. */
+/** A client that holds what the page holds: the tree read's answer of `nodes`, on one page. It
+ *  is not fresh, so an enabled observer would read it again as it mounts. */
 function heldReads(nodes: readonly TreeAnswerNode[]): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(issueTreeKey(KEY), {
@@ -101,7 +99,6 @@ function heldReads(nodes: readonly TreeAnswerNode[]): QueryClient {
     tuples: [],
     view_of: null,
   } satisfies TreeAnswer);
-  client.setQueryData(["asks", KEY], []);
   return client;
 }
 
@@ -629,9 +626,9 @@ test("Keep drops every held view, the Spec view's among them", async () => {
   }
 });
 
-// The node finds its decision in the reads the page already holds, through observers
-// that are never enabled, so drawing Keep and Change sends no request, though neither held answer
-// is fresh and an enabled observer would read it again as it mounts.
+// The node finds its decision in the read the page already holds, through an observer that is
+// never enabled, so drawing Keep and Change sends no request, though the held answer is not
+// fresh and an enabled observer would read it again as it mounts.
 test("the node sends no request of its own to draw Keep and Change", async () => {
   const tree = spyOn(api, "getIssueTree").mockImplementation(() => new Promise<never>(() => {}));
   const asks = spyOn(api, "listIssueAsks").mockImplementation(() => new Promise<never>(() => {}));

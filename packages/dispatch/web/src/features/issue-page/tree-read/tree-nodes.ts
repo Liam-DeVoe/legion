@@ -9,11 +9,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import {
-  buildDispatchReference,
-  parseDispatchReference,
-  parseNodeReference,
-} from "../../refs/routes";
+import { buildDispatchReference, parseNodeReference } from "../../refs/routes";
 import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
@@ -23,7 +19,11 @@ import {
   type DecisionNode,
   decisionNodes,
   issueAsks,
+  type Lookup,
   nodeReference,
+  nodesById,
+  tieReference,
+  tuplesByFrom,
 } from "../decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
@@ -209,12 +209,14 @@ export function treeDraftsFrom(
   context: TreeWords
 ): Map<string, Draft> {
   const nodes = nodesById(answer);
-  const tuples = new Map<string, TreeTuple[]>();
-  for (const tuple of answer.tuples) {
-    const from = tuples.get(tuple.from);
-    if (from === undefined) tuples.set(tuple.from, [tuple]);
-    else from.push(tuple);
-  }
+  const tuples = tuplesByFrom(answer);
+  // The answer as `decisionNodes` looks it up, built once for the decisions and the steps alike.
+  const lookup: Lookup = {
+    askOf: askOfNode(reads),
+    key: reads.issue.key,
+    nodeOf: (readId) => nodes.get(readId),
+    tuplesFrom: (readId) => tuples.get(readId) ?? [],
+  };
   const idOfNode = nodeIdsIn(reads);
   const idOf = (readId: string): string => {
     const node = nodes.get(readId);
@@ -235,16 +237,18 @@ export function treeDraftsFrom(
   let offered = false;
   const drafting: TreeDraftContext = {
     ...context,
-    askOf: askOfNode(reads),
+    askOf: lookup.askOf,
     changes: decisionNodeChanges(answer),
-    decisions: new Map(decisionNodes(answer, reads).map((decision) => [decision.node, decision])),
+    decisions: new Map(
+      decisionNodes(answer, reads, lookup).map((decision) => [decision.node, decision])
+    ),
     drafted: (readId) => drafts.has(idOf(readId)),
     kept: keptReads(reads, context),
     lineOf: (readId) => {
       const draft = offered ? drafts.get(idOf(readId)) : undefined;
       return draft === undefined ? undefined : context.lineWords(draft);
     },
-    nodeOf: (readId) => nodes.get(readId),
+    nodeOf: lookup.nodeOf,
     // A node under a kind the page does not draw stands under that node's nearest drawn
     // ancestor, and a chain of parents that runs in a circle ends where it comes round.
     placeOf: (node) => {
@@ -262,7 +266,7 @@ export function treeDraftsFrom(
     },
     treeIdOf: idOf,
     treeIdOfNode: idOfNode,
-    tuplesFrom: (readId) => tuples.get(readId) ?? [],
+    tuplesFrom: lookup.tuplesFrom,
   };
   const made: [Draft, TreeAnswerNode][] = [];
   for (const [order, node] of walk.entries()) {
@@ -728,24 +732,18 @@ function pinDropped(reference: string): { readonly pinned: boolean; readonly tar
 }
 
 /**
- * The chip naming the node `readId` names: addressed by that node's address (`referenceOf`, and an
- * issue's own), and named by the node the answer holds, by the outline's rule for the kind of
- * target it is (`chipName`). Where the answer holds no words for it, or does not hold it and the
- * tuple names it by an address, the batched reference read names it (`chipOf`), as it names
- * every chip the outline draws. A target with no address has no chip, as in the outline.
+ * The chip naming the node `readId` names: addressed by the one rule a tie names its target by
+ * (`decision-nodes.ts`' `tieReference`, with this node's address, `referenceOf`), and named by
+ * the node the answer holds, by the outline's rule for the kind of target it is (`chipName`).
+ * Where the answer holds no words for it, or does not hold it and the tuple names it by an
+ * address, the batched reference read names it (`chipOf`), as it names every chip the outline
+ * draws. A target with no address has no chip, as in the outline.
  */
 function chipTo(readId: string, context: TreeDraftContext): NodeChip | undefined {
-  const target = context.nodeOf(readId);
-  if (target === undefined) {
-    return parseDispatchReference(readId) === undefined ? undefined : context.chipOf(readId);
-  }
-  const ref =
-    referenceOf(target, context) ??
-    (target.supertag === "issue"
-      ? buildDispatchReference({ key: target.id, kind: "issue" })
-      : undefined);
+  const ref = tieReference(readId, context.nodeOf, (target) => referenceOf(target, context));
   if (ref === undefined) return undefined;
-  const name = chipName(target, context);
+  const target = context.nodeOf(readId);
+  const name = target === undefined ? "" : chipName(target, context);
   return name === "" ? context.chipOf(ref) : { answered: true, gone: false, name, ref };
 }
 
@@ -789,15 +787,6 @@ function reviewState(node: TreeAnswerNode, changed: boolean): DecisionState | un
 /** Whether the read marks `node` as another issue's. */
 function isForeign(node: TreeAnswerNode, key: string): boolean {
   return node.issue !== undefined && node.issue !== key;
-}
-
-/** Each node of the answer by its read id, the first the answer holds where two share one. */
-function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
-  const nodes = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes) {
-    if (!nodes.has(node.id)) nodes.set(node.id, node);
-  }
-  return nodes;
 }
 
 /** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). */

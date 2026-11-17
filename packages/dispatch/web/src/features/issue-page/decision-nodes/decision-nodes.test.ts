@@ -5,9 +5,9 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
 import {
   type DecisionNode,
   type DecisionReads,
-  decisionDocument,
   decisionNodes,
   decisionQuote,
+  nodesById,
 } from "./decision-nodes";
 
 /**
@@ -174,9 +174,9 @@ const READS: DecisionReads = { issue: { key: KEY } };
 // A decision node answers the members the decisions read answers, by the same
 // names and values, so every reader of a `Decision` - the Decisions filter's parts, the review
 // list, the Spec filter's column, Keep and Change - reads it with no change; with the document it
-// is a block of, which Keep and a Change's anchor are written against, who decided it, and the
-// node itself. No other node is a decision: a statement, a comment under the decision, and an
-// open question that carries `shaped` ties answer none.
+// is a block of, which Keep and a Change's anchor are written against, and the node itself. No
+// other node is a decision: a statement, a comment under the decision, and an open question that
+// carries `shaped` ties answer none.
 test("a decision node answers the shape decisionsParts reads", () => {
   const words = "Keep the model pure.\n\nThe tree reads one answer.";
   const d1 = decision("d1", {
@@ -203,7 +203,6 @@ test("a decision node answers the shape decisionsParts reads", () => {
   expect(decisionNodes(tree, reads) satisfies readonly Decision[]).toEqual([
     {
       asks: [],
-      author: { id: "alice", kind: "user" },
       block_id: "d1",
       changed_at: "2026-11-06T00:00:00Z",
       changed_version: 2,
@@ -366,7 +365,6 @@ test("a person's decision is its answered ask", () => {
     {
       ...person,
       asks: ["ask-1"],
-      author: { id: "alice", kind: "user" },
       block_id: "q1",
       document: SPEC.artifact_id,
       heading: "Which transport do we expose?",
@@ -379,7 +377,6 @@ test("a person's decision is its answered ask", () => {
     {
       ...person,
       asks: ["ask-4"],
-      author: null,
       block_id: "ask-4",
       document: undefined,
       heading: "Words of ask-4.",
@@ -406,15 +403,43 @@ test("a decision of another document names that document", () => {
   ]);
 
   expect(
-    decisionNodes(tree, READS).map((one: DecisionNode) => [
-      one.ref,
-      one.block_id,
-      decisionDocument(one),
-    ])
+    decisionNodes(tree, READS).map((one: DecisionNode) => [one.ref, one.block_id, one.document])
   ).toEqual([
     [blockRef("spec", "d1"), "d1", SPEC.artifact_id],
     [blockRef("decisions-md", "d2"), "d2", DECISIONS.artifact_id],
     ["dispatch://CORE-2/artifact/spec#b-d3", "d3", "artifact-core-2-spec"],
+  ]);
+});
+
+// Two documents of an issue that has not converted can each hold a block of one id, and a tie
+// names its target by that id alone. A person's decision's `shaped` tie then names the first of
+// the two the answer holds, the block the outline's chip names (`nodesById`), so the decision and
+// the outline's chip name the same block.
+test("a shaped tie to an id two blocks share names the first, as the outline does", () => {
+  const tree = answer(
+    [
+      block("r1", "requirement", SPEC, 0),
+      block("r1", "callout", DECISIONS, 0),
+      block("q1", "ask", SPEC, 1),
+    ],
+    [tuple("shaped", "q1", "r1")]
+  );
+  const reads: DecisionReads = {
+    asks: [
+      question("ask-1", {
+        answer: { at: "2026-11-06T12:00:00Z", selected: ["REST"], text: null, user: "alice" },
+        artifact_id: SPEC.artifact_id,
+        block_artifact: { id: SPEC.artifact_id, primary: true, slug: SPEC.slug },
+        block_id: "q1",
+        state: "answered",
+      }),
+    ],
+    issue: { key: KEY },
+  };
+
+  expect(nodesById(tree).get("r1")?.document?.slug).toBe(SPEC.slug);
+  expect(decisionNodes(tree, reads).map((one) => one.links?.map((link) => link.to.ref))).toEqual([
+    [blockRef("spec", "r1")],
   ]);
 });
 

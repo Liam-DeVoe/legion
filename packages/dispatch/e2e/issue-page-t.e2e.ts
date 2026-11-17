@@ -32,7 +32,6 @@ import {
   decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
-  decisionsViewGate,
   decisionTimes,
   drawnNodes,
   drawnRowReadings,
@@ -64,6 +63,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t";
+import { decisionsViewServedGate } from "./issue-page-u";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -102,9 +102,10 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (`decisionNodesGate`); row 2's Decisions (`decisionsViewGate`); row 3's
- * Decisions (`decisionsViewGate`) and its decision lines (`partUGate`); row 4's Keep
- * (`decisionsViewGate` and `partUGate`).
+ * holds a decision (`decisionNodesGate`); row 2's Decisions, row 3's Decisions and row 4's Keep
+ * on the server's answer to the tree read's `view=decisions`, read before Decisions is pressed
+ * (`decisionsViewServedGate`), so a press that sends no view read fails the row; and row 3's
+ * decision lines and row 4's Keep on the page drawing the decisions from the tree read's nodes.
  */
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
@@ -115,8 +116,9 @@ const DECISION_SEEDS = new Set(
   )
 );
 
-/** The filters that read a view of the tree today: Decisions reads one once the decisions view
- *  is on the base (`decisionsViewGate`). */
+/** The filters whose view read rows 2 and 3 read on any server that serves the tree read.
+ *  Decisions reads its view too, on its first press, in rows of its own that gate on the server
+ *  serving that view (`decisionsViewServedGate`). */
 const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly TreeView[];
 
 /** How long one seed's row 1 may take: every row of the outline read with its body, inside CI's
@@ -690,6 +692,7 @@ test("the first load reads the tree once and a filter its view once, and Decisio
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await decisionsViewServedGate(page, seeded.key));
     const traffic = watchApiRequests(page);
     const load = await firstLoad(page, traffic, seeded.key);
     for (const press of [1, 2]) {
@@ -697,7 +700,6 @@ test("the first load reads the tree once and a filter its view once, and Decisio
       await pressFilter(page, traffic, "decisions");
       const pressed = traffic.requests.slice(from);
       if (press === 1) {
-        owedUnless(decisionsViewGate([...load, ...pressed], seeded.key));
         expect(
           treeReads(load, seeded.key, "decisions"),
           "the load sends no Decisions view read"
@@ -910,10 +912,10 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   }
 });
 
-// c-views for Decisions, owed while the decisions view goes unserved: once a press reads the
-// decisions as the tree read's `view=decisions`, the Decisions filter draws that view read's rows,
-// as Spec, Verification and Plan draw theirs, which is how the root issue settled row 3's gap for
-// Decisions.
+// c-views for Decisions, owed until the server serves the tree read's Decisions view
+// (`decisionsViewServedGate`, read before Decisions is pressed): the Decisions filter draws its
+// view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
+// settled row 3's gap for Decisions, and a press that sends no view read fails the row.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
 // still, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
@@ -923,15 +925,14 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
   for (const [name, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
+      owedUnless(await decisionsViewServedGate(page, seeded.key));
       const decisions = viewAnswerOf(page, "decisions");
       const traffic = watchApiRequests(page);
       await firstLoad(page, traffic, seeded.key);
       const reads = await idReadsOf(seeded.key);
       const view = PRESET_NAMES.decisions;
       const where = `${name} under ${view}`;
-      const from = traffic.requests.length;
       const drawn = await pressFilter(page, traffic, "decisions");
-      owedUnless(decisionsViewGate(traffic.requests.slice(from), seeded.key));
       const answer = await heldAnswer(decisions, `the ${view} view read`);
       const expected = viewNodeIds(answer, "decisions", reads);
       expect(
@@ -1044,8 +1045,8 @@ test("a write is drawn without a reload", async ({ browser }) => {
   });
 });
 
-// c-fresh's Keep clause, owed on the model's decisions view of the tree read
-// (`decisionsViewGate`) for the Decisions view read, and on the page drawing the decisions from
+// c-fresh's Keep clause, owed until the server serves the Decisions view
+// (`decisionsViewServedGate`), and on the page drawing the decisions from
 // the tree read's nodes (`partUGate`), which records it once decisions are nodes on this
 // branch's base.
 // SLOW(>=2s): a seeded issue, its load waited out, a Keep in the outline waited for, Decisions
@@ -1056,6 +1057,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
   test.setTimeout(ROW_MS);
   await phase(browser, seedReviewList, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await decisionsViewServedGate(page, seeded.key));
     const tree = treeAnswerOf(page);
     const decisions = decisionsReadOf(page, seeded.key);
     const traffic = watchApiRequests(page);
@@ -1082,9 +1084,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
       .poll(() => stateWordOf(page, first), { message: 'Keep makes its row read "Kept by" alice' })
       .toMatch(KEPT_BY_ALICE);
 
-    const pressed = traffic.requests.length;
     await pressFilter(page, traffic, "decisions");
-    owedUnless(decisionsViewGate(traffic.requests.slice(pressed), seeded.key));
     const target = nodeRow(page, second).first();
     await target.focus();
     const kept = traffic.requests.length;

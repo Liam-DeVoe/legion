@@ -193,9 +193,7 @@ export function SpecFilterBody({
   const asks = asksRead.data;
   const answered = root.views?.spec;
   const [last, setLast] = useState(answered);
-  useEffect(() => {
-    if (answered !== undefined) setLast(answered);
-  }, [answered]);
+  if (answered !== undefined && answered !== last) setLast(answered);
   const held = answered ?? last;
   const decisions = useMemo(
     () => (held === undefined ? [] : decisionNodes(held, { asks, issue })),

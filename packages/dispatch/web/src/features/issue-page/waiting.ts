@@ -1,6 +1,6 @@
 import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import type { DecisionNode } from "./decision-nodes/decision-nodes";
+import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -18,11 +18,13 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
- * A decision is a decision node of the tree read (`decisionNodes`), and one the reader asked to
- * change waits on its agent and is not counted, by the outline's one rule
- * (`decisionNodeChanges`): its Change is a comment the tree read (`tree`) hangs under its node,
- * whether or not the comments read holds that comment yet, so the count matches no quote and
- * reads no block of a document.
+ * A decision is a decision node of the tree read (`tree`), read once per answer
+ * (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks: they only make an answered question a
+ * person's decision, which never waits for review, and an agent's decision reads none, so the
+ * count is the same without them. One the reader asked to change waits on its agent and is not
+ * counted, by the outline's one rule (`decisionNodeChanges`): its Change is a comment the tree
+ * read hangs under its node, whether or not the comments read holds that comment yet, so the
+ * count matches no quote and reads no block of a document.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -38,9 +40,8 @@ export interface WaitingOnReader {
 }
 
 export function waitingOnReader(
-  issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
-  decisions: readonly DecisionNode[],
   isStatement: (reference: string) => boolean,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
@@ -62,6 +63,7 @@ export function waitingOnReader(
   // The decision nodes a Change waits on, by the node's id: from the tree read alone, as the
   // outline finds them, so the two agree while the comments read is out or older.
   const changes = tree === undefined ? undefined : decisionNodeChanges(tree);
+  const decisions = tree === undefined ? [] : [...decisionsOfAnswer(tree, issue.key).values()];
   const reviewing =
     viewer === undefined
       ? 0

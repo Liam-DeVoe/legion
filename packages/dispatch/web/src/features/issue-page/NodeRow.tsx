@@ -145,8 +145,8 @@ export function NodeRow({
   context: boolean;
   /** The document this row's node is a block of, which names the issue whose tree read holds
    *  the node: a decision's Keep and Change write on the decision node's own document
-   *  (`DecisionActions.tsx`'s `decisionDocument`), never this one. Undefined for a node that is
-   *  no block of a document of this issue. */
+   *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
+   *  is no block of a document of this issue. */
   document?: Artifact;
   /** The document this row's own text lives in, while the reader is editing it here: its
    *  editor is drawn in place of the row's words and the caret is in this node's block. */

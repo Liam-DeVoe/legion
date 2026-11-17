@@ -14,9 +14,8 @@ import {
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   type DecisionNode,
-  decisionDocument,
-  decisionNodes,
   decisionQuote,
+  decisionsOfAnswer,
 } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -109,7 +108,7 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
  * comment anchored to the words of the decision's first block (`decisionQuote`). The decision is
  * the node of the tree read the page already holds (`issueTreeKey`), found by its address among
- * that answer's decisions (`decisionNodes`), so the node makes no read of its own
+ * that answer's decisions (`decisionsOfAnswer`), so the node makes no read of its own
  * to draw its controls.
  */
 export function DecisionActions({
@@ -120,7 +119,8 @@ export function DecisionActions({
 }: {
   /** The document the row stands in, which names the issue (`issue_key`) whose tree read holds
    *  the decision; `undefined` for a decision whose document the issue read does not carry. The
-   *  writes name the decision node's own document (`decisionDocument`), never this one. */
+   *  writes name the decision node's own document (`decision-nodes.ts`' `DecisionNode.document`),
+   *  never this one. */
   document: Artifact | undefined;
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
@@ -132,17 +132,16 @@ export function DecisionActions({
   const issueKey = document?.issue_key ?? "";
   // The tree read under the key the page reads it by, watched by an observer that is never
   // enabled: the node sends no request of its own and sees every answer the page's own observer
-  // fetches. No asks are passed: they only make an answered question a person's decision
-  // (`decisionNodes`), and these controls are drawn only on a decision waiting for review, which
-  // is an agent's, so the decision its address finds is the same without them.
+  // fetches. Its decisions are read once per answer for every node of the page
+  // (`decisionsOfAnswer`), with no asks: they only make an answered question a person's
+  // decision, and these controls are drawn only on a decision waiting for review, which is an
+  // agent's, so the decision its address finds is the same without them.
   const tree = useQuery({ ...issueTreeQuery(issueKey), enabled: false });
-  // Read once per answer, which is when a decision is a new object.
-  const decisions = useMemo(
-    () => (tree.data === undefined ? [] : decisionNodes(tree.data, { issue: { key: issueKey } })),
-    [issueKey, tree.data]
-  );
-  const decision = decisions.find((row) => row.ref === nodeReference);
-  const documentId = decision === undefined ? undefined : decisionDocument(decision);
+  const decision =
+    tree.data === undefined || nodeReference === undefined
+      ? undefined
+      : decisionsOfAnswer(tree.data, issueKey).get(nodeReference);
+  const documentId = decision?.document;
   if (decision === undefined || documentId === undefined || isClosed) return null;
   return (
     <DecisionControls
@@ -161,7 +160,7 @@ function DecisionControls({
   tabStops,
 }: {
   decision: DecisionNode;
-  /** The document `decision` is a block of (`decisionDocument`), which both writes name. */
+  /** The document `decision` is a block of (`DecisionNode.document`), which both writes name. */
   documentId: string;
   issueKey: string;
   tabStops: boolean;

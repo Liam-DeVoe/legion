@@ -43,9 +43,10 @@ import {
 import {
   askOfNode,
   askRowId,
-  decisionNodeOf,
+  decisionNodesOf,
   decisionRowId,
   decisionSum,
+  decisionSumOf,
   type FilterReading,
   heldDecisionsRead,
   holdTreeReads,
@@ -593,10 +594,10 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
 // c-keep-change, owed: on this branch's base the server serves no tree read, so the row skips on
 // the gate of the server's tree read (`treeReadGate`). It waits too on an issue whose documents
 // are nodes of its tree (`convertedGate`), and on the seeds written as decision nodes of the tree
-// read (`decisionNodesGate`, read once Decisions is pressed). Its Change clause asserts
-// `anchor.block_id` on the captured comment request, which the page sends once the API
-// contract's anchor carries `AnchorInput.block_id`: the check holds it owed until the server on
-// the base meets those three gates and accepts that anchor block id.
+// read (`decisionNodesGate`, read once Decisions is pressed): the check holds it owed until the
+// server on the base meets those three gates. Its Change clause asserts `anchor.block_id` on the
+// captured comment request, which the page sends (`DecisionActions.tsx`' `ChangeAnchor`); no
+// gate checks that the server reads it.
 // SLOW(>=2s): a seeded issue with a third decision written, a Keep and a Change each waited on
 // until the server's reads redraw the list, a reload, and a refused Keep under held tree reads.
 test("Keep and Change act on the decision node @owed", async ({ browser }) => {
@@ -623,9 +624,11 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     owedUnless(decisionNodesGate(answer, await heldDecisionsRead(key, decisions)));
     expect(answer.converted, "the tree read answers converted: true").toBe(true);
 
-    const newer = await decisionNodeOf(key, seeded.tiedNewer);
-    const older = await decisionNodeOf(key, seeded.tiedOlder);
-    const third = await decisionNodeOf(key, THIRD_DECISION.block);
+    const [newer, older, third] = await decisionNodesOf(key, [
+      seeded.tiedNewer,
+      seeded.tiedOlder,
+      THIRD_DECISION.block,
+    ]);
     const ids = {
       newer: decisionRowId(newer),
       older: decisionRowId(older),
@@ -639,7 +642,7 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
 
     // (1) Keep on the first, `tiedNewer`: one POST against the node's own document and block,
     // with the sum the tree read answers on it; the row reads kept by alice and leaves the list.
-    const sum = await decisionSum(key, seeded.tiedNewer);
+    const sum = decisionSumOf(key, newer);
     const keep = nodeRow(page, ids.newer).first().locator(KEEP);
     await expect(keep, "the first decision, tiedNewer, draws its Keep control").toBeVisible();
     const kept = writes.length;
