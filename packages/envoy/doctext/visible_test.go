@@ -1,4 +1,4 @@
-package textcheck
+package doctext
 
 import (
 	"strings"
@@ -7,7 +7,8 @@ import (
 
 // VisibleMarkdown takes out every HTML comment, on one line or across several, and keeps each
 // comment's newlines, so a line number read from its result is the file's. A `<!--` inside a
-// fenced code block or a code span is text a reader sees, and stays.
+// fenced code block or a code span is text a reader sees, and stays; a fenced block or a list that
+// a comment opens before and closes after is hidden with it, as a page hides it.
 func TestVisibleMarkdownTakesOutWhatNoReaderSees(t *testing.T) {
 	for _, row := range []struct{ name, doc, want string }{
 		{"a comment on one line", "before <!-- hidden --> after\n", "before  after\n"},
@@ -22,6 +23,10 @@ func TestVisibleMarkdownTakesOutWhatNoReaderSees(t *testing.T) {
 		{"a code span across lines", "a ``x\n<!-- y`` b <!-- gone -->\n", "a ``x\n<!-- y`` b \n"},
 		{"a closer with no comment open stays", "an end marker (`-->`) and --> alone\n", "an end marker (`-->`) and --> alone\n"},
 		{"an unmatched backtick is text", "a ` b <!-- gone --> c\n", "a ` b  c\n"},
+		{"a comment opening before a fenced block and closing after it hides the block",
+			"a\n<!--\n```go\nhidden()\n```\n-->\nb\n", "a\n\n\n\n\n\nb\n"},
+		{"a comment opening before a list and closing after it hides the list",
+			"a\n\n<!--\n- `session` — hidden\n- `person` — hidden\n-->\n\nb\n", "a\n\n\n\n\n\n\nb\n"},
 		{"no comment at all", "# Title\n\n- `x` — y\n", "# Title\n\n- `x` — y\n"},
 	} {
 		t.Run(row.name, func(t *testing.T) {

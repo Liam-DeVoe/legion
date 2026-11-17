@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/textcheck"
+	"github.com/sjawhar/envoy/doctext"
 )
 
 // graceMarginDocs are the documents that state the margin a listener pod grants above its
@@ -70,7 +70,7 @@ func TestDocumentedGraceMarginIsTheListenerGraceMargin(t *testing.T) {
 				t.Fatalf("read %s: %v", doc.path, err)
 			}
 			// Read as the page shows it, so a sentence inside an HTML comment states nothing.
-			collapsed := graceMarginWhitespace.ReplaceAllString(textcheck.VisibleMarkdown(string(body)), " ")
+			collapsed := graceMarginWhitespace.ReplaceAllString(doctext.VisibleMarkdown(string(body)), " ")
 			stated := graceMarginSentence.FindAllStringSubmatch(collapsed, -1)
 			if len(stated) == 0 {
 				t.Fatalf("%s states no margin in the shape %q, the shape every such sentence is written in: the sentence was deleted or rewritten, and the number it stated is now held by nothing. Whoever rewrote it writes it in that shape again, or moves this check to the shape it chose.",

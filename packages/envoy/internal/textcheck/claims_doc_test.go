@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/doctext"
 )
 
 // The claim list under "The Dispatch identity the broker can issue" in docs/kubernetes.md is what
@@ -40,8 +42,8 @@ const (
 // The committed copy of the claim list is the guide's list, name for name and in its order. An
 // edit to either side alone fails here: a claim added to the guide and not to the copy would
 // otherwise never reach the exchange's own check, which reads the copy and not the guide. The
-// guide is read as its page shows it (VisibleMarkdown), so a list moved inside an HTML comment is
-// no list here either.
+// guide is read as its page shows it (doctext.VisibleMarkdown), so a list moved inside an HTML
+// comment is no list here either.
 func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 	doc, err := os.ReadFile(filepath.FromSlash(kubernetesGuide))
 	if err != nil {
@@ -49,7 +51,7 @@ func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
 		// what this check exists to stop.
 		t.Fatalf("read docs/kubernetes.md: %v", err)
 	}
-	documented, err := claimListNames(VisibleMarkdown(string(doc)))
+	documented, err := claimListNames(doctext.VisibleMarkdown(string(doc)))
 	if err != nil {
 		t.Fatalf("docs/kubernetes.md %v", err)
 	}
@@ -79,7 +81,7 @@ func TestAClaimListInsideAnHTMLCommentIsNotTheGuidesList(t *testing.T) {
 		t.Fatalf("the guide with its claim list inside a comment, read raw, no longer matches the extract "+
 			"(%v, %v): this case no longer plants the fault it guards against", raw, err)
 	}
-	if seen, err := claimListNames(VisibleMarkdown(hidden)); err == nil && slices.Equal(seen, extracted) {
+	if seen, err := claimListNames(doctext.VisibleMarkdown(hidden)); err == nil && slices.Equal(seen, extracted) {
 		t.Fatalf("a claim list inside an HTML comment still reads as the guide's list: %v", seen)
 	}
 }

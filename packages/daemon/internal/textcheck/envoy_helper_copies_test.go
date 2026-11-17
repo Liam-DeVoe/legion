@@ -41,18 +41,26 @@ const (
 	copyFloor = 8
 )
 
-// The daemon module carries no copy of a file of an Envoy test-helper package. Go's internal rule
-// keeps this module from importing github.com/sjawhar/envoy/internal/..., and the daemon held
-// copies of testtmp, testwait, githubtest, logtest's Buffer, testnats's User and fixtureenv's Unset
-// for that reason. Each is now a public package of packages/envoy that both modules import, and a
-// new copy fails here naming both files: a helper the daemon needs moves to a public package of
+// The daemon module carries no copy of a file of an Envoy helper package. Go's internal rule keeps
+// this module from importing github.com/sjawhar/envoy/internal/..., and the daemon held copies of
+// testtmp, testwait, githubtest, logtest's Buffer, testnats's User and fixtureenv's Unset for that
+// reason. Each is now a public package of packages/envoy that both modules import, and a new copy
+// fails here naming both files: a helper the daemon needs moves to a public package of
 // packages/envoy instead (docs/testing.md, "Test helpers the two Go modules share").
 //
 // A file is compared by its code lines: comments, blank lines and the package clause are dropped,
 // and each line is its tokens as the Go scanner reads them, so a copy whose comments were
-// rewritten, or whose package was renamed, still counts. An Envoy test-helper package is a
-// directory under packages/envoy, infra included, whose package name begins or ends with "test",
-// or whose non-test files import "testing"; every Go file of it is compared, its tests included.
+// rewritten, or whose package was renamed, still counts. An Envoy helper package is either of two
+// kinds (helperPackage), and every Go file of it is compared, its tests included:
+//
+//   - a test helper: a directory under packages/envoy, infra included, whose package name begins
+//     or ends with "test", or whose non-test files import "testing";
+//   - a public package of the Envoy module: a directory outside internal/, cmd/ and infra/ (a
+//     module of its own, which the daemon does not require) whose package is not a command. The
+//     daemon imports such a package as it is, so a copy of one has no reason at all;
+//     doctext.VisibleMarkdown, the reader every text check of either module takes a guide
+//     through, is one.
+//
 // Neither side reads testdata (walkGo).
 func TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper(t *testing.T) {
 	daemon, envoy := "../..", "../../../envoy"
@@ -60,9 +68,9 @@ func TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper(t *testing.T) {
 	// A check that read no helper, or not the ones the daemon is known to need, would pass on
 	// anything: each of these must be among what it reads.
 	for _, want := range []string{"testtmp/testtmp.go", "testwait/testwait.go", "githubtest/githubtest.go",
-		"logtest/buffer.go", "fixtureenv/fixtureenv.go", "testnkeys/nkeys.go"} {
+		"logtest/buffer.go", "fixtureenv/fixtureenv.go", "testnkeys/nkeys.go", "doctext/visible.go"} {
 		if _, ok := helpers[want]; !ok {
-			t.Fatalf("the check does not read packages/envoy/%s as a test helper's file; it reads %d files, so it "+
+			t.Fatalf("the check does not read packages/envoy/%s as a helper's file; it reads %d files, so it "+
 				"would pass a copy of that one", want, len(helpers))
 		}
 	}
@@ -86,12 +94,12 @@ func TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper(t *testing.T) {
 		}
 	}
 	if len(offences) > 0 {
-		t.Fatalf("copies of an Envoy test helper's file in the daemon module (%d):\n\t%s\n"+
+		t.Fatalf("copies of an Envoy helper's file in the daemon module (%d):\n\t%s\n"+
 			"import the helper from its public package under packages/envoy, moving it there out of internal/ first, "+
 			"and delete the copy (docs/testing.md, \"Test helpers the two Go modules share\")",
 			len(offences), strings.Join(offences, "\n\t"))
 	}
-	t.Logf("compared %d Go files of packages/daemon with %d files of Envoy's test-helper packages", len(daemonFiles), len(helpers))
+	t.Logf("compared %d Go files of packages/daemon with %d files of Envoy's helper packages", len(daemonFiles), len(helpers))
 }
 
 // codeLines is a Go file read as its code lines: how many there are, and how many times each
@@ -174,8 +182,8 @@ func goFilesUnder(t *testing.T, root string) map[string]codeLines {
 	return read
 }
 
-// envoyTestHelperFiles reads every Go file of an Envoy test-helper package under root, keyed by
-// its path from root.
+// envoyTestHelperFiles reads every Go file of an Envoy helper package under root, keyed by its path
+// from root.
 func envoyTestHelperFiles(t *testing.T, root string) map[string]codeLines {
 	t.Helper()
 	byDirectory := map[string][]string{}
@@ -184,7 +192,7 @@ func envoyTestHelperFiles(t *testing.T, root string) map[string]codeLines {
 	})
 	read := map[string]codeLines{}
 	for directory, files := range byDirectory {
-		if !testHelperPackage(t, directory, files) {
+		if !helperPackage(t, directory, files) {
 			continue
 		}
 		for _, relative := range files {
@@ -194,9 +202,11 @@ func envoyTestHelperFiles(t *testing.T, root string) map[string]codeLines {
 	return read
 }
 
-// testHelperPackage is whether the package of directory's non-test files is a test helper: its
-// name begins or ends with "test", or one of those files imports "testing".
-func testHelperPackage(t *testing.T, directory string, relatives []string) bool {
+// helperPackage is whether directory, whose files are relatives (paths from the Envoy module's
+// root), holds a package whose copy the daemon has no reason to keep: a test helper, whose
+// package name begins or ends with "test" or whose non-test files import "testing", or a public
+// package the daemon can import, one outside internal/, cmd/ and infra/ that is not a command.
+func helperPackage(t *testing.T, directory string, relatives []string) bool {
 	t.Helper()
 	for _, relative := range relatives {
 		if strings.HasSuffix(relative, "_test.go") {
@@ -207,13 +217,18 @@ func testHelperPackage(t *testing.T, directory string, relatives []string) bool 
 		if err != nil {
 			t.Fatalf("read the imports of %s: %v", path, err)
 		}
-		if name := parsed.Name.Name; strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test") {
+		name := parsed.Name.Name
+		if strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test") {
 			return true
 		}
 		for _, spec := range parsed.Imports {
 			if spec.Path.Value == `"testing"` {
 				return true
 			}
+		}
+		segments := strings.Split(filepath.ToSlash(filepath.Dir(relative)), "/")
+		if name != "main" && segments[0] != "infra" && !slices.Contains(segments, "internal") && !slices.Contains(segments, "cmd") {
+			return true
 		}
 	}
 	return false

@@ -1,4 +1,12 @@
-package textcheck
+// Package doctext reads a document as its reader sees it, for a check that holds a guide's text
+// to something: a test that compares a guide with a constant, a committed copy or a command
+// reads the guide through VisibleMarkdown rather than its raw bytes.
+//
+// It is public, as testnatsimages is, so that packages/daemon, a module outside
+// github.com/sjawhar/envoy, reads its guides through this one helper: Go's internal-package rule
+// keeps that module from importing an internal package of this one.
+// packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there.
+package doctext
 
 import "strings"
 
@@ -9,11 +17,15 @@ import "strings"
 // page.
 //
 // A comment's newlines stay, so a line number a caller reports from the result is the line in the
-// file. What is not a comment stays as written: a `<!--` inside a fenced code block or inside a
-// code span is text a reader sees (packages/envoy/AGENTS.md shows the `<!-- legion:` footer in
-// one), and a `-->` with no comment open is text too. A comment that never closes runs to the end
-// of the document, as CommonMark's HTML block does. It reads no other HTML, and it does not
-// model a comment that a list item or a block quote around it would end early.
+// file. A `<!--` inside a fenced code block or inside a code span is text a reader sees, and stays
+// (packages/envoy/AGENTS.md shows the `<!-- legion:` footer in one), and a `-->` with no comment
+// open is text too. A comment that opens before a fence or a list and closes after it hides the
+// whole of it, as a page does. A comment that never closes runs to the end of the document, as
+// CommonMark's HTML block does. It reads no other HTML, and three shapes are not modelled: a
+// comment that a list item or a block quote around it would end early, and a `<!--` in an
+// indented code block (four spaces or a tab), which a reader sees as code and this takes out.
+// Modelling the last would misread a list item's own indented text as code as often as it read a
+// code block right.
 func VisibleMarkdown(doc string) string {
 	var out strings.Builder
 	out.Grow(len(doc))

@@ -39,14 +39,15 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 ## Test helpers the two Go modules share
 
 `packages/daemon` is a Go module of its own, and Go's internal-package rule keeps it from importing `github.com/sjawhar/envoy/internal/...`.
-So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `sourcecheck`, `testnatsimages` and `brokertest`.
+So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `sourcecheck`, `doctext`, `testnatsimages` and `brokertest`.
+A text check that holds a guide's text to something reads the guide through `doctext.VisibleMarkdown`, which takes out every HTML comment, so a passage no reader sees is no passage to the check.
 A helper of `packages/envoy/internal` that the daemon needs moves out of `internal/` first, and its callers in both modules import it from there; it is never copied.
 The daemon's own `internal/fixtureenv`, the guard that keeps its git and jj off a Legion pod's workspace, shares only a name with Envoy's, so a daemon file that needs both imports Envoy's under another name.
 
 `packages/daemon/internal/textcheck`'s `TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper` fails a copy, naming the daemon file and the Envoy file.
 It reads each Go file as its code lines, without comments, blank lines and the package clause, and counts two files a copy when four fifths or more of the code lines of the smaller one are lines of the other and the smaller one has 8 code lines or more.
-It compares every Go file of `packages/daemon` with every Go file of an Envoy test-helper package: a directory under `packages/envoy`, `infra` included, whose package name begins or ends with `test`, or whose non-test files import `testing`. Neither side's `testdata` is read.
-A copy of a file of any other Envoy package is out of its reach.
+It compares every Go file of `packages/daemon` with every Go file of an Envoy helper package, of either of two kinds: a test helper, which is a directory under `packages/envoy`, `infra` included, whose package name begins or ends with `test`, or whose non-test files import `testing`; and a public package of the Envoy module, outside `internal/`, `cmd/` and `infra/` and not a command, which the daemon can import as it is. Neither side's `testdata` is read.
+A copy of a file of an internal package that is no test helper is out of its reach, and so is code written again rather than copied, such as a second implementation of `VisibleMarkdown`.
 
 
 ## Bun tests

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/doctext"
 	"github.com/sjawhar/envoy/internal/docnumbers"
-	"github.com/sjawhar/envoy/internal/textcheck"
 )
 
 // Every count the three documents of the connection-count check state of this package's pools,
@@ -177,7 +177,7 @@ func sumTerms(t *testing.T, root, readme, number string) []docnumbers.Stated {
 	if err != nil {
 		t.Fatalf("read %s: %v", readme, err)
 	}
-	written := regexp.MustCompile(`opens at most ((?:\d+ \+ )+\d+) =`).FindStringSubmatch(textcheck.VisibleMarkdown(string(body)))
+	written := regexp.MustCompile(`opens at most ((?:\d+ \+ )+\d+) =`).FindStringSubmatch(doctext.VisibleMarkdown(string(body)))
 	if written == nil {
 		t.Fatalf("%s states no connection sum this row can read, so its terms are unchecked", readme)
 	}
