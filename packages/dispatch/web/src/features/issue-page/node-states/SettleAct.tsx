@@ -6,7 +6,7 @@ import type { TreeNode } from "../issue-tree";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
 import { READER_ACTS } from "../useNodeEditing";
-import { settleKeyOf, useSettle } from "./settle-write";
+import { settleKeyOf, useSettle, useSettleIssue } from "./settle-write";
 
 /** The sentence a refused settle draws after the act, read from the refusal's status and
  *  code, never from its text: every refusal the page names no sentence for - a 403 with no code,
@@ -35,8 +35,9 @@ function focusRowOf(control: HTMLElement | null): void {
  * presses it: it carries `data-row-act`, which `useTreeKeymap.ts`'s `KEYED_CONTROLS` names only
  * for Reply and Answer, so `f` reaches it as it reaches each control no key presses, and Enter or
  * a press sends the settle (`settle-write.ts`). It needs no writer: a cookie proves a person, so
- * every reader of the page gets it. It is drawn for a node whose own address names its issue,
- * which every proposed node of the tree read has.
+ * every reader of the page gets it. It is drawn for a node whose own address names its issue, and
+ * for one whose address names none - a lens's, a risk's, a constraint's, a finding's - under the
+ * issue the tree is drawn for (`settle-write.ts`'s `SettleIssueProvider`); with neither, nothing.
  *
  * A pointer's press leaves the focus where it is, as the row's other acts do; a press of the act
  * holding the focus (Enter after `f`) moves it to the row first, since the act takes no press
@@ -53,8 +54,9 @@ export function SettleAct({
   /** Whether the act keeps its place in the tab order (`NodeRow`'s `tabStops`). */
   tabStops?: boolean;
 }): ReactNode {
+  const treeIssue = useSettleIssue();
   const reference = node.reference;
-  const key = reference === undefined ? undefined : settleKeyOf(reference);
+  const key = reference === undefined ? undefined : (settleKeyOf(reference) ?? treeIssue);
   if (reference === undefined || key === undefined) return null;
   return <Settle issueKey={key} reference={reference} tabStops={tabStops} />;
 }

@@ -16,7 +16,7 @@ import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeStatesProvider } from "./node-states/NodeMarks";
 import { linesIn, marksOf, statesByReference, withLine } from "./node-states/node-states";
-import { useHoldsWords } from "./node-states/settle-write";
+import { SettleIssueProvider, useHoldsWords } from "./node-states/settle-write";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
@@ -757,41 +757,43 @@ export function IssueTree({
             tree's, as the pins are. */}
         <ChangeDraftsProvider>
           <NodeStatesProvider value={nodeStates}>
-            <TreeRows
-              artifacts={artifacts}
-              context={context}
-              cycle={cycle}
-              editing={editing}
-              focused={focused}
-              isClosed={isClosed}
-              onFocus={(row, node) => press.focus({ node, row })}
-              onOpenDeeper={openDeeper}
-              onOvertaken={toggleOvertaken}
-              onPin={pin}
-              // A line of overtaken nodes takes the stop as a row does, and, as a move to a row
-              // does, the reader going on from what a key reported there.
-              onStop={(row) => {
-                setStop(row);
-                setReport(undefined);
-              }}
-              // A branch opens where it is at every width (R16): below 1024 px the outline draws
-              // one level under the node it is read from, so an opened branch deeper than that is
-              // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
-              onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
-              {...(openBody === undefined ? {} : { openBody })}
-              pinned={pinned}
-              {...(report === undefined
-                ? {}
-                : { report: { line: report.line, row: report.row ?? tabStop } })}
-              rows={rows}
-              tabStop={tabStop}
-              threads={threads}
-              // The row the reader is editing in places nothing of its own (decision 123): the
-              // editor keeps its caret on screen as they write, and grows the row, and the row put
-              // back at its top at each change of its size took the caret off the screen - a new
-              // line written deep in the spec moved the page from 3120 px to 89 px.
-              unplaced={editing?.row ?? unplaced}
-            />
+            <SettleIssueProvider value={root.type === "issue" ? root.id : undefined}>
+              <TreeRows
+                artifacts={artifacts}
+                context={context}
+                cycle={cycle}
+                editing={editing}
+                focused={focused}
+                isClosed={isClosed}
+                onFocus={(row, node) => press.focus({ node, row })}
+                onOpenDeeper={openDeeper}
+                onOvertaken={toggleOvertaken}
+                onPin={pin}
+                // A line of overtaken nodes takes the stop as a row does, and, as a move to a row
+                // does, the reader going on from what a key reported there.
+                onStop={(row) => {
+                  setStop(row);
+                  setReport(undefined);
+                }}
+                // A branch opens where it is at every width (R16): below 1024 px the outline draws
+                // one level under the node it is read from, so an opened branch deeper than that is
+                // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
+                onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
+                {...(openBody === undefined ? {} : { openBody })}
+                pinned={pinned}
+                {...(report === undefined
+                  ? {}
+                  : { report: { line: report.line, row: report.row ?? tabStop } })}
+                rows={rows}
+                tabStop={tabStop}
+                threads={threads}
+                // The row the reader is editing in places nothing of its own (decision 123): the
+                // editor keeps its caret on screen as they write, and grows the row, and the row put
+                // back at its top at each change of its size took the caret off the screen - a new
+                // line written deep in the spec moved the page from 3120 px to 89 px.
+                unplaced={editing?.row ?? unplaced}
+              />
+            </SettleIssueProvider>
           </NodeStatesProvider>
         </ChangeDraftsProvider>
       </div>

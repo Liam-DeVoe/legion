@@ -1,5 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import {
+  createContext,
+  createElement,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+} from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { writeRequest } from "../../../api/client";
@@ -35,6 +42,36 @@ function settleRequest(key: string, reference: string) {
 export function settleKeyOf(reference: string): string | undefined {
   const route = parseNodeReference(reference);
   return route !== undefined && "key" in route ? route.key : undefined;
+}
+
+/** The key of the issue the tree is drawn for, which the settle of a node whose own address names
+ *  no issue goes under: the address of a lens, a risk, a constraint or a finding
+ *  (`dispatch://lens/<uuid>`, `dispatch://lens/<uuid>#b-<block>`) names none, and the server
+ *  settles such a node under the issue it stands under. Undefined outside a
+ *  `SettleIssueProvider`. */
+const SettleIssue = createContext<string | undefined>(undefined);
+
+/**
+ * Hands the key of the issue the tree is drawn for to each Settle under it (`SettleAct.tsx`), for
+ * a node whose own address names no issue - a lens's, a risk's, a constraint's, a finding's -
+ * which settles under the issue the tree is drawn for. `IssueTree` wraps its rows in it, with the
+ * key of the issue its root is.
+ */
+export function SettleIssueProvider({
+  children,
+  value,
+}: {
+  children?: ReactNode;
+  /** The key of the issue the tree is drawn for; undefined for a tree whose root is no issue. */
+  value: string | undefined;
+}): ReactNode {
+  return createElement(SettleIssue.Provider, { value }, children);
+}
+
+/** The key of the issue the tree is drawn for, under which a node whose own address names no
+ *  issue settles; undefined outside a `SettleIssueProvider`. */
+export function useSettleIssue(): string | undefined {
+  return useContext(SettleIssue);
 }
 
 /**
