@@ -12,7 +12,7 @@ import { blockedByControlName } from "./BlockedByControl";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
@@ -198,7 +198,13 @@ export function IssueAddMenu({
       // words are passed.
       fields.push({
         label: PROPERTY_LABELS.labels,
-        ...atControl(labelsControlName([], details.key, CONTROL_LABELS)),
+        ...atControl(
+          labelsControlName(details.key, {
+            labels: [],
+            saving: false,
+            words: { ANSWER_LINES, CONTROL_LABELS },
+          })
+        ),
       });
     }
     if (details.route === null || details.route === "") {
@@ -230,7 +236,8 @@ export function IssueAddMenu({
         ...atControl(
           componentsControlName(details.key, {
             components: details.components,
-            controlLabels: CONTROL_LABELS,
+            saving: false,
+            words: { ANSWER_LINES, CONTROL_LABELS },
           })
         ),
       });

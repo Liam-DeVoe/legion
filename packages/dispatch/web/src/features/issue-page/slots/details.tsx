@@ -85,12 +85,11 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
         // from these same writes (decision 145 of the parts). Without the save's words the key
         // found no control for the length of the save.
-        const name = labelsControlName(
-          issue.labels ?? [],
-          issue.key,
-          CONTROL_LABELS,
-          writes.labels.isPending ? ANSWER_LINES : undefined
-        );
+        const name = labelsControlName(issue.key, {
+          labels: issue.labels ?? [],
+          saving: writes.labels.isPending,
+          words: { ANSWER_LINES, CONTROL_LABELS },
+        });
         const control = document.querySelector(
           `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
         );
