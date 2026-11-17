@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -12,18 +15,19 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// /healthz answers what the decisions step's last pass found owed, `decisions_step_owed`, and
-// nothing before a pass of its tick has run: a step that has not run - as
+// /healthz answers what the decisions step's last pass found owed, `decisions_step_owed`, as one
+// number, and nothing before a tick has counted: a step that has not run - as
 // DISPATCH_TEST_HOLD_DECISIONS_STEP keeps a server's from running at boot and on its tick -
 // answers no member at all, and neither does a step whose boot pass alone has run, since the boot
 // counts nothing (docs.DecisionStep.Boot: the count reads tables the boot must not wait on). Once
-// the first tick has run over a database with nothing owed, the member reads each part and the
-// total zero, and once a project stores a list of gated steps that holds `decisions`, the next
-// tick reads that list, and the total, as one.
+// the first tick has run over a database with nothing owed, the member reads 0, and once a project
+// stores a list of gated steps that holds `decisions`, the next tick reads 1. Each count logs the
+// three parts beside the total, which is where an operator reads which part is owed.
 func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	step := docs.NewDecisionStep(database, "", nil)
+	var logged bytes.Buffer
+	step := docs.NewDecisionStep(database, "c0ffee", slog.New(slog.NewTextHandler(&logged, nil)))
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, step, issuers{})
 	probe := func() map[string]any {
 		t.Helper()
@@ -35,15 +39,24 @@ func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 		}
 		return health
 	}
-	owed := func(stage string) map[string]any {
+	owed := func(stage string) float64 {
 		t.Helper()
 		health := probe()
-		member, ok := health["decisions_step_owed"].(map[string]any)
+		member, ok := health["decisions_step_owed"].(float64)
 		if !ok {
-			t.Fatalf("%s: /healthz answers decisions_step_owed %#v, want the counts of the step's last pass", stage, health["decisions_step_owed"])
+			t.Fatalf("%s: /healthz answers decisions_step_owed %#v, want one number, the total the step's last pass counted", stage, health["decisions_step_owed"])
 		}
 		t.Logf("%s: decisions_step_owed %v", stage, member)
 		return member
+	}
+	countLine := func(stage, want string) {
+		t.Helper()
+		for _, line := range strings.Split(logged.String(), "\n") {
+			if strings.Contains(line, `msg="dispatch: decisions step counted what it owes"`) && strings.Contains(line, want) {
+				return
+			}
+		}
+		t.Errorf("%s: the step logged no count holding %q:\n%s", stage, want, logged.String())
 	}
 
 	if member, present := probe()["decisions_step_owed"]; present {
@@ -59,12 +72,10 @@ func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	if err := step.Tick(ctx); err != nil {
 		t.Fatalf("run the step's first tick: %v", err)
 	}
-	empty := owed("after a tick over a database with nothing owed")
-	for _, part := range []string{"decisions_documents", "answers_left_spec", "gated_steps_lists", "total"} {
-		if empty[part] != float64(0) {
-			t.Errorf("after a tick over a database with nothing owed, decisions_step_owed.%s = %v, want 0", part, empty[part])
-		}
+	if empty := owed("after a tick over a database with nothing owed"); empty != 0 {
+		t.Errorf("after a tick over a database with nothing owed, decisions_step_owed = %v, want 0", empty)
 	}
+	countLine("after the first tick", "owed=0 decisions_documents=0 answers_left_spec=0 gated_steps_lists=0 commit=c0ffee")
 
 	if _, err := database.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee, gated_steps) values ('GATE', 'Gated', 'alice', '{decisions,spec}')
@@ -74,8 +85,8 @@ func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	if err := step.Tick(ctx); err != nil {
 		t.Fatalf("run a tick of the step: %v", err)
 	}
-	gated := owed("after a pass over one list of gated steps holding decisions")
-	if gated["gated_steps_lists"] != float64(1) || gated["total"] != float64(1) {
-		t.Errorf("decisions_step_owed = %v, want gated_steps_lists 1 and total 1", gated)
+	if gated := owed("after a pass over one list of gated steps holding decisions"); gated != 1 {
+		t.Errorf("decisions_step_owed = %v, want 1, the one list of gated steps holding decisions", gated)
 	}
+	countLine("after the gated list", "owed=1 decisions_documents=0 answers_left_spec=0 gated_steps_lists=1 commit=c0ffee")
 }

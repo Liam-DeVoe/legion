@@ -1966,14 +1966,14 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
 //
-// `decisions_step_owed` is what the decisions step's last pass found the restore and the
-// conversion still owe (docs.DecisionStepOwed): `{"decisions_documents": n, "answers_left_spec":
-// n, "gated_steps_lists": n, "total": n}`, the decisions documents still standing, the answered
-// asks whose block left their spec, the stored lists of gated steps that hold `decisions`, and
-// their sum. It is absent until a pass of the step's tick has run - the boot's pass counts nothing
-// (docs.DecisionStep.Boot), and DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it
-// is set - and it is read from the step, so the probe adds no statement to the database. It never
-// decides `ok`.
+// `decisions_step_owed` is one number: the sum of what the decisions step's last pass found the
+// restore and the conversion still owe (docs.DecisionStepOwed.Total) - the decisions documents
+// still standing, the answered asks whose block left their spec, and the stored lists of gated
+// steps that hold `decisions`. The step logs the three parts at each count. A deploy check reads
+// the member at zero as the step having nothing left to do. It is absent until a tick of the step
+// has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
+// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
+// the step, so the probe adds no statement to the database. It never decides `ok`.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
@@ -2033,22 +2033,22 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
-			OK                bool                   `json:"ok"`
-			DB                bool                   `json:"db"`
-			NATS              *bool                  `json:"nats"`
-			Files             *bool                  `json:"files"`
-			SignIn            *bool                  `json:"signin"`
-			ServiceTokens     *bool                  `json:"service_tokens"`
-			Commit            *string                `json:"commit"`
-			FleetCommit       *string                `json:"fleet_commit"`
-			SchemaVersion     *int                   `json:"schema_version"`
-			OutboxPublisher   bool                   `json:"outbox_publisher"`
-			IdempotencyKeys   bool                   `json:"idempotency_keys"`
-			DecisionsStepOwed *docs.DecisionStepOwed `json:"decisions_step_owed,omitempty"`
+			OK                bool    `json:"ok"`
+			DB                bool    `json:"db"`
+			NATS              *bool   `json:"nats"`
+			Files             *bool   `json:"files"`
+			SignIn            *bool   `json:"signin"`
+			ServiceTokens     *bool   `json:"service_tokens"`
+			Commit            *string `json:"commit"`
+			FleetCommit       *string `json:"fleet_commit"`
+			SchemaVersion     *int    `json:"schema_version"`
+			OutboxPublisher   bool    `json:"outbox_publisher"`
+			IdempotencyKeys   bool    `json:"idempotency_keys"`
+			DecisionsStepOwed *int64  `json:"decisions_step_owed,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.Owed(),
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }

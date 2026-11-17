@@ -159,6 +159,15 @@ type StoreReport struct {
 	// reach one in a document that still owes its block index (storeOnlyRead). An unresolved far
 	// end refuses the census; a count does not, and neither does a far end left out.
 	StoreOnly []StoreOnlyReport
+	// Dangling is the dangling-citation counter over the restore's work (DanglingCitations), and
+	// Collisions the collision census of the same work (CollisionsOf), the block ids the restore
+	// must change for each issue: both read the census's snapshot, so both answer before the
+	// restore of dispatch://INFRA-1150 moves anything. Neither refuses the census. The returning
+	// set counts before the restore by design, and the moved set is a finding the driver that
+	// watches it holds to zero: a decisions document may hold a citation of a section an edit
+	// deleted before this release, which no move made and no deploy should wait on.
+	Dangling   DanglingReport
+	Collisions []Collision
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 }
@@ -1269,6 +1278,14 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		if report.StoreOnly, err = readStoreOnly(ctx, tx); err != nil {
 			return nil, err
 		}
+		work, err := ReadRestoreWork(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		report.Collisions = CollisionsOf(work)
+		if report.Dangling, err = danglingCitationsOver(ctx, tx, work); err != nil {
+			return nil, err
+		}
 		if report.Projects, err = ProjectCensus(ctx, tx); err != nil {
 			return nil, err
 		}
@@ -1290,21 +1307,15 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 	return report, nil
 }
 
-// movedTo is the tuple kind a block address that no longer stands states to the block it moved
-// to (dispatch://INFRA-1150 R8): the restore and the conversion write it, and the resolvers follow
-// it. No table projects it, so the census counts it and resolves its far ends (readStoreOnly).
-const movedTo = "moved_to"
-
-// movedToHops is how many moved_to tuples a far end is followed through before it is read as not
-// resolving, as the resolvers follow a chain (dispatch://INFRA-1150 R8: at most 8 hops).
-const movedToHops = 8
-
 // storeOnlyRead counts, in one read of graph_tuples, every relation of the two kinds no table
 // projects that the store states now - the newest tuple of each (near end, far end), kept while
 // it asserts - and those of them whose far end does not resolve: a copied_from (a copy's block to
 // the ask it was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node, and a
-// moved_to to a block that stands, which is one a document_blocks row holds, reached at once or
-// through at most movedToHops more moved_to tuples, a cycle reaching none.
+// moved_to (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row
+// holds, reached at once or through more moved_to tuples, a cycle reaching none. A far end is
+// followed through one tuple fewer than graphstore.MovedToHops, since the tuple that names it is
+// the first of the chain a citation of its near end is read through (graphstore.MovedTo), so a
+// far end that resolves here is one every resolver reaches from that near end.
 //
 // A moved_to whose chain reaches no block that stands but reaches an address in a document that
 // still owes its block index (document_block_versions.version null, as typedNodeOwed reads it) is
@@ -1321,17 +1332,17 @@ var storeOnlyRead = `
 		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id from (
 			` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id, t.to_kind, t.to_id`,
 	`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+movedTo+`')`) + `
+	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+graphstore.TupleMovedTo+`')`) + `
 		) held where held.asserted
 	),
 	followed (start, kind, address, hops, path) as (
 		select far.to_id, far.to_kind, far.to_id, 0, array[far.to_id]
-		from (select distinct s.to_kind, s.to_id from stated s where s.kind = '` + movedTo + `') far
+		from (select distinct s.to_kind, s.to_id from stated s where s.kind = '` + graphstore.TupleMovedTo + `') far
 		union all
 		select f.start, m.to_kind, m.to_id, f.hops + 1, f.path || m.to_id
 		from followed f
-		join stated m on m.kind = '` + movedTo + `' and m.from_kind = f.kind and m.from_id = f.address
-		where f.kind = '` + refs.BlockNodeKind + `' and f.hops < ` + strconv.Itoa(movedToHops) + ` and m.to_id <> all(f.path)
+		join stated m on m.kind = '` + graphstore.TupleMovedTo + `' and m.from_kind = f.kind and m.from_id = f.address
+		where f.kind = '` + refs.BlockNodeKind + `' and f.hops < ` + strconv.Itoa(graphstore.MovedToHops-1) + ` and m.to_id <> all(f.path)
 		  and not exists (select 1 from document_blocks d where d.node_id = f.address)
 	),
 	standing as (
@@ -1352,14 +1363,14 @@ var storeOnlyRead = `
 				  and ask.state = '` + graphstore.StateLive + `')
 			else s.to_kind = '` + refs.BlockNodeKind + `' and exists (select 1 from standing where standing.start = s.to_id)
 		end as resolves,
-		s.kind = '` + movedTo + `' and s.to_kind = '` + refs.BlockNodeKind + `'
+		s.kind = '` + graphstore.TupleMovedTo + `' and s.to_kind = '` + refs.BlockNodeKind + `'
 		  and exists (select 1 from owing where owing.start = s.to_id) as left_out
 		from stated s
 	)
 	select listed.kind, count(r.kind),
 	       count(r.kind) filter (where not r.resolves and not r.left_out),
 	       count(r.kind) filter (where not r.resolves and r.left_out)
-	from (values (1, '` + graphstore.TupleCopiedFrom + `'), (2, '` + movedTo + `')) listed (position, kind)
+	from (values (1, '` + graphstore.TupleCopiedFrom + `'), (2, '` + graphstore.TupleMovedTo + `')) listed (position, kind)
 	left join resolved r on r.kind = listed.kind
 	group by listed.position, listed.kind
 	order by listed.position`
@@ -1615,12 +1626,19 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 }
 
 // Write prints the report, one `census: store ` line per fact, every difference under its kind,
-// the store-only kinds and the sizing after them, ending with the verdict. A kind held triple by
-// triple prints the store's tuple count and its rows' triple count, and the differences as the
-// rows no tuple states and the tuples no row projects; a store-only kind prints the far ends it
-// leaves out as left_out. It prints counts, digests, kinds and the addresses of rows and nodes;
-// no body, no actor and no value of an attribute leaves the database.
-func (r *StoreReport) Write(w io.Writer) {
+// the store-only kinds, the dangling-citation counter and the collision census, and the sizing
+// after them, ending with the verdict. A kind held triple by triple prints the store's tuple count
+// and its rows' triple count, and the differences as the rows no tuple states and the tuples no row
+// projects; a store-only kind prints the far ends it leaves out as left_out. It prints counts,
+// digests, kinds and the addresses of rows and nodes; no body, no actor and no value of an
+// attribute leaves the database.
+func (r *StoreReport) Write(w io.Writer) { r.write(w, false) }
+
+// WriteVerbose is Write with one line for each citation the dangling-citation counter counted,
+// naming its set, the node that cites and the address it cites, under the counter's line.
+func (r *StoreReport) WriteVerbose(w io.Writer) { r.write(w, true) }
+
+func (r *StoreReport) write(w io.Writer, verbose bool) {
 	if r.Absent {
 		fmt.Fprintln(w, "census: store absent (the database holds no graph_nodes: this branch's migrations have not run, so no kind was read)")
 	}
@@ -1655,6 +1673,9 @@ func (r *StoreReport) Write(w io.Writer) {
 	for _, kind := range r.StoreOnly {
 		fmt.Fprintf(w, "census: store-only kind=%s tuples=%s unresolved=%s left_out=%s\n",
 			kind.Kind, pgmigrate.Thousands(kind.Tuples), pgmigrate.Thousands(kind.Unresolved), pgmigrate.Thousands(kind.LeftOut))
+	}
+	if !r.Absent {
+		writeMoves(w, r.Dangling, r.Collisions, verbose)
 	}
 	writeProjectCensus(w, r.Projects)
 	for _, row := range r.ProjectIncomplete {

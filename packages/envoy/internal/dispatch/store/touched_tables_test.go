@@ -20,6 +20,8 @@ var thisChildsMigrations = []string{
 	"20261116094100_ask_followers_node_index.up.sql",
 	"20261116094101_graph_edges_asks.up.sql",
 	"20261116220307_graph_tuples_store_only_index.up.sql",
+	"20261117002006_block_moved_to.up.sql",
+	"20261117002045_artifacts_retired_at.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations

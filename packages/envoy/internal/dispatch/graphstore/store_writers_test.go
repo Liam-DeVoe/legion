@@ -103,6 +103,11 @@ var storeWriteCallSites = []string{
 	"api/messages.go#writeMessageNode",
 	"api/reviews.go#openApprovalAsk",
 	"docs/ask_blocks.go#createAskBlock",
+	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
+	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
+	// document.retired and the node's facts under it.
+	"docs/retire.go#RetireDocument",
+	"docs/retire.go#writeRetiredNode",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
@@ -144,8 +149,9 @@ var storeWriteCallSites = []string{
 	// Caused: the answer, resolve and decline routes' transition, an issue's close and reopen, the
 	// approval carry's answer, and a settlement's retractions and restorations. The settlement
 	// states the copies among a document's ask blocks as claims once its version is indexed, and
-	// the backfill of the boot step's first phase states the asks and the followers written before
-	// this release, each batch with its rows locked first.
+	// beside them the readability of each ask whose block it read, as that ask node's `invalid`
+	// value (G1), and the backfill of the boot step's first phase states the asks and the
+	// followers written before this release, each batch with its rows locked first.
 	"api/ask_transitions.go#closeAskTx",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx",
 	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
@@ -154,6 +160,7 @@ var storeWriteCallSites = []string{
 	"docs/approval_carry.go#answerApprovalAsk",
 	"docs/ask_blocks.go#causeSettledAnswers",
 	"docs/ask_blocks.go#claimCopies",
+	"docs/ask_blocks.go#stateInvalidReasons",
 	"graphcensus/backfill.go#writeAskBatch",
 	"graphcensus/backfill.go#writeAskFollowerBatch",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
