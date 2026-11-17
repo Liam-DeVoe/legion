@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // c-reading-approval (dispatch://INFRA-1150 R2): a reading never changes the decision it reads, so
@@ -19,22 +22,35 @@ import (
 // state this fails on is a write that carries the approval onto the old version alone and leaves
 // the new current version unapproved, which a test reading the old approval would pass.
 
-// The fixture spec of the reading tests: prose, an agent's decision d1 that the reading r1 reads,
-// a decision d2 nobody reads yet, and two asks of the person's, which the fixture answers: a1,
-// which offers options, and a2, whose answer is the person's own words.
+// The fixture spec of the reading tests, as c-reading-approval's fixture holds it: prose; the
+// agent's decision d1, uploaded by its session with its level of certainty and its reason, that
+// the reading r1 reads; the agent's decision d2, which nobody reads yet; and four asks the
+// person is asked: a1, which offers options, and a2, whose answer is the person's own words, both
+// of which the fixture answers, a3, which it leaves open, and a4, which the person declines with
+// a note. Every version a write stores holds a3 and a4 beside the answered asks, so each carry is
+// read agreeing with an open and a declined ask too.
 const (
 	readingProse       = "The service ships behind a flag."
 	readingDecisionOne = "We chose REST."
 	readingDecisionTwo = "We chose Postgres."
+	// readingReason is the agent's reason for its level of certainty in d1, and readingCertainty
+	// the two attributes d1's directive carries them in, as every rendering writes them.
+	readingReason      = "A client that needs streaming would change it."
+	readingCertainty   = ` uncertainty="medium" uncertainty_reason="` + readingReason + `"`
 	readingOfOne       = "The agent reads it as REST for every service."
 	readingQuestion    = "Which transport do we expose?"
 	readingOpenWords   = "Which region goes first?"
 	readingAskWithout  = ":::ask{#a2 urgency=\"med\" multiple=\"false\"}\n" + readingOpenWords + "\n:::\n"
+	readingStillOpen   = "Which store holds the queue?"
+	readingOpenAsk     = ":::ask{#a3 urgency=\"low\" multiple=\"false\"}\n" + readingStillOpen + "\n\n- Postgres: The one we run\n- Redis: The faster one\n:::\n"
+	readingDeclined    = "Who owns the rollout?"
+	readingDeclinedAsk = ":::ask{#a4 urgency=\"high\" multiple=\"false\"}\n" + readingDeclined + "\n\n- Ops: The ops team\n- Dev: The service team\n:::\n"
+	readingDeclineNote = "Not mine to choose: ask the design lead."
 	readingSpec        = "# Plan\n\n" + readingProse + "\n\n" +
-		"::::decision{#d1}\n" + readingDecisionOne + "\n\n:::reading{#r1}\n" + readingOfOne + "\n:::\n::::\n\n" +
+		"::::decision{#d1" + readingCertainty + "}\n" + readingDecisionOne + "\n\n:::reading{#r1}\n" + readingOfOne + "\n:::\n::::\n\n" +
 		":::decision{#d2}\n" + readingDecisionTwo + "\n:::\n\n" +
 		":::ask{#a1 urgency=\"med\" multiple=\"false\"}\n" + readingQuestion + "\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n" +
-		readingAskWithout
+		readingAskWithout + "\n" + readingOpenAsk + "\n" + readingDeclinedAsk
 	// The readings the writes add: r2 under d2, and r3 inside an answered ask.
 	readingOfTwo    = "The agent reads it as Postgres for every store."
 	readingOfAnswer = "The agent reads the answer as the quiet region first."
@@ -46,30 +62,90 @@ func readingCarrySentence(from int) string {
 	return fmt.Sprintf("Carried forward from the approval of version %d: the readings of its decisions and of its answered asks, which change no decision, were the whole change since it.", from)
 }
 
-// readingFixture is one issue whose spec, readingSpec, a person approved once its asks held
-// their answers: the issue, its spec and that approval.
+// readingFixture is one issue whose spec, readingSpec, a person approved once its asks held their
+// answers and its declined ask its decline: the issue, its spec, that approval, and the ask a3
+// leaves open and the one a4 declines.
 type readingFixture struct {
 	issueKey, artifactID string
 	approval             model.ArtifactReview
+	open, declined       string
 }
 
-// approvedReadingSpec creates an issue of project TEST holding readingSpec as alice, waits for
-// settlement to open the asks of a1 and a2, has alice answer both - which writes no version - and
-// approve the spec's latest version.
-func approvedReadingSpec(t *testing.T, handler http.Handler, title string) readingFixture {
+// approvedReadingSpec has the agent's session create an issue of project TEST holding readingSpec,
+// so d1 and d2 are the agent's decisions, waits for settlement to open the asks of a1 to a4, has
+// alice answer a1 and a2 and decline a4 with a note - none of which writes a version - and approve
+// the spec's latest version. It fails unless the spec is the check's fixture: d1 decided by the
+// session with its level of certainty and its reason, a3 open, and a4 declined with the note.
+func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Store, title string) readingFixture {
 	t.Helper()
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "TEST", "title": title, "spec": readingSpec, "force": true,
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create the issue %q: status=%d body=%s", title, created.Code, created.Body.String())
-	}
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "TEST", "title": title, "spec": readingSpec, "force": true, "actor": sessionActor(),
+	})
+	requireAgentWrite(t, "the agent's issue "+title, created, http.StatusCreated)
 	issue := decodeBody[model.Issue](t, created)
-	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"a1": readingQuestion, "a2": readingOpenWords})
+	asks := readingAsksOpened(t, handler, issue.Key, map[string]string{
+		"a1": readingQuestion, "a2": readingOpenWords, "a3": readingStillOpen, "a4": readingDeclined,
+	})
 	answerDecisionBlock(t, handler, asks["a1"], "alice", []string{"REST"}, "", nil)
 	answerDecisionBlock(t, handler, asks["a2"], "alice", []string{}, "The quiet one, East.", nil)
+	if declined := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks["a4"]+"/decline",
+		map[string]any{"note": readingDeclineNote}, "alice"); declined.Code != http.StatusOK {
+		t.Fatalf("alice declines a4: status=%d body=%s", declined.Code, declined.Body.String())
+	}
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	requireDecidedByNode(t, database, "the agent's decision d1", spec.address("d1"), graphstore.KindSession, decidingSession)
+	requireValue(t, database, spec.address("d1"), refs.ValueUncertainty, "medium")
+	requireValue(t, database, spec.address("d1"), refs.ValueUncertaintyReason, readingReason)
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-	return readingFixture{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, approval: approval}
+	return readingFixture{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, approval: approval, open: asks["a3"], declined: asks["a4"]}
+}
+
+// readingAsksOpened waits for settlement to open an ask for each block of questions (block id to
+// question) on the issue, and answers each ask's id by block id. It reads the issue's own asks: the
+// open a3 every earlier fixture leaves stands in alice's Inbox under the same block id.
+func readingAsksOpened(t *testing.T, handler http.Handler, issueKey string, questions map[string]string) map[string]string {
+	t.Helper()
+	ids := make(map[string]string, len(questions))
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/asks?state=all", nil, "alice")
+		if listed.Code != http.StatusOK {
+			t.Fatalf("list the asks of %s: status=%d body=%s", issueKey, listed.Code, listed.Body.String())
+		}
+		for _, ask := range decodeBody[[]model.Ask](t, listed) {
+			if ask.BlockID == nil {
+				continue
+			}
+			if question, asked := questions[*ask.BlockID]; asked && ask.Question == question && ask.State == "open" {
+				ids[*ask.BlockID] = ask.ID
+			}
+		}
+		if len(ids) == len(questions) {
+			return ids
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("settlement opened the asks %v on %s, want one for each block of %v", ids, issueKey, questions)
+		}
+	}
+}
+
+// requireOpenAndDeclinedAsks fails unless version number of fixture's spec, stored as markdown,
+// holds the open ask a3 and the declined ask a4 as the agent wrote them, and the two asks still
+// read open, and declined by alice with her note.
+func requireOpenAndDeclinedAsks(t *testing.T, handler http.Handler, fixture readingFixture, number int, markdown string) {
+	t.Helper()
+	for _, block := range []string{readingOpenAsk, readingDeclinedAsk} {
+		if !strings.Contains(markdown, block) {
+			t.Fatalf("version %d reads\n%s\nwant it holding the ask block\n%s", number, markdown, block)
+		}
+	}
+	if open := readBlockAsk(t, handler, fixture.open); open.State != "open" {
+		t.Fatalf("a3 reads %q at version %d, want it still open", open.State, number)
+	}
+	declined := readBlockAsk(t, handler, fixture.declined)
+	if declined.State != "resolved" || declined.Resolution == nil || declined.Resolution.Kind != model.AskResolutionDeclined ||
+		declined.Resolution.Reason != readingDeclineNote {
+		t.Fatalf("a4 reads %q with the resolution %+v at version %d, want it declined with the note %q", declined.State, declined.Resolution, number, readingDeclineNote)
+	}
 }
 
 // replacedOnce is markdown with old replaced by with, failing unless markdown holds old once.
@@ -143,11 +219,11 @@ var readingWrites = []readingWrite{
 	{
 		name: "a reading removed",
 		upload: func(t *testing.T, markdown string) string {
-			return replacedOnce(t, markdown, "::::decision{#d1 replaced=\"false\"}\n"+readingDecisionOne+"\n\n:::reading{#r1}\n"+readingOfOne+"\n:::\n::::\n",
-				":::decision{#d1 replaced=\"false\"}\n"+readingDecisionOne+"\n:::\n")
+			return replacedOnce(t, markdown, "::::decision{#d1"+readingCertainty+" replaced=\"false\"}\n"+readingDecisionOne+"\n\n:::reading{#r1}\n"+readingOfOne+"\n:::\n::::\n",
+				":::decision{#d1"+readingCertainty+" replaced=\"false\"}\n"+readingDecisionOne+"\n:::\n")
 		},
 		edit:  []map[string]string{{"op": "delete", "block": "r1"}},
-		holds: ":::decision{#d1 replaced=\"false\"}\n" + readingDecisionOne + "\n:::\n",
+		holds: ":::decision{#d1" + readingCertainty + " replaced=\"false\"}\n" + readingDecisionOne + "\n:::\n",
 		drops: readingOfOne,
 	},
 }
@@ -169,7 +245,8 @@ var supersedingWrites = []readingWrite{
 // writeReadingSpec makes write to fixture's spec as the session, through the upload of the whole
 // document when upload is set and through the edits route otherwise, waits for the version it
 // stores, one past the approved one, and answers the advice the write came back with. It reads
-// the document back and fails unless it holds what the write leaves.
+// the document back and fails unless it holds what the write leaves, and the open and the
+// declined ask beside it (requireOpenAndDeclinedAsks).
 func writeReadingSpec(t *testing.T, handler http.Handler, fixture readingFixture, write readingWrite, upload bool) *testWriteAdvice {
 	t.Helper()
 	version := fixture.approval.Version + 1
@@ -187,6 +264,7 @@ func writeReadingSpec(t *testing.T, handler http.Handler, fixture readingFixture
 	if !strings.Contains(stored, write.holds) || write.drops != "" && strings.Contains(stored, write.drops) {
 		t.Fatalf("%s: version %d reads back as\n%s\nwant it holding %q and not %q", write.name, version, stored, write.holds, write.drops)
 	}
+	requireOpenAndDeclinedAsks(t, handler, fixture, version, stored)
 	return advice
 }
 
@@ -266,16 +344,19 @@ func requireSupersededByTheWrite(t *testing.T, handler http.Handler, fixture rea
 	}
 }
 
-// A person approves the fixture spec at a version, and a session writes a reading under one of
-// its decisions and reads the document back; the four reads after the write find the current
-// version approved (requireApprovedAtTheCurrentVersion). The same holds for a reading added inside
+// A person approves the fixture spec at a version - the agent's decision with its level of
+// certainty, its reason and a reading under it, beside an answered ask, an open one and a declined
+// one with a note (approvedReadingSpec) - and a session writes a reading under one of its
+// decisions and reads the document back; the four reads after the write find the current version
+// approved (requireApprovedAtTheCurrentVersion), the open and the declined ask standing in the
+// version that carries (requireOpenAndDeclinedAsks). The same holds for a reading added inside
 // the person's answered ask, an edit of a reading's text and the removal of one, each written as
 // an upload of the whole document and as an edit of it (the reading inside the ask that offers
 // options as an upload alone: readingWrites). Four writes still supersede the approval: the
 // decision's own words, prose outside any reading, both at once beside a reading, and a reading
 // retyped into a decision (requireSupersededByTheWrite).
 func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
-	handler, _, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "TEST project",
 	}, "alice"); response.Code != http.StatusCreated {
@@ -285,7 +366,7 @@ func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
 	fixture := func(t *testing.T) readingFixture {
 		t.Helper()
 		issues++
-		return approvedReadingSpec(t, handler, fmt.Sprintf("Reading fixture %d", issues))
+		return approvedReadingSpec(t, handler, database, fmt.Sprintf("Reading fixture %d", issues))
 	}
 	for _, write := range readingWrites {
 		for _, upload := range []bool{true, false} {
