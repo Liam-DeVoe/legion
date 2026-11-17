@@ -4,6 +4,7 @@ import path from "node:path";
 import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
 import { z } from "zod";
 import { createLegionDaemonClient } from "./daemon-client";
+import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
   type DeclaredNumber,
@@ -46,12 +47,15 @@ const REPORT = {
 type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
 
 /** A runtime over a stub daemon answering the golden fixtures, recording each route it is sent
- * and each body it is posted. `state` is what `GET /legion/v1/state` answers, and `ratingRefusal`,
- * when given, what the daemon answers a completion that carries `planRating`. */
+ * and each body it is posted. `state` is what `GET /legion/v1/state` answers, `ratingRefusal`,
+ * when given, what the daemon answers a completion that carries `planRating`, and `report` what
+ * the pane reports for the phase it finds: `REPORT`, or the commit alone that a phase with no
+ * handoff record reports (handoff-record's standingReport). */
 function runtime(
   claim: ClaimCapability = implementer,
   state: Record<string, unknown> = daemonFixture("state.json"),
-  ratingRefusal?: DaemonRefusal
+  ratingRefusal?: DaemonRefusal,
+  report: HandoffReport = REPORT
 ) {
   const routes: string[] = [];
   const posted: Record<string, unknown>[] = [];
@@ -85,7 +89,7 @@ function runtime(
     claim,
     handoffReport: async (phase, role) => {
       lookups.push(`${phase} ${role}`);
-      return REPORT;
+      return report;
     },
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
@@ -370,7 +374,9 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
 // daemon's to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any
 // phase, since a filter on the record's phase would drop a rating the agent believes it gave.
 test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
-  const late = runtime(implementer, stateAtPhase("merging"));
+  // A retro writes no handoff record, so the pane reports the commit alone for it.
+  const lateHead = "b".repeat(40);
+  const late = runtime(implementer, stateAtPhase("merging"), undefined, { commit: lateHead });
   const lateReason = "The reviewer's two rounds were the test step the plan had left out.";
   await expect(
     executePhaseOp(late.ops, {
@@ -385,7 +391,7 @@ test("a rating is sent on a completion at any phase: the late retro's at merging
     grantId: "grant-for-one-command",
     summary: "Retro done.",
     verdict: "",
-    ...REPORT,
+    commit: lateHead,
     planRating: 2,
     planReason: lateReason,
   });
