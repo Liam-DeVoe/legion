@@ -685,6 +685,13 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // worked each, never the planner's plan.md), the two fields its completion carries, both ends of
 // the scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
 // on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
+//
+// The same prompt reaches a tool that takes neither field: a claim whose launch installs no plugin
+// (a Claude Code role in a pod) is served on the contract of the plugin its image carries until the
+// update round over its pod (docs/kubernetes.md), and the daemon asks a rating of a plugin at
+// PlanRatingContract or above alone. So the prompt says the refusal comes from a tool that takes
+// the two, and tells an agent whose tool takes neither to complete with the summary alone, rather
+// than to send fields its tool refuses.
 // This shows the text is loaded, never that a role follows it.
 func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	composer, err := New(t.TempDir())
@@ -697,8 +704,9 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 		"The agent that does the retro rates the plan the issue ran in that completion, the issue's steps and the role that worked each, not the planner's `plan.md`",
 		"`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
 		"`plan_reason`, one sentence of why",
-		"`PLAN_RATING_REQUIRED`",
+		"The daemon refuses the completion that ends the retro without them from a tool that takes them (`PLAN_RATING_REQUIRED`)",
 		"a rating outside 1 to 5, one of the two without the other, or a reason that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`)",
+		"A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
@@ -710,31 +718,6 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 		}
 		if strings.Contains(composedText(t, composer, role, false), "plan_rating") {
 			t.Errorf("the composed %s prompt teaches plan_rating, and the %s never ends the retro", role, role)
-		}
-	}
-}
-
-// A claim whose launch installs no plugin (a Claude Code role in a pod) is served on the contract
-// of the plugin its image carries until the update round over its pod (docs/kubernetes.md), so the
-// retro's composed prompt can reach a `legion` tool of the release before the rating, whose strict
-// handoff_complete takes neither plan_rating nor plan_reason. The daemon refuses a retro with no
-// rating only from a plugin at PlanRatingContract or above (api's planRatingOf), so the
-// prompt says the refusal comes from a tool that takes the two, and tells an agent whose tool takes
-// neither to complete with the summary alone, rather than to send fields its tool refuses.
-// This shows the text is loaded, never that a role follows it.
-func TestTheComposedRetroCompletesUnratedWhereTheToolTakesNoRating(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	retro := phase.RoleFor(phase.Retro)
-	text := foldWhitespace(composedText(t, composer, retro, false))
-	for _, phrase := range []string{
-		"The daemon refuses the completion that ends the retro without them from a tool that takes them (`PLAN_RATING_REQUIRED`)",
-		"A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating.",
-	} {
-		if !strings.Contains(text, phrase) {
-			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
 		}
 	}
 }
