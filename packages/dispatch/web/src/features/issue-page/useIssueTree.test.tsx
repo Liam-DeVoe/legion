@@ -849,6 +849,57 @@ test("an invalidated comments query reads the tree again", async () => {
   }
 });
 
+// dispatch://INFRA-4097's plan, choice 6: the decisions view is a view of the tree as the others
+// are - watched here and never sent, and set on the root (`root.views`) - and it is kept as fresh.
+// Every event of the issue, a Keep's (`decision.kept`) among them, invalidates the issue's own
+// read (`api/event-refresh.ts`), and the page's one subscription (`subscribeTreeFreshness`, which
+// `ViewReadProvider` mounts on the page and this case mounts itself) reads the tree again and
+// drops the held decisions view, which the filter that is on then reads again. No decisions read
+// is made.
+test("an invalidated issue read resets the decisions view", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The issue's own read, which the page holds and an event of the issue invalidates.
+  client.setQueryData(["issue", KEY], issue);
+  const unsubscribe = subscribeTreeFreshness(client, KEY);
+  const decisionsView: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [answerNode("d1", "decision", { mark: "query", text: "Keep one reading." })],
+  };
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "decisions"), decisionsView);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.views?.decisions).toBe(decisionsView));
+    expect(api.getIssueTree).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: ["issue", KEY] });
+    });
+    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.result.current.views?.decisions).toBeUndefined());
+    expect(client.getQueryData(viewKey(KEY, "decisions"))).toBeUndefined();
+    // The tree was read again, and the decisions view was not: the hook sends no view read, and
+    // no decisions read is made.
+    expect(
+      (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.every(
+        ([, query]) => query?.view === undefined
+      )
+    ).toBe(true);
+    expect(api.getIssueDecisions).not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    unsubscribe();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // dispatch://INFRA-4062 R5 and decision 98: the tree read holds data once every page of it holds
 // data - the pages are read in turn and answered merged - so neither the tree nor a role's blocks
 // are drawn from the first page alone; and a refetch whose last page fails keeps every page held,

@@ -9,7 +9,6 @@ import type {
   IssueCheckResults,
   IssueChild,
   IssueCoverage,
-  IssueDecisions,
   IssueDetails,
   MessageRead,
   ReferenceTarget,
@@ -230,8 +229,8 @@ export interface TreeNode {
   readonly type: NodeType;
   /** Whether the model marks this decision unsure, which its row says in one word (R9). */
   readonly unsure?: true;
-  /** The view reads the page holds (`?view=`), with the decisions read, on the issue's own node
-   *  alone: what each filter draws once its view has answered (`presets.ts`). Absent on every
+  /** The view reads the page holds (`?view=`), on the issue's own node alone: what each filter
+   *  draws once its view has answered (`presets.ts`, `decisions-entries.ts`). Absent on every
    *  other node, and on the issue's until a view is held (dispatch://INFRA-4062 R4). */
   readonly views?: TreeViews;
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
@@ -243,17 +242,17 @@ export interface TreeNode {
   readonly waiting: boolean;
 }
 
-/** The view answers the page holds, by filter, and the decisions read the Decisions filter
- *  draws (`TreeNode.views`). */
+/** The view answers the page holds, by filter (`TreeNode.views`): the Decisions filter's is the
+ *  decisions view, the issue's decisions wherever they are written (dispatch://INFRA-4097's
+ *  plan, choice 6). */
 export interface TreeViews {
-  readonly decisions?: IssueDecisions;
+  readonly decisions?: TreeAnswer;
   readonly plan?: TreeAnswer;
   readonly spec?: TreeAnswer;
   readonly verification?: TreeAnswer;
 }
 
-/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them: what the
- *  Decisions filter reads its Changes' sections from (`decision-review.ts`), until part U. */
+/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them. */
 export interface DocumentBlocks {
   readonly artifactId: string;
   readonly blocks: readonly ArtifactBlock[];

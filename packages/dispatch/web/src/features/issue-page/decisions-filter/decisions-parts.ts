@@ -1,7 +1,8 @@
-import type { Actor, Decision, IssueDecisions } from "../../../api/types";
+import type { Actor, Decision } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
+import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, inReviewList } from "../decision-review";
 import {
   drawnLine,
@@ -226,7 +227,7 @@ export function decisionsParts({
   /** The issue's asks, for how each closed one was closed. */
   readonly asks: readonly DecisionsAsk[] | undefined;
   readonly changes?: ReadonlyMap<string, ChangeComment>;
-  readonly decisions: IssueDecisions | undefined;
+  readonly decisions: readonly DecisionNode[] | undefined;
   /** The issue's key, which a change's address in the conversation is built with. */
   readonly issueKey: string;
   readonly nodeIdOf: (reference: string) => string | undefined;
@@ -238,7 +239,7 @@ export function decisionsParts({
 }): DecisionsParts {
   const placed = placements(root);
   const kept = view === undefined ? undefined : idsOf(view);
-  const rows = new Map((decisions?.decisions ?? []).map((row) => [row.ref, row]));
+  const rows = new Map((decisions ?? []).map((row) => [row.ref, row]));
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>
     placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement";

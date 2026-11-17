@@ -98,10 +98,12 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * and the reader's login, which says which open questions wait on the reader
  * (`IssueTreeReads.viewer`).
  *
- * Each filter's view read (`viewQuery`) is watched here and never sent: `ViewReadProvider`
+ * Each filter's view read (`viewQuery`), the decisions view among them (dispatch://INFRA-4097's
+ * plan, choice 6), is watched here and never sent: `ViewReadProvider`
  * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds
  * is set on the issue's node (`TreeNode.views`), which `presetView` and `filterSignals` draw a
- * filter from (R4). The root keeps its identity while neither the tree nor a held view changes.
+ * filter from (R4), and the Decisions filter its decisions (`decisions-entries.ts`). The root
+ * keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
@@ -139,24 +141,27 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
   // and holds whatever `ViewReadProvider` read for the load.
-  const [specView, verificationView, planView] = useQueries({
+  const [specView, verificationView, planView, decisionsView] = useQueries({
     queries: [
       { ...viewQuery(key, "spec"), enabled: false },
       { ...viewQuery(key, "verification"), enabled: false },
       { ...viewQuery(key, "plan"), enabled: false },
+      { ...viewQuery(key, "decisions"), enabled: false },
     ],
   });
   const spec = specView?.data;
   const verification = verificationView?.data;
   const plan = planView?.data;
+  const decisions = decisionsView?.data;
   const views = useMemo((): TreeViews | undefined => {
     const held: TreeViews = {
+      ...(decisions === undefined ? {} : { decisions }),
       ...(plan === undefined ? {} : { plan }),
       ...(spec === undefined ? {} : { spec }),
       ...(verification === undefined ? {} : { verification }),
     };
     return Object.keys(held).length === 0 ? undefined : held;
-  }, [plan, spec, verification]);
+  }, [decisions, plan, spec, verification]);
   // One value, so the model is given the reads and nothing else.
   const reads = useMemo<IssueTreeReads>(
     () => ({
