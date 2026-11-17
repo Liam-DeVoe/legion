@@ -1,17 +1,17 @@
 import type {
   Actor,
   Artifact,
-  Decision,
   DecisionLink,
   IssueCoverage,
-  IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
 import type { TreeAsk, TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
 /**
- * What the Spec filter's two unit tests are given: one issue, one tree and one decisions read,
+ * What the Spec filter's two unit tests are given: one issue, one tree and one answer of the
+ * Spec view read, whose decision nodes are the decisions the column draws (`decisionNodes`),
  * built by hand, so the model and the body are read without a server
  * (`spec-decided-by.test.ts`, `SpecFilterBody.drawn.test.tsx`). A case that needs the tree as
  * part F's model places its nodes builds it with `buildIssueTree` from the reads below
@@ -139,30 +139,68 @@ export function shaped(ref: string): DecisionLink {
   };
 }
 
-/** One decision of the issue's decisions document, as the decisions read answers it. */
-export function decision(
-  partial: Partial<Decision> & { block_id: string; kind: "agent" | "person" }
-): Decision {
+/** One node of a read of the issue's tree, under the issue, with the fields a case needs on it. */
+export function answerNode(
+  id: string,
+  supertag: string,
+  partial: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
   return {
-    asks: [],
-    changed_at: "2026-11-14T12:00:00Z",
-    changed_version: 1,
-    heading: partial.block_id,
-    kept: null,
-    links: [],
-    ref: `dispatch://${KEY}/artifact/${DECISIONS_SLUG}#b-${partial.block_id}`,
-    replaced: false,
-    text: partial.block_id,
-    text_sha256: "",
-    unsure: false,
-    waiting_review: false,
+    attributes: {},
+    author: null,
+    id,
+    made_at: "2026-11-05T00:00:00Z",
+    parent: KEY,
+    rank: null,
+    state: "live",
+    supertag,
+    text: "",
+    visibility: "project",
     ...partial,
   };
 }
 
-/** The decisions read over `made`. */
-export function decisionsRead(made: readonly Decision[]): IssueDecisions {
-  return { decisions: [...made], document: "artifact-dec", open_questions: [] };
+/** One decision of the issue's decisions document as the Spec view read answers it, as context
+ *  (dispatch://INFRA-1253 R8): a decision block, with the members INFRA-1150's decisions read
+ *  answers for that decision, by the same names. */
+export function decision(block: string, partial: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
+  return answerNode(block, "decision", {
+    asks: [],
+    changed_at: "2026-11-14T12:00:00Z",
+    changed_version: 1,
+    document: { artifact_id: "artifact-dec", position: 0, slug: DECISIONS_SLUG },
+    kept: null,
+    kind: "agent",
+    links: [],
+    made_at: "2026-11-14T12:00:00Z",
+    mark: "context",
+    replaced: false,
+    text: block,
+    text_sha256: "",
+    unsure: false,
+    waiting_review: false,
+    ...partial,
+  });
+}
+
+/** The Spec view read's answer (`?view=spec`), on one page: `nodes` under the issue's own node,
+ *  with `tuples` between them. It is what the page holds on the issue's node
+ *  (`TreeNode.views.spec`), whose decisions the column draws. */
+export function specViewAnswer(
+  nodes: readonly TreeAnswerNode[],
+  tuples: readonly TreeTuple[] = []
+): TreeAnswer {
+  return {
+    converted: false,
+    cursor: null,
+    nodes: [
+      answerNode(KEY, "issue", { parent: null, text: "The issue page draws one ordered body" }),
+      ...nodes,
+    ],
+    tree: null,
+    tuples: [...tuples],
+    view_of: null,
+  };
 }
 
 /** The address of one statement, which is one block of the issue's spec. */
@@ -210,8 +248,8 @@ export function answeredAsk(
   });
 }
 
-/** One decision of the decisions document as the tree draws it: the node the decisions read's
- *  own entry is addressed to. */
+/** One decision of the decisions document as the tree draws it: the node the Spec view's
+ *  decision of the same block (`decision`) is addressed to. */
 export function decisionNode(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
     at: "2026-11-13T07:00:00Z",
