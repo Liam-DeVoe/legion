@@ -28,6 +28,7 @@ import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
 import { pageHeaderControl, pageInkText } from "../../theme/classes";
+import { mentionOptions } from "../conversation/MentionComposer";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
@@ -1570,9 +1571,36 @@ function AuthorProbe({
   );
 }
 
-/** The sentences `useAgentText` builds for the session nothing names, as `view` draws them, each
- *  up to its first comma: the Unsubscribe dialog's question, opened by its control, and each route
- *  marker's words for a screen reader (`sr-only`). */
+/** What `useAgentText` spells for the session nothing names where the text names the session
+ *  rather than says what is drawn: `sessionText`, and the title of the mention picker's option for
+ *  that session listed untitled, the `@` text a sent message keeps. */
+function SpelledProbe(): ReactNode {
+  const text = useAgentText();
+  const option = mentionOptions([listed(NAMELESS_SESSION, "")], text).find(
+    (each) => each.target === `session:${NAMELESS_SESSION}`
+  );
+  return (
+    <div data-case="spelled, nameless">
+      <span data-session-text="">{text.sessionText(NAMELESS_SESSION, undefined)}</span>
+      <span data-mention-title="">{option?.title}</span>
+    </div>
+  );
+}
+
+/** How `view` spells the session nothing names: `label`, `sessionText` and the mention option's
+ *  title, as `AuthorProbe` and `SpelledProbe` draw them. */
+function spelledNames(view: RenderResult): Record<string, string | null | undefined> {
+  const spelled = caseOf(view, "spelled, nameless");
+  return {
+    label: caseOf(view, "author: nameless").querySelector("[data-label]")?.textContent,
+    mentionTitle: spelled.querySelector("[data-mention-title]")?.textContent,
+    sessionText: spelled.querySelector("[data-session-text]")?.textContent,
+  };
+}
+
+/** The sentences built of the session nothing names, as `view` draws them, each up to its first
+ *  comma: the Unsubscribe dialog's question, opened by its control, and each route marker's words
+ *  for a screen reader (`sr-only`). */
 async function namelessSentences(view: RenderResult): Promise<(string | undefined)[]> {
   const subscribed = within(caseOf(view, "subscribed, nameless"));
   await userEvent.setup().click(subscribed.getByRole("button", { name: "Unsubscribe" }));
@@ -1585,9 +1613,11 @@ async function namelessSentences(view: RenderResult): Promise<(string | undefine
 
 // Inside `NoTooltips`, an author is named by a title - the agent list's, else the one its write
 // was stamped with - else the page's word for an agent, and never by the short id that tells no
-// two sessions apart; a person's act made through an agent names the agent by what it is.
-// `label`, and each sentence built of a session's name there (the Unsubscribe dialog's question, a
-// route marker's words for a screen reader), name a session as every form of `AgentName` does.
+// two sessions apart; a person's act made through an agent names the agent by what it is. Each
+// sentence a reader takes beside a drawn name there (the Unsubscribe dialog's question, a route
+// marker's words for a screen reader) names a session as every form of `AgentName` does. Text
+// that names a session rather than says what is drawn - `label`, `sessionText`, and the mention a
+// sent message keeps - stays `main`'s on both surfaces, since the page's word names nobody.
 // Outside, `author` names an actor as `label` does, and those sentences keep `main`'s short id.
 test("author names a session by its title and never by its short id", async () => {
   // The page's words for an agent nothing names, for no actor, and for an act made through an
@@ -1670,6 +1700,7 @@ test("author names a session by its title and never by its short id", async () =
         />
       </div>
       <AuthorProbe actors={actors} />
+      <SpelledProbe />
     </>
   );
 
@@ -1698,11 +1729,8 @@ test("author names a session by its title and never by its short id", async () =
     expect(authored("nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(authored("through an agent")).toBe(`alice, acting through ${AUTHOR_KIND_WORDS.agent}`);
     expect(authored("no actor")).toBe(CONTROL_LABELS.unknown_author);
-    // `label` and every sentence built of a session's name say it as `AgentName` draws it, so
-    // the Unsubscribe dialog and a route marker's words for a screen reader name no short id.
-    expect(caseOf(inside, "author: nameless").querySelector("[data-label]")?.textContent).toBe(
-      CONTROL_LABELS.unnamed_author
-    );
+    // Every sentence built of a session's drawn name says it as `AgentName` draws it, so the
+    // Unsubscribe dialog and a route marker's words for a screen reader name no short id.
     expect(await namelessSentences(inside)).toEqual([
       `Unsubscribe ${CONTROL_LABELS.unnamed_author} from CORE-1? They will be told.`,
       `. ${CONTROL_LABELS.unnamed_author} has missed its heartbeats without ending`,
@@ -1711,6 +1739,13 @@ test("author names a session by its title and never by its short id", async () =
     for (const name of ["subscribed, nameless", "routes, nameless"]) {
       expect(caseOf(inside, name).textContent).not.toContain("session:");
     }
+    // The text that names the session keeps `main`'s short id inside too: a mention composed
+    // here stores `@session <id>`, never the page's word, which would name nobody.
+    expect(spelledNames(inside)).toEqual({
+      label: "session:01234567…",
+      mentionTitle: "session:01234567…",
+      sessionText: "session:01234567…",
+    });
   } finally {
     undraw(inside);
   }
@@ -1731,10 +1766,13 @@ test("author names a session by its title and never by its short id", async () =
         expect(author).not.toBe("");
       }
     }
-    // Outside, `main`'s short id names the session nothing names, in `label` and every sentence.
-    expect(caseOf(outside, "author: nameless").querySelector("[data-label]")?.textContent).toBe(
-      "session:01234567…"
-    );
+    // Outside, `main`'s short id names the session nothing names, in `label`, `sessionText`, the
+    // mention's title and every sentence.
+    expect(spelledNames(outside)).toEqual({
+      label: "session:01234567…",
+      mentionTitle: "session:01234567…",
+      sessionText: "session:01234567…",
+    });
     expect(await namelessSentences(outside)).toEqual([
       "Unsubscribe session:01234567… from CORE-1? They will be told.",
       ". session:01234567… has missed its heartbeats without ending",
