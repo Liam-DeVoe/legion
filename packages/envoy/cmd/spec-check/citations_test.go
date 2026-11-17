@@ -616,6 +616,40 @@ func TestCitationsCommand(t *testing.T) {
 			stderr: "spec-check: " + other + `: specgraph: the workflow has no job "spec-citations"` + "\n"})
 	})
 
+	// --repo is the top of its git clone, from which changed names each path: a directory below the
+	// top is refused before the command reads an input (here a workflow that does not exist), with
+	// the top that git names to pass instead, and so is a directory where git finds no work tree,
+	// such as the clone's .git. The top passes, also through a link to it.
+	t.Run("a --repo that is not the top of its clone is refused before a read", func(t *testing.T) {
+		t.Parallel()
+		r := newCitationRun()
+		f := r.write(t)
+		top := gitIn(t, f.repo, "rev-parse", "--show-toplevel")
+		withRepo := func(repo, workflow string) []string {
+			args := r.args(f, workflow)
+			args[slices.Index(args, "--repo")+1] = repo
+			return args
+		}
+		missing := filepath.Join(f.root, "missing.yaml")
+		below := filepath.Join(f.repo, "a")
+		expect(t, runBinary(t, binary, "", withRepo(below, missing)...), result{code: 2,
+			stderr: "spec-check: " + below + ": is not the top of its git clone; pass the top, --repo " + top + "\n"})
+		gitDir := filepath.Join(f.repo, ".git")
+		if got, line := runBinary(t, binary, "", withRepo(gitDir, missing)...), "spec-check: "+gitDir+": git finds no work tree there: "; got.code != 2 ||
+			got.stdout != "" || !strings.HasPrefix(got.stderr, line) || strings.Count(got.stderr, "\n") != 1 {
+			t.Errorf("citations --repo %s: exit %d, stdout %q, stderr %q; want exit 2 and one line that starts %q", gitDir, got.code, got.stdout, got.stderr, line)
+		}
+		if _, err := os.Stat(f.json); err == nil {
+			t.Errorf("a refused --repo, and a --json file at %s", f.json)
+		}
+		link := filepath.Join(f.root, "link")
+		if err := os.Symlink(f.repo, link); err != nil {
+			t.Fatal(err)
+		}
+		expect(t, runBinary(t, binary, "", withRepo(link, workflow)...), cited(f.dir))
+		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), cited(f.dir))
+	})
+
 	t.Run("a bad argument exits 2 with the line that names it and the usage", func(t *testing.T) {
 		t.Parallel()
 		r := newCitationRun()
@@ -1005,6 +1039,27 @@ func TestChanged(t *testing.T) {
 	}
 	missing := filepath.Join(t.TempDir(), "missing")
 	expect(t, runBinary(t, binary, "", "changed", "--repo", missing, "--base", a), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
+
+	// --repo is the top of its clone, from which changed names each path: a directory below the top
+	// is refused before git reads a commit, with the top that git names to pass instead, and so is
+	// a directory where git finds no work tree, such as the clone's .git. The top passes, also
+	// through a link to it.
+	top := git("rev-parse", "--show-toplevel")
+	below := filepath.Join(repo, "a")
+	expect(t, runBinary(t, binary, "", "changed", "--repo", below, "--base", unknown), result{code: 2,
+		stderr: "spec-check: " + below + ": is not the top of its git clone; pass the top, --repo " + top + "\n"})
+	gitDir := filepath.Join(repo, ".git")
+	if got, line := runBinary(t, binary, "", "changed", "--repo", gitDir, "--base", a), "spec-check: "+gitDir+": git finds no work tree there: "; got.code != 2 ||
+		got.stdout != "" || !strings.HasPrefix(got.stderr, line) || strings.Count(got.stderr, "\n") != 1 {
+		t.Errorf("changed --repo %s: exit %d, stdout %q, stderr %q; want exit 2 and one line that starts %q", gitDir, got.code, got.stdout, got.stderr, line)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, runBinary(t, binary, "", "changed", "--repo", link, "--base", a), result{
+		stdout: "base " + a + "\na/data.json\ndocs/data.json\n",
+		stderr: "spec-check: " + link + ": 2 paths changed from " + a + " to HEAD\n"})
 
 	writeFile(t, filepath.Join(repo, "a", "line\nbreak.go"), []byte("package a\n"))
 	blob := git("hash-object", "-w", "a/line\nbreak.go")

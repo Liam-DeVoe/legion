@@ -46,6 +46,31 @@ func commitName(repo, rev string) (string, bool) {
 	return strings.TrimSpace(string(name)), err == nil
 }
 
+// isCloneTop is whether repo is the top of its git clone, the one directory from which changed
+// names each path and citations reads the ties and the code; when it is not, it has written the
+// one line that names the top that git rev-parse --show-toplevel gives, to pass instead, or why
+// git gives none. A directory below the top would make the two commands disagree, since git names
+// each changed path from the top whatever directory the command names. The top named through a
+// link is the top, since the two are one directory.
+func isCloneTop(stderr io.Writer, repo string) bool {
+	var gitErr bytes.Buffer
+	show := gitCommand(repo, "rev-parse", "--show-toplevel")
+	show.Stderr = &gitErr
+	out, err := show.Output()
+	if err != nil {
+		say(stderr, "%s: git finds no work tree there: %s", repo, strings.Join(strings.Fields(gitErr.String()), " "))
+		return false
+	}
+	top := strings.TrimSuffix(string(out), "\n")
+	repoInfo, repoErr := os.Stat(repo)
+	topInfo, topErr := os.Stat(top)
+	if repoErr != nil || topErr != nil || !os.SameFile(repoInfo, topInfo) {
+		say(stderr, "%s: is not the top of its git clone; pass the top, --repo %s", repo, top)
+		return false
+	}
+	return true
+}
+
 // readTiesFiles reads the files of --ties, each in the form of specgraph.ReadCommitTies, as one
 // set of ties by commit. It refuses a commit that is no full object name, and a commit that two of
 // the files hold, since the command could not say which file's ties are the commit's; of a file's

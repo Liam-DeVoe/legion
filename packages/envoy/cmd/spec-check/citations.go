@@ -39,7 +39,8 @@ type citationFault struct {
 // <file> | --all-changed) --reports <dir> --needs <file> [--ties <file>...] [--json <file>]
 // [--allow-empty]": it names each program check of the spec files that CI refuses at the commit
 // (specgraph.Citations, R48), and answers 1 when it names one, 0 when none, and 2 for an input it
-// cannot read or arguments it does not take.
+// cannot read, a root that is not the top of its git clone (isCloneTop) or arguments it does not
+// take.
 func runCitations(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("citations", flag.ContinueOnError)
 	dir := flags.String("dir", "", "the directory of spec files")
@@ -76,7 +77,7 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 		}
 		*path = abs
 	}
-	if !isDirectory(stderr, *repo) {
+	if !isDirectory(stderr, *repo) || !isCloneTop(stderr, *repo) {
 		return 2
 	}
 

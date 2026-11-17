@@ -13,8 +13,8 @@ import (
 // the line "base <object name of base>", then the paths whose content differs between the trees of
 // the two commits of the git clone at root, specgraph.GitHistory's answer (both paths of a move),
 // sorted, one a line: the one form that citations --changed reads, and answers 0; 2 for a commit
-// that git cannot read, a path that holds a line break, a root it cannot read or arguments it does
-// not take, each with one line naming it.
+// that git cannot read, a path that holds a line break, a root it cannot read or that is not the
+// top of its git clone (isCloneTop), or arguments it does not take, each with one line naming it.
 //
 // The base is the commit where each result that the head carries stands, which for a change's
 // branch is its merge base with the default branch and never the branch's push before: a list from
@@ -35,7 +35,7 @@ func runChanged(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	repo, ok := absolute(stderr, *repoFlag)
-	if !ok || !isDirectory(stderr, repo) {
+	if !ok || !isDirectory(stderr, repo) || !isCloneTop(stderr, repo) {
 		return 2
 	}
 	baseName, ok := commitName(repo, *base)

@@ -209,7 +209,8 @@
 // file as one line of JSON, as checks and state write theirs, [{"check","rule","detail"}], [] for
 // none, making its directory. With --allow-empty, a directory that does not exist or holds no spec
 // file is "spec-check: <dir>: holds no spec file; no check to cite", exit 0. A spec file that does
-// not parse is exit 2 with its problems.
+// not parse is exit 2 with its problems. <root> is the top of its git clone, and citations refuses
+// one that is not as changed does, before it reads an input.
 //
 // changed prints the line "base <commit>", with the full object name of the base, then the paths
 // whose content differs between the trees of the two commits of the git clone at <root>, both
@@ -217,7 +218,13 @@
 // <n> paths changed from <base> to <head>" on standard error; --head is HEAD when not given. The
 // base is the commit where each result that the head carries stands, which for a change's branch
 // is its merge base with the default branch, and never the branch's push before. A commit that git
-// cannot read and a path that holds a line break are exit 2 with one line naming them.
+// cannot read and a path that holds a line break are exit 2 with one line naming them. <root> is
+// the top of its git clone, from which git names each path whatever directory the command names: a
+// directory below the top is exit 2 before git reads a commit, with the one line "spec-check:
+// <root>: is not the top of its git clone; pass the top, --repo <top>", where <top> is what git
+// rev-parse --show-toplevel gives, and a directory where git finds no work tree, such as a clone's
+// .git, is exit 2 with "spec-check: <root>: git finds no work tree there: <git's words>". The top
+// named through a link is the top.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on

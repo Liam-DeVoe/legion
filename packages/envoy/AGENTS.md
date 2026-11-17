@@ -3409,6 +3409,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   They are the value at that commit of the input `Input.Uncited` of the states, which is by commit, then by check (`uncited.json`, `{"<commit>":{"<check id>":"<R48 rule>"}}`), so a reader files them under the commit that `citations` judged.
   With `--allow-empty`, a directory with no spec file is `spec-check: <dir>: holds no spec file; no check to cite`, exit 0.
   A spec file that does not parse, an input it cannot read, and a `--needs` that does not name exactly the jobs `spec-citations` needs are exit 2 and write no `--json` file.
+  `<root>` is the top of its git clone: a `<root>` below the top, or one where git finds no work tree, is refused as `changed` refuses it (below), before the command reads an input (`TestCitationsCommand`).
   `TestCitationsCommand` runs the built binary on each fixture of `specgraph`'s `TestCitations` over a copy of `testdata/citations/repo`.
 
 - Stated limits of `cmd/spec-check citations`, each pinned by a row:
@@ -3441,6 +3442,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `spec-check changed --repo <root> --base <commit> [--head <commit>]` prints the list that `citations --changed` reads: the line `base <commit>`, with the full object name of the base, then the paths whose content differs between the two commits' trees (`specgraph.GitHistory`, `git diff --no-renames`, so a move gives both paths), sorted, one a line on stdout, with `spec-check: <root>: <n> paths changed from <base> to <head>` on stderr;
   `--head` is `HEAD` when not given.
+  `<root>` is the top of its git clone, from which git names each path whatever directory the command names: a directory below the top is exit 2 before git reads a commit, with the one line `spec-check: <root>: is not the top of its git clone; pass the top, --repo <top>`, where `<top>` is what `git rev-parse --show-toplevel` gives, and a directory where git finds no work tree, such as a clone's `.git`, is exit 2 with `spec-check: <root>: git finds no work tree there: <git's words>`.
+  The top named through a link is the top, since the two are one directory (`TestChanged`).
   `git rev-parse` names each of the two commits, with no replace ref and no variable `GIT_*` of the process, as `GitHistory` runs git, so another clone's commit is never named (`TestTheGitCallsOfTheBaseAreTheSameUnderEachSetting`).
   A submodule that moved to another commit gives one path, its gitlink, as git names it, and no path under it, whatever `.gitmodules` or the git configuration say, `ignore = all` included (`TestCitationsSeesAChangedSubmodule`; each other setting of git: `TestGitHistoryIsTheSameUnderEachSetting`).
   The base line and the paths are the data of a file and do not pass through `runnerlog.Say`, so a path that holds a line break, and a commit that git cannot read, are exit 2 with one line naming them.
