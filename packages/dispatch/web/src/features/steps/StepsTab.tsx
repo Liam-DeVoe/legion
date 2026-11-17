@@ -66,20 +66,46 @@ function Time({ at }: { at: string | null }): ReactNode {
   );
 }
 
+/** A part of an id that cannot stand on a line alone: a number (`2`, `3570`, `6.1`) or one
+ *  character. It stays with the part before it, so `core-2` and `gpt-6.1` never break. */
+const CLINGS = /^(?:[\d.]+|.)$/u;
+
+/** One `/`-free piece of an id: its hyphen-joined parts in groups, a group being a part and every
+ *  clinging part after it. The hyphen between two groups is where a line may break; inside a
+ *  group it may not. Each group is keyed by its first part's place in the piece. */
+function HyphenGroups({ piece }: { piece: string }): ReactNode {
+  const groups: { at: number; parts: string[] }[] = [];
+  for (const [at, part] of piece.split("-").entries()) {
+    const last = groups.at(-1);
+    if (last !== undefined && CLINGS.test(part)) last.parts.push(part);
+    else groups.push({ at, parts: [part] });
+  }
+  return groups.map(({ at, parts }, index) => (
+    <Fragment key={at}>
+      {index === 0 ? null : "-"}
+      {parts.length === 1 ? parts[0] : <span className="whitespace-nowrap">{parts.join("-")}</span>}
+    </Fragment>
+  ));
+}
+
 /** An agent token or a model id, or the dash for one the record does not hold. A token breaks at
- *  its hyphens on its own; a model id (`anthropic/claude-opus-5`) is also offered a break after
- *  each slash, so neither forces its column wider than its longest part. */
+ *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break after each slash,
+ *  so neither forces its column wider than its longest part. A number or a single letter keeps
+ *  to the part before it, so no line holds it alone (`legion-core-core-2-…` never leaves `2-`). */
 function Identifier({ value }: { value: string }): ReactNode {
   if (value === "") return NONE;
-  const parts = value.split("/");
-  // Each part is keyed by the text up to and including it, which no other part of the id shares.
-  return parts.map((part, index) => {
-    const through = parts.slice(0, index + 1).join("/");
-    return index === 0 ? (
-      <Fragment key={through}>{part}</Fragment>
-    ) : (
+  const pieces = value.split("/");
+  // Each piece is keyed by the text up to and including it, which no other piece of the id shares.
+  return pieces.map((piece, index) => {
+    const through = pieces.slice(0, index + 1).join("/");
+    return (
       <Fragment key={through}>
-        <wbr />/{part}
+        {index === 0 ? null : (
+          <>
+            <wbr />/
+          </>
+        )}
+        <HyphenGroups piece={piece} />
       </Fragment>
     );
   });
