@@ -1478,7 +1478,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
 	// and before the start below writes the step it moves into.
-	if err := e.endStep(ctx, tx, issue, endOfTransition(trigger, issue.Phase, row.To, handoff)); err != nil {
+	if err := e.endStep(ctx, tx, issue, endOfTransition(trigger, issue, row.To, handoff)); err != nil {
 		return err
 	}
 	from := issue.Phase

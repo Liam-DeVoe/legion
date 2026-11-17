@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -70,6 +71,24 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 	} {
 		if result, returns := endOf(tc.trigger); result != tc.result || returns != tc.returns {
 			t.Errorf("endOf(%s) = %q, %v; want %q, %v", tc.trigger, result, returns, tc.result, tc.returns)
+		}
+	}
+}
+
+// The end of a move is the end of the step the issue stands in, read as endStep reads it
+// (record.StandsAt): a held issue's is the step of the phase its hold is from, so a review sent
+// back from a hold of reviewing ends that review failed, returns the work to implementing's place
+// and names the reviewer's report, as it does for the issue standing in reviewing itself.
+func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
+	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "6f1d2c3b-review"}
+	for name, before := range map[string]record.Issue{
+		"standing in reviewing": {Key: "LEGION-1", Phase: phase.Reviewing},
+		"held from reviewing":   {Key: "LEGION-1", Phase: phase.Held, Hold: &record.Hold{From: phase.Reviewing}},
+	} {
+		end := endOfTransition(TriggerReviewRejected, before, phase.Implementing, review)
+		if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
+			t.Errorf("%s: the end of the review = %+v (returned to %v), want failed, returned to place 2, naming report %s",
+				name, end, end.ReturnedTo, review.HandoffRecord)
 		}
 	}
 }
