@@ -167,6 +167,7 @@ const (
 	yamlStops problemKind = iota
 	yamlDocument
 	noJSONForm
+	yamlNull
 	noNode
 	schemaDropped
 	schemaKept
@@ -183,6 +184,10 @@ const (
 //   - yamlDocument: yaml.v3 reads no data from one document, such as one with a key written two
 //     times, so it gives no node;
 //   - noJSONForm: the data of a document has no JSON form, such as a key that is not a string;
+//   - yamlNull: the data of a document holds a null at a place, the document itself, a member or an
+//     element of a list (null, ~, or no value), which says nothing and which yaml.v3 reads as the
+//     zero value of the place, a real value, such as a statement with no parent. No member of a
+//     node takes null, so the document gives no node;
 //   - schemaDropped: the schema refuses a value that the node does not hold as the file writes it:
 //     a key that the node takes no field for (additional properties), a value of another type, a
 //     component kind that is not "component" or "interface", or any refusal of a document that
@@ -205,6 +210,7 @@ var problemKinds = [numProblemKinds]struct {
 	yamlStops:        {LosesNode, "bad-yaml: %s"},
 	yamlDocument:     {LosesNode, "bad-yaml: %s"},
 	noJSONForm:       {LosesNode, "bad-yaml: the document holds a value that JSON cannot hold"},
+	yamlNull:         {LosesNode, "bad-yaml: %s is null"},
 	noNode:           {KeepsEachNode, "no-node: a spec file holds one or more nodes"},
 	schemaDropped:    {LosesNode, "schema: %s"},
 	schemaKept:       {KeepsEachNode, "schema: %s"},
@@ -233,8 +239,9 @@ type document struct {
 // decodes each document with yaml.v3 into a yaml.Node, then into a value, and writes the value as
 // JSON. A fault of the YAML is bad-yaml: one that ends the stream stops the reading, keeps the
 // documents before it and answers stopped; one that only its document holds, such as a key written
-// two times or a key that is not a string, keeps the document with no data. A file with no
-// document is no-node.
+// two times, a key that is not a string or a null at a place, keeps the document with no data. A
+// null is named by its place (nullPlace, in the order of the JSON form), as decodeJSON names a null
+// of a JSON file. A file with no document is no-node.
 func readDocuments(name string, data []byte) (documents []document, problems []Problem, stopped bool) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	for {
@@ -266,6 +273,14 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 			js, err := json.Marshal(value)
 			if err != nil || !stringKeys(value) {
 				problems = append(problems, readerProblem(Position{File: name, Line: d.line}, "", noJSONForm))
+				break
+			}
+			if place, null := nullPlace(js); null {
+				where := "the document"
+				if place != "" {
+					where = "the value at " + quoted(place)
+				}
+				problems = append(problems, readerProblem(Position{File: name, Line: d.line}, "", yamlNull, where))
 				break
 			}
 			d.data = js
@@ -820,14 +835,14 @@ func ReadLayout(files map[string][]byte) (Layout, []Problem) {
 // tree they hold, each list sorted by ID then Pos, and every problem, sorted by SortProblems.
 //
 // A spec file holds one or more nodes, one YAML document for each. The reader decodes each
-// document with yaml.v3 (bad-yaml for YAML it does not read, a key written two times, or a value
-// that JSON cannot hold), checks its data against the schema of schema/spec-node.schema.json
-// (schema, with the JSON pointer of the value it refuses), and reads a positive Go duration from a
-// time limit (bad-time-limit). A document that the schema refuses still gives its node when its
-// keys have the schema's types, so one fault gives one problem. A file with no document is
-// no-node, and a file with no other problem must be exactly the documents that Print writes for
-// its nodes, in its order (not-printed): the reader normalizes nothing, so one node has one
-// spelling in git. A node is at the line of its document's "---".
+// document with yaml.v3 (bad-yaml for YAML it does not read, a key written two times, a value
+// that JSON cannot hold, or a null at any place, which gives no node), checks its data against the
+// schema of schema/spec-node.schema.json (schema, with the JSON pointer of the value it refuses),
+// and reads a positive Go duration from a time limit (bad-time-limit). A document that the schema
+// refuses still gives its node when its keys have the schema's types, so one fault gives one
+// problem. A file with no document is no-node, and a file with no other problem must be exactly
+// the documents that Print writes for its nodes, in its order (not-printed): the reader normalizes
+// nothing, so one node has one spelling in git. A node is at the line of its document's "---".
 func Parse(files map[string][]byte) (Tree, []Problem) {
 	l, problems := ReadLayout(files)
 	return l.tree(), problems

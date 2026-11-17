@@ -32,48 +32,52 @@ func (t Term) Print() (string, error) { return printNode(t) }
 // The file structs are the data of one YAML document of a spec file, one struct for each type of
 // node, with the keys of the schema (schema/spec-node.schema.json) in the order the document holds
 // them: type and id first, the texts last. A text is a list of its lines. An absent value is an
-// absent key, so no document holds an empty string, an empty list or a null.
+// absent key, so no document holds an empty string, an empty list or a null, which the reader
+// refuses (yamlNull). Each member has the mark of an input (memberMark, members.go), which the
+// schema holds: nonzero, a key that the schema requires of each node of the type, or zero, a key
+// that a node may leave out, whose reason says what the node then is
+// (TestEachMemberOfANodeHasAMarkThatTheSchemaHolds).
 type (
 	requirementFile struct {
-		Type   string   `json:"type" yaml:"type"`
-		ID     string   `json:"id" yaml:"id"`
-		Kind   string   `json:"kind,omitempty" yaml:"kind,omitempty"`
-		Parent string   `json:"parent,omitempty" yaml:"parent,omitempty"`
-		Serves []string `json:"serves,omitempty" yaml:"serves,omitempty"`
-		About  []string `json:"about,omitempty" yaml:"about,omitempty"`
-		Text   []string `json:"text,omitempty" yaml:"text,omitempty"`
+		Type   string   `json:"type" yaml:"type" input:"nonzero"`
+		ID     string   `json:"id" yaml:"id" input:"nonzero"`
+		Kind   string   `json:"kind,omitempty" yaml:"kind,omitempty" input:"nonzero"`
+		Parent string   `json:"parent,omitempty" yaml:"parent,omitempty" input:"zero: a statement with no parent is one of the top of the tree"`
+		Serves []string `json:"serves,omitempty" yaml:"serves,omitempty" input:"zero: a statement that serves no other statement"`
+		About  []string `json:"about,omitempty" yaml:"about,omitempty" input:"zero: a statement about no component or term; the schema requires it of a structure statement"`
+		Text   []string `json:"text,omitempty" yaml:"text,omitempty" input:"nonzero"`
 	}
 	testFile struct {
-		Runner   string `json:"runner,omitempty" yaml:"runner,omitempty"`
-		Selector string `json:"selector,omitempty" yaml:"selector,omitempty"`
-		Job      string `json:"job,omitempty" yaml:"job,omitempty"`
+		Runner   string `json:"runner,omitempty" yaml:"runner,omitempty" input:"nonzero"`
+		Selector string `json:"selector,omitempty" yaml:"selector,omitempty" input:"nonzero"`
+		Job      string `json:"job,omitempty" yaml:"job,omitempty" input:"nonzero"`
 	}
 	checkFile struct {
-		Type           string    `json:"type" yaml:"type"`
-		ID             string    `json:"id" yaml:"id"`
-		Serves         string    `json:"serves,omitempty" yaml:"serves,omitempty"`
-		Subject        string    `json:"subject,omitempty" yaml:"subject,omitempty"`
-		Procedure      string    `json:"procedure,omitempty" yaml:"procedure,omitempty"`
-		Test           *testFile `json:"test,omitempty" yaml:"test,omitempty"`
-		TimeLimit      string    `json:"time_limit,omitempty" yaml:"time_limit,omitempty"`
-		Claim          string    `json:"claim,omitempty" yaml:"claim,omitempty"`
-		ProcedureText  []string  `json:"procedure_text,omitempty" yaml:"procedure_text,omitempty"`
-		FailingExample []string  `json:"failing_example,omitempty" yaml:"failing_example,omitempty"`
+		Type           string    `json:"type" yaml:"type" input:"nonzero"`
+		ID             string    `json:"id" yaml:"id" input:"nonzero"`
+		Serves         string    `json:"serves,omitempty" yaml:"serves,omitempty" input:"nonzero"`
+		Subject        string    `json:"subject,omitempty" yaml:"subject,omitempty" input:"nonzero"`
+		Procedure      string    `json:"procedure,omitempty" yaml:"procedure,omitempty" input:"nonzero"`
+		Test           *testFile `json:"test,omitempty" yaml:"test,omitempty" input:"zero: a check with no test part, which a query or an agent decides; the schema requires it of a program check"`
+		TimeLimit      string    `json:"time_limit,omitempty" yaml:"time_limit,omitempty" input:"zero: no time limit, so a result of the check does not expire (R9)"`
+		Claim          string    `json:"claim,omitempty" yaml:"claim,omitempty" input:"nonzero"`
+		ProcedureText  []string  `json:"procedure_text,omitempty" yaml:"procedure_text,omitempty" input:"nonzero"`
+		FailingExample []string  `json:"failing_example,omitempty" yaml:"failing_example,omitempty" input:"nonzero"`
 	}
 	componentFile struct {
-		Type    string   `json:"type" yaml:"type"`
-		ID      string   `json:"id" yaml:"id"`
-		Name    string   `json:"name,omitempty" yaml:"name,omitempty"`
-		Kind    string   `json:"kind,omitempty" yaml:"kind,omitempty"` // "component" or "interface"
-		Parent  string   `json:"parent,omitempty" yaml:"parent,omitempty"`
-		Joins   []string `json:"joins,omitempty" yaml:"joins,omitempty"`
-		Purpose []string `json:"purpose,omitempty" yaml:"purpose,omitempty"`
+		Type    string   `json:"type" yaml:"type" input:"nonzero"`
+		ID      string   `json:"id" yaml:"id" input:"nonzero"`
+		Name    string   `json:"name,omitempty" yaml:"name,omitempty" input:"nonzero"`
+		Kind    string   `json:"kind,omitempty" yaml:"kind,omitempty" input:"nonzero"` // "component" or "interface"
+		Parent  string   `json:"parent,omitempty" yaml:"parent,omitempty" input:"zero: a component with no parent is one of the top"`
+		Joins   []string `json:"joins,omitempty" yaml:"joins,omitempty" input:"zero: a component, which joins nothing; the schema requires it of an interface"`
+		Purpose []string `json:"purpose,omitempty" yaml:"purpose,omitempty" input:"nonzero"`
 	}
 	termFile struct {
-		Type       string   `json:"type" yaml:"type"`
-		ID         string   `json:"id" yaml:"id"`
-		Name       string   `json:"name,omitempty" yaml:"name,omitempty"`
-		Definition []string `json:"definition,omitempty" yaml:"definition,omitempty"`
+		Type       string   `json:"type" yaml:"type" input:"nonzero"`
+		ID         string   `json:"id" yaml:"id" input:"nonzero"`
+		Name       string   `json:"name,omitempty" yaml:"name,omitempty" input:"nonzero"`
+		Definition []string `json:"definition,omitempty" yaml:"definition,omitempty" input:"nonzero"`
 	}
 )
 

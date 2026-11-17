@@ -103,6 +103,7 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 		{name: "an anchor whose value holds its alias", kind: yaml, effect: specgraph.LosesNode, files: files("---\ntype: term\nid: work-unit\nname: work unit\ndefinition: &" + v + "\n  - *" + v + "\n"), shows: shows},
 		{name: "a tag that the value does not take", kind: yaml, effect: specgraph.LosesNode, files: files(term("work-unit", "!!int "+v, "A work unit is work.")), shows: shows},
 		{name: "a key that JSON cannot hold", kind: "bad-yaml: the document holds a value that JSON cannot hold", effect: specgraph.LosesNode, files: files("---\n1: " + v + "\n")},
+		{name: "a null under a long key", kind: "bad-yaml: %s is null", effect: specgraph.LosesNode, files: files(workUnit + "? " + v + "\n: null\n"), shows: shows},
 		{name: "a file of a comment only", kind: "no-node: a spec file holds one or more nodes", effect: specgraph.KeepsEachNode, files: map[string]string{"spec.yaml": base, "empty.yaml": "# " + v + "\n"}},
 		{name: "a key that the node does not take", kind: schema, effect: specgraph.LosesNode, files: files(workUnit + "? " + v + "\n: x\n"), shows: shows},
 		{name: "an id that breaks the pattern", kind: schema, effect: specgraph.KeepsEachNode, files: files(requirement(longValue(1<<18, "Value-start-", "-value-end"), "", "Envoy keeps it.")), shows: []string{"Value-start-", "-value-end"}},
