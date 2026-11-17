@@ -377,6 +377,22 @@ Each item below names a script, then what it proves.
   a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
+- `plan-ratings.sh`
+
+  each retro of an issue rates the plan the issue ran, and a person lists the finished issues of a project with the real `dispatch plans` command, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues of one project:
+  three walk planning to done, the first with one failed review, and their retros rate the plan 3, 4 and 5;
+  `dispatch plans --project <PROJECT>`, run as a person with their personal token, prints the three, newest close first, each with the default plan, its one rating with its reason, its time and `failed steps` 1, 0 and 0, and reports the first issue's `failed steps 0` once the failed review's record is deleted from Dispatch's database;
+  [`plan-ratings-read.sh`](#plan-ratings-readsh) passes on the first issue over the same command's output and fails on the fourth, which is not finished;
+  the fourth issue's retro, completed with no rating from a claim at the contract that added the rating, is refused `400 PLAN_RATING_REQUIRED`, and the same completion with a rating is taken.
+  No GitHub, no cluster
+
+- `plan-ratings-read.sh`
+
+  the read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to done: `dispatch plans --project <PROJECT>` run once in the operator's own shell with the operator's own credential, and the line of `<ISSUE>` judged.
+  It passes only when the issue is listed with a plan, at least one rating, each with a reason, and a time;
+  a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
+  A deployed Dispatch and the operator's credential; it starts nothing
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -4880,7 +4896,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 The live proof that each phase of an issue leaves a step record on its Dispatch issue and that a person reads the records back with `dispatch steps`, run before the change merges.
-It runs on any Linux host with `go`, `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
 A run takes two to five minutes: most of it builds Dispatch and the driver, and up to a minute and a half waits for the daemon's outbox after the outage.
@@ -4934,6 +4950,64 @@ It reads an issue that is done, so every step of it has ended.
 | 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
 
 `scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
+
+## plan-ratings.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/plan-ratings.sh     # → "plan ratings e2e: PASS in <n>s", exit 0
+```
+
+The live proof that each retro of an issue rates the plan the issue ran and that a person lists the finished issues of a project with `dispatch plans`, each with its plan, its ratings with their reasons, its time and its count of failed steps, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`step-records.sh`](#step-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run took 53 s measured on a loaded host with a warm Go build cache, 17 s of it building the driver and 33 s the proof, which builds Dispatch first.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI and the read script out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestPlanRatingsLive` (`internal/daemon/plan_ratings_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the record path is stood in for.
+The driver is [`step-records.sh`](#step-recordssh)'s, over four issues of one project of the run's own (`SR<6 hex>`) instead of one, each seeded and booted as that driver seeds and boots its issue, so each plan and each rating goes through the daemon's outbox and its Dispatch client to the real `PUT /api/v1/issues/{key}/plans/{id}` and `PUT /api/v1/issues/{key}/steps/{id}/rating`.
+The first three issues walk side by side, one step of each in turn, as the package's whole-daemon test of the read by project walks them (`walkThreeRated`, `internal/daemon/plan_ratings_test.go`).
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts plans --project <PROJECT>`), run as `step-records.sh`'s driver runs it, as the person who set the project up, with their personal token.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `three-finished-issues-each-rated` | three issues walked planning to done, the first with a person's review requesting changes once; their retros' completions rating the plan 3, 4 and 5, each with a reason; `dispatch plans --project <PROJECT>` as the person, once the read by project holds all of it; then [`plan-ratings-read.sh`](#plan-ratings-readsh) on the first issue and on the fourth, in the person's shell with a `dispatch` on PATH that runs the same CLI | the header `<PROJECT>: 3 finished issues` and three lines, newest close first, each with `plan default (1 tasks: planner implementer tester reviewer acceptance:owner)`, its one rating `<n>/5 "<reason>"`, its time from the earliest start to the latest end of its step records, and `failed steps` 1, 0 and 0; the read script exits 0 on the first issue with a `PASS` line that names its rating and reason, and 1 on the fourth, which is not finished (`no line of <ISSUE>`); control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse reports the first issue's `failed steps 0` where 1 is wanted |
+| `a-retro-with-no-rating-is-refused` | the fourth issue walked to its retro; the retro's completion with no rating, from the implementer's claim at the plugin contract that added the rating (`api.PlanRatingContract`) or later; then the same completion with `planRating` 4 and a reason | `400 PLAN_RATING_REQUIRED` and the issue still in `retro`; control: `200` and the issue in `merging`, so the refusal is the rating's and no refusal of every retro; the fourth issue goes no further, so the read by project lists the three alone |
+
+The times print as `0h0m`: the walks take seconds, and `dispatch plans` prints whole minutes.
+A plugin of the release before that contract is no step here: the package's whole-daemon test `TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy` (`internal/daemon/plan_ratings_test.go`) holds that its retro, in its turn when the daemon is upgraded, completes with no rating and that the daemon writes none.
+What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
+`PLAN_RATINGS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## plan-ratings-read.sh
+
+```sh
+scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: plan …, ratings …, time …, failed steps <n>", exit 0
+```
+
+The check after the merge: once the release that rates each plan reaches a deployment, one real issue of the project runs to done there, and this script reads it among the project's finished issues.
+It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
+It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
+It sets none of those, reads no credential of its own, writes nothing and starts nothing.
+It judges no other issue: a finished issue Legion never ran, or ran before the release that rates each plan, lists `plan none`, `ratings none` and `time -`, which is true of what Dispatch holds of it.
+
+| exit | printed | when |
+| :--- | :--- | :--- |
+| 0 | `PASS: <ISSUE>: plan <plan>, ratings <ratings>, time <time>, failed steps <n>` | the read lists the issue with a plan, at least one rating, each rating with a reason, and a time; the line names each rating with its reason as the command printed them |
+| 1 | one `FAIL: …` line per fault | the read lists finished issues and the issue's line does not hold: no plan, no rating, a rating with an empty reason, no time; or the read lists no line of the issue (`the read lists <n> finished issues of <PROJECT> and no line of <ISSUE>`), or lists it twice; each line names the issue's line as the command printed it |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no finished issue of the project (`dispatch plans lists no finished issue of <PROJECT>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the project (no header, a line that is no finished issue, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr: a project key and the key of an issue of that project |
+
+`scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, an issue rated twice passes, an empty read is `UNKNOWN`, and each fault above has its row.
+[`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so a change of the line the command prints that this script cannot read fails that proof.
 
 ## plan-pointer-drive.sh
 

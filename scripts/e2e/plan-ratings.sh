@@ -12,9 +12,11 @@
 #   - three-finished-issues-each-rated: three issues walk planning to done, the first with one
 #     failed review, and their retros rate the plan 3, 4 and 5, each with a reason; `dispatch plans
 #     --project <PROJECT>` prints the three, newest close first, each with the default plan, its one
-#     rating with its reason, its time and `failed steps` 1, 0 and 0; control: the failed review's
-#     record deleted from Dispatch's database (its node and its tuples), the same parse reports
-#     the first issue's `failed steps 0` where 1 is wanted;
+#     rating with its reason, its time and `failed steps` 1, 0 and 0; scripts/e2e/plan-ratings-read.sh,
+#     run on that output with a dispatch on PATH that runs the same CLI, passes on the first issue
+#     and fails on the fourth, which is not finished; control: the failed review's record deleted
+#     from Dispatch's database (its node and its tuples), the same parse reports the first issue's
+#     `failed steps 0` where 1 is wanted;
 #   - a-retro-with-no-rating-is-refused: the fourth issue walks to its retro, and the retro's
 #     completion with no rating, from a claim at the contract that added the rating, is refused
 #     400 PLAN_RATING_REQUIRED, with the issue still in retro; control: the same completion with
