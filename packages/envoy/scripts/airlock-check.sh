@@ -559,7 +559,7 @@ check_k1() {
 		'{"owner":"legion-daemon","tier":"agent"}' "$plain_value"
 	github_app="$(stored_value "${STACK_SECRETS_PREFIX}airlock-github-app")"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-github" \
-		'{"owner":"legion-daemon","tier":"agent","kind":"github-app","github-owners":"acme-org"}' "$github_app"
+		'{"owner":"legion-daemon","tier":"agent","type":"github-app","github-owners":"acme-org"}' "$github_app"
 	reread_all AIRLOCK_PLAIN_TOKEN
 	reread_all AIRLOCK_PLAIN_GITHUB
 
@@ -1428,11 +1428,11 @@ k7_names() {
 	add_fake_secret "${STACK_SECRETS_PREFIX}slack-bot-token" '{"owner":"legion-daemon","tier":"agent"}' "$K7_SLACK"
 	add_fake_secret "${STACK_SECRETS_PREFIX}github-admin-pat" '{"owner":"legion-daemon","tier":"agent"}' "$K7_GITHUB"
 	add_fake_secret "${STACK_SECRETS_PREFIX}tailscale-api-key" '{"owner":"legion-daemon","tier":"agent"}' "$K7_TAILSCALE"
-	# The three Google logins are minted kinds: the broker mints each at the stack's stand-in
+	# The three Google logins are minted types: the broker mints each at the stack's stand-in
 	# Google token endpoint, so what the consumer holds a placeholder for is a minted value. A
 	# secret's store name is its name lowercased, each underscore a hyphen (policy.NameToSlug).
 	local google login gcloud_slug
-	google='{"owner":"legion-daemon","tier":"agent","kind":"google-login"}'
+	google='{"owner":"legion-daemon","tier":"agent","type":"google-login"}'
 	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
 	gcloud_slug="$(printf '%s' "$AIRLOCK_CHECK_GCLOUD_SECRET" | tr 'A-Z_' 'a-z-')"
 	add_fake_secret "${STACK_SECRETS_PREFIX}${gcloud_slug}" "$google" "$login"
