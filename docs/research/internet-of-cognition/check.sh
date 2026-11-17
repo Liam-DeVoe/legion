@@ -286,7 +286,9 @@
 # that no row above it holds, and holds each of requirement, source, kind, claim, mark,
 # note, output and command only as a string and evidence only as an object, whose fields
 # sha256 and corpus_floor, where it holds them, are 64 lowercase hexadecimal digits and a
-# whole number, the shape the list of keys below gives; expect may hold any value, since
+# whole number, and checks only as an array of one or more objects, each holding row and
+# mark, strings that are not empty, and no key but those two and refines, a string, the
+# shape the list of keys below gives; expect may hold any value, since
 # predicate-form judges it. A line that is no row is the evidence being wrong, which
 # reading it again does not cure: it is one FAIL naming its line number and why, a second
 # row of an id naming the line of the first, and the mode reads on and ends with its
@@ -296,18 +298,21 @@
 # how the mode reads a citation rather than over what one of a kind resolves to, since a
 # line that is no row is a citation of no kind. Every reader after it, the install reader,
 # jq over the rows and env.sh's reads of claims.jsonl when --replay sources it, reads only
-# the rows the parse read (claims), so none of them meets a line it cannot read. env.sh
-# reads a value of a row only as a named field of its evidence, which this parse holds to
-# its type, and never from its predicate: the sha256 of s-model-checksum and the
-# corpus_floor of tc-corpus-1, which env.sh's ioc_env_row_fields lists. The field and the
-# predicate write one fact twice, so before it sources env.sh, --replay fails claim-form,
-# naming the row and the field, when no row carries one of them or when the field is not a
-# whole line of the value of its row's one predicate (env_rows_judge); a pin that differs
-# from the value its row records is the evidence being wrong, never a refusal of env.sh.
-# --replay then stops there, before env.sh builds anything, and every assertion after
-# claim-form could not run, of the kind evidence; the run ends exit 1. --shape, --landed
-# and --published read no row of claims.jsonl; --published asks only that the default
-# branch holds the file.
+# the rows the parse read (claims), so none of them meets a line it cannot read. --replay
+# judges claim-marks-agree from those rows alone, first, before it reads a source or
+# env.sh builds anything, so two rows that disagree on one claim are reported however the
+# rest of the run goes. env.sh reads a value of a row only as a named field of its
+# evidence, which this parse holds to its type, and never from its predicate: the sha256
+# of s-model-checksum and the corpus_floor of tc-corpus-1, which env.sh's
+# ioc_env_row_fields lists. The field and the predicate write one fact twice, so before
+# it sources env.sh, --replay fails claim-form, naming the row and the field, when no row
+# carries one of them or when the field is not a whole line of the value of its row's one
+# predicate (env_rows_judge); a pin that differs from the value its row records is the
+# evidence being wrong, never a refusal of env.sh. --replay then stops there, before
+# env.sh builds anything, and every assertion after claim-form but claim-marks-agree
+# could not run, of the kind evidence; the run ends exit 1. --shape, --landed and
+# --published read no row of claims.jsonl; --published asks only that the default branch
+# holds the file.
 #
 # The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
 # into a file under its own scratch, readable by its owner alone, exports that file's path
@@ -317,10 +322,24 @@
 # The evidence it reads:
 #
 #   claims.jsonl   one line per claim, one JSON object. Keys: id, requirement, source,
-#                  kind, claim, mark, evidence, command, expect, output, note.
+#                  kind, claim, mark, evidence, command, expect, output, note, checks.
 #                  evidence is an object, and its fields sha256 and corpus_floor, the
 #                  two env.sh reads, are 64 lowercase hexadecimal digits and a whole
 #                  number.
+#                  checks is on a row that judges a claim of a record under check other
+#                  than its own: one or more objects, each naming one such claim and the
+#                  verdict this row gives it, as {"row": "d-17", "mark": "false"}. row
+#                  is the id of a citation row of a record under check, <label>-<n>
+#                  with <label> one of sources.json's records_under_check[].label; mark
+#                  is one of verified, false, unverified and not-externally-checkable,
+#                  the marks r1 fixes; and refines, where the row holds one part of the
+#                  claim or narrows it, is a sentence, five words or more ending with a
+#                  full stop, saying which part and why its verdict on that part differs
+#                  from the named row's. Each is a string, and an entry holds no other
+#                  key. claim-marks-agree holds each mark to the named row's: the two are
+#                  one mark or the entry names its part, no part of a claim marked
+#                  verified is marked otherwise, and a record claim's own row carries no
+#                  checks.
 #                  kind is one of project-code, our-code, behaviour, published, absence
 #                  and quotation, which are the five forms of the specification with the
 #                  quotation form marked as a claim of the project rather than of its
@@ -503,6 +522,7 @@ assertion_table() {
     cat <<'TABLE'
 claim-form|replay|every line of claims.jsonl is a claim the one parse reads, and every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
+claim-marks-agree|replay|every row that checks a claim of a record under check names that claim's row and gives it the mark that row carries, or names the part of it the row holds, no part of a claim marked verified is marked otherwise, and at least one row checks one|a row whose check of a record claim gives it another mark than its own row carries
 predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
 install-pinned|replay|every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend, and every environment a row installed into holds only packages its lock holds at their version and packages its pinned clone builds|a recorded command that runs a package with no version
 replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
@@ -1009,6 +1029,11 @@ TYPED = {
                      lambda value: isinstance(value, int) and not isinstance(value, bool) and value >= 0),
 }
 
+# The keys of an entry of checks, which names a claim of a record under check this row
+# judges and the mark it gives it; claim-marks-agree reads each entry against that claim's
+# own row. row and mark are in every entry, refines only where the row holds one part.
+CHECK_KEYS = ("row", "mark", "refines")
+
 def kind(value):
     for name, types in (("a boolean", bool), ("a number", (int, float)), ("a string", str),
                         ("an array", list), ("an object", dict)):
@@ -1018,6 +1043,28 @@ def kind(value):
 
 def constant(name):
     raise ValueError("%s is no JSON value" % name)
+
+def checks_why(checks):
+    # None when checks has the shape the header's list of keys gives it, or why it has not.
+    if not isinstance(checks, list) or not checks:
+        return "its checks is %s, and a checks is an array of one or more objects" % (
+            "an empty array" if isinstance(checks, list) else kind(checks))
+    for number, entry in enumerate(checks, 1):
+        if not isinstance(entry, dict):
+            return "entry %d of its checks is %s, and an entry of a checks is an object" % (number, kind(entry))
+        for key in entry:
+            if key not in CHECK_KEYS:
+                return "entry %d of its checks holds the key %s, and an entry of a checks holds row, mark and refines alone" % (
+                    number, json.dumps(key)[:80])
+        for key in CHECK_KEYS:
+            if key in entry and not isinstance(entry[key], str):
+                return "the %s of entry %d of its checks is %s, and the %s of an entry of a checks is a string" % (
+                    key, number, kind(entry[key]), key)
+        for key in ("row", "mark"):
+            if not entry.get(key):
+                return "entry %d of its checks has %s, and an entry of a checks names a row and a mark, each a string that is not empty" % (
+                    number, ("an empty " if key in entry else "no ") + key)
+    return None
 
 def read(text):
     # The row the line holds and None, or None and why the line holds no row.
@@ -1041,6 +1088,10 @@ def read(text):
         if key in evidence and not holds(evidence[key]):
             return None, "its evidence's %s is %s, and an evidence's %s is %s" % (
                 key, json.dumps(evidence[key])[:80], key, what)
+    if "checks" in row:
+        why = checks_why(row["checks"])
+        if why is not None:
+            return None, why
     return row, None
 
 try:
@@ -1118,6 +1169,109 @@ env_rows_judge() {
         fi
     done < <(ioc_env_row_fields)
     return "$bad"
+}
+
+# claim_marks_judge; claim-marks-agree, which --replay judges first, from the rows the one
+# parse read alone, before it reads a source or env.sh builds anything (the header's "The
+# one parse of claims.jsonl"), so two rows that disagree on one claim are reported however
+# the rest of the run goes. A row that judges a claim of a record under check names that
+# claim's row in its checks, with the mark it gives it (the header's list of keys). Each
+# entry fails, naming the row and the row it names, when the row that carries it is itself
+# a citation row of a record under check, which names no other claim; when the row it
+# names is not in the file, or is no citation row of a record under check; when its mark
+# is none of the four r1 fixes; when its mark differs from the named row's and it names no
+# part it holds (refines), the two rows disagreeing on one claim; when its refines is no
+# sentence, five words or more ending with a full stop; and when the named row is verified
+# and it gives a part of that claim another mark, since a part of a claim marked verified
+# is verified too. A file in which no row carries checks compares no pair, and fails too.
+claim_marks_judge() {
+    local verdict message status
+    if ! claims_parsed; then
+        fail claim-marks-agree "the parse of claims.jsonl did not run to its end, so no row is compared with the record claim it checks"
+        return 0
+    fi
+    python3 - "$CLAIMS_ROWS" "$EVIDENCE/sources.json" >"$RUN_SCRATCH/claim-marks" 2>"$RUN_SCRATCH/claim-marks.err" <<'PY'
+import json, re, sys
+
+rows_path, sources_path = sys.argv[1:3]
+# The marks requirement r1 fixes for a claim of a record under check.
+MARKS = ("verified", "false", "unverified", "not-externally-checkable")
+
+def say(verdict, message):
+    print("%s\t%s" % (verdict, re.sub(r"[\t\n]", " ", message)))
+
+try:
+    with open(sources_path, encoding="utf-8") as sources:
+        labels = [record["label"] for record in json.load(sources)["records_under_check"]]
+except (OSError, ValueError, KeyError, TypeError) as why:
+    say("fail", "sources.json names no record under check this run can read, so no row is known as the row of a record claim: "
+        + " ".join(str(why).split())[:160])
+    sys.exit(0)
+
+with open(rows_path, encoding="utf-8") as lines:
+    rows = [json.loads(line) for line in lines if line.strip()]
+by_id = {row["id"]: row for row in rows}
+
+def citation(row_id):
+    # A citation row of a record under check: <label>-<n>, <label> one of sources.json's.
+    return any(re.fullmatch(re.escape(label) + "-[0-9]+", row_id) for label in labels)
+
+def sentence(text):
+    # A sentence by the gate's own reading: five words or more, ending with a full stop.
+    return len(text.split()) >= 5 and text.rstrip().endswith(".")
+
+failed = False
+carrying = entries = 0
+for row in rows:
+    if "checks" not in row:
+        continue
+    carrying += 1
+    me = row["id"]
+    for entry in row["checks"]:
+        entries += 1
+        named, mark, refines = entry["row"], entry["mark"], entry.get("refines")
+        target = by_id.get(named)
+        whys = []
+        if citation(me):
+            whys.append("%s checks %s, and %s is itself the row of a claim of a record under check, which names no other claim"
+                        % (me, named, me))
+        if target is None:
+            whys.append("%s checks %s, and claims.jsonl holds no row %s" % (me, named, named))
+        elif not citation(named):
+            whys.append("%s checks %s, which is no citation row of a record under check, <label>-<n> with <label> one of %s"
+                        % (me, named, ", ".join(labels) or "none"))
+        if mark not in MARKS:
+            whys.append("%s gives %s's claim the mark %s, which is none of the marks r1 fixes: %s" % (me, named, mark, ", ".join(MARKS)))
+        if refines is not None and not sentence(refines):
+            whys.append("%s names the part of %s's claim it holds in a refines that is no sentence, five words or more ending with a full stop: %s"
+                        % (me, named, json.dumps(refines)[:160]))
+        if target is not None and citation(named) and mark in MARKS:
+            theirs = target.get("mark") or "no mark"
+            if refines is None and mark != theirs:
+                whys.append("%s gives %s's claim the mark %s, %s carries %s, and %s names no part it holds, so the two rows disagree on one claim"
+                            % (me, named, mark, named, theirs, me))
+            elif refines is not None and theirs == "verified" and mark != "verified":
+                whys.append("%s gives a part of %s's claim the mark %s, and %s carries verified, so the two rows disagree on one claim: a part of a claim marked verified is verified too"
+                            % (me, named, mark, named))
+        for why in whys:
+            failed = True
+            say("fail", why)
+if carrying == 0:
+    say("fail", "no row of claims.jsonl carries checks, so no row is compared with the record claim it judges")
+elif not failed:
+    say("pass", "each of the %d entries of checks on %d rows names the row of a claim of a record under check and gives it the mark that row carries, or names the part of it the row holds, and no part of a claim marked verified is marked otherwise"
+        % (entries, carrying))
+PY
+    status=$?
+    while IFS=$'\t' read -r verdict message; do
+        if [ "$verdict" = fail ]; then
+            fail claim-marks-agree "$message"
+        elif [ "$verdict" = pass ] && [ "$status" -eq 0 ]; then
+            pass claim-marks-agree "$message"
+        fi
+    done <"$RUN_SCRATCH/claim-marks"
+    [ "$status" -eq 0 ] ||
+        fail claim-marks-agree "the comparison of each row's checks with the row it names stopped before its end: $(tail -1 "$RUN_SCRATCH/claim-marks.err" | head -c 240)"
 }
 
 # live_read <source> <file> <command...>; the one read of a live source the gate makes
@@ -3664,6 +3818,10 @@ mode_replay() {
     # only the rows it read, env.sh's reads of claims.jsonl among them (IOC_ENV_CLAIMS).
     claims_judge claim-form || unread_rows=1
     local IOC_ENV_CLAIMS="$CLAIMS_ROWS"
+    # Two rows that judge one claim of a record under check are compared from those rows
+    # alone, before anything below can stop the mode, so a disagreement is reported
+    # however the rest of the run goes.
+    claim_marks_judge
     # The rows env.sh reads a value from are judged here too, before env.sh builds anything
     # (the header's "The one parse of claims.jsonl"): a row env.sh would read wrong, or
     # whose pin is not the value its predicate records, fails claim-form by name, and the
@@ -5056,7 +5214,7 @@ MD
 
     cat >"$evidence/claims.jsonl" <<'JSONL'
 {"id":"f-project-1","requirement":"r3","source":"mas-lab","kind":"project-code","claim":"The runtime declares a boundary gate.","mark":"verified","evidence":{"repo":"mas-lab","commit":"COMMIT","file":"README.md","symbol":"README"},"note":"read again"}
-{"id":"f-our-1","requirement":"r1","source":"this tree's measurement","kind":"our-code","claim":"The completion refusal names a tester verdict.","mark":"verified","evidence":{"file":"packages/daemon/internal/api/handoff.go","symbol":"TesterVerdictRequired","commit":"OURS"},"note":"read again"}
+{"id":"f-our-1","requirement":"r1","source":"this tree's measurement","kind":"our-code","claim":"The completion refusal names a tester verdict.","mark":"verified","evidence":{"file":"packages/daemon/internal/api/handoff.go","symbol":"TesterVerdictRequired","commit":"OURS"},"note":"read again","checks":[{"row":"u-1","mark":"verified"}]}
 {"id":"f-behaviour-1","requirement":"r7","source":"this tree's measurement","kind":"behaviour","claim":"The script prints its own name.","mark":"verified","evidence":{"surface":"cli"},"command":"printf 'ran once\\n'","expect":{"contains":"ran once"},"output":"ran once","note":"ran again"}
 {"id":"f-absence-1","requirement":"r5","source":"this tree's measurement","kind":"absence","claim":"Nothing names a pair refusal.","mark":"verified","evidence":{"scope":"the fixture tree"},"command":"grep -r 'REVIEWER_PAIR_REQUIRED' skills || true","expect":{"at_most":"0"},"output":"","note":"searched again"}
 {"id":"f-quotation-1","requirement":"r2","source":"the interview","kind":"quotation","claim":"The authors say the third protocol is not released.","mark":"unreleased","evidence":{"source":"the interview","quote":"the third protocol is not released","marked":"a claim of the project, not of its code"},"note":"their words"}
@@ -5244,6 +5402,7 @@ fixture_plant() {
     case "$family" in
     claim-form) sed -i 's/"kind":"project-code"/"kind":"a reading"/' "$evidence/claims.jsonl" ;;
     claim-mark) sed -i 's/"mark":"verified"/"mark":""/' "$evidence/claims.jsonl" ;;
+    claim-marks-agree) sed -i 's/"checks":\[{"row":"u-1","mark":"verified"}\]/"checks":[{"row":"u-1","mark":"false"}]/' "$evidence/claims.jsonl" ;;
     predicate-form) sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains_a_sentence":"the output says it ran"}/' "$evidence/claims.jsonl" ;;
     install-pinned) sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx pyshacl --version; printf 'ran once/" "$evidence/claims.jsonl" ;;
     replay-command) sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$evidence/claims.jsonl" ;;

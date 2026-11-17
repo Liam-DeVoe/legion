@@ -1256,10 +1256,10 @@ ending_result "a spent GitHub budget cannot run: exit 2, naming the reset" 2 '^c
 dir="$(fresh ending-failed)"
 sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 out="$(fixture_run "$dir" --replay)"
-ending_result "an ordinary failed assertion still ends exit 1 with the count" 1 '^1 of 16 assertions failed: replay-command$' "$out"
+ending_result "an ordinary failed assertion still ends exit 1 with the count" 1 '^1 of 17 assertions failed: replay-command$' "$out"
 dir="$(fresh ending-passed)"
 out="$(fixture_run "$dir" --replay)"
-ending_result "a mode whose assertions all pass ends exit 0" 0 '^all 16 assertions passed$' "$out"
+ending_result "a mode whose assertions all pass ends exit 0" 0 '^all 17 assertions passed$' "$out"
 
 # 71. The exemption reads every spelling of its files (the tester's note of round 23). At
 # 987017b05f the exemption read -c, --constraint, -r and --requirement alone, and held
@@ -1370,7 +1370,7 @@ dir="$(fresh citations-honest)"
 out="$(fixture_run "$dir" --citations)"
 ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 5 assertions passed$' "$out"
 out="$(fixture_run "$dir" --replay)"
-ending_result "the fixture passes --replay" 0 '^all 16 assertions passed$' "$out"
+ending_result "the fixture passes --replay" 0 '^all 17 assertions passed$' "$out"
 
 # 76. A recorded command reproduces on a machine that never ran it. At 9959ca5563 the row
 # m-ctl-our-row-count kept its Go module cache at $TMPDIR/gomod, outside IOC_CACHE and
@@ -1502,7 +1502,7 @@ missing_tool admitted python3 'apt-get install python3'
 missing_tool self-test jq 'apt-get install jq'
 dir="$(fresh tools-whole)"
 out="$(fixture_run "$dir" --replay)"
-ending_result "--replay with every tool of its table on PATH passes the fixture" 0 '^all 16 assertions passed$' "$out"
+ending_result "--replay with every tool of its table on PATH passes the fixture" 0 '^all 17 assertions passed$' "$out"
 out="$(fixture_run "$dir" --shape)"
 ending_result "--shape with every tool of its table on PATH passes the fixture" 0 '^all 9 assertions passed$' "$out"
 out="$(fixture_run "$dir" --landed)"
@@ -1519,7 +1519,7 @@ missing_result "--replay with DISPATCH_TOKEN_FILE unset cannot run, naming it" r
 out="$(DISPATCH_TOKEN_FILE="$dir/no-such-token" fixture_run "$dir" --published)"
 missing_result "--published whose DISPATCH_TOKEN_FILE names no file cannot run, naming it" published 'the variable DISPATCH_TOKEN_FILE names .*/no-such-token, which is no readable file' 'export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets' "$out"
 out="$(fixture_run "$dir" --replay)"
-ending_result "--replay with DISPATCH_TOKEN_FILE naming a readable file passes the fixture" 0 '^all 16 assertions passed$' "$out"
+ending_result "--replay with DISPATCH_TOKEN_FILE naming a readable file passes the fixture" 0 '^all 17 assertions passed$' "$out"
 
 # 80. --landed tells a missing install from a proof that fails. Case 77 runs this tree's
 # own --landed on a checkout with no node_modules; this case holds the rule on the fixture,
@@ -1636,7 +1636,7 @@ z.close()' "$gocold/proxy/example.com/ioccount/@v/v1.0.0.zip" example.com/ioccou
         else
             plant_behaviour "$dir" 'cd gocount && GOFLAGS=-mod=mod go run ./cmd/count' '{"matches":"^rows 38$"}'
             out="$(HOME="$gocold/home" IOC_CACHE="$dir/cache" fixture_run "$dir" --replay)"
-            ending_result "a row whose go downloads on a cold cache meets the measured line, ^rows 38\$" 0 '^all 16 assertions passed$' "$out"
+            ending_result "a row whose go downloads on a cold cache meets the measured line, ^rows 38\$" 0 '^all 17 assertions passed$' "$out"
         fi
     done
     unset GOPROXY GOSUMDB GOTOOLCHAIN
@@ -1672,7 +1672,7 @@ done
 dir="$(fresh caller-variable)"
 plant_behaviour "$dir" "printf 'ran once%s\\n' \"\$IOC_CALLER_PROBE\"" '{"equals":"ran once"}'
 out="$(IOC_CALLER_PROBE=' and a variable of the caller' fixture_run "$dir" --replay)"
-ending_result "a variable of the caller's that the header does not name does not reach a fixture's row" 0 '^all 16 assertions passed$' "$out"
+ending_result "a variable of the caller's that the header does not name does not reach a fixture's row" 0 '^all 17 assertions passed$' "$out"
 
 # 85. A run the self-test makes that cannot run is a self-test that cannot run. At
 # 0fdbb24ddf mode_self_test looked only for the all-passed line at the end of each run it
@@ -1701,7 +1701,7 @@ ending_result "--self-test whose fixture's --citations has no Dispatch to read c
 out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
 ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$out"
 out="$(IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
-ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 39 assertions passed$' "$out"
+ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 40 assertions passed$' "$out"
 
 # 86. --admitted reads the status of the install reader. At 0fdbb24ddf it read the
 # classifier's lines through a process substitution, so no status of python3 reached it:
@@ -1864,7 +1864,7 @@ dir_copy() {
 BROKEN_LINE='{"id": "broken-row", "kind": '
 LIST_COMMAND='{"id":"command-list","requirement":"r7","source":"the case","kind":"behaviour","claim":"A command that is a list.","mark":"verified","evidence":{"surface":"cli"},"command":["ls"],"expect":{"contains":"ls"},"note":"planted"}'
 NUMBER_ID='{"id":7,"requirement":"r7","source":"the case","kind":"behaviour","claim":"An id that is a number.","mark":"verified","evidence":{"surface":"cli"},"command":"printf ran","expect":{"contains":"ran"},"note":"planted"}'
-for mode in replay:16:claim-form citations:5:citation-kinds; do
+for mode in replay:17:claim-form citations:5:citation-kinds; do
     family="${mode##*:}"
     count="${mode#*:}"
     count="${count%%:*}"
@@ -1895,7 +1895,7 @@ copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
 printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" admitted-table \
-    '^1 of 39 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
+    '^1 of 40 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 
 # 89. check.test.sh ends the three ways the gate does, and --self-test reads it by its
 # ending record. At 9c82069807 case_result, passed_result and ending_result read a fixture
@@ -1986,7 +1986,7 @@ if [ "$RUN_CRASH" != 1 ] || [ -e "$out/ending" ] || ! grep -q "syntax error near
 fi
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no ending record, fails gate-cases" gate-cases \
-    '^1 of 39 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
+    '^1 of 40 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
 
 # 90-92 come from the thirteenth review of the pull request and the architect's rulings on
 # it of 2026-11-16T06:40Z and 07:08Z, and the header of check.sh states each rule they hold:
@@ -2058,14 +2058,14 @@ CASE
 ending_result "a planted failure beside an outage it does not plant could not run, neither failed nor passed, and check.test.sh ends exit 2" 2 \
     "^check\\.sh cannot run check\\.test\\.sh: 1 of 1 cases could not run: --citations over a claims\\.jsonl holding a line cut short fails citation-kinds alone, beside a Dispatch that does not answer: $DISPATCH_DOWN" "$(gate_run "$copy/check.test.sh")" "$DISPATCH_DOWN"
 dir="$(fresh no-record)"
-sed -i "s/^    --replay) run_mode replay ;;\$/    --replay) printf 'all 16 assertions passed\\\\n' ;;/" "$dir/repo/docs/research/internet-of-cognition/check.sh"
-grep -qxF "    --replay) printf 'all 16 assertions passed\\n' ;;" "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
+sed -i "s/^    --replay) run_mode replay ;;\$/    --replay) printf 'all 17 assertions passed\\\\n' ;;/" "$dir/repo/docs/research/internet-of-cognition/check.sh"
+grep -qxF "    --replay) printf 'all 17 assertions passed\\n' ;;" "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
     printf 'FAIL the gate that prints the all-passed line and writes no record could not be planted in the fixture copy of check.sh\n'
     exit 1
 }
 out="$(fixture_run "$dir" --replay)"
 ending_read "$out"
-if [ "$RUN_ENDING" = failed ] && [ "$RUN_CRASH" = 1 ] && [ "$(tail -1 "$out/text")" = 'all 16 assertions passed' ]; then
+if [ "$RUN_ENDING" = failed ] && [ "$RUN_CRASH" = 1 ] && [ "$(tail -1 "$out/text")" = 'all 17 assertions passed' ]; then
     case_passed "a run whose text ends with the all-passed line, exit 0, but that wrote no ending record, reads as a crash"
 else
     case_failed "a run whose text ends with the all-passed line, exit 0, but that wrote no ending record, reads as a crash" "it reads as $RUN_ENDING: $RUN_LINE"
@@ -2147,7 +2147,7 @@ for form in 'sha256:"sha256:53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cac
     jq -cn --arg field "$field" --argjson value "${form#*:}" \
         '{id: ("typed-" + $field), requirement: "r7", source: "the case", kind: "behaviour", claim: "An evidence field of the wrong type.", mark: "verified", evidence: {surface: "cli", ($field): $value}, note: "planted"}' >>"$claims_copy"
     one_failure_result "--replay over a claims.jsonl whose evidence holds $field as ${form#*:} fails claim-form alone, naming the line" claim-form \
-        '^1 of 16 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its evidence's $field is " \
+        '^1 of 17 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its evidence's $field is " \
         "$(fixture_run "$dir" --replay)"
 done
 
@@ -2162,7 +2162,7 @@ claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 row="$(grep -F '"id":"f-behaviour-1"' "$claims_copy")"
 printf '%s\n' "$row" >>"$claims_copy"
 one_failure_result "--replay over a claims.jsonl holding a second row of one id fails claim-form alone, naming both lines, exit 1" claim-form \
-    '^1 of 16 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its id \"f-behaviour-1\" is the id of line 3 too" \
+    '^1 of 17 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its id \"f-behaviour-1\" is the id of line 3 too" \
     "$(fixture_run "$dir" --replay)"
 copy="$(admitted_copy duplicate-id-admitted)"
 row="$(head -1 "$copy/claims.jsonl")"
@@ -2304,16 +2304,18 @@ honest_result "the old form of tm-validate, the exit status alone, passes a mas-
 # GitHub and Dispatch cut, as case 90 cuts GitHub: s-model-checksum gone, its sha256 one
 # digit off the line its predicate records, and tc-corpus-1's corpus_floor one below its
 # predicate's count. Each fails claim-form alone, naming the row, and stops there, before
-# it reads a live source or builds anything, exit 1, each of the other 15 assertions one
-# that could not run for the evidence. The honest form is env_rows_judge over claims.jsonl
-# as it stands, which reports nothing.
+# it reads a live source or builds anything, exit 1: claim-marks-agree, which reads the
+# rows alone, is judged before it stops, and each of the other 15 assertions could not run
+# for the evidence. The honest form is env_rows_judge over claims.jsonl as it stands,
+# which reports nothing.
 # evidence_stop_result <name> <the FAIL's detail, an extended regular expression> <run>;
 # passes when the record holds exit 1, claim-form alone among the assertions that failed,
-# and the 15 others as ones that could not run, of the kind evidence, for the reason
-# evidence_stops gives, and the text a FAIL of claim-form with that detail. A run that
-# stops there reads no live source and builds nothing, so the only reasons from outside
-# the tree that can end it first, a missing prerequisite or its own scratch and record
-# (case 96), make the case one that could not run; any other ending fails it.
+# and the 15 others but claim-marks-agree as ones that could not run, of the kind
+# evidence, for the reason evidence_stops gives, and the text a FAIL of claim-form with
+# that detail. A run that stops there reads no live source and builds nothing, so the only
+# reasons from outside the tree that can end it first, a missing prerequisite or its own
+# scratch and record (case 96), make the case one that could not run; any other ending
+# fails it.
 EVIDENCE_STOP='the evidence stops --replay at claim-form: '
 evidence_stop_result() {
     local name="$1" detail="$2" run="$3" first
@@ -2887,6 +2889,46 @@ if evaluate '{"exit":1}' "$WORK/op-status/out"; then
 else
     case_failed "a recorded exit status of 1 meets {\"exit\":1}" "evaluate did not hold {\"exit\":1} over an output with the status 1 recorded"
 fi
+
+# 110. Two rows that judge one claim of a record under check give it one mark, or the one
+# that is not the claim's own row names the part it holds (round 34). At c1520338 tc-voc-2
+# said that the record's sentence at d-17 is false as stated while d-17 was marked
+# verified, and nothing linked the two rows, so nothing compared their marks. A row now
+# names each record claim it judges in its checks, with the mark it gives it, and
+# --replay's claim-marks-agree holds that mark to the named row's; the fixture's f-our-1
+# checks u-1 with u-1's own mark. The case plants into the fixture's claims.jsonl a row
+# that gives u-2, marked verified, the mark false and names no part it holds, which fails
+# claim-marks-agree alone, naming both rows; u-2 marked false and split by two rows, each
+# naming the part it holds in a refines, one part verified and one false, which passes;
+# and a row that marks a part of u-1, marked verified, unverified with a refines, which
+# fails claim-marks-agree alone, since a part of a claim marked verified is verified too.
+# checks_row <id> <checks, a JSON array>; a row of the case's own carrying those checks.
+checks_row() {
+    jq -cn --arg id "$1" --argjson checks "$2" \
+        '{id: $id, requirement: "r7", source: "the case", kind: "behaviour", claim: "A row that judges a claim of the fixture record.", mark: "verified", evidence: {surface: "cli"}, note: "planted", checks: $checks}'
+}
+dir="$(fresh marks-disagree)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+checks_row f-check-disagrees '[{"row":"u-2","mark":"false"}]' >>"$claims_copy"
+one_failure_result "a row that gives u-2's claim, marked verified, the mark false and names no part it holds fails claim-marks-agree alone, naming both rows" claim-marks-agree \
+    '^1 of 17 assertions failed: claim-marks-agree$' "^FAIL claim-marks-agree: f-check-disagrees gives u-2's claim the mark false, u-2 carries verified, and f-check-disagrees names no part it holds, so the two rows disagree on one claim\$" \
+    "$(fixture_run "$dir" --replay)"
+dir="$(fresh marks-split)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i '/"id":"u-2"/s/"mark":"verified"/"mark":"false"/' "$claims_copy"
+grep -F '"id":"u-2"' "$claims_copy" | grep -qF '"mark":"false"' || {
+    printf 'FAIL u-2 could not be marked false in the fixture copy of claims.jsonl\n'
+    exit 1
+}
+checks_row f-check-part-held '[{"row":"u-2","mark":"verified","refines":"This row holds the count of thirteen, which the file prints."}]' >>"$claims_copy"
+checks_row f-check-part-false '[{"row":"u-2","mark":"false","refines":"This row holds the word normative, which the file never uses of them."}]' >>"$claims_copy"
+ending_result "u-2 marked false and split by two rows that each name the part they hold, one part verified and one false, passes" 0 '^all 17 assertions passed$' "$(fixture_run "$dir" --replay)"
+dir="$(fresh marks-verified-part)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+checks_row f-check-part-unverified '[{"row":"u-1","mark":"unverified","refines":"This row holds the symbol the record names, which no command of it reads."}]' >>"$claims_copy"
+one_failure_result "a row that marks a part of u-1's claim, marked verified, unverified with a refines fails claim-marks-agree alone, naming both rows" claim-marks-agree \
+    '^1 of 17 assertions failed: claim-marks-agree$' "^FAIL claim-marks-agree: f-check-part-unverified gives a part of u-1's claim the mark unverified, and u-1 carries verified, " \
+    "$(fixture_run "$dir" --replay)"
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
