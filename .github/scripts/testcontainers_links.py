@@ -4,7 +4,7 @@
 testcontainers-go's package init (internal/core/bootstrap) reads every process on the machine,
 through gopsutil's process.Processes(), at each start of a binary that links it: 3.0-3.3 s and
 379 MB of allocations with 8,300 processes on the dev box, 5.8 s at 16,551 and 8-15 s at 20,000
-to 28,000 (dispatch://INFRA-3904). A test pays that once per package, but a command pays it at
+to 28,000. A test pays that once per package, but a command pays it at
 every start, and a test binary that starts itself pays it at every start of its child: the
 Dispatch browser row that ran requestseed six times paid it six times, and cmd/legion's tests,
 which start their own binary 69 times in one test, ran out their package deadline on it. So no

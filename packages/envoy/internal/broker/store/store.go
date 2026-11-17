@@ -71,7 +71,7 @@ func WithTokenMinter(mint TokenMinter) Option {
 // poolConns is the most connections the store's pool holds (MaxConns) when the connection
 // settings name no pool_max_conns of their own. pgxpool's default is max(4, runtime.NumCPU()),
 // and NumCPU in a container is the node's CPU count, not the pod's CPU limit, so an unsized pool
-// held as many connections as its machine had CPUs (dispatch://INFRA-3904). 10 is what every
+// held as many connections as its machine had CPUs. 10 is what every
 // deployed broker already runs with: its deployment writes pool_max_conns=10 into
 // BROKER_DATABASE_URL, the most Cloud SQL connections one replica's pool opens on an instance it
 // shares with Dispatch. Settings that name pool_max_conns keep their number (poolsetting.Named),

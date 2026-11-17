@@ -900,7 +900,7 @@ func readLoopPlan(path string) (*loopPlan, error) {
 // replay-seed's), holding one connection per worker. Each worker runs one statement at a time, and
 // nothing else of the seed uses the pool while the workers run, so no worker waits for a
 // connection. pgxpool.New's own size is max(4, runtime.NumCPU()): 288 connections on a large
-// machine and 4 on a small one for the same -workers (dispatch://INFRA-3904).
+// machine and 4 on a small one for the same -workers.
 func workerPool(ctx context.Context, pgURL string, workers int) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(pgURL)
 	if err != nil {

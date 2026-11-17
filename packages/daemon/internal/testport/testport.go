@@ -1,7 +1,7 @@
 // Package testport is a loopback address that refuses every dial for as long as the test that
 // asked for it runs. A test that needs a peer that is not there takes one rather than the address
 // of a server or listener it closed: a freed port is any process's to take, and on a machine that
-// runs other tests beside this one another process took it and answered HTTP (dispatch://INFRA-3904).
+// runs other tests beside this one another process took it and answered HTTP.
 //
 // The envoy module keeps the same file at packages/envoy/internal/testport/testport.go, which pull
 // request #4185 adds. The two are copies, not one package imported twice, for the reason

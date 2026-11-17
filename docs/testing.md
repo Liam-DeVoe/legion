@@ -32,7 +32,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
-  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
+  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP.
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
 
@@ -510,7 +510,7 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
 - A machine's `PATH` can lead with wrappers of git or jj that are not Legion's: a mise shim, which finds its version under the caller's `HOME` and none under a test's, and a person's own shim, which checks every commit against a list it decrypts with that `HOME`'s keys.
-  A fixture runs git and jj under a home of the test's, and so does the code under test, which looks each up by name on the process's `PATH`, so on such a machine every bundle test of `packages/daemon/internal/launcher` failed at its setup (dispatch://INFRA-3904).
+  A fixture runs git and jj under a home of the test's, and so does the code under test, which looks each up by name on the process's `PATH`, so on such a machine every bundle test of `packages/daemon/internal/launcher` failed at its setup.
   So Guard also puts first on `PATH` a directory of links to the git and jj that the `PATH`'s own git and jj run, each read from the running program (`/proc/<pid>/exe` of the parent of a shell it starts) under the process's own `HOME`, so neither a fixture nor the code under test meets the wrapper.
   The directory sits in the user's cache (`legion-fixtureenv/<hash of the two programs>`), shared by every test binary that reads the same two programs; a git or jj on `PATH` that cannot be read that way fails the `TestMain`, naming it, and off Linux, which alone has that `/proc`, Guard leaves `PATH`'s git and jj as they are.
 

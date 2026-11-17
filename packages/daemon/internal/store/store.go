@@ -60,10 +60,10 @@ const (
 // pool_max_conns of its own. pgxpool's default is max(4, runtime.NumCPU()), and NumCPU in a
 // container is the host's CPU count, not the pod's CPU limit, so an unsized pool held as many
 // connections as the node had CPUs: a different number on every node, and 288 on a large dev
-// machine, past a Postgres of 100 connections (dispatch://INFRA-3904). 32 is what every deployed
-// daemon already runs with: its deployment writes pool_max_conns=32 into each daemon's DSN, chosen
-// after LINUX's daemon failed six boots in a row on 2026-10-26 with about 880 claims deciding at
-// once, while its instance served 41-48 connections. A DSN whose settings name pool_max_conns keeps
+// machine, past a Postgres of 100 connections. 32 is what every deployed daemon already runs with:
+// its deployment writes pool_max_conns=32 into each daemon's DSN, chosen after one deployed daemon
+// failed six boots in a row on 2026-10-26 with about 880 claims deciding at once, while its
+// instance served 41-48 connections. A DSN whose settings name pool_max_conns keeps
 // that number (poolsetting.Named).
 const PoolConns = 32
 

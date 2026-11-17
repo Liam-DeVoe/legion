@@ -191,7 +191,7 @@ const parentExe = `readlink "/proc/$PPID/exe"`
 // version is set for shim: jj`), and a person's own git or jj shim can check every commit against
 // a list it decrypts with that HOME's keys and refuse the commit where it cannot. A fixture runs
 // git and jj under a home of the test's (Isolated), and so does the code under test, so a test's
-// result depended on what the machine put first on PATH (dispatch://INFRA-3904).
+// result depended on what the machine put first on PATH.
 //
 // Each program is read from itself while it runs: the executable /proc names for the parent of a
 // shell it starts (a git shell alias; `jj util exec`), started as path's first git or jj, in a

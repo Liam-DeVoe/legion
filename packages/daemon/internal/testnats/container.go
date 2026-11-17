@@ -7,7 +7,7 @@
 // through gopsutil's process.Processes(), so each start of a binary that links the library costs
 // seconds and hundreds of megabytes of allocation: 7.6 to 11.5 s and 600 to 910 MB per start of
 // internal/daemon's test binary, measured with GODEBUG=inittrace=1 on a machine that ran 13,000 to
-// 20,000 processes (dispatch://INFRA-3904). A test binary pays the init at each start, and
+// 20,000 processes. A test binary pays the init at each start, and
 // internal/daemon's test binary starts itself again for each role process of its idle rig
 // (TestIdleRigRoleProcess), so that package's TestThisTestBinaryLinksNoTestcontainers fails when
 // the library is linked again, and so does this package's own.

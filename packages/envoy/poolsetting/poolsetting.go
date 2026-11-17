@@ -1,7 +1,7 @@
 // Package poolsetting reads whether a Postgres connection string names pgxpool's pool size,
 // pool_max_conns. pgxpool.ParseConfig takes the key out of the config it returns, so that config
 // cannot tell a named size from pgxpool's default, max(4, runtime.NumCPU()), which follows the
-// machine (dispatch://INFRA-3904). A store that sets its own pool size asks here first.
+// machine. A store that sets its own pool size asks here first.
 //
 // Three stores read it, each with its own policy. The daemon's store (packages/daemon/internal/
 // store) and the broker's (internal/broker/store) keep a named size and set their own default

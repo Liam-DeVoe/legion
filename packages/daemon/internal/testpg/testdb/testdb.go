@@ -60,8 +60,8 @@ const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 // PoolConns is the size, as MaxConns, of every Postgres pool a test of this module builds.
 // pgxpool's default is max(4, runtime.NumCPU()), so an unsized pool holds 4 connections on CI's
 // 4-vCPU runners and hundreds on a large devbox, where a test's concurrent work on one pool can
-// open more connections than the server's max_connections and fail with SQLSTATE 53300
-// (dispatch://INFRA-3904). Four is what every unsized pool already got on the CI runners that run
+// open more connections than the server's max_connections and fail with SQLSTATE 53300. Four is
+// what every unsized pool already got on the CI runners that run
 // these suites, so every test is already green at it, and it is pgx's own floor. It is never
 // derived from runtime.NumCPU or GOMAXPROCS: a test's pool is the same size on every machine.
 //

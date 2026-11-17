@@ -5479,8 +5479,8 @@ jobs:
   # module cache, so that check needs Go but downloads no module. The job's second step,
   # .github/scripts/testcontainers_links.py, lists the commands and self-starting test binaries of
   # the daemon and envoy modules with their third-party packages, so it downloads the modules they
-  # need into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox
-  # (dispatch://INFRA-3904). It restores no cache.
+  # need into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox. It
+  # restores no cache.
   ci-filters:
     needs: changes
     if: needs.changes.outputs.ci_filters == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

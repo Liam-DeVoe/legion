@@ -853,7 +853,7 @@ const startMargin = 30 * time.Second
 //
 // It waits for the daemon's own signal that it serves HTTP, not for a poll of /healthz to pass
 // within a fixed time: the boot takes what the machine's load makes it take, and a bound of the
-// helper's own failed a test whose daemon was only slow (dispatch://INFRA-3904). The signal is the
+// helper's own failed a test whose daemon was only slow. The signal is the
 // seam the boot runs once the goroutine that serves the API has begun (beforeServingLatched,
 // wrapped here around any hook the test set). The wait ends there, at the daemon's exit, which
 // fails the test naming the exit's error, or at the test binary's own deadline less startMargin,
