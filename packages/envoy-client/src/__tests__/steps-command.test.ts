@@ -125,8 +125,8 @@ const docsReview: StepRecord = {
   report: null,
 };
 
-/** A merger's run that failed and sent its task back to place 0, the retro, with the report its
- *  completion named: a destination of 0 is a place, not the absence of one. */
+/** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
+ *  is a place, not the absence of one. Merging ends with no handoff record, so it names no report. */
 const mergeSentBack: StepRecord = {
   id: "9d4b2f6a-3c8e-5f1b-a7d9-2e4c6a8b0d47",
   issue: "LEG-1",
@@ -144,7 +144,7 @@ const mergeSentBack: StepRecord = {
   ended_at: "2026-11-16T12:10:00Z",
   result: "failed",
   returned_to: 0,
-  report: "2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f79",
+  report: null,
 };
 
 const config = {
@@ -270,7 +270,7 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "default", steps: [tester, mergeSentBack] },
+        { task: "default", steps: [implementer, tester, mergeSentBack] },
         { task: "docs", steps: [docsReview] },
       ],
     };
