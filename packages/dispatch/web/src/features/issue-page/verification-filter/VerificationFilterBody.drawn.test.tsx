@@ -354,14 +354,23 @@ test("each of the seven states a check can be in is drawn by its own word and sh
 });
 
 // R17: Met where every check of it passed at the commit the page names, Not met where one
-// failed there, Unknown otherwise - here a pass recorded against another commit.
+// failed there, Unknown otherwise - here a pass the server reads at another commit than the one
+// it compares the check with, so no pass of it stands (decision 152: a check stands as the
+// server reads it, `commit_stands` and `pass_stands`, as part F's own case reads it).
 test("a statement reads Met, Not met or Unknown by how its checks stand at that commit", () => {
   const met = passing("c-one");
   const failed = failing("c-two");
   const elsewhere = check({
     block_id: "c-three",
-    pass_stands: { answer: "yes" },
-    results: [result({ check_block_id: "c-three", commit_sha: OTHER_COMMIT, id: "result-three" })],
+    pass_stands: { answer: "no" },
+    results: [
+      result({
+        check_block_id: "c-three",
+        commit_sha: OTHER_COMMIT,
+        commit_stands: { answer: "other_commit" },
+        id: "result-three",
+      }),
+    ],
   });
   const view = drawBody(
     [
