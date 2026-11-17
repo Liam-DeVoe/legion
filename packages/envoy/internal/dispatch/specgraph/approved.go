@@ -284,8 +284,9 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 // another value, a name of no letter and no digit among them, would read as no relation: a
 // statement at the top of the tree in place of under its parent, which can make that parent met.
 // The schema refuses such a value in the files; in an approved document its problems pass, so
-// versionText refuses it here. An id or a parent "" is one that the node does not set, and each
-// entry of a list is set.
+// versionText refuses it here. A "" at a place that is not an entry of a list, such as an id, a
+// parent or the statement that a check serves, is one that the node does not set, and each entry
+// of a list is set.
 func notAnID(node any) (member, value string, found bool) {
 	type place struct {
 		member, value string

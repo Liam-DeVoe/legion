@@ -61,8 +61,8 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 	v := longValue(1<<18, "value-start-", "-value-end")
 	other := longValue(1<<18, "other-start-", "-other-end")
 	shows := []string{"value-start-", "-value-end"}
-	// notAnID is a long text that is not in the shape of an id, as the upper-case V makes it.
-	notAnID, notAnIDShows := longValue(1<<18, "Value-start-", "-value-end"), []string{"Value-start-", "-value-end"}
+	// badID is a long text that is not in the shape of an id, as the upper-case V makes it.
+	badID, badIDShows := longValue(1<<18, "Value-start-", "-value-end"), []string{"Value-start-", "-value-end"}
 	both := []string{"value-start-", "-value-end", "other-start-", "-other-end"}
 	term := func(id, name, definition string) string {
 		return "---\ntype: term\nid: " + id + "\nname: " + name + "\ndefinition:\n  - " + definition + "\n"
@@ -108,7 +108,7 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 		{name: "a null under a long key", kind: "bad-yaml: %s is null", effect: specgraph.LosesNode, files: files(workUnit + "? " + v + "\n: null\n"), shows: shows},
 		{name: "a file of a comment only", kind: "no-node: a spec file holds one or more nodes", effect: specgraph.KeepsEachNode, files: map[string]string{"spec.yaml": base, "empty.yaml": "# " + v + "\n"}},
 		{name: "a key that the node does not take", kind: schema, effect: specgraph.LosesNode, files: files(workUnit + "? " + v + "\n: x\n"), shows: shows},
-		{name: "an id that breaks the pattern", kind: schema, effect: specgraph.KeepsEachNode, files: files(requirement(notAnID, "", "Envoy keeps it.")), shows: notAnIDShows},
+		{name: "an id that breaks the pattern", kind: schema, effect: specgraph.KeepsEachNode, files: files(requirement(badID, "", "Envoy keeps it.")), shows: badIDShows},
 		{name: "a time limit that is no duration", kind: `bad-time-limit: %q is not a positive Go duration`, effect: specgraph.LosesNode,
 			files: files(agentCheck("a-check-of-time", "messages-reach-sessions", "time_limit: "+v+"\n", "The page shows it.", "An agent opens the page.", "A page that shows nothing.")), shows: shows},
 		{name: "a space at the end of a line", kind: "not-printed: %s", effect: specgraph.LosesNode, files: files(term("work-unit", "work unit", "A work unit is "+v+". ")), shows: shows},
@@ -155,7 +155,7 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 		{name: "an approved document of another node", kind: ruleFormat(t, "bad-approved-document: the document is of"), files: files(),
 			approved: addNode(v, false, workUnit), shows: shows, in: "approved"},
 		{name: "an approved document whose parent is no id", kind: ruleFormat(t, "bad-approved-document: ", "is no id"), files: files(),
-			approved: addNode("a-page-shows-it", false, requirement("a-page-shows-it", "parent: "+notAnID+"\n", "The page shows it.")), shows: notAnIDShows, in: "approved"},
+			approved: addNode("a-page-shows-it", false, requirement("a-page-shows-it", "parent: "+badID+"\n", "The page shows it.")), shows: badIDShows, in: "approved"},
 		{name: "an approved document that print does not write", kind: "bad-approved-document: the document is not as Print writes it", files: files(),
 			approved: addNode(v, false, term(v, "work unit", "A work unit is work.")+"surprise: true\n"), shows: shows, in: "approved"},
 	}
