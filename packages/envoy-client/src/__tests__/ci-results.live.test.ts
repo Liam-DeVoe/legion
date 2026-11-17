@@ -367,7 +367,8 @@ describe.skipIf(!dispatchStackEnabled)(
         ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
         ["GET", `/api/v1/projects/${project}/results?commit=${at}`, undefined],
       ] as const) {
-        // One signal bounds the request and the trade the credential awaits for it.
+        // One signal bounds the request and this call's wait on the broker trade the credential
+        // awaits for it; the trade itself runs under its own bound (BrokerTokenClient.token).
         const signal = AbortSignal.timeout(60_000);
         const url = `${resolution.url}${route}`;
         const response = await fetch(url, {
