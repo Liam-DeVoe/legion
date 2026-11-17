@@ -367,8 +367,8 @@ case "$mode" in
     #
     # The full lane's 3,156 s sits between the two limits such a ceiling has: its margin over
     # this tree is wider than the spread of the default branch's own green lanes, and it is below
-    # a suite grown by half. Every figure below is a lane as this step reads it, its merge job
-    # apart, from the jobs API.
+    # a suite grown by half. Every figure of the three points below is a lane as this step reads
+    # it, its merge job apart, from the jobs API.
     #
     # - It is 27 per cent above this tree's worst full-lane reading, 2,484 s (run 43885980414,
     #   at 61e5c402): 3,156 / 2,484 = 1.27. That margin is wider than the 14 per cent between
@@ -391,16 +391,16 @@ case "$mode" in
     # 43150379433 (2,003 s) and run 43192333526 (2,285 s), both dispatched on 2026-11-12, the
     # binaries job, which runs no row, rose from 157 to 205 s - and 2,700 s when one slow pair of
     # runs proved that an absolute figure near the measurement is a figure the fleet decides. On
-    # 2026-11-15 two runs of one tree cost 2,252 and 2,450 s (43664675139, 43667557013), whose
-    # real-stack row medians were 2,746 and 3,126 ms: the lane's cost tracked the runner and not
-    # the rows. The default branch moved with it, as it always does - the thirteen green
-    # merge-queue runs of that day up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126 s
-    # (dispatch-browser.yaml's head) - which is why the ratio is what R5 and R4 read and this
-    # ceiling is not. It became 3,200 s on 2026-11-17, when pull request #3513's full lanes at
-    # 61e5c402 and 1ba866a9 read 2,062 to 2,484 s at this step, the worst of them 6.5 per cent
-    # under 2,656 s, so a slow fleet or the rows the default branch adds in a day could have
-    # stopped the merge queue with no regression in it (review 5929818647 of pull request
-    # #3513).
+    # 2026-11-15 two runs of one tree cost 2,252 and 2,450 s with their merge jobs (43664675139,
+    # 43667557013), whose real-stack row medians were 2,746 and 3,126 ms: the lane's cost tracked
+    # the runner and not the rows. The default branch moved with it, as it always does - the
+    # thirteen green merge-queue runs of that day up to 15:03Z cost 2,975 to 3,347 s with their
+    # merge jobs, with a median of 3,126 s (dispatch-browser.yaml's head) - which is why the ratio
+    # is what R5 and R4 read and this ceiling is not. It became 3,200 s on 2026-11-17, when pull
+    # request #3513's full lanes at 61e5c402 and 1ba866a9 read 2,062 to 2,484 s at this step,
+    # the worst of them 6.5 per cent under 2,656 s, so a slow fleet or the rows the default
+    # branch adds in a day could have stopped the merge queue with no regression in it (review
+    # 5929818647 of pull request #3513).
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.
     # The 44 s is measured, not allowed for: it is the most the `dispatch-browser / merge` job

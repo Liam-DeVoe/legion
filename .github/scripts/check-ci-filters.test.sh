@@ -1295,7 +1295,7 @@ check "names the step, its job and the file that does not have it" \
 # A job that calls a reusable workflow gives it its steps, so the go commands, the `env:` blocks
 # and the shells that decide what that job compiles are in the called file. The check reads them
 # there, exactly as it reads a job's own steps: ci.yaml's dispatch-browser job does this with
-# dispatch-browser.yaml, whose multiprocess job builds the Dispatch server.
+# dispatch-browser.yaml, whose binaries job builds the Dispatch server.
 
 # calls_workflow <root>: a `suite` job that calls .github/workflows/suite.yaml, whose `rows` job
 # builds ./cmd/app, with the filter, the ci-ok map entry and the gate that go with it.
