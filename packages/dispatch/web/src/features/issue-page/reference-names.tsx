@@ -2,7 +2,7 @@ import { createContext, type ReactNode, useContext, useEffect, useId, useReducer
 
 /**
  * The names a page has already read for the references it draws, shared with every surface the
- * shell mounts beside it (dispatch://INFRA-1196 R20).
+ * shell mounts beside it.
  *
  * A link to a block shows the block's own words, and reading them one link at a time is one
  * `GET /api/v1/references` per pointer - the read `GET /api/v1/reference-targets` exists to
@@ -146,9 +146,9 @@ export function useKnownReferenceNames(): ReadonlyMap<string, string> {
 
 /** Every reference the page read as ambiguous, empty where the page published none. Such a
  *  reference writes short an id two or more targets carry, so it names none of them, and a
- *  surface draws it as its author wrote it and links nothing (dispatch://INFRA-1196 decision
- *  62). A reference with no name (`useKnownReferenceName`) and not in this set reads its own: a
- *  gone one, or one the page did not read. */
+ *  surface draws it as its author wrote it and links nothing. A reference with no name
+ *  (`useKnownReferenceName`) and not in this set reads its own: a gone one, or one the page did
+ *  not read. */
 export function useKnownAmbiguousReferences(): ReadonlySet<string> {
   return useContext(ReferenceNamesContext).ambiguous;
 }

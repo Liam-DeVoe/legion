@@ -1453,13 +1453,13 @@ function askThreadsOn(issue: string): RefreshTarget {
 /**
  * Every names read the app holds (`referenceTargetsQuery`, `["reference-targets", <sorted
  * addresses>]`, by that prefix) on an event that changes the words under an address a names read
- * can already name, and none on any other (dispatch://INFRA-1196 decision 184): a comment's edit
- * (its body), an ask's edit (its question) and a document's new version (its blocks' words), on
- * whichever issue or project document it is, since a page's words can cite another issue's
- * target. The issue page's names reads are kept fresh by events since decision 180
- * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
- * addresses it names, so a page that comes to hold another set reads again under a key of its
- * own: only a change of words under the same address needs a rule.
+ * can already name, and none on any other: a comment's edit (its body), an ask's edit (its
+ * question) and a document's new version (its blocks' words), on whichever issue or project
+ * document it is, since a page's words can cite another issue's target. The issue page's
+ * names reads are kept fresh by events (`useIssueTree`'s `EVENT_FRESH`), never by their age,
+ * and a names read's key is the set of addresses it names, so a page that comes to hold
+ * another set reads again under a key of its own: only a change of words under the same
+ * address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
  * naming none, as an older server sends it) renames every address to that issue, since a names
  * read names an issue by its title, so it refreshes them too.

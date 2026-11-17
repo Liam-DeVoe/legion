@@ -298,7 +298,7 @@ const TREE_READS: readonly TreeRead[] = [
   "login",
 ];
 
-// The tester's F17: the names come last and all at once. While any one read of the tree is still
+// The names come last and all at once. While any one read of the tree is still
 // out - the comments, the asks, the coverage, the decisions, the messages, the results, the
 // plan's blocks or the reader's login - the addresses known so far are not read; once it
 // answers, every address the tree holds - a block's own, and one a comment's words cite - is
@@ -359,10 +359,10 @@ test("The names are read in one batched request, after every other read has answ
   }
 });
 
-// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an id a comment writes
-// short in the owner the reference names, and answers under the reference as the request wrote
-// it. So the names read is asked for the short address itself, and the page publishes its answer
-// under that address, which is the one a row links it by.
+// The batched read resolves an id a comment writes short in the owner the reference names, and
+// answers under the reference as the request wrote it. So the names read is asked for the short
+// address itself, and the page publishes its answer under that address, which is the one a row
+// links it by.
 test("a short address a comment cites is read as written and named from that answer", async () => {
   const cited = `dispatch://${KEY}/comment/c0b271c7`;
   const asked: string[][] = [];
@@ -401,11 +401,11 @@ test("a short address a comment cites is read as written and named from that ans
   }
 });
 
-// dispatch://INFRA-1196 decisions 62 and 89: the batched read answers a short reference whose id
-// two or more targets carry gone and ambiguous, and one whose target is gone gone alone. Neither
-// has a name, so the page publishes none for either; it publishes the ambiguous one among the
-// references it read as ambiguous, which a link draws as written and links nothing, and leaves
-// the gone one out of them, which a link reads its own.
+// The batched read answers a short reference whose id two or more targets carry gone and
+// ambiguous, and one whose target is gone gone alone. Neither has a name, so the page publishes
+// none for either; it publishes the ambiguous one among the references it read as ambiguous,
+// which a link draws as written and links nothing, and leaves the gone one out of them, which a
+// link reads its own.
 test("the page publishes an ambiguous reference a comment cites as ambiguous, a gone one not", async () => {
   const ambiguous = `dispatch://${KEY}/comment/c0b271c7`;
   const gone = `dispatch://${KEY}/comment/c0ffee00`;
@@ -688,7 +688,7 @@ test("once the second read has nothing left to name, the first read's newer name
   }
 });
 
-// The tester's F17: one block read for every document of the issue was 25 of a first load's 47
+// One block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
 // documents, whose typed blocks the page draws, and of no other document: each the one the issue
 // read names by its id, as the server answers which document plays which part.
@@ -810,7 +810,7 @@ test("A published name of a typed block is never its directive line", async () =
   }
 });
 
-// dispatch://INFRA-1196 decision 98: a refetch of a document's blocks that fails keeps the blocks
+// A refetch of a document's blocks that fails keeps the blocks
 // the first read answered - TanStack holds a query's data through a failed refetch, and the tree
 // is still built from them - so a view that draws from the blocks it holds keeps drawing them
 // (`blocksHeld`), while a view that needs every read to have answered stops waiting on one that
@@ -856,11 +856,11 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
   }
 });
 
-// dispatch://INFRA-1196 decision 180: the page's stage mounts the tree's slot again on every
+// The page's stage mounts the tree's slot again on every
 // press of a view, and under the app's `staleTime` a read is stale 30 s after it answered
 // (`main.tsx`). The tree's reads are kept fresh by events instead: the slot mounted again more
 // than 30 s on draws from what the client holds and sends no read, and a comment's edit reads the
-// comments again and the names (decision 184), and nothing else.
+// comments again and the names, and nothing else.
 test("a tree mounted again past 30 s reads nothing, and a comment event reads the comments", async () => {
   const stored: Comment[] = [comment];
   const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: stored });
@@ -949,7 +949,7 @@ function feedEvent(type: EventType, payload: Record<string, unknown>): DispatchE
   } as unknown as DispatchEvent;
 }
 
-// dispatch://INFRA-1196 decision 184: a names read is keyed by the addresses it names, so only
+// A names read is keyed by the addresses it names, so only
 // words that change under an address already named need a rule - a comment's edit, an ask's edit
 // and a document's new version - and each refreshes every names read the app holds, by the key's
 // prefix; so do a document's rename and its removal, which rename or empty every address to it,
@@ -982,10 +982,10 @@ test("an edited comment or ask and a document's new version refresh every names 
   }
 });
 
-// Decision 184 again, on the page: every read of the tree is kept fresh by events (decision
-// 180), so a comment a node's words cite, edited under the same address, is named anew only by
-// the feed's rule for the edit. The edit reads the names once more, and the page publishes the
-// comment's new words under its address, which every link beside the tree draws.
+// The same rule on the page: every read of the tree is kept fresh by events, so a comment a
+// node's words cite, edited under the same address, is named anew only by the feed's rule for
+// the edit. The edit reads the names once more, and the page publishes the comment's new words
+// under its address, which every link beside the tree draws.
 test("a cited comment's edit reads the names once more, and the page publishes its new words", async () => {
   const cited: Comment = { ...comment, body: "Hold the deploy.", id: "comment-2" };
   const address = `dispatch://${KEY}/comment/${cited.id}`;
