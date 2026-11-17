@@ -1,10 +1,11 @@
 /** Red test for PR #4236, acceptance finding D3. Goes at
  *  scripts/e2e/lib/released-port-probe.test.ts.
  *
- *  R1 of dispatch://INFRA-4043: "A test stack starts each server of this repository on a socket
- *  that the stack holds. It holds the socket from the choice of the port until the server serves
- *  on it." R2: "For a program that cannot take a socket, the program binds a port that the kernel
- *  chooses. The stack reads the port from the program's own output."
+ *  R1 of PR #4236: "A test stack starts each server of this repository on a socket that the stack
+ *  holds. It holds the socket from the choice of the port until the server serves on it." R2:
+ *  "For a program that cannot take a socket, the program binds a port that the kernel chooses.
+ *  The stack reads the port from the program: from its output, or from the kernel's list of the
+ *  sockets that the process holds."
  *
  *  A command substitution that asks Python for a port, prints it and closes the socket hands the
  *  caller a port nothing holds: another program can take it before the server the caller starts on

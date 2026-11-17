@@ -106,9 +106,8 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
-      # Both stacks start their servers though another program takes each port they choose
-      # (dispatch://INFRA-4043): a held socket for Dispatch and the listener, the kernel's ports for
-      # natsd.
+      # Both stacks start their servers though another program takes each port they choose: a
+      # held socket for Dispatch and the listener, the kernel's ports for natsd.
       - name: Ports of the Dispatch and Envoy stacks
         run: bun test src/__tests__/stack-ports.live.test.ts
         working-directory: packages/envoy-client

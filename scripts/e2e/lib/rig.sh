@@ -179,8 +179,8 @@ report_port() {
 # start_reported NAME PORT_VAR PATTERN -- COMMAND... starts COMMAND as the service NAME
 # (start_process), a server that binds a port the kernel chooses and names it in its own log, and
 # assigns PORT_VAR the port: the digits right after the first match of PATTERN (report_port), waited
-# for while NAME lives. It is how a run starts a server that takes no socket (R2 of
-# dispatch://INFRA-4043): the e2e harness's fakes bind port 0 with FAKE_ENVOY_PORT and
+# for while NAME lives. It is how a run starts a server that takes no socket, which binds a port
+# the kernel chooses and logs it: the e2e harness's fakes bind port 0 with FAKE_ENVOY_PORT and
 # FAKE_GITHUB_PORT unset and log `fake envoy listener on 127.0.0.1:<port>`, and natsd -p -1 logs
 # 'Listening for client connections on 127.0.0.1:<port>'. The locals' names are ones no caller passes.
 start_reported() {

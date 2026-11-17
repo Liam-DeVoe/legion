@@ -86,8 +86,8 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "512m",
       // No published port: Docker's allocator, not the kernel, would choose it, and it fails the
       // run when another program holds the ports after its last choice. On the host's network
-      // the server binds a loopback port the kernel chooses (-p -1) and logs it, as R2 of
-      // dispatch://INFRA-4043 asks of a server that takes no socket.
+      // the server binds a loopback port the kernel chooses (-p -1) and logs it, as a server
+      // that takes no socket must.
       "--network",
       "host",
       "-v",

@@ -4,8 +4,7 @@
 # port by forwarding each connection to the server's own port, which the kernel chose as the server
 # bound it (natsd -p -1). When the server stops and starts again it binds a new port the kernel
 # chooses, and a new front is started on the kept socket, forwarding there, so every client keeps
-# the one URL it was given, the kept port's, and no port is free between its choice and its bind
-# (dispatch://INFRA-4043).
+# the one URL it was given, the kept port's, and no port is free between its choice and its bind.
 #
 # A front lives only while its server does: the caller stops the front when it stops the server,
 # and starts a new one once the server serves again. A front left running would forward to the
