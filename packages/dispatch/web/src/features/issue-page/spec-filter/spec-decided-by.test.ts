@@ -337,6 +337,50 @@ test("a replaced decision shapes nothing", () => {
   expect(groups[0]?.runs[0]?.decision).toBeUndefined();
 });
 
+// R5: a statement's decisions are its ties in order, the first heads its run, and each other
+// one is named after "informed by". While the asks read is out, a person's decision is drawn
+// as nothing, but it is still the first of the statements it shaped. Found by the tester on a
+// running build at d9344476, with the asks read refused on the seeded issue: the person's
+// decision shaped three statements and an agent's decision informed the second and the third,
+// and the view drew those two each in a run of its own, headed "Because an agent decided".
+test("a person's decision that waits on the asks read still heads its run, and no decision that only informed a statement takes its place", () => {
+  const tree = issueTree([
+    statement("r1"),
+    statement("r2"),
+    decisionNode("d1"),
+    decisionNode("d2"),
+  ]);
+  const { groups } = specDecidedBy({
+    asksHeld: false,
+    checks: [],
+    decisions: decisionsRead([
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      }),
+      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))] }),
+    ]),
+    nameOf: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  });
+  const runs = groups.flatMap((group) => group.runs);
+  const runOf = (block: string) =>
+    runs.find((run) => run.statements.some((one) => one.node.id === `spec#b-${block}`));
+  expect(
+    runOf("r2")?.decision?.id,
+    "a decision that only informed statement r2 heads its run while the person's decision waits"
+  ).not.toBe("decisions-md#b-d2");
+  expect(
+    runOf("r2"),
+    "statement r2 leaves the run of the person's decision that shaped it and r1"
+  ).toBe(runOf("r1"));
+});
+
 // R5: a statement that hangs under an answered question carries that answer the same way, with
 // no tuple, since that decision is its parent.
 test("a statement under an answered question carries that answer with no tie", () => {
