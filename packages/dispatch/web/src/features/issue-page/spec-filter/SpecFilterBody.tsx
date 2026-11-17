@@ -15,7 +15,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
 import {
@@ -77,7 +77,7 @@ import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
 import { isOvertaken, outOfCounts } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { viewQuery } from "../tree-read/tree-read";
+import { useTreeRead, viewQuery } from "../tree-read/tree-read";
 import { useTreeKeymap } from "../useTreeKeymap";
 import {
   type SpecDecision,
@@ -204,15 +204,12 @@ export function SpecFilterBody({
   const decisionsFailed = failedWithNothing({ data: held, isError: specRead.isError });
   // The two reads the statements come from, the coverage and the spec's blocks, under the keys
   // the tree reads them with (no request of their own): until both hold an answer the body
-  // cannot say the issue holds no statement. The body's own reads of the spec's blocks here and
-  // of the Verification document's below give way to part F's `blocksHeld` once F is under this
-  // part's base (decision 98).
+  // cannot say the issue holds no statement. Both documents' blocks, the spec's here and the
+  // Verification document's below, are the tree read's (`useTreeRead`, dispatch://INFRA-4062 R5).
   const spec = primarySpec(issue);
   const coverageRead = useQuery(issueCoverageQuery(issue.key));
-  const specBlocksRead = useQuery({
-    ...artifactBlocksQuery(spec?.id ?? ""),
-    enabled: spec !== undefined,
-  });
+  const { blocksOf } = useTreeRead(issue);
+  const specBlocksRead = blocksOf("spec");
   const statementsRead =
     coverageRead.data !== undefined && (spec === undefined || specBlocksRead.data !== undefined);
   const statementsFailed = failedWithNothing(coverageRead) || failedWithNothing(specBlocksRead);
@@ -220,17 +217,14 @@ export function SpecFilterBody({
   // filter reads it (`statement-state.ts`), from three reads under the keys the tree reads them
   // with (no request of their own): the issue's results, the coverage, and the blocks of its
   // Verification document, which put each check under the statement it serves, the document
-  // found as the tree finds it (`useIssueTree.ts`'s `treeDocumentIds`). Before all three hold an
+  // found as the tree read finds it (`tree-nodes.ts`'s `blocksOfRole`). Before all three hold an
   // answer a mark would say Unknown or no check of a statement that is Met, so none is drawn
   // until they do; a failed read of the results or of those blocks is one line, since either
   // leaves every statement unmarked.
   const resultsRead = useQuery(issueResultsQuery(issue.key));
   const results = resultsRead.data;
   const verification = roleDocument(issue, "verification");
-  const checksRead = useQuery({
-    ...artifactBlocksQuery(verification?.id ?? ""),
-    enabled: verification !== undefined,
-  });
+  const checksRead = blocksOf("verification");
   const marked =
     results !== undefined &&
     coverageRead.data !== undefined &&
