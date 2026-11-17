@@ -4,7 +4,7 @@ import {
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
-import { readTextReferences } from "../refs/text-references";
+import { readTextReferences, type TextReading } from "../refs/text-references";
 import { textHead } from "../refs/tree-fragment";
 
 /** How many characters of a target's words a link to it draws: a link's title elsewhere is cut
@@ -37,10 +37,64 @@ const TITLE_MAX = 60;
 /** One reference in a text, where it stands and what it names. */
 export interface RowReference {
   readonly end: number;
+  /** The address a link to it goes to (`buildReferencePath`). */
+  readonly path: string;
   /** The reference as the batched read is asked for it. */
   readonly reference: string;
   readonly route: DispatchReferenceRoute;
   readonly start: number;
+}
+
+/** How many texts' readings the page keeps (decision 206 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md). A row's words hold a few texts - each
+ *  paragraph a link pass walks, the answer, the stored text - so 4096 hold every text of an issue
+ *  of several hundred rows, the largest the page draws, with room for a second view's; and each
+ *  entry is the text's own string, which the page holds anyway, and its few references. */
+const READINGS_KEPT = 4096;
+
+/** One text's reading, and the references of it a row links, read once it is first asked. */
+interface Reading {
+  linked?: readonly RowReference[];
+  readonly reading: TextReading;
+}
+
+/** Each text's reading, the least recently asked first, by the issue keys it was read against
+ *  and the text itself. Nothing else a reading depends on changes while the page is open: the
+ *  origin is the page's, and the references read ambiguous are left out after the reading
+ *  (`rowReferences`), so a new set of them draws no stale link. */
+const readings = new Map<string, Reading>();
+
+/** Each list of issue keys a caller passes, joined once, as the front of a reading's key. */
+const joinedKeys = new WeakMap<readonly string[], string>();
+
+/**
+ * `text` read by `readTextReferences` against `issues`, the bare keys it may link, once per
+ * distinct text and list of keys while the reading is kept: each row's words were read again on
+ * every draw, the references' block ids encoded each time, which on a copy of INFRA-1196 was
+ * about 650 ms of a draw of the outline after a view change (part Q's tester's profile).
+ */
+function readingOf(text: string, issues: readonly string[] | undefined): Reading {
+  let front = "\u0000";
+  if (issues !== undefined) {
+    front = joinedKeys.get(issues) ?? `${issues.join(" ")}\u0001`;
+    joinedKeys.set(issues, front);
+  }
+  const key = `${front}${text}`;
+  const held = readings.get(key);
+  if (held !== undefined) {
+    readings.delete(key);
+    readings.set(key, held);
+    return held;
+  }
+  const read: Reading = {
+    reading: readTextReferences(text, issues === undefined ? {} : { issues }),
+  };
+  readings.set(key, read);
+  if (readings.size > READINGS_KEPT) {
+    const oldest = readings.keys().next();
+    if (oldest.done !== true) readings.delete(oldest.value);
+  }
+  return read;
 }
 
 /**
@@ -55,7 +109,7 @@ export interface RowReference {
  */
 export function citedReferences(text: string): string[] {
   if (text === "") return [];
-  const { needs, references } = readTextReferences(text);
+  const { needs, references } = readingOf(text, undefined).reading;
   const cited = new Set<string>();
   for (const found of references) {
     if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
@@ -94,13 +148,21 @@ export function rowReferences(
   ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
 ): RowReference[] {
   if (text === "") return [];
-  const found: RowReference[] = [];
-  for (const one of readTextReferences(text, { issues }).references) {
-    if (one.form === "question" || one.reference === undefined || one.route === undefined) continue;
-    if (ambiguous.has(one.reference)) continue;
-    found.push({ end: one.end, reference: one.reference, route: one.route, start: one.start });
-  }
-  return found;
+  const read = readingOf(text, issues);
+  read.linked ??= read.reading.references.flatMap((one) =>
+    one.form === "question" || one.reference === undefined || one.route === undefined
+      ? []
+      : [
+          {
+            end: one.end,
+            path: buildReferencePath(one.route),
+            reference: one.reference,
+            route: one.route,
+            start: one.start,
+          },
+        ]
+  );
+  return read.linked.filter((one) => !ambiguous.has(one.reference));
 }
 
 /**
@@ -197,7 +259,7 @@ export function linkRowReferences(
     for (const one of found) {
       pieces.push(value.slice(at, one.start));
       const anchor = document.createElement("a");
-      anchor.setAttribute("href", buildReferencePath(one.route));
+      anchor.setAttribute("href", one.path);
       anchor.setAttribute(ROW_REFERENCE, one.reference);
       anchor.setAttribute(ROW_WRITTEN, value.slice(one.start, one.end));
       anchor.tabIndex = -1;
