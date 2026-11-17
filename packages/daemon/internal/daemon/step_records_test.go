@@ -1279,6 +1279,35 @@ func (r *stepRecordsRig) childInAccepting() string {
 	return child
 }
 
+// v-records through the daemon's own wiring: the planner's completion reaches the daemon on its
+// HTTP request while the answer its model gave last has been read by the stream and not yet
+// decided by the claim's machine (heldRequest). The completion route waits for that machine
+// (api.Options.AwaitStream, which serve gives the daemon's awaitStream), so the record of planning
+// ends naming the planner's session and that answer's model, not the model of the answer before.
+func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
+	r := newStepRecordsRig(t)
+	planner := r.worker(claim.RolePlanner)
+	planner.takeAnswering("stand-in/planner-first")
+	req := api.HandoffCompleteRequest{Summary: "planned"}
+	req.HandoffID, req.HandoffVersion = r.writeHandoff(planner.session, "plan")
+	req.GrantID = planner.grant()
+	if status, body := r.heldRequest(planner, "stand-in/planner-second", "/legion/v1/handoff/complete", req); status != http.StatusOK {
+		t.Fatalf("the planner's completion = %d %s, want 200", status, body)
+	}
+	planner.endTurn()
+	r.waitPhase(phase.Implementing)
+	r.waitSteps("the end of planning", func(got stepRecordsRead) error {
+		switch found := got.find("step", 1, 1); {
+		case found.ID == "" || found.EndedAt == nil || found.Result != "passed":
+			return fmt.Errorf("planning reads %+v, want it ended passed", found)
+		case found.Session != planner.session || found.Model != "stand-in/planner-second":
+			return fmt.Errorf("planning names session %q and model %q; want %q and the model that answered last, stand-in/planner-second",
+				found.Session, found.Model, planner.session)
+		}
+		return nil
+	})
+}
+
 // v-records on the architect's own step: a move back out of accepting ends the acceptance, the
 // tree architect's step, as its sign-off does, so its record names the model whose answer the
 // architect's stream read ahead of the request, though the claim's machine has not decided that
