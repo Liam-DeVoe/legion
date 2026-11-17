@@ -514,8 +514,9 @@ describe("executeDispatchTool", () => {
 
   // A configured Dispatch URL may carry a user and a password. The requests go to it as
   // configured; what the session reads names it without them, in an error and in ordinary
-  // output alike: the unreachable server, a build without the answers route, an issue's page link
-  // when no public URL is set, and an open-asks summary given the configured URL as its base.
+  // output alike: the unreachable server a read names, the request a write that may have reached
+  // it names, a build without the answers route, an issue's page link when no public URL is set,
+  // and an open-asks summary given the configured URL as its base.
   test("names a Dispatch URL that carries a user and a password without either, in errors and links", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
@@ -576,7 +577,8 @@ describe("executeDispatchTool", () => {
 
     const read = (await run("dispatch_read", { issue: "DSP-42" }, issueRead as typeof fetch)).text;
     const answers = await refusal(run("dispatch_answers", {}, noAnswersRoute as typeof fetch));
-    const offline = await refusal(
+    const offline = await refusal(run("dispatch_read", { issue: "DSP-42" }, unreachable));
+    const offlineWrite = await refusal(
       run("dispatch_ask", { issue: "DSP-41", question: releaseQuestion }, unreachable)
     );
     const summary = formatOpenAsksSummary(
@@ -602,11 +604,23 @@ describe("executeDispatchTool", () => {
     expect(answers).toBe(
       "This Dispatch (https://host.example) has no answers route yet: its build is older than the answers route."
     );
-    expect(offline).toContain("Dispatch at https://host.example is unreachable: ");
+    expect(offline).toBe(
+      "Dispatch at https://host.example is unreachable: Unable to connect. Is the computer able to " +
+        "access the url?. If the Dispatch URL changed, restart this agent process so it picks up " +
+        "the new configuration."
+    );
+    // The write's request may have reached Dispatch, so it says that rather than "unreachable".
+    expect(offlineWrite).toBe(
+      "POST https://host.example/api/v1/issues/DSP-41/asks got no answer on the network (Unable " +
+        "to connect. Is the computer able to access the url?) (its only attempt), and an attempt " +
+        "of the write may have reached Dispatch, so it may or may not have taken effect: check " +
+        "whether it did before retrying it. If the Dispatch URL changed, restart this agent " +
+        "process so it picks up the new configuration."
+    );
     expect(summary).toEndWith(
       " · https://host.example/issues/LEGION-1/asks/ask-1\n\nWaiting on agent (0):"
     );
-    for (const text of [read, answers, offline, summary]) {
+    for (const text of [read, answers, offline, offlineWrite, summary]) {
       expect(text).not.toContain(user);
       expect(text).not.toContain(secret);
     }
@@ -5023,7 +5037,10 @@ describe("executeDispatchTool", () => {
         writeRetry,
       })
     ).rejects.toThrow(
-      `INTERNAL: internal server error; one of ${pullRequest} may already be linked from another issue (a URL links exactly one issue)`
+      "INTERNAL: internal server error (its only attempt), and Dispatch answers a 5xx when a write " +
+        "fails, which can be after it committed, so it may or may not have taken effect: check " +
+        `whether it did before retrying it. One of ${pullRequest} may already be linked from ` +
+        "another issue (a URL links exactly one issue)"
     );
   });
 
@@ -5298,31 +5315,29 @@ describe("executeDispatchTool", () => {
       headers: { "Content-Type": "text/html" },
     });
 
-  // A request that got no answer, the client's timeout and a transport error, each with the
-  // message the client reports for it (given the request it names) and the attempts the write
-  // made: a timeout is the call's deadline and ends it, saying the write may or may not have taken
-  // effect, while a transport failure is asked again under the write's key until its five attempts
-  // run out. The reason's post and the close's PATCH each add their own account after it, as a
-  // sentence of its own, since both messages end one.
+  // A request that got no answer, the client's timeout and a transport error, each with what the
+  // write got as the client names it (given the request), the attempts the write made, and what
+  // follows the caller's account: a timeout is the call's deadline and ends it, while a transport
+  // failure is asked again under the write's key until its five attempts run out. Either leaves the
+  // write unsettled, and the reason's post and the close's PATCH each say what that means for their
+  // call in place of the client's words on it, so the message says it once; the command fetch's
+  // advice for a moved URL then ends it.
   const unanswered = [
     [
       (): Response => {
         throw new DOMException("The operation timed out.", "TimeoutError");
       },
-      (request: string) =>
-        `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
-        "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it.",
+      (request: string) => `${request} had no definitive answer when its deadline ended it`,
       1,
+      "",
     ],
     [
       (): Response => {
         throw new TypeError("fetch failed");
       },
-      (_request: string) =>
-        "Dispatch at http://dispatch.test is unreachable: fetch failed. If the Dispatch URL " +
-        "changed, restart this agent process so it picks up the new configuration.",
+      (request: string) => `${request} got no answer on the network (fetch failed)`,
       5,
+      ". If the Dispatch URL changed, restart this agent process so it picks up the new configuration.",
     ],
   ] as const;
 
@@ -5331,10 +5346,10 @@ describe("executeDispatchTool", () => {
   // gateway's answer that never reached Dispatch: a 408 or 429 (its own timeout or rate limit,
   // where the client's advice that a retry may succeed stands) or a status that cannot clear. A
   // 5xx, Dispatch's own included (it can fail after it committed), a timeout or a transport error
-  // leaves the reason possibly posted, and that account replaces the client's advice. After an
-  // error's own message it joins a clause, or starts a sentence where the message ended one. Every
-  // failure but a timeout and a refusal that cannot clear is asked again until the write's five
-  // attempts run out, each failing the same way, so the last attempt's account is the agent's.
+  // leaves the reason possibly posted, and that account replaces the client's advice, joined to
+  // what the post got as a clause. Every failure but a timeout and a refusal that cannot clear is
+  // asked again until the write's five attempts run out, each failing the same way, so the last
+  // attempt's account is the agent's.
   test("dispatch_issue_update says whether a failed post of the reason leaves it posted", async () => {
     const answered = (status: string, page: string) =>
       `HTTP_${status.slice(0, 3)}: POST http://dispatch.test/api/v1/issues/ACME-175/messages ` +
@@ -5343,12 +5358,11 @@ describe("executeDispatchTool", () => {
     const unknown =
       "; the reason may or may not have been posted, and the close was not sent: read the " +
       "issue's messages before retrying, since retrying this call posts its reason again";
-    const unknownSentence =
-      " The reason may or may not have been posted, and the close was not sent: read the " +
-      "issue's messages before retrying, since retrying this call posts its reason again";
     const notPosted = "; the reason was not posted, so the close was not sent";
     const retry = ", so the write did not reach Dispatch, and a retry may succeed";
-    // Bun's messages for a refused connection and a reset one; the second ends with no stop.
+    const post = "POST http://dispatch.test/api/v1/issues/ACME-175/messages";
+    // Bun's messages for a refused connection and a reset one, thrown as errors that are no
+    // TypeError, which the command's fetch passes on as they are.
     const refused = "Unable to connect. Is the computer able to access the url?";
     const reset =
       "The socket connection was closed unexpectedly. For more information, pass `verbose: true` " +
@@ -5365,25 +5379,20 @@ describe("executeDispatchTool", () => {
         5,
       ],
       ...unanswered.map(
-        ([fail, told, tries]) =>
-          [
-            fail,
-            `${told("POST http://dispatch.test/api/v1/issues/ACME-175/messages")}${unknownSentence}`,
-            tries,
-          ] as const
+        ([fail, told, tries, moved]) => [fail, `${told(post)}${unknown}${moved}`, tries] as const
       ),
       [
         (): Response => {
           throw new Error(refused);
         },
-        `${refused}${unknownSentence}`,
+        `${post} got no answer on the network (${refused})${unknown}`,
         5,
       ],
       [
         (): Response => {
           throw new Error(reset);
         },
-        `${reset}${unknown}`,
+        `${post} got no answer on the network (${reset})${unknown}`,
         5,
       ],
       [
@@ -5499,17 +5508,12 @@ describe("executeDispatchTool", () => {
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    const unknownSentence =
-      " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
-      "and the close may or may not have taken effect. Read the issue's status before retrying: " +
-      "done means it closed; otherwise retry with a reason that points at message message-7, " +
-      "since retrying this call posts its reason again";
     for (const [patch, expected, attempts] of [
       ...unanswered.map(
-        ([fail, told, tries]) =>
+        ([fail, told, tries, moved]) =>
           [
             fail,
-            `${told("PATCH http://dispatch.test/api/v1/issues/ACME-175")}${unknownSentence}`,
+            `${told("PATCH http://dispatch.test/api/v1/issues/ACME-175")}${unknown}${moved}`,
             tries,
           ] as const
       ),
@@ -5576,17 +5580,14 @@ describe("executeDispatchTool", () => {
   // A close whose last attempt alone says it never reached Dispatch (a gateway's 429), or that
   // Dispatch still runs an earlier attempt (409 KEY_IN_FLIGHT), after an attempt that may have
   // reached it (a 502, a transport failure), may have closed the issue: the agent is told to read
-  // the status before retrying, never that the issue did not close.
+  // the status before retrying, never that the issue did not close. The close's own account says
+  // the close may or may not have taken effect, in place of the client's words on the write.
   test("dispatch_issue_update says the close is unknown when an earlier attempt may have reached Dispatch", async () => {
-    const unknownSentence =
-      " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
+    const unknown =
+      "; the reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    // This Dispatch runs the keyed layer, so each message also says that it finishes the close.
-    const keyedTail =
-      ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
-      "back before you send it again: a new command sends it under a new key.";
     const inFlight = () =>
       refusal(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
     // A KEY_IN_FLIGHT says Dispatch may still be running the close, so it is asked every 3 s at
@@ -5597,9 +5598,7 @@ describe("executeDispatchTool", () => {
         () => gatewayPage(429, "Too Many Requests"),
         "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 429 Too Many Requests with " +
           'a body that is not Dispatch\'s error JSON ("429 Too Many Requests"), which looks like ' +
-          "a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), " +
-          "and an earlier attempt of the write may have reached Dispatch, so it may or may not " +
-          `have taken effect${keyedTail}${unknownSentence}`,
+          `a proxy or gateway page rather than Dispatch's own answer${unknown}`,
         5,
       ],
       [
@@ -5607,9 +5606,7 @@ describe("executeDispatchTool", () => {
           throw new TypeError("fetch failed");
         },
         inFlight,
-        "KEY_IN_FLIGHT (the last of 20 " +
-          "attempts), and Dispatch was still running an earlier attempt of the write, so it may " +
-          `or may not have taken effect${keyedTail}${unknownSentence}`,
+        `KEY_IN_FLIGHT${unknown}`,
         20,
       ],
     ] as const) {
@@ -11963,6 +11960,50 @@ describe("executeDispatchTool", () => {
     expect(message).toContain(error);
     expect(message).toContain("Send the upload again once that call is answered.");
     // The upload never left: a check that did not run says nothing about what the store writes.
+    expect(posts).toEqual([]);
+  });
+
+  // A failure whose own message ends its sentence, as the command fetch's line for a server it
+  // cannot reach does, is quoted with no second stop before the advice that follows it. The round
+  // trip writes nothing, so that line is a read's, with none of a write's words.
+  test("refuses the upload when the round trip gets no answer, ending each sentence once", async () => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") throw new TypeError("fetch failed");
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "Dispatch could not say how it would store this text, so nothing was uploaded: POST " +
+        "/api/v1/markdown/round-trip failed with Dispatch at http://dispatch.test is unreachable: " +
+        "fetch failed. If the Dispatch URL changed, restart this agent process so it picks up the " +
+        "new configuration. Send the upload again once that call is answered."
+    );
     expect(posts).toEqual([]);
   });
 

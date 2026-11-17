@@ -446,7 +446,8 @@ describe("DispatchClient's writes", () => {
 
   // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
   // request - a release without the layer, as after a rollback - so an echo the process saw
-  // earlier does not license a resend: /healthz decides afresh.
+  // earlier does not license a resend: /healthz decides afresh. Its 500 is not resent, and may have
+  // come after the write committed, so it leaves the write unsettled.
   test("ask /healthz afresh on Dispatch's own refusal that echoes no key", async () => {
     const { fetchImpl, sent, probes } = scripted(
       [json(posted, 201), refusal(500, "INTERNAL", "internal server error"), json(posted, 201)],
@@ -457,7 +458,10 @@ describe("DispatchClient's writes", () => {
     await dispatch.comment("DSP-1", comment);
     const error = await failure(dispatch.comment("DSP-1", comment));
 
-    expect(error).toEqual(expect.objectContaining({ code: "INTERNAL", status: 500 }));
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ code: "INTERNAL", status: 500 })
+    );
     expect(sent).toHaveLength(2);
     expect(probes).toHaveLength(1);
   });
@@ -571,7 +575,8 @@ describe("DispatchClient's writes", () => {
     );
   });
 
-  test("a transport failure on every attempt throws the last one", async () => {
+  // Every attempt may have reached Dispatch, however it failed on the way back.
+  test("a transport failure on every attempt leaves the write unsettled, naming the last", async () => {
     const { fetchImpl, sent } = scripted(
       Array.from({ length: 5 }, (_, n) => new TypeError(`fetch failed ${n + 1}`))
     );
@@ -579,8 +584,83 @@ describe("DispatchClient's writes", () => {
     const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
     expect(sent).toHaveLength(5);
-    expect(error).toBeInstanceOf(TypeError);
-    expect(error.message).toBe("fetch failed 5");
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(TypeError);
+    expect(error.message).toBe(
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments got no answer on the network (fetch " +
+        "failed 5) (the last of 5 attempts), and an attempt of the write may have reached " +
+        "Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it " +
+        "received whatever this command does, so read the write back before you send it again: a " +
+        "new command sends it under a new key."
+    );
+  });
+
+  // A PUT or a DELETE carries no key and goes once, but it is a write: whatever leaves it with no
+  // definitive answer may have reached Dispatch, while a read's failure is thrown as it came.
+  test("an unkeyed write that fails in transport, at its deadline or with Dispatch's 5xx is unsettled", async () => {
+    const follow = (fetchImpl: typeof fetch, signal?: AbortSignal) =>
+      failure(client(fetchImpl, pacing().retry, signal).followAsk("ask-1", "session-1", actor));
+    const put = "PUT http://dispatch.test/api/v1/asks/ask-1/followers/session-1";
+    const checkFirst =
+      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or " +
+      "may not have taken effect: check whether it did before retrying it.";
+
+    const dropped = scripted([new TypeError("fetch failed")]);
+    const transport = await follow(dropped.fetchImpl);
+    expect(transport).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(transport.message).toBe(
+      `${put} got no answer on the network (fetch failed) ${checkFirst}`
+    );
+    expect(dropped.probes).toEqual([]);
+
+    const hung = scripted([hang]);
+    const deadline = await follow(hung.fetchImpl, AbortSignal.timeout(30));
+    expect(deadline).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((deadline as DispatchWriteUnsettledError).last.name).toBe("TimeoutError");
+    expect(deadline.message).toBe(
+      `${put} had no definitive answer when its deadline ended it ${checkFirst}`
+    );
+
+    const failed = scripted([refusal(500, "INTERNAL", "internal server error")]);
+    const internal = await follow(failed.fetchImpl);
+    expect(internal).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(internal.message).toBe(
+      "INTERNAL: internal server error (its only attempt), and Dispatch answers a 5xx when a " +
+        "write fails, which can be after it committed, so it may or may not have taken effect: " +
+        "check whether it did before retrying it."
+    );
+    expect(failed.sent).toHaveLength(1);
+
+    // A gateway's 5xx already says the write may or may not have reached Dispatch, and a refusal
+    // Dispatch decided says it did not.
+    const gateway = await follow(scripted([page(502, "Bad Gateway")]).fetchImpl);
+    expect(gateway).toBeInstanceOf(DispatchGatewayError);
+    expect(gateway.message).toEndWith(
+      "so the write may or may not have reached Dispatch: check whether it took effect before " +
+        "retrying it."
+    );
+    const refused = await follow(
+      scripted([refusal(409, "ASK_RESOLVED", "the ask is resolved")]).fetchImpl
+    );
+    expect(refused).toBeInstanceOf(DispatchServiceError);
+    expect(refused.message).toBe("the ask is resolved");
+
+    // The caller's own cancellation, once the PUT is out, is thrown as it is.
+    const controller = new AbortController();
+    const cancelled = scripted([
+      (signal) => {
+        const answer = hang(signal);
+        controller.abort(new DOMException("The operation was aborted.", "AbortError"));
+        return answer;
+      },
+    ]);
+    expect((await follow(cancelled.fetchImpl, controller.signal)).name).toBe("AbortError");
+
+    // A read keeps the failure the fetch threw.
+    const read = await failure(
+      client(scripted([new TypeError("fetch failed")]).fetchImpl, pacing().retry).getAsk("ask-1")
+    );
+    expect(read).toBeInstanceOf(TypeError);
   });
 
   test("wait a Retry-After longer than the pause, and stop rather than start past 30 s", async () => {

@@ -22,6 +22,7 @@ import {
   DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
 } from "../dispatch-http";
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
@@ -42,7 +43,13 @@ import {
   optionalStringArray,
   stringArg,
 } from "./context";
-import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import {
+  dispatchAnswered,
+  refusalWithCode,
+  unsettledWithAccount,
+  withAccount,
+  writeMayHaveLanded,
+} from "./failures";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { notSubscribed } from "./results";
 
@@ -305,11 +312,13 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
         );
       }
       // The close's PATCH below follows the same rule: only an answer sent before the reason
-      // could be stored proves it was not posted.
+      // could be stored proves it was not posted. An unsettled post is told in these words alone,
+      // which say what it was.
       const told = writeMayHaveLanded(error)
         ? "the reason may or may not have been posted, and the close was not sent: read the issue's messages before retrying, since retrying this call posts its reason again"
         : "the reason was not posted, so the close was not sent";
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
+      if (error instanceof DispatchWriteUnsettledError) throw unsettledWithAccount(error, told);
       throw withAccount(error, told);
     }
   }
@@ -359,13 +368,19 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     // call's landing, which the caller reports as done.
     if (error instanceof DispatchWriteLandedError) throw error;
     // A URL links exactly one issue. A server from before EXTERNAL_LINK_TAKEN answers the
-    // unique-index violation with 500 INTERNAL, which names nothing; say what it means. A
-    // gateway's 500 page is not that answer, and gets no such reading.
+    // unique-index violation with 500 INTERNAL, which names nothing; say what it means. That 500
+    // leaves the write unsettled, so its refusal is the error's `last`. A gateway's 500 page is
+    // not that answer, and gets no such reading.
+    const refusal = error instanceof DispatchWriteUnsettledError ? error.last : error;
     const taken =
-      dispatchAnswered(error, 500) && newLinks.length > 0
+      dispatchAnswered(refusal, 500) && newLinks.length > 0
         ? `one of ${newLinks.join(", ")} may already be linked from another issue (a URL links exactly one issue)`
         : "";
-    if (closingNote === undefined) throw refusalWithCode(error, taken);
+    if (closingNote === undefined) {
+      throw error instanceof DispatchWriteUnsettledError && taken !== ""
+        ? withAccount(error, taken)
+        : refusalWithCode(error, taken);
+    }
     // The reason is on the issue, so a blind retry would post it a second time: the error
     // says where the first one is, and whether the close may have landed anyway. A gateway's
     // timeout or rate limit refused nothing there is to fix.
@@ -378,6 +393,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
       : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
     if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
+    if (error instanceof DispatchWriteUnsettledError) {
+      throw unsettledWithAccount(error, taken, landed);
+    }
     throw withAccount(error, landed);
   }
   refuseUnsavedRepository("updated", after, repo);

@@ -603,7 +603,8 @@ calls share, so a clock set back between two calls stretches the five minutes by
 calls racing in one session can bring back a sighting one of them set aside, which still ends
 five minutes after the answer that showed it.
 
-A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
+A non-2xx answer is thrown as `DispatchServiceError`, unless it leaves a write unsettled (below).
+Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
@@ -616,7 +617,8 @@ of the client's bearer's characters (a shorter bearer only whole), so a copy cut
 markup or overlapping another leaves no such piece. A body none of whose read part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever
-answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, and so
+answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, as may
+a POST whose route stores nothing (the markdown round trip, the related search), and so
 may a write answered 408 or 429, the gateway's own timeout or rate limit, which it sends before it
 forwards anything (`mayHaveReachedDispatch` false); a write answered 5xx may or may not have reached
 Dispatch, so the advice is to check whether it took effect before retrying. The error's `answer`,
@@ -626,17 +628,34 @@ reads a status as Dispatch's meaning (a 404 as no linked issue, no such document
 without the route) only when `fromDispatch` is true.
 
 A write whose attempts run out is thrown as the last attempt's own error, with its usual message,
-except where that last answer alone would say the write never took effect while an earlier attempt
-may have reached Dispatch: a gateway's 408 or 429, Dispatch's own 429, and `409 KEY_IN_FLIGHT`.
-Those are a `DispatchWriteUnsettledError`, deliberately not a `DispatchServiceError`, since a
-caller reads one as a refusal Dispatch decided: its message is the last answer, the number of
-attempts, whether an earlier attempt may have reached Dispatch or Dispatch was still running one,
-and that the write may or may not have taken effect, so check before running it again - a new
-command is a new key. A write that ends with no answer at all is one too, naming the request: its
-last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
-deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
-definitive answer when its deadline ended it"); `last` is the cut or the timeout. A write Dispatch
-made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
+except where that answer says nothing settled. Dispatch's own 5xx is such an answer whether the
+write was asked once or again, since Dispatch answers a 5xx when a write fails, which can be after
+it committed; so is a last answer that alone would say the write never took effect while an
+earlier attempt may have reached Dispatch: a gateway's 408 or 429, Dispatch's own 429, and
+`409 KEY_IN_FLIGHT`. Those are a `DispatchWriteUnsettledError`, deliberately not a
+`DispatchServiceError`, since a caller reads one as a refusal Dispatch decided: its message is the
+last answer, the number of attempts, why the write may have landed (Dispatch's 5xx, an earlier
+attempt that may have reached Dispatch, or one Dispatch was still running), and that the write may
+or may not have taken effect, so check before running it again - a new command is a new key. Its
+`last` is that answer, so a caller still reads a 5xx's code and status there, and its `answer` is
+the message's first clause, which a caller with its own account of the write, such as
+`dispatch issue-update`'s close path, joins that account to in place of the rest. A gateway's 5xx
+stays a `DispatchGatewayError`, whose advice already says the write may or may not have reached
+Dispatch. A write that ends with no answer at all is one too, naming the request: its last attempt
+failed on the network ("got no answer on the network (<the fetch's own words>)"), was cut off for
+silence ("made no progress for 20 s, so it was cut off"), or the call's deadline ended it while an
+attempt was out or after one that may have reached Dispatch ("had no definitive answer when its
+deadline ended it"); `last` is the transport failure, the cut or the timeout. The `dispatch`
+command's fetch throws a transport failure as a `DispatchUnreachableError`, which a read prints as
+it stands ("Dispatch at <url> is unreachable: …") and an unsettled write ends with its advice for a
+moved URL (`hint`). A PUT or a DELETE, which goes once and carries no key, is unsettled the same way
+when its transport fails, the call's deadline ends it or Dispatch answers its own 5xx, with one
+attempt; its caller's cancellation is thrown as it is. The two POSTs whose routes store nothing,
+the markdown round trip and the related search, keep their key and their attempts but are no
+writes, so each of their endings is thrown as a read's would be, with none of these words.
+
+A write Dispatch made whose answer is gone is a `DispatchWriteLandedError` (`code`, an
+`IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no

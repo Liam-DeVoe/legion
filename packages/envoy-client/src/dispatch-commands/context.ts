@@ -11,7 +11,11 @@ import type {
 } from "@legion/contracts";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import {
+  DispatchClient,
+  DispatchUnreachableError,
+  type DispatchWriteRetry,
+} from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
@@ -291,8 +295,11 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
 /**
  * The context every command starts from, built from the checked call. The fetch it hands the
  * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else. That message and every link name the server without the
- * user and password its URL may carry; the client's requests go to the URL as configured.
+ * reads that message and nothing else: a `DispatchUnreachableError` that keeps the fetch's own
+ * error as its `cause` and the advice for a moved URL as its `hint`, so a write the failure leaves
+ * unsettled can say so first and give both after. That message and every link name the server
+ * without the user and password its URL may carry; the client's requests go to the URL as
+ * configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -307,8 +314,10 @@ export function sessionContext(
         return await baseFetch(...args);
       } catch (error) {
         if (error instanceof TypeError) {
-          throw new Error(
-            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
+          throw new DispatchUnreachableError(
+            configUrl,
+            error,
+            "If the Dispatch URL changed, restart this agent process so it picks up the new configuration."
           );
         }
         throw error;
