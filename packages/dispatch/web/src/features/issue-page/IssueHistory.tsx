@@ -231,23 +231,27 @@ export function IssueHistory({
   // The entry an address names is brought into view once, as the list first draws it: an entry
   // with no box yet - its day still folded, or Details still closed around the list, which the
   // page opens a commit after this one mounts - is not landed on, so the render that draws it
-  // lands it.
+  // lands it. An entry taller than Details' view lands at the top of that view, so its head is
+  // read first; a shorter one in the middle of it.
   const landed = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (item === undefined || landed.current === item || marked === undefined) return;
-    const entry = document.querySelector(`[data-history-item="${CSS.escape(item)}"]`);
+    const entry = document.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(item)}"]`);
     if (entry === null || entry.getClientRects().length === 0) return;
     landed.current = item;
-    entry.scrollIntoView({ block: "center" });
+    const box = scrollingAncestor(entry);
+    const tall = box !== null && entry.getBoundingClientRect().height > box.clientHeight;
+    entry.scrollIntoView({ block: tall ? "start" : "center" });
   });
   // `/activity` opens Details at the history (R4): its heading is brought into Details' view
-  // once for each arrival at that address, on the first render it has a box - Details still
-  // closed around it, or the panel not yet placed in the drawer, gives it none - and leaving the
-  // address lets the next arrival bring it again. A reader who comes back with the browser's
-  // Back or Forward to the history this list drew there before - Details left open beside a
-  // view, or at a turn's address - finds Details where they left it (R3), so that arrival brings
-  // nothing. Only the box Details scrolls in moves, never the page under it; the reader's own
-  // scroll after that is theirs.
+  // once for each arrival at that address, on the first render it has a box and the log under
+  // it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
+  // gives it no box, and before the log is drawn Details has nothing to scroll the heading up
+  // by - and leaving the address lets the next arrival bring it again. A reader who comes back
+  // with the browser's Back or Forward to the history this list drew there before - Details left
+  // open beside a view, or at a turn's address - finds Details where they left it (R3), so that
+  // arrival brings nothing. Only the box Details scrolls in moves, never the page under it; the
+  // reader's own scroll after that is theirs.
   const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
@@ -261,7 +265,8 @@ export function IssueHistory({
     if (
       headingLanded.current === activityAddress ||
       element === null ||
-      element.getClientRects().length === 0
+      element.getClientRects().length === 0 ||
+      log.data === undefined
     ) {
       return;
     }
@@ -303,10 +308,12 @@ export function IssueHistory({
   // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). Load older, which a
   // press disables while its page is read and the log's end takes away, hands it to the first
   // control the page it read added, where Load older stood, else to Load older again where
-  // pages are left, else to the heading; the Retry of a failed read, gone once the read lands,
-  // hands it to the heading. Each is held from its press, made with the focus on it, until the
-  // reads settle, and only a focus left on the page moves: a reader who has put it elsewhere by
-  // then keeps it there. No such move scrolls Details, whose reader keeps their place (R3).
+  // pages are left, else to the heading, and so does the Retry of a failed next page, which
+  // stands where Load older stood; the Retry of a failed read of the log, gone once the read
+  // lands, hands it to the heading. Each is held from its press, made with the focus on it,
+  // until the reads settle, and only a focus left on the page moves: a reader who has put it
+  // elsewhere by then keeps it there. No such move scrolls Details, whose reader keeps their
+  // place (R3).
   const pressed = useRef<
     { readonly kind: "older"; readonly before: ReadonlySet<Element> } | { readonly kind: "retry" }
   >(undefined);
@@ -339,8 +346,12 @@ export function IssueHistory({
         error={log.error}
         message={ANSWER_LINES.history_unreadable}
         onRetry={() => {
+          // The next page's Retry stands where Load older stood, and hands the focus on as it
+          // does; the log's Retry, under the heading, to the heading.
           if (failure.current?.contains(document.activeElement) === true) {
-            pressed.current = { kind: "retry" };
+            pressed.current = log.isFetchNextPageError
+              ? { before: new Set(controlsOfList()), kind: "older" }
+              : { kind: "retry" };
           }
           void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
         }}
