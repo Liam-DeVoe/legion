@@ -19,9 +19,13 @@ import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
+  BodyAuthor,
+  MoreWords,
   NODE_ROW_LAYOUT,
   NodeOptions,
   RowActs,
+  type Tone,
+  UNTYPED,
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
@@ -37,7 +41,6 @@ import {
   GLYPH_TOKENS,
   isReader,
   NODE_TYPE_NAMES,
-  type NodeType,
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
@@ -219,29 +222,16 @@ export function DecisionsRow({
               />
             ) : null}
           </div>
-          {/* A press on it leaves the focus where it is, so the control does not move under
-              the pointer before the press ends. It opens the rest in place, and closes it. The
-              body draws the words whole, so it offers nothing to open there. */}
+          {/* G's control under cut words, the one every view that cuts a node's words draws,
+              so it opens and closes the rest as the outline's rows do. The body draws the words
+              whole, so it offers nothing to open there. */}
           {clamp === undefined || body ? null : (
-            <button
-              className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-              data-node-more=""
-              onClick={() => setOpened((held) => !held)}
-              onMouseDown={(event) => event.preventDefault()}
-              tabIndex={-1}
-              type="button"
-              {...pageChrome}
-            >
-              {opened ? (
-                CONTROL_LABELS.read_less
-              ) : (
-                <>
-                  {CONTROL_LABELS.read_more} ·{" "}
-                  <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-                  {CONTROL_LABELS.read_more_words}
-                </>
-              )}
-            </button>
+            <MoreWords
+              hidden={clamp.hidden}
+              onToggle={() => setOpened((held) => !held)}
+              opened={opened}
+              tabStops={false}
+            />
           )}
           {node.options === undefined ? null : (
             <NodeOptions body={body} node={node} writer={writer} />
@@ -360,28 +350,11 @@ export function DecisionsRow({
               data-node-body=""
               data-pinned={pinned ? "" : undefined}
             >
-              {author.kind === "unknown" ? (
-                <p
-                  className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-                  data-author-kind={author.kind}
-                  data-node-author=""
-                >
-                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
-                  <span {...pageChrome}>{author.name}</span>
-                </p>
-              ) : author.kind === "agent" && agentRoleWord(author.name) !== author.name ? (
-                <p
-                  className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-                  data-node-author-title=""
-                >
-                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
-                  <span className="min-w-0 break-words" {...authorText}>
-                    {author.name}
-                  </span>
-                </p>
-              ) : null}
+              <BodyAuthor author={author} />
               <p>
-                {/* A press moves no focus: the body this closes would take it to the page. */}
+                {/* A press moves no focus: the body this closes would take it to the page. G's
+                    `KeepOpen` has no such guard yet, so this row keeps its own button until
+                    decision 141 gives G's one and that change is under this row. */}
                 <button
                   className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
                   onClick={onPin}
@@ -419,13 +392,6 @@ export function DecisionsRow({
 /** Keep, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
 const KEEP = rowActionSelector("keep");
-
-/** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
-type Tone = "context" | "decision" | "question";
-
-/** The kinds of node that draw no tag, as G's outline row draws none for them (`NodeRow.tsx`'s
- *  `UNTYPED`): what somebody said is the conversation's own words, not a typed kind. */
-const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
 
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
