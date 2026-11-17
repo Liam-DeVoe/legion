@@ -3010,16 +3010,23 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
     const landed = await focusNow(page);
     await expect(copy, `once Copied was drawn the focus was on ${landed.what}`).toBeFocused();
 
-    // The press is made inside Copied's time: Copied is still drawn as it is made. The press
-    // clears that status as it starts its own copy, so Copied is read before it, not after.
+    // A press made while Copied shows is a copy of its own (decision 255): Copied describes the
+    // newest copy only, so it goes while that write is held and is drawn again once it lands.
     expect(await copied.isVisible(), "the press made for Copied's time came after it").toBe(true);
     await page.keyboard.press("Enter");
     await expect
       .poll(() => clipboard.writes(), {
-        message: "Copy issue key, pressed inside Copied's time, wrote nothing",
+        message: "Copy issue key, pressed while Copied showed, wrote nothing",
       })
       .toBe(2);
+    await expect(copied, "Copy issue key drew Copied while its second write was held").toHaveCount(
+      0
+    );
     await clipboard.land();
+    await expect(
+      copied,
+      "Copy issue key drew no Copied once its second write landed"
+    ).toBeVisible();
     await framesDrawn(page, 2);
     const after = await focusNow(page);
     await expect(
