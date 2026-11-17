@@ -6,7 +6,9 @@ The secrets broker's client. An agent session runs it to use a secret:
 agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- ./deploy.sh
 ```
 
-It asks the broker for the named secrets, waits while a person approves them on the broker's own
+It looks the command up on `PATH` first, and refuses one it does not find (exit 1) before it asks
+the broker anything, so no request waits on an approver for a command that could not run. It then
+asks the broker for the named secrets, waits while a person approves them on the broker's own
 approval page if the secret's owner and tier require it, and runs the command with each granted
 value in its
 environment, writing one line to standard error first: the names it injected, that the broker
@@ -37,7 +39,18 @@ session's grants (`agent-secrets self`). People and agents manage the agent secr
 store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential its environment
 gives it - the store's own IAM decides what that credential may do - and then asks the broker to
 reread each secret written, so the change
-is served at once; those forms need no helper and no session. From their own shell on a machine
+is served at once; those forms need no helper and no session. On GCP, `secret create` makes the
+secret, empty and with its tags, before it asks for the value, so a store that refuses the create
+asks for none; until the value is added, a failure or a hang-up, interrupt, quit or termination
+deletes that empty secret again, and a secret that may hold the value, where the store's answer to
+the add leaves that open, is kept. Each store call from the create until the value is stored or
+the empty secret deleted has a deadline of 60 seconds, Secret Manager's Go client's own default
+for those calls, which AWS's `CreateSecret` takes too, its SDK setting none. That bound is per
+call, not per signal: a signal waits out the call in flight, and then its cleanup makes its own
+calls, each with the same deadline, so a first signal against a store that answers nothing can
+take a few minutes. A second signal ends the command at once, by that signal, naming what the
+store may be left holding and the command that clears or checks it. From their own shell on a
+machine
 that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
 login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
@@ -88,6 +101,65 @@ refuses a secret whose value it refuses as `value-malformed`.
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
 `AGENT_SECRETS_KEY_DIR`.
+
+A use command (`agent-secrets NAME -- command`), and every other form that acts as a session,
+takes its broker identity from the first of four sources that has one for the calling process, in
+this order, and needs no registered agent session:
+
+1. `key-dir`: the `key.pem` and `enrollment` a launcher put in `AGENT_SECRETS_KEY_DIR` (default
+   `$XDG_RUNTIME_DIR/agent-secrets`), a box's or a pod's. Absent without `key.pem`; a `key.pem`
+   that does not parse, one with no `enrollment`, or a fresh `enrollment.pending` still without
+   `key.pem` after `AGENT_SECRETS_ENROLL_WAIT` (a launcher still enrolling), stops the command.
+2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in.
+3. `helper`: `agent-secrets-helper`, asked first whether the caller is in a session it registered.
+   Absent when there is no socket and no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset, no
+   helper unit installed), or the helper answers `NOT_A_SESSION`, as it does for a process that
+   only inherited `AGENT_SECRETS_HELPER_SOCK`. A stopped helper (no socket where that variable
+   names one or the unit is installed), a socket that does not answer, `NO_CREDENTIAL` or any
+   other refusal stops the command.
+4. `machine`: the machine's own cloud identity, found with no setting from the Google exchange
+   audience the broker answers in `GET /v1/settings`: an `external_account` file
+   `GOOGLE_APPLICATION_CREDENTIALS` names, or the Compute Engine metadata server
+   (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead; `kubernetes` is refused,
+   exit 2, since the broker mints no launcher credential for a Kubernetes identity, and a pod
+   enrolls through its launcher or `enroll --pod`). The settings are read only from an `https`
+   broker, or an `http` one on loopback. Once an identity is found, and before a token is minted
+   for it, the audience is kept in the cache's `google-exchange-audience` (a machine with no
+   identity keeps none): a broker that later names another is refused before any token is minted
+   for it. The session it
+   registers is kept in the machine cache, `$XDG_STATE_HOME/agent-secrets/machine` (a 0700
+   directory, `key.pem` and `enrollment` each 0600), and signs every later command with no
+   network call; each registration, the first and each one after the broker says the session is
+   not live, makes a key of its own, and a lock in the cache makes commands that find it empty at
+   once register one session between them. A broker that names no exchange audience is skipped
+   with that reason; a broker that refuses the exchange stops the command.
+
+A source that is present but broken, and any broker refusal, stop the command with that error
+(exit 1); with no source, one refusal names each source and why it had nothing:
+`no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`. Since the
+cache is read below the sign-in, a person who runs `agent-secrets login` acts as themselves from
+their next command on, and the cache stays for every process no person signed in for. A machine
+session an older client kept in the key dir (beside a `machine-session` file) is moved into the
+cache by the first command that finds it.
+
+A process started with no environment of its own, such as a systemd unit or a cron job, reads its
+settings from `~/.config/agent-secrets/config`: `KEY=value` lines, `#` comments and blank lines,
+no quotes, no `export`, no expansion. It takes `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,
+`AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
+`AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
+`AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`,
+and refuses any other key, a path that is not a regular file, a file another user than this one
+or root owns, and a file its group or others can write, as a usage error (exit 2) naming the
+file. A variable that is set and not empty wins over the file. With no `HOME` in the
+environment (a system unit that names no `User=`), the file, the sign-ins and the machine cache
+are under the home the password database gives the process's user.
+
+`agent-secrets identity` answers by exit status alone (0 for a launcher's key dir or a helper
+session, 1 otherwise) and asks nothing of the network. `agent-secrets identity --source` walks the
+chain without registering anything and prints the source a command would use — `key-dir: <dir>`,
+`sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in <dir>`, or `machine:`
+and the identity it would trade — then `helper: <socket>` whenever the helper answered and is not
+that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1.
 
 A Kubernetes pod an operator launches by hand needs no credential a person installs and no machine
 login a person approves: it logs in and enrols itself with the projected ServiceAccount token its
@@ -267,13 +339,20 @@ agent-secrets-helper sessions
 `machine list` shows your machines' logins, `grant list` the live grants of your sessions and
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
 
-Owners manage the secrets themselves, with no helper, under whatever cloud credential the
-environment gives the command: on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default
-chain, in the broker's account; on Google Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the
-Application Default Credentials, else the gcloud login. The store's IAM decides what each may
-do. `--owner me` is the email of the person that credential names, and is refused where it names
-none (a machine's role, a service account, a token without an email scope); `--owner <email>`
-names the owning person outright:
+Owners manage the secrets themselves, with no helper, under the credential of the first source
+the command finds: on AWS, the AWS SDK's own order, in the broker's account (access keys in
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
+`AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain); on Google
+Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS`
+names, else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+`CLOUDSDK_CORE_ACCOUNT` names, else the well-known credentials file, else the active gcloud
+account, else the metadata server. A source that is present but broken stops the command, and so
+does a profile variable that names a profile the AWS config does not hold; every form prints the
+source it used (`using …`) before its first store call, and a store refusal names it and how to
+choose another from that source. The store's IAM decides what each may do. `--owner me` is the
+email of the person that credential names, and is refused where it names none (a machine's role,
+a service account, a token without an email scope); `--owner <email>` names the owning person
+outright:
 
 ```sh
 agent-secrets secret list

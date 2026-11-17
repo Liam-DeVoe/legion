@@ -180,6 +180,13 @@ An agent subscribes with Envoy's `envoy_subscribe` tool, which stores the subscr
 listener. A subscription to `<subject>.>` also covers `<subject>` itself, so subscribing to a pull
 request's `.>` gets its lifecycle events as well as its comments and checks.
 
+An issue's topic, a session's inbox and a role's lane each have a second form that names the
+project too: `notifications.dispatch.issue.<PROJECT>.<KEY>.>`, `notifications.agent.<PROJECT>.<session_id>`
+(`_` for no project) and `notifications.role.<PROJECT>.<role>`. While Envoy moves to it, a session
+receives each event in either form, whichever form it subscribed with. A subscription or a role
+claim that names the form without the project is kept as written and answered with a warning that
+names the new form; nothing is refused for it yet.
+
 A publish to a role through the API resolves the role's holder, waits for the stream to store the
 forward to it, and answers `200` naming the holder and its `holder_state`. If no live session
 holds the role, the listener keeps the message for one hour and answers `202` with
@@ -514,6 +521,8 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_LISTEN_HOST`, `PORT` | Where to listen. Defaults: `127.0.0.1` and `9020`. |
 | `ENVOY_API_TOKEN` | The bearer token `/v1` callers must send. |
 | `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. |
+| `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
+| `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_STREAM_MAX_BYTES` | The `ENVOY_NOTIFICATIONS` stream's size limit, a positive whole number of bytes. Once the stream holds that much it refuses every new message and keeps every one it holds, which leaves only when it is 72 hours old, and the sender gets an error it can retry: the listener answers a GitHub webhook `503`, which Dispatch's redelivery sweep has GitHub send again (on a doubling backoff, until GitHub records the delivery or 72 hours after its first failed attempt); Dispatch's outbox retries its event; an agent's send or publish fails with `stream ENVOY_NOTIFICATIONS is full`. Size the limit above what the stream takes in 72 hours at its busiest, with room to spare. Unset, the listener creates the stream with no limit and keeps a limit the stream already has; set, it raises a smaller limit, or none, to its own at start and every 30 seconds, and never lowers one ([Keeping the stream](#keeping-the-stream)). A limit larger than the NATS server can reserve makes the listener exit at start with an error naming the variable. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
@@ -529,13 +538,25 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 
-A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN` or the OIDC pair,
-unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its port, as the
-clustered hub's NetworkPolicy fences its listener's port.
-A listener with neither serves `/v1` only to a request whose `Host` is `localhost`, a loopback
+A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
+the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its
+port, as the clustered hub's NetworkPolicy fences its listener's port.
+A listener with none of them serves `/v1` only to a request whose `Host` is `localhost`, a loopback
 address or a name in `ENVOY_ALLOWED_HOSTS`, and answers any other `Host` with a JSON `421`, so a
 page that rebinds its own name to the listener's address cannot use the API.
 Keep the API private: only `/webhook/...` needs to be reachable from GitHub and Slack.
+
+The Google identity-token branch accepts both `https://accounts.google.com` and
+`accounts.google.com` as Google's issuer, including when the projected-token verifier is also
+configured. Both spellings require a listed, verified account address; addresses are compared
+without case.
+
+`/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
+`credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
+credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request
+admitted on the shared token or with no credential also logs a warning, at most once a minute
+each, naming the route and the caller's address, so callers that still use either can be found
+and moved to a token of their own.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the
@@ -734,6 +755,15 @@ volume: update your checkout, then
 which starts 2.15.1 on the same volume, and the listener's next start sets the cap. A store
 written by nats-server 2.10.29 opens on 2.15.1 with its stream, its messages and its consumers
 intact.
+
+**The listener and the Legion daemon need nats-server v2.11.12, v2.12.4, or v2.14.0 and later**,
+and refuse to start against any other, naming its version and those releases. From v2.10.26, and
+in 2.11 before v2.11.12 and 2.12 before v2.12.4, nats-server can skip a message on a consumer that
+filters on a wildcard and a literal at the same token, and a session's consumer does (its inbox in
+both forms of its name), so on such a server a session would lose messages with no error. No 2.10
+release has the fix, so every 2.10 is refused, and so are the first fixed releases' own
+candidates. The 2.15.1 this file pins is past all of them; a machine still on an earlier file's
+2.10 moves to it as above.
 
 1. Write the machine's settings:
 
