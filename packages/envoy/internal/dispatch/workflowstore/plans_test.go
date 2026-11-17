@@ -522,17 +522,17 @@ func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
 		seededIssue{"LEG-2", "done", &middle},
 		seededIssue{"LEG-3", "done", &late},
 	)
-	for name, window := range map[string]struct {
-		since, until *time.Time
-		want         []string
+	for name, bounded := range map[string]struct {
+		window Window
+		want   []string
 	}{
-		"no bound":    {nil, nil, []string{"LEG-3", "LEG-2", "LEG-1"}},
-		"since":       {&middle, nil, []string{"LEG-3", "LEG-2"}},
-		"until":       {nil, &middle, []string{"LEG-1"}},
-		"both bounds": {&early, &late, []string{"LEG-2", "LEG-1"}},
+		"no bound":    {Window{}, []string{"LEG-3", "LEG-2", "LEG-1"}},
+		"since":       {Window{Since: &middle}, []string{"LEG-3", "LEG-2"}},
+		"until":       {Window{Until: &middle}, []string{"LEG-1"}},
+		"both bounds": {Window{Since: &early, Until: &late}, []string{"LEG-2", "LEG-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			read, err := ProjectPlans(context.Background(), pool, "LEG", Window{Since: window.since, Until: window.until})
+			read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window)
 			if err != nil {
 				t.Fatalf("read the plans of LEG: %v", err)
 			}
@@ -540,8 +540,8 @@ func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
 			for _, issue := range read {
 				keys = append(keys, issue.Issue)
 			}
-			if !slices.Equal(keys, window.want) {
-				t.Fatalf("the read lists %v, want %v", keys, window.want)
+			if !slices.Equal(keys, bounded.want) {
+				t.Fatalf("the read lists %v, want %v", keys, bounded.want)
 			}
 		})
 	}
