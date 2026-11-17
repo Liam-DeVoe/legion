@@ -63,6 +63,17 @@ type stepRecordInput struct {
 	Report     *string      `json:"report"`
 }
 
+// write is the step write input states, each field as the body sent it: the fields the record
+// shares with the rating route's body, which adds the rating and its reason to it.
+func (input stepRecordInput) write() workflowstore.StepWrite {
+	return workflowstore.StepWrite{
+		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
+		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
+		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
+		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
+	}
+}
+
 // stepRatingInput is the body PUT /api/v1/issues/{key}/steps/{id}/rating takes: the step write's
 // body, which makes the retro's record where its start and end have not landed yet, and the
 // rating with its reason, both required.
@@ -82,12 +93,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeIssueStep(w, r, workflowstore.StepWrite{
-		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
-		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
-		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
-		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
-	}, input.Actor, false)
+	s.writeIssueStep(w, r, input.write(), input.Actor, false)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -99,13 +105,9 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeIssueStep(w, r, workflowstore.StepWrite{
-		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
-		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
-		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
-		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
-		Rating: input.Rating, RatingReason: input.RatingReason,
-	}, input.Actor, true)
+	write := input.write()
+	write.Rating, write.RatingReason = input.Rating, input.RatingReason
+	s.writeIssueStep(w, r, write, input.Actor, true)
 }
 
 // writeIssueStep is the one write of a step record behind both routes: the writer and the issue
