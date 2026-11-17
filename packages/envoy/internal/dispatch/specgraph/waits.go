@@ -5,9 +5,9 @@ import (
 	"fmt"
 )
 
-// Unit is a work unit as the workflow spec defines it (dispatch://INFRA-3570/spec), as far as a
-// wait reads it (R29): the statements it serves, the units it needs, and the statements it waits
-// on. JSON tags are the form of units.json.
+// Unit is a work unit as the workflow spec defines it, as far as a wait reads it (R29): the
+// statements it serves, the units it needs, and the statements it waits on. JSON tags are the form
+// of units.json.
 type Unit struct {
 	ID      string   `json:"id" input:"nonzero"`
 	Serves  []string `json:"serves" input:"present: [] serves no statement, and a file sets it"`

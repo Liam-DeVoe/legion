@@ -19,8 +19,12 @@ import (
 //   - input:"nonzero": its zero value is no value of the format, so the validation of its type
 //     refuses it, and a file that leaves it out is refused too, as its zero value: the one that the
 //     reader and the entry of the derivation share (Result.fault, JobRun.fault, subjectFault,
-//     ApprovedNode.check, FixtureHistory.check, unitsFault), the entry's (Input.check), or the
-//     reader's, for a member that only a file holds (ApprovedFile.approved, readResults);
+//     ApprovedNode.check, FixtureHistory.check, unitsFault, uncitedFault), the entry's
+//     (Input.check), or the reader's, for a member that only a file holds (ApprovedFile.approved,
+//     readResults). A nonzero string has at least one character. A nonzero map is set, not nil, and
+//     each of its values is nonzero by the same rule, at each depth of a map of maps; an empty map
+//     is a value, as Input.Uncited {} says that CI refused no check, and a rule "" in it is refused.
+//     A type's own rule can ask more, as FixtureCommit.Files holds at least one path;
 //   - input:"present: <reason>": its zero value is a value of the format, as the reason says, such
 //     as false for removed, so a file must set it (unsetFault), and to a caller of the library the
 //     zero value is that value;

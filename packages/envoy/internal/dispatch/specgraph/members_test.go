@@ -4,7 +4,13 @@ import (
 	"bytes"
 	"encoding/json/v2"
 	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"maps"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -28,8 +34,57 @@ var scenarioFileTypes = map[string]reflect.Type{
 
 // libraryInputTypes is the type of each input that a caller of the library gives: an Input of
 // Derive and CheckStates, the FixtureHistory that a scenario gives as its History, the GitHistory
-// of a clone, and the units of WaitCycle.
+// of a clone, and the units of WaitCycle. A type of the package that implements History is reached
+// through an interface, which no walk of the types enters, so the list names each one, and
+// TestEachHistoryOfThePackageIsAnInputType fails for one that it does not name; a type of a caller
+// that implements History is the caller's.
 var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[FixtureHistory](), reflect.TypeFor[GitHistory](), reflect.TypeFor[[]Unit]()}
+
+// TestEachHistoryOfThePackageIsAnInputType reads the non-test source of the package with go/types,
+// and fails for each type of it that implements History, by value or by pointer, that
+// libraryInputTypes does not name, and when it finds no such type at all, since it then read none.
+func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
+	t.Parallel()
+	dir, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, path := range paths {
+		if !strings.HasSuffix(path, "_test.go") {
+			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files = append(files, f)
+		}
+	}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil), IgnoreFuncBodies: true}
+	pkg, err := conf.Check("specgraph", fset, files, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := pkg.Scope().Lookup("History").Type().Underlying().(*types.Interface)
+	found := 0
+	for _, name := range pkg.Scope().Names() {
+		typ, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+		if !ok || types.IsInterface(typ.Type()) || !types.Implements(typ.Type(), history) && !types.Implements(types.NewPointer(typ.Type()), history) {
+			continue
+		}
+		found++
+		if !slices.ContainsFunc(libraryInputTypes, func(input reflect.Type) bool { return input.Name() == name }) {
+			t.Errorf("%s implements History, and libraryInputTypes does not name it, so no test checks the marks of its members", name)
+		}
+	}
+	if found == 0 {
+		t.Error("go/types found no type of the package that implements History, so the test read none")
+	}
+}
 
 // structTypes is each struct type of this package that a value of type t holds, t itself first,
 // through pointers, slices, maps and members. It does not go into Tree, the spec files of
@@ -113,7 +168,8 @@ func TestEachMemberOfAnInputHasAMark(t *testing.T) {
 // two times; Q, a program check of production, and G, a query of the graph; at c1, whose history
 // holds c2 and c3 after it, a failing run of each check before its pass, a caught failing example of
 // each, and a failing example of C that missed its fault; the runs of C's job in two legs and of
-// Q's in one; at the commit that production runs at deploy d1 and transaction tx1. subjects are the
+// Q's in one; CI's refusal of Q at c9, a commit that the history does not hold, so that it counts
+// nowhere; at the commit that production runs at deploy d1 and transaction tx1. subjects are the
 // subjects of its scenario, two at the head of a branch and two at a deploy, and units two units.
 func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubject, units []Unit) {
 	t.Helper()
@@ -150,6 +206,7 @@ func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubjec
 	s.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "arm", Commit: "c1", Ended: true},
 		{Job: q.Test.Job, Leg: "linux", Commit: "c1", Ended: true}}
 	s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
+	s.Uncited = map[string]map[string]string{"c9": {q.ID: "test-not-in-code"}}
 	in = s.input()
 	subjects = []ScenarioSubject{
 		{Point: Point{Commit: "c1", Branch: "b"}, Now: in.Now}, {Point: Point{Commit: "c1", Branch: "main"}, Now: in.Now},
@@ -201,7 +258,7 @@ func memberScenario(t *testing.T) fstest.MapFS {
 	put("jobs.json", in.JobRuns)
 	put("subjects.json", subjects)
 	put("units.json", units)
-	put("uncited.json", map[string]map[string]string{})
+	put("uncited.json", in.Uncited)
 	return fsys
 }
 
@@ -527,9 +584,10 @@ func edit(v reflect.Value, path []step, change func(reflect.Value)) {
 // member of one value at its zero value, as a caller that does not set it gives it: for each member
 // marked nonzero, beside a value that sets it (for a result, the failing run of C beside its pass)
 // and alone in its list or map, Derive and CheckStates (WaitCycle for a unit) give an error, where
-// the same input with the member set gives none or another one; for a member of a one of mark, also
-// with both members set. To a caller of the library, a zero value of a member marked present or zero
-// is the value that its reason states, and no file is read.
+// the same input with the member set gives none or another one; for a map marked nonzero, also with
+// one value of it at its zero value, at each depth of a map of maps (memberMark); for a member of a
+// one of mark, also with both members set. To a caller of the library, a zero value of a member
+// marked present or zero is the value that its reason states, and no file is read.
 func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	refusal := func(t *testing.T, in Input, units []Unit, root reflect.Type) string {
@@ -625,6 +683,22 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 						if zeroed == "<nil>" || zeroed == kept {
 							t.Errorf("%s %s at %v (alone %t): with it zero the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, zeroed, kept)
 						}
+						if mark.kind == "nonzero" && m.field.Type.Kind() == reflect.Map {
+							for depth := 1; ; depth++ {
+								held := false
+								zeroed, at := variant(t, instance, alone, func(s reflect.Value) { held = zeroValueAt(s.FieldByIndex(m.index), depth) })
+								if !held {
+									if depth == 1 {
+										t.Errorf("%s: memberBase sets no value of %s of %s, so the test reads no zero of one", root, m.field.Name, typ)
+									}
+									break
+								}
+								checked++
+								if zeroed == "<nil>" || zeroed == kept {
+									t.Errorf("%s %s at %v (alone %t), with a value at depth %d zero: the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, depth, zeroed, kept)
+								}
+							}
+						}
 					}
 					if mark.kind == "one of" && !alone {
 						i := slices.IndexFunc(inputMembers(typ), func(o inputMember) bool { return o.name == mark.other })
@@ -642,4 +716,20 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 		}
 	}
 	t.Logf("%d readings of a member at its zero value", checked)
+}
+
+// zeroValueAt sets the first value, by its key, of the map m to its zero value at depth 1, and at a
+// greater depth the first value of that value, a map too, at the depth below; it is false when there
+// is no such value.
+func zeroValueAt(m reflect.Value, depth int) bool {
+	if m.Kind() != reflect.Map || m.Len() == 0 {
+		return false
+	}
+	keys := m.MapKeys()
+	slices.SortFunc(keys, func(a, b reflect.Value) int { return strings.Compare(fmt.Sprint(a), fmt.Sprint(b)) })
+	if depth == 1 {
+		m.SetMapIndex(keys[0], reflect.Zero(m.Type().Elem()))
+		return true
+	}
+	return zeroValueAt(m.MapIndex(keys[0]), depth-1)
 }

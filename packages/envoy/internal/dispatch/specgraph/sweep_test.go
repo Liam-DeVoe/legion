@@ -36,12 +36,15 @@ var sweepMaps = map[string][][]string{
 // no exception, and a mark whose reading moves a state toward true is wrong. The reader may refuse the
 // input. A record taken out whole, such as a result, is another input, not one that says nothing
 // (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight). The scenarios hold each shape that a rule
-// reads: a matrix with a silent leg, a wait on its statement, a failure of production at the at of
-// its pass, an empty content label, and a refusal of CI.
+// reads: a check of the code with a matrix and a silent leg, a wait on its statement, a failure of
+// production at the at of its pass, a refusal of CI, and, in production-and-graph, a program check
+// of production whose runs name the commit of their test (test_commit), a query of the graph at the
+// transaction of its subject (graph_tx), and a run of a job that has not ended. So each member that
+// a rule reads is in a record of some scenario, and each place of it is swept.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
-	if err != nil || len(dirs) < 6 {
+	if err != nil || len(dirs) < 7 {
 		t.Fatalf("the scenarios: %q, %v", dirs, err)
 	}
 	for _, dir := range dirs {
@@ -135,8 +138,9 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 }
 
 // sweepStates is the state of each check, of each statement and its own state, and of each wait of
-// each unit, at each subject of the scenario fsys, by its place in the output; or the refusal of the
-// reader or of the derivation.
+// each unit, at each subject of the scenario fsys, by its place in the output: the subject by its
+// place in subjects.json, not its value, since an input that leaves out a member of a subject, such
+// as graph_tx, derives the states of that subject; or the refusal of the reader or of the derivation.
 func sweepStates(fsys fs.FS) (map[string]string, error) {
 	s, err := ReadScenario(fsys)
 	if err != nil {
@@ -148,7 +152,7 @@ func sweepStates(fsys fs.FS) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		at := fmt.Sprintf("subject %d %+v", i+1, state.Subject)
+		at := fmt.Sprintf("subject %d", i+1)
 		for _, c := range state.Checks {
 			states[at+" check "+c.ID] = c.State
 		}
