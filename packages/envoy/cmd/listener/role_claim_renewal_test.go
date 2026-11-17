@@ -11,13 +11,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -36,13 +41,20 @@ type roleClaimRenewalRig struct {
 
 func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	t.Helper()
+	return newRoleClaimRenewalRigOn(t, nil)
+}
+
+// newRoleClaimRenewalRigOn is newRoleClaimRenewalRig with the listener's own bounds, the
+// registration's sendRequestBudget among them, on clk; nil is the real clock.
+func newRoleClaimRenewalRigOn(t *testing.T, clk clock.Clock) *roleClaimRenewalRig {
+	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	logs := &bytes.Buffer{}
 	// withRoleClaimDrain, because a registration that makes its session live again hands that
 	// session the kept lane of each role whose claim record it read for it (runKeptRoleDrain),
 	// and the first registration of every holder here is one: the rig's session cache has never
 	// seen it.
-	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil), clock: clk})
 	return &roleClaimRenewalRig{
 		t:         t,
 		registry:  registry,
@@ -154,6 +166,82 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 	}
 	if adopted.HolderSessionID != seeded.HolderSessionID || adopted.ClaimedAt != seeded.ClaimedAt || adopted.PreviousSessionID != seeded.PreviousSessionID {
 		t.Fatalf("the adopted claim is %+v, want %+v with its process and renewal alone written", adopted, seeded)
+	}
+}
+
+// The largest registration production has seen (802 topics, 2026-11-16) is a holder following a
+// few hundred Dispatch issues, each as `<KEY>` and `<KEY>.>`, with the per-kind topics of one
+// issue that its `<KEY>.>` already holds, and the lane topic of the role it holds. This case
+// registers about twice that, on a claim that names no process, and the first registration must
+// adopt and renew the claim. The per-kind topics are those of an issue that sorts among the
+// others, as production's did, and not first: each is then found contained only after the pairs
+// before it are weighed.
+//
+// What it guards: a registration's own work must leave its renewal the budget the renewal runs on.
+// The renewal runs after the registration's topic work, on what is left of the request's
+// sendRequestBudget. Work that grows with the number of topics, such as reducing them to the
+// consumer's filters (bus.ReduceFilterSubjects), spent that budget in production: every
+// registration was answered 200 and its renewal's claim read ran out of time, so the claim was
+// never renewed while its holder kept registering.
+func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
+	const (
+		role      = "legion-controller"
+		sessionID = "ses_largest_holder"
+		issues    = 800
+	)
+	topics := make([]string, 0, 2*issues+9)
+	for issue := range issues {
+		topic := fmt.Sprintf("notifications.dispatch.issue.K-%d", issue)
+		topics = append(topics, topic, topic+".>")
+	}
+	for _, kind := range []string{"message", "issue", "comment", "ask"} {
+		topic := "notifications.dispatch.issue.K-400." + kind
+		topics = append(topics, topic, topic+".>")
+	}
+	topics = append(topics, contracts.RoleTopicPrefix+role)
+	body, err := json.Marshal(map[string]any{
+		"session_id":         sessionID,
+		"topics":             topics,
+		"delivery":           map[string]any{"consumer": true, "epoch": "e"},
+		"client_instance_id": holdingProcess,
+	})
+	if err != nil {
+		t.Fatalf("encode the registration: %v", err)
+	}
+	// The registration's budget runs on the listener's clock. The suite stands that clock still,
+	// so its verdict is the renewal's own and never how fast a loaded machine reduces these
+	// topics. Whether the work fits in the budget is a service level, read on a quiet machine with
+	// DISPATCH_BENCH_TIMING set, where the row runs on the real clock and the budget decides it as
+	// it decided the incident.
+	var listenerClock clock.Clock
+	if os.Getenv(benchtime.TimingEnv) == "" {
+		listenerClock = clocktest.New(time.Now())
+	}
+	rig := newRoleClaimRenewalRigOn(t, listenerClock)
+	seeded := rig.seed(role, lapsedClaim(sessionID, ""))
+
+	registered := time.Now()
+	recorder := httptest.NewRecorder()
+	rig.subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(body)))
+	took := time.Since(registered)
+	// The renewal runs inside the registration, so the budget it had left is at least the budget
+	// less the whole registration's time.
+	t.Logf("registered %d topics in %s: at least %s of the %s budget was left when the renewal ran",
+		len(topics), took.Round(time.Millisecond), (sendRequestBudget - took).Round(time.Millisecond), sendRequestBudget)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the registration of %d topics was answered %d %s, want 200", len(topics), recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	}
+	adopted := rig.stored(role)
+	if adopted.ClientInstanceID != holdingProcess || adopted.RenewedAt < registered.UnixMilli() {
+		var unrenewed []string
+		for line := range strings.Lines(rig.logs.String()) {
+			if strings.Contains(line, "left a role claim unrenewed") {
+				unrenewed = append(unrenewed, strings.TrimSpace(line))
+			}
+		}
+		t.Fatalf("the claim is now %+v, want %+v adopted by the registering process %q and renewed at the registration, %d or later; the route logged %q",
+			adopted, seeded, holdingProcess, registered.UnixMilli(), unrenewed)
 	}
 }
 
