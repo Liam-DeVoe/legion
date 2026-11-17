@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"time"
@@ -13,19 +14,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// reasoningNode is one node of the kinds dispatch://INFRA-1950 adds that a request writes under
-// an issue: a lens (graphstore.KindLens), a finding of a lens - a node of kind and supertag block
-// whose id names its lens, `lens/<uuid>#<block id>` (graphstore.KindLensBlock) - a risk
-// (graphstore.KindRisk) or a constraint (graphstore.KindConstraint). A run's interaction is no
-// node of this write: the going POST states it (api/going.go).
+// reasoningNode is one node of the reasoning kinds a request writes under an issue: a lens
+// (graphstore.KindLens), a finding of a lens - a node of kind and supertag block whose id names
+// its lens, `lens/<uuid>#<block id>` (graphstore.KindLensBlock) - a risk (graphstore.KindRisk) or
+// a constraint (graphstore.KindConstraint). A run's interaction is no node of this write: the
+// going POST states it (api/going.go).
 //
 // visibility is what the request asked for, the empty string being project. parentKind and
 // parentID are the node it stands under, which its part_of tuple names: a lens's node, a
-// finding's or a risk's lens, a constraint's issue. attributes are what its row carries, and
-// tuples every other fact the request states with it: a relation out of it or into it - a lens's
-// has_kind and triggered_by, a risk's prevented_by, a requirement's constrained_by to a constraint
-// - or a value of it (ToKind graphstore.KindValue). A tuple is named by its kind and its two ends
-// alone: the write dates it, signs it as the node's writer and asserts it.
+// finding's or a risk's lens, a constraint's issue. attributes are what its row carries, each of
+// which the write also states as a value tuple, and tuples every other fact the request states
+// with it: a relation out of it or into it - a lens's has_kind and triggered_by, a risk's
+// prevented_by, a requirement's constrained_by to a constraint - or a value of it that its row
+// does not carry (ToKind graphstore.KindValue), a finding's text. A tuple is named by its kind and
+// its two ends alone: the write dates it, signs it as the node's writer and asserts it.
 type reasoningNode struct {
 	kind, id             string
 	visibility           string
@@ -34,29 +36,38 @@ type reasoningNode struct {
 	tuples               []graphstore.Tuple
 }
 
-// reasoningWrite is one request's write of reasoning nodes, all under the issue issue names.
-// proving is the credential that proved the caller, optionalActor's actor, and recorded the actor
-// the write records, actorFrom's: the session the body names on a bearer that proves none, as a
-// comment's author is. A caller that resolves no request - a command - passes the actor it acts
-// as for both.
+// reasoningWrite is one request's write of reasoning nodes, all under the issue issue names, by
+// the caller the route resolved (reasoningCaller): a caller that resolves no request - a command
+// - passes the actor it acts as for both of its actors.
 type reasoningWrite struct {
-	issue    string
-	proving  model.Actor
-	recorded model.Actor
-	at       time.Time
-	nodes    []reasoningNode
+	reasoningCaller
+	issue string
+	at    time.Time
+	nodes []reasoningNode
 }
 
-// writeReasoningNodes is the one write path of the nodes and the tuples dispatch://INFRA-1950
-// adds, in the caller's transaction: every route that writes a lens, a finding, a risk or a
-// constraint, and the pre-mortem conversion, write through here. For each node it writes the
-// node, its part_of tuple to its parent, the tuples the request states with it, and, where the
-// proving credential proves an author (graphstore.ProvesAuthor), its authored_by tuple to the
-// author graphstore.AuthorOf names of its made_by, with that author's own person or session node
-// and its alias and recorded_as tuples (graphstore.AuthorFacts), as the comment path states who
-// wrote a comment. A credential that proves no author - the deployment's shared bearer - states
-// no author and no author node at all, though the node's made_by names the session its body
-// claims, so a claimed session never becomes a node of the store.
+// lockIssueRow takes the issue's row `for no key update`, the owner row the lock order on
+// api/inbox_read.go's markInboxReadThreads puts before every other, and answers the issue's
+// project: the first statement of every reasoning write. An issue that does not exist is
+// pgx.ErrNoRows.
+func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
+	var project string
+	err := tx.QueryRow(ctx, `select project_key from issues where key = $1`+ownerRowLock, key).Scan(&project)
+	return project, err
+}
+
+// writeReasoningNodes is the one write path of the lenses, the findings, the risks and the
+// constraints a request writes, and of their tuples, in the caller's transaction: every route that
+// writes one, and the pre-mortem conversion, write through here. For each node it writes the
+// node, its part_of tuple to its parent, one value tuple of each attribute its row carries
+// (graphstore.AttributeTuples, in the attributes' name order), so the row is the projection of its
+// tuples and the history and the as-of reads answer each attribute, the tuples the request states
+// with it, and, where the proving credential proves an author (graphstore.ProvesAuthor), its
+// authored_by tuple to the author graphstore.AuthorOf names of its made_by, with that author's own
+// person or session node and its alias and recorded_as tuples (graphstore.AuthorFacts), as the
+// comment path states who wrote a comment. A credential that proves no author - the deployment's
+// shared bearer - states no author and no author node at all, though the node's made_by names the
+// session its body claims, so a claimed session never becomes a node of the store.
 //
 // Each node's visibility is graphstore.VisibilityFor of what it asked for and the proving
 // credential: `author` on a credential that proves no author is graphstore.ErrAuthorNamesNobody,
@@ -66,14 +77,13 @@ type reasoningWrite struct {
 // the project of the issue (the project graphstore.IssueNode states of the issue's own node), and
 // between no parties.
 //
-// It takes the issue's row `for no key update` first, the owner row the lock order on
-// api/inbox_read.go's markInboxReadThreads puts before every other, and reads the project off it;
-// an issue that does not exist is pgx.ErrNoRows. Then it writes every node, the authors' among
-// them, and every tuple in one graphstore.Write: the nodes in ascending (kind, id), the type rules
-// of the pointer tuples checked before the first tuple is appended (graphstore's pointerRules,
-// whose refusals are 400 INVALID_POINTER and 409 POINTER_ALREADY_ASSERTED), and every node and
-// tuple at graphstore.NoEvent. No event is appended, because no write of these kinds sends a
-// delivery (R1): a reader learns of one by reading it.
+// It takes the issue's row first (lockIssueRow) and reads the project off it; an issue that does
+// not exist is pgx.ErrNoRows. Then it writes every node, the authors' among them, and every tuple
+// in one graphstore.Write: the nodes in ascending (kind, id), the type rules of the pointer tuples
+// checked before the first tuple is appended (graphstore's pointerRules, whose refusals are 400
+// INVALID_POINTER and 409 POINTER_ALREADY_ASSERTED), and every node and tuple at
+// graphstore.NoEvent. No event is appended, because no write of these kinds sends a delivery: a
+// reader learns of one by reading it.
 //
 // That each far end a tuple names exists, is not gone and may be seen by the caller is the
 // route's to check before it calls this, through the read registry's loader for that end's kind,
@@ -109,8 +119,8 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 			MadeAt: write.at, MadeBy: madeBy, SourceEvent: graphstore.NoEvent, Changed: true,
 		}
 	}
-	var project string
-	if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`+ownerRowLock, write.issue).Scan(&project); err != nil {
+	project, err := lockIssueRow(ctx, tx, write.issue)
+	if err != nil {
 		return nil, err
 	}
 
@@ -131,6 +141,7 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 			ToKind: write.nodes[index].parentKind, ToID: write.nodes[index].parentID,
 			At: write.at, Who: node.MadeBy, SourceEvent: graphstore.NoEvent, Asserted: true,
 		})
+		tuples = append(tuples, graphstore.AttributeTuples(*node, slices.Sorted(maps.Keys(node.Attributes))...)...)
 		for _, stated := range write.nodes[index].tuples {
 			stated.Seq, stated.LegacySourceSeq = 0, nil
 			stated.At, stated.Who, stated.SourceEvent, stated.Asserted = write.at, node.MadeBy, graphstore.NoEvent, true
@@ -189,23 +200,25 @@ type reasoningPointer struct {
 }
 
 // writeReasoningPointer is the one write path of a pointer tuple a request appends, retracts or
-// retargets out of a node of dispatch://INFRA-1950's reasoning kinds, or out of a requirement
-// block, and of the moved_to the pre-mortem conversion appends out of the document it retires
-// (retireConvertedDocument), in the caller's transaction. It takes the issue's row `for no key
-// update` first, the owner row the lock order on api/inbox_read.go's markInboxReadThreads puts
-// before every other, and then writes through the store, which holds the tuple to its type rule
-// (graphstore's pointerRules) and takes the node rows that rule names after the owner row: an
-// append and a retraction through graphstore.Write, a retarget through graphstore.Retarget. No
-// event is appended, as none is for the nodes these tuples tie (writeReasoningNodes). The pointer
-// is marked as changing the node it goes out of (graphstore.Tuple's Changes), so a write made for a
-// run names that node, and not its far end, as changed by it.
+// retargets out of a lens, a risk or a requirement block, and of the moved_to the pre-mortem
+// conversion appends out of the document it retires (retireConvertedDocument), in the caller's
+// transaction. It takes the issue's row first (lockIssueRow), and then writes through the store,
+// which holds the tuple to its type rule (graphstore's pointerRules) and takes the node rows that
+// rule names after the owner row: an append and a retraction through graphstore.Write, a
+// retarget through graphstore.Retarget. No event is appended, as none is for the nodes these
+// tuples tie (writeReasoningNodes). The pointer is marked as changing the node it goes out of
+// (graphstore.Tuple's Changes), so a write made for a run names that node, and not its far end,
+// as changed by it.
 //
 // A retraction of a tuple the node does not hold now is a 404, as a retarget of one is
-// (graphstore.ErrPointerNotHeld): there is nothing to retract. That both ends exist, are not
-// gone and may be seen by the caller is the route's to check before it calls this.
+// (graphstore.ErrPointerNotHeld): there is nothing to retract. An append of a tuple the node holds
+// now changes nothing, so it writes nothing, and a write made for a run names no node as changed
+// by it, as a retarget to the far end the node holds writes nothing; a has_kind is the store's to
+// refuse, since a lens holds one kind and a second assertion of it is ErrLensKindAsserted whatever
+// its far end. That both ends exist, are not gone and may be seen by the caller is the route's to
+// check before it calls this.
 func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointer) error {
-	var held bool
-	if err := tx.QueryRow(ctx, `select true from issues where key = $1`+ownerRowLock, write.issue).Scan(&held); err != nil {
+	if _, err := lockIssueRow(ctx, tx, write.issue); err != nil {
 		return err
 	}
 	write.pointer.Changes = true
@@ -213,22 +226,38 @@ func writeReasoningPointer(ctx context.Context, tx pgx.Tx, write reasoningPointe
 	case pointerRetarget:
 		return graphstore.Retarget(ctx, tx, write.pointer, write.toKind, write.toID)
 	case pointerRetract:
-		current, err := graphstore.CurrentOut(ctx, tx, write.pointer.FromKind, write.pointer.FromID, []string{write.pointer.Kind})
+		held, err := holdsPointer(ctx, tx, write.pointer)
 		if err != nil {
 			return err
 		}
-		if !slices.ContainsFunc(current, func(tuple graphstore.Tuple) bool {
-			return tuple.ToKind == write.pointer.ToKind && tuple.ToID == write.pointer.ToID
-		}) {
+		if !held {
 			return errorf(http.StatusNotFound, "NOT_FOUND", "the node holds no %s tuple at that node to retract", write.pointer.Kind)
 		}
 		retraction := write.pointer
 		retraction.Asserted = false
 		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{retraction})
 	case pointerAppend:
+		if write.pointer.Kind != graphstore.TupleHasKind {
+			held, err := holdsPointer(ctx, tx, write.pointer)
+			if err != nil || held {
+				return err
+			}
+		}
 		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{write.pointer})
 	}
 	return fmt.Errorf("no pointer write %q", write.action)
+}
+
+// holdsPointer is whether the node pointer goes out of holds it now: a current tuple of its kind
+// at its far end.
+func holdsPointer(ctx context.Context, tx pgx.Tx, pointer graphstore.Tuple) (bool, error) {
+	current, err := graphstore.CurrentOut(ctx, tx, pointer.FromKind, pointer.FromID, []string{pointer.Kind})
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(current, func(tuple graphstore.Tuple) bool {
+		return tuple.ToKind == pointer.ToKind && tuple.ToID == pointer.ToID
+	}), nil
 }
 
 // nodeStateWrite is one request's write of one node's state: the node the store keys by kind and
@@ -246,9 +275,8 @@ type nodeStateWrite struct {
 }
 
 // writeNodeState is the one write path of a node's state a request asks for - the state route and
-// the settle (node_state.go) - in the caller's transaction. It takes the issue's row `for no key
-// update` first, the owner row the lock order on api/inbox_read.go's markInboxReadThreads puts
-// before every other, as writeReasoningPointer does, so two writes of one node's state queue there
+// the settle (node_state.go) - in the caller's transaction. It takes the issue's row first
+// (lockIssueRow), as writeReasoningPointer does, so two writes of one node's state queue there
 // and the second reads what the first wrote. It reads the node's row, holds it to the route's rule,
 // and writes the node again as the store holds it but for its state: a plain node write, not one
 // that restates the node (graphstore.Node.Restates), dated and signed by the request and at
@@ -268,8 +296,7 @@ type nodeStateWrite struct {
 // It answers the node as the write leaves it and the state it held before. A node the store holds
 // no row of is the rule's to refuse: nothing here writes a node that is not there.
 func writeNodeState(ctx context.Context, tx pgx.Tx, write nodeStateWrite) (graphstore.Node, string, error) {
-	var issueHeld bool
-	if err := tx.QueryRow(ctx, `select true from issues where key = $1`+ownerRowLock, write.issue).Scan(&issueHeld); err != nil {
+	if _, err := lockIssueRow(ctx, tx, write.issue); err != nil {
 		return graphstore.Node{}, "", err
 	}
 	node, held, err := graphstore.ReadNode(ctx, tx, write.kind, write.id)

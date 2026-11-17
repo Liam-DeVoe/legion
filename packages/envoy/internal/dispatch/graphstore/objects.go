@@ -86,6 +86,13 @@ func objectNode(kind, id, supertag, project string, parties []string, who model.
 	}
 }
 
+// Created is node marked as the node its write creates (Node's Changed), as a create states each
+// node it makes: a create made for a run names the node it makes as changed by that run.
+func Created(node Node) Node {
+	node.Changed = true
+	return node
+}
+
 // ArtifactRefKey is the address an artifacts row takes, exactly as the artifacts_ref_key trigger
 // computes it (0071_agent_artifacts.up.sql): `<issue key>/<slug>` for an issue's document,
 // `<project key>/<slug>` for a project's, and `agent/<session id>/<slug>` for a conversation's. A

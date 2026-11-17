@@ -3225,16 +3225,17 @@ type ArtifactReferences struct {
 // reads without them during a roll, so the OpenAPI document marks them optional
 // (`required:"false"`) and a reader takes a node that carries neither as live and project.
 // A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
-// the others null.
+// MadeAt, ChangedAt, Parent and ParentVersion null; State and Visibility always hold a value.
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
 // last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
 // `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. A run of
 // the command bar (kind `interaction`, id the run's uuid) stands under no issue, so it carries no
-// IssueKey and no Parent, and reaches the credential that asked it alone; it carries Frames, every
-// frame of its stream in sequence, which no other kind carries, so the member is absent from every
-// other node. Text and Pin are set only on the node a reference read names: Text is a block's
+// IssueKey and no Parent, and reaches the credential that asked it alone; the read of its own
+// address carries Frames, every frame of its stream in sequence, which no other read and no other
+// kind carries, so the member is absent from every other node and from a run at an edge's far
+// end. Text and Pin are set only on the node a reference read names: Text is a block's
 // whole current text, or a run's whole words, which an edge at the run shows only the head of as
 // its excerpt, and Pin answers a reference pinned to a version.
 type GraphNode struct {
@@ -3256,9 +3257,10 @@ type GraphNode struct {
 	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
-	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, and
-	// absent for a run that holds none and for every other kind. A server of the release before
-	// never sends it, and `omitempty` keeps every other node's answer byte for byte as it was.
+	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, on the
+	// read of the run's own address (refs.Node), and absent for a run that holds none, for a run
+	// at an edge's far end and for every other kind. A server of the release before never sends
+	// it, and `omitempty` keeps every other node's answer byte for byte as it was.
 	Frames []GraphFrame `json:"frames,omitempty"`
 }
 
@@ -3301,11 +3303,11 @@ type GraphExcerpt struct {
 
 // GraphEdgeKinds is every structural edge kind graph_edges emits: the kinds its arms over the
 // projections write, and the six the node and tuple store states with no projection row behind
-// them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy of
-// the kinds dispatch://INFRA-1950 adds), which the view answers from the tuples alone. A typed
-// block's `block[]` attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds),
-// which is never one of these: a schema name equal to one would merge silently with it in every
-// reader.
+// them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy of an
+// interaction, a lens, a finding, a risk and a constraint), which the view answers from the tuples
+// alone. A typed block's `block[]` attribute makes edges of a kind named by the attribute
+// (pmdoc.LinkKinds), which is never one of these: a schema name equal to one would merge silently
+// with it in every reader.
 var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
 	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by"}
 

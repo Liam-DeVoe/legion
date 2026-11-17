@@ -152,7 +152,7 @@ func (e *Erasure) nodeProject(ctx context.Context, tx pgx.Tx, document *ownDocum
 // names its lens (graphstore.AddressKind), which no document holds, so its id names no document
 // and no block of one.
 func (e *Erasure) ownDocument(ctx context.Context, tx pgx.Tx) (*ownDocument, string, error) {
-	if e.Kind != refs.BlockNodeKind || graphstore.AddressKind(e.Kind, e.ID) != refs.BlockNodeKind {
+	if graphstore.AddressKind(e.Kind, e.ID) != refs.BlockNodeKind {
 		return nil, "", nil
 	}
 	refKey, blockID, found := strings.Cut(e.ID, "#")
@@ -310,16 +310,16 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
 // the node. A value tuple is listed without its value, which can be text. A tuple into a finding
-// of a lens names it by the kind the graph addresses it by, lens_block (graphstore.AddressKind),
-// where the store keys the finding as a block, so a tuple into the node is read under either. Of
-// an ask's node or a block's, it also keeps the writers its authored_by, decided_by and
-// answered_by tuples name (Erasure.Writers), which the record of the run holds once those tuples
-// go.
+// of a lens names it by the kind the graph addresses it by, lens_block, where the store keys the
+// finding as a block, so the tuples of the node are read under either (graphstore.NodeTuplesSQL,
+// the set the delete takes). Of an ask's node or a block's, it also keeps the writers its
+// authored_by, decided_by and answered_by tuples name (Erasure.Writers), which the record of the
+// run holds once those tuples go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
 		from graph_tuples
-		where (from_kind = $1 and from_id = $2) or (to_kind in ($1, $3) and to_id = $2)
+		where `+graphstore.NodeTuplesSQL("", "$1", "$2", "$3")+`
 		order by seq`, e.Kind, e.ID, graphstore.AddressKind(e.Kind, e.ID))
 	if err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
@@ -375,25 +375,29 @@ func writesTheNode(nodeKind, kind, toKind string) bool {
 	return false
 }
 
-// readRows lists the node's row, its projection rows by key, the rows that cannot exist without
-// them (every required single-column reference into a projected table), the rows of a run of the
-// command bar (runTables), and the whole text of its block at every version.
+// readRows lists the node's row, its own rows of every table by key (ownRowSets): its projection
+// rows and the rows that cannot exist without them (every required single-column reference into
+// a projected table), and the rows of a run of the command bar (runTables); and the whole text of
+// its block at every version.
 func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", e.Kind, e.ID))
-	for _, held := range projectedTables {
-		rows, err := tx.Query(ctx, `select row(`+held.Key+`)::text from `+held.Table+
-			` where node_kind = $1 and node_address = $2 order by `+held.Key, e.Kind, e.ID)
+	for _, own := range e.ownRowSets() {
+		rows, err := tx.Query(ctx, `select row(`+own.key+`)::text from `+own.table+
+			` where `+own.where+` order by `+own.key, own.args...)
 		if err != nil {
-			return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
+			return fmt.Errorf("read the %s rows of %s:%s: %w", own.table, e.Kind, e.ID, err)
 		}
 		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
-			return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
+			return fmt.Errorf("read the %s rows of %s:%s: %w", own.table, e.Kind, e.ID, err)
 		}
 		for _, key := range keys {
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", held.Table, held.Key, key))
+			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", own.table, own.key, key))
 		}
-		references, err := referencesTo(ctx, tx, held.Table)
+		if !own.projected {
+			continue
+		}
+		references, err := referencesTo(ctx, tx, own.table)
 		if err != nil {
 			return err
 		}
@@ -403,28 +407,12 @@ func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 			}
 			var count int64
 			if err := tx.QueryRow(ctx, `select count(*) from `+reference.Table+` child where child.`+reference.Column+
-				` in (`+projectionRows(reference, held.Table)+`)`, e.Kind, e.ID).Scan(&count); err != nil {
+				` in (`+projectionRows(reference, own.table)+`)`, e.Kind, e.ID).Scan(&count); err != nil {
 				return fmt.Errorf("count the %s rows of %s:%s: %w", reference.Table, e.Kind, e.ID, err)
 			}
 			if count > 0 {
 				read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s: %d row(s) through %s.%s",
 					reference.Table, count, reference.Table, reference.Column))
-			}
-		}
-	}
-	if run, ok := e.run(); ok {
-		for _, held := range runTables {
-			rows, err := tx.Query(ctx, `select row(`+held.Key+`)::text from `+held.Table+
-				` where `+held.Column+` = $1::uuid order by `+held.Key, run)
-			if err != nil {
-				return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-			}
-			keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-			}
-			for _, key := range keys {
-				read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", held.Table, held.Key, key))
 			}
 		}
 	}
@@ -899,14 +887,17 @@ func projectionRows(reference referencingColumn, table string) string {
 // run appended out of a comment or a block, a requirement's constrained_by - is the store's alone:
 // it blocks nothing, and the erase deletes it with the node.
 //
-// Two writes of dispatch://INFRA-1950 state a tuple into a node with no projection row behind
-// them, which the census holds to all the same, so each blocks too, at any state, since the census
-// reads its tuple at any state: a finding or a risk standing under a lens by its part_of, which an
-// erase of the lens would leave standing under nothing, and an interaction, a lens, a finding, a
-// risk or a constraint whose asserted authored_by names a person or a session, whom the census's
-// row side of person and session names again from it (reasoningAuthored, goneRunsAuthored) and the
+// Two tuples into a node have no projection row behind them and still block, at any state of
+// the node that states them. One is the part_of of a node of a standing kind - a lens, a finding
+// of one, a risk, a constraint (refs.StandingKinds) - which stands where that tuple says, and
+// whose issue every read finds by walking it up (refs.StandingIssueSQL): an erase of the node it
+// stands under would leave it standing under nothing, so a finding or a risk under an erased lens,
+// and a lens invoked on an erased issue, document, block, comment, finding, risk or constraint,
+// each refuses the erase. The other is the asserted authored_by of a run of the command bar or of
+// a node of a standing kind into a person or a session, whom the census's row side of person and
+// session names again from it (graphcensus' reasoningAuthored, goneRunsAuthored) and from the
 // run's own going_requests row. A tuple into a finding is read under the kind the graph addresses
-// it by as well (graphstore.AddressKind).
+// it by as well (graphstore.NodeTuplesIntoSQL).
 func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	for _, held := range projectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
@@ -932,7 +923,7 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	for index, held := range projectedTables {
 		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
 	}
-	into := `t.to_kind in ($1, $3) and t.to_id = $2 and not (t.from_kind = $1 and t.from_id = $2)`
+	into := graphstore.NodeTuplesIntoSQL("t.", "$1", "$2", "$3") + ` and not (t.from_kind = $1 and t.from_id = $2)`
 	addressed := graphstore.AddressKind(e.Kind, e.ID)
 	if err := e.readStating(ctx, tx, `
 		select distinct t.from_kind, t.from_id, t.kind from (
@@ -945,25 +936,26 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 		e.Kind, e.ID, addressed, graphstore.StateGone); err != nil {
 		return err
 	}
-	var stated string
-	switch e.Kind {
-	case graphstore.KindLens:
-		stated = `t.kind = '` + graphstore.TuplePartOf + `' and (t.from_kind = '` + graphstore.KindRisk + `' or (t.from_kind = '` +
-			refs.BlockNodeKind + `' and t.from_id like '` + graphstore.KindLens + `/%'))`
-	case graphstore.KindPerson, graphstore.KindSession:
-		stated = `t.kind = '` + graphstore.TupleAuthoredBy + `' and (t.from_kind in ('` + graphstore.KindInteraction + `', '` +
-			graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` + graphstore.KindConstraint + `') or (t.from_kind = '` +
-			refs.BlockNodeKind + `' and t.from_id like '` + graphstore.KindLens + `/%'))`
+	type storeOnly struct {
+		kind   string
+		from   []string
+		format string
 	}
-	if stated != "" {
+	stated := []storeOnly{{graphstore.TuplePartOf, refs.StandingKinds(),
+		"%s:%s states %s into this node, which is where it stands and how every read finds the issue it stands under, so an erase of this node would leave it standing under nothing: erase it first"}}
+	if e.Kind == graphstore.KindPerson || e.Kind == graphstore.KindSession {
+		stated = append(stated, storeOnly{graphstore.TupleAuthoredBy, append(refs.StandingKinds(), graphstore.KindInteraction),
+			"%s:%s states %s into this node, which the census holds it to: erase it first"})
+	}
+	for _, tuple := range stated {
 		if err := e.readStating(ctx, tx, `
 			select distinct t.from_kind, t.from_id, t.kind from (
 				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,
-			into+` and `+stated)+`
+			into+` and t.kind = '`+tuple.kind+`' and `+graphstore.AddressKindSQL("t.from_kind", "t.from_id")+
+				` in ('`+strings.Join(tuple.from, `', '`)+`')`)+`
 			) t
 			where t.asserted
-			order by 1, 2, 3`, "%s:%s states %s into this node, which the census holds it to: erase it first",
-			e.Kind, e.ID, addressed); err != nil {
+			order by 1, 2, 3`, tuple.format, e.Kind, e.ID, addressed); err != nil {
 			return err
 		}
 	}

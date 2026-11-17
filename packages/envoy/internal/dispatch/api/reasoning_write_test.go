@@ -25,6 +25,10 @@ import (
 // project of the issue the write names, and no write appends an event. A pointer the request
 // states is held to its type rule by the store, so a lens of a kind that is no lens_kind is 400
 // INVALID_POINTER and a lens of two kinds 409 POINTER_ALREADY_ASSERTED, each with nothing stored.
+// Each attribute a node's row carries - a lens's verdict, a risk's heading, early warning and
+// prevention, a constraint's standard and reference or measurement, value and where it was taken
+// - is also one value tuple of the node, its whole history, as a finding's text is; and an append
+// of a pointer the node holds already writes nothing, under a run as under none.
 func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
@@ -64,7 +68,7 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		}
 		defer tx.Rollback(ctx)
 		written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-			issue: issue.Key, proving: proving, recorded: recorded, at: time.Now().UTC(), nodes: nodes,
+			reasoningCaller: reasoningCaller{proving: proving, recorded: recorded}, issue: issue.Key, at: time.Now().UTC(), nodes: nodes,
 		})
 		if err != nil {
 			return nil, err
@@ -263,6 +267,101 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		_, err = write(t, proving, recorded, twoKinds)
 		requireRefusal(t, err, http.StatusConflict, "POINTER_ALREADY_ASSERTED", graphstore.ErrLensKindAsserted.Reason)
 		requireNothingStored(t, graphstore.KindLens, twoKinds.id)
+	})
+
+	t.Run("each attribute a row carries is a value tuple of its node", func(t *testing.T) {
+		proving, recorded := actorsOf(t, "X-Dispatch-User", "alice", "")
+		premortem := lens("", graphstore.LensKindPreMortem)
+		premortem.attributes = map[string]any{graphstore.AttributeVerdict: "Ship it with the index built first."}
+		risk := reasoningNode{
+			kind: graphstore.KindRisk, id: uuid.NewString(), parentKind: graphstore.KindLens, parentID: premortem.id,
+			attributes: map[string]any{
+				graphstore.AttributeHeading:      "The migration locks the table.",
+				graphstore.AttributeEarlyWarning: "Writes queue behind the build.",
+				graphstore.AttributePrevention:   "Build the index concurrently.",
+			},
+		}
+		standard := reasoningNode{
+			kind: graphstore.KindConstraint, id: uuid.NewString(), parentKind: graphstore.KindIssue, parentID: issue.Key,
+			attributes: map[string]any{graphstore.AttributeStandard: "RFC 9110", graphstore.AttributeReference: "section 15.5.20"},
+		}
+		measured := reasoningNode{
+			kind: graphstore.KindConstraint, id: uuid.NewString(), parentKind: graphstore.KindIssue, parentID: issue.Key,
+			attributes: map[string]any{
+				graphstore.AttributeMeasurement: "p95 read latency", graphstore.AttributeValue: "120 ms",
+				graphstore.AttributeTakenWhere: "the staging pod",
+			},
+		}
+		findingID := graphstore.KindLens + "/" + premortem.id + "#held"
+		finding := reasoningNode{
+			kind: "block", id: findingID, parentKind: graphstore.KindLens, parentID: premortem.id,
+			tuples: []graphstore.Tuple{{FromKind: "block", FromID: findingID,
+				Kind: graphstore.AttributeText, ToKind: graphstore.KindValue, ToID: "The index is the risk."}},
+		}
+		if _, err := write(t, proving, recorded, premortem, risk, standard, measured, finding); err != nil {
+			t.Fatalf("write the reasoning nodes: %v", err)
+		}
+		finding.attributes = map[string]any{graphstore.AttributeText: "The index is the risk."}
+		for _, node := range []reasoningNode{premortem, risk, standard, measured, finding} {
+			stored, found, err := graphstore.ReadNode(ctx, database.Pool, node.kind, node.id)
+			if err != nil || !found {
+				t.Fatalf("read %s/%s: found %t, %v", node.kind, node.id, found, err)
+			}
+			for attribute, value := range node.attributes {
+				if node.kind != "block" && stored.Attributes[attribute] != value {
+					t.Errorf("%s/%s's row carries %s %v, want %q", node.kind, node.id, attribute, stored.Attributes[attribute], value)
+				}
+				history, err := graphstore.History(ctx, database.Pool, node.kind, node.id, attribute)
+				if err != nil {
+					t.Fatalf("read the history of %s on %s/%s: %v", attribute, node.kind, node.id, err)
+				}
+				if len(history) != 1 || history[0].ToKind != graphstore.KindValue || history[0].ToID != value ||
+					!history[0].Asserted || !history[0].Who.SameCredential(recorded) || history[0].SourceEvent != graphstore.NoEvent {
+					t.Errorf("the history of %s on %s/%s is %+v, want one asserted value %q by the node's writer at the sentinel",
+						attribute, node.kind, node.id, history, value)
+				}
+			}
+		}
+	})
+
+	t.Run("an append of a pointer the node holds writes nothing", func(t *testing.T) {
+		proving, recorded := actorsOf(t, "X-Dispatch-User", "alice", "")
+		trigger, triggered := lens("", "trade-off"), lens("", "inversion")
+		if _, err := write(t, proving, recorded, trigger, triggered); err != nil {
+			t.Fatalf("write the two lenses: %v", err)
+		}
+		// Each append is made for a run of its own, so a second append that wrote anything would
+		// also name the lens changed by a second run.
+		pointer := graphstore.Tuple{
+			FromKind: graphstore.KindLens, FromID: triggered.id, Kind: graphstore.TupleTriggeredBy,
+			ToKind: graphstore.KindLens, ToID: trigger.id, At: time.Now().UTC(), Who: recorded, SourceEvent: graphstore.NoEvent, Asserted: true,
+		}
+		for attempt := range 2 {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin append %d: %v", attempt+1, err)
+			}
+			if err := writeReasoningPointer(graphstore.WithRun(ctx, uuid.NewString()), tx, reasoningPointer{issue: issue.Key, action: pointerAppend, pointer: pointer}); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("append %d of the triggered_by: %v", attempt+1, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit append %d: %v", attempt+1, err)
+			}
+		}
+		history, err := graphstore.History(ctx, database.Pool, graphstore.KindLens, triggered.id, graphstore.TupleTriggeredBy)
+		if err != nil {
+			t.Fatalf("read the triggered_by history: %v", err)
+		}
+		changed, err := graphstore.History(ctx, database.Pool, graphstore.KindLens, triggered.id, graphstore.TupleChangedByRun)
+		if err != nil {
+			t.Fatalf("read the changed_by_run history: %v", err)
+		}
+		if len(history) != 1 || len(changed) != 1 {
+			t.Errorf("two appends of one triggered_by left %d triggered_by and %d changed_by_run tuples, want one of each: %+v %+v",
+				len(history), len(changed), history, changed)
+		}
+		requireFarEnds(t, graphstore.KindLens, triggered.id, graphstore.TupleTriggeredBy, "lens/"+trigger.id)
 	})
 
 	if eventsAfter := countRows(t, database, `select count(*) from events`); eventsAfter != eventsBefore {

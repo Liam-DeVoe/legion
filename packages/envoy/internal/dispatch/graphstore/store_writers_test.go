@@ -26,19 +26,26 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 // named without a package.
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
+// graphstoretestDirectory is the one package besides the store's own whose statements write its
+// tables: graphstoretest, which seeds for other packages' tests the rows the store's writers
+// refuse to write, and which no deployment builds. Any other package under the store's directory
+// is held to the rule like every package outside it.
+const graphstoretestDirectory = graphstoreDirectory + "/graphstoretest"
+
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
 // package goes through, the same ones docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
 // author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, FillScopes, the backfill's fill of the project of a node stored with none, and
-// Retarget, the move of one pointer tuple of a node from one far end to another.
+// and its tuples, FillScopes, the backfill's fill of the project of a node stored with none,
+// Retarget, the move of one pointer tuple of a node from one far end to another, and
+// QueueFrameTuple, Write's append of one frame value of a run queued on a caller's batch.
 // Each is a function of the package, never a method, so a call of one is named by the package
 // and found here wherever it is made. A write that holds a statement of its own instead is found
 // by rawStoreWrite, and none outside this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget", "QueueFrameTuple"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -89,7 +96,7 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#recordAnsweredDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
-	// The nodes and tuples of dispatch://INFRA-1950's reasoning kinds - a lens, its findings, a
+	// The nodes and tuples of the reasoning kinds a request writes - a lens, its findings, a
 	// risk and a constraint - with the author's node where the credential proves one: the issue's
 	// owner row, then one Write of every node in ascending (kind, id) and every tuple at the
 	// sentinel, appending no event. Its order is the order TestEveryStoreWriteTakesOneLockOrder
@@ -107,7 +114,7 @@ var storeWriteCallSites = []string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner row writeReasoningNodes
 	// takes first too.
 	"api/reasoning_write.go#writeNodeState",
-	// An issue's own field write made for a run (api/issue_patch.go, D14 of dispatch://INFRA-1950):
+	// An issue's own field write made for a run (api/issue_patch.go), which names the issue changed:
 	// the issue's owner row (lockPatchRows), the issue's row, then, on a context that carries a
 	// run alone, the issue's node through WriteUncaused, the issue's own event, and what the node
 	// states with its changed_by_run under that event through Caused. api's
@@ -404,10 +411,11 @@ func storeWriteSitesIn(relative string, files *token.FileSet, file *ast.File) ma
 // rawStoreWritesIn is every site one file writes the store at with a statement of its own, each
 // with the statements it holds as "<statement> at <file>:<line>", read from the file's string
 // literals alone, so a statement a comment spells is none. The store's own package writes its
-// tables that way by design, through the writers storeWriteFunctions names, so its files are
-// not read here.
+// tables that way by design, through the writers storeWriteFunctions names, and graphstoretest
+// seeds what those writers refuse (graphstoretestDirectory), so the files of those two packages
+// alone are not read here.
 func rawStoreWritesIn(relative string, files *token.FileSet, file *ast.File) map[string][]string {
-	if strings.HasPrefix(relative, graphstoreDirectory+"/") {
+	if directory := filepath.ToSlash(filepath.Dir(relative)); directory == graphstoreDirectory || directory == graphstoretestDirectory {
 		return nil
 	}
 	sites := map[string][]string{}

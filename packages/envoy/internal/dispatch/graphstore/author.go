@@ -184,8 +184,8 @@ var ErrVisibilityNotAdmitted = errors.New("a node of this kind is never reserved
 type VisibilityNotAdmittedError struct{ Kind string }
 
 func (e *VisibilityNotAdmittedError) Error() string {
-	return fmt.Sprintf("the node kind %s takes no node reserved for its author, because not every read of a %s binds "+
-		"the visibility predicate: write it project-visible", e.Kind, e.Kind)
+	return fmt.Sprintf("the node kind %s takes no node reserved for its author, because not every read of %s binds "+
+		"the visibility predicate: write it project-visible", e.Kind, WithArticle(e.Kind))
 }
 
 func (e *VisibilityNotAdmittedError) Unwrap() error { return ErrVisibilityNotAdmitted }
@@ -215,12 +215,6 @@ func AdmitAuthorOnly(kinds ...string) {
 // AuthorOnlyKinds is every kind the store takes a node reserved for its author of, sorted.
 func AuthorOnlyKinds() []string {
 	return slices.Sorted(maps.Keys(authorOnlyKinds))
-}
-
-// checkAuthorOnly refuses a node reserved for its author whose kind the store does not take one
-// of (CheckVisibilityAdmitted).
-func checkAuthorOnly(node *Node) error {
-	return CheckVisibilityAdmitted(node.Kind, node.ID, node.Visibility)
 }
 
 // CheckVisibilityAdmitted is the rule every node write of this store holds a node to before its

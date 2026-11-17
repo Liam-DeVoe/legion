@@ -189,11 +189,13 @@ type derivedRows struct {
 	where   string
 }
 
-// derivedTables is every table holding rows that derive from a node, by name, each with the rows
-// of it that do. It is the same derivation apply writes by, row set for row set: the node's own
-// rows, its tuples, its projections, its own document's rows, its embedding rows, the events about
-// it and its project's term statistics, which the run counts again. The rows that cannot exist
-// without a projection row are added by leftDerived, from the foreign keys into the projections.
+// derivedTables is every table holding rows that derive from a node and may hold its text, by
+// name, each with the rows of it that do: the node's own rows, its tuples, its projections, its
+// own document's rows, its embedding rows, the events about it and its project's term statistics,
+// which the run counts again. The rows that cannot exist without a projection row are added by
+// leftDerived, from the foreign keys into the projections. apply also deletes the rows of a run of
+// the command bar (runTables), which are not here: a run's node holds no text the erase redacts
+// (readTexts reads none of an interaction), so no search for the rows a run leaves is made.
 var derivedTables = map[string][]derivedRows{
 	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},

@@ -303,7 +303,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			drift.add(typ.Name)
 		}
 	}
-	var storeOnly []graphstore.Node
+	var storeOnly []storeOnlyNode
 	for _, id := range slices.Sorted(maps.Keys(held)) {
 		if _, declared := wanted[id]; declared {
 			continue
@@ -313,13 +313,20 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			t.Fatalf("read the type attribute node %q is tied to: %v", id, err)
 		}
 		if len(ties) == 1 && !slices.ContainsFunc(file.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == ties[0].ToID }) {
-			storeOnly = append(storeOnly, held[id])
+			storeOnly = append(storeOnly, storeOnlyNode{node: held[id], tie: ties[0]})
 			continue
 		}
 		t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
 		drift.add(id)
 	}
-	requireStoreOnlyAttributesMatchTheirMigrations(t, ctx, pool, storeOnly)
+	requireStoreOnlyAttributesMatchTheirMigrations(t, storeOnly)
+}
+
+// storeOnlyNode is one attribute node of a type that declares no block type, with the one
+// `attribute_of` tuple it holds now.
+type storeOnlyNode struct {
+	node graphstore.Node
+	tie  graphstore.Tuple
 }
 
 // storeOnlyAttribute matches one attribute a type migration declares of a type with no block
@@ -329,11 +336,11 @@ var storeOnlyAttribute = regexp.MustCompile(`\('([a-z_ ]+)', '([a-z_]+)', '([a-z
 
 // requireStoreOnlyAttributesMatchTheirMigrations holds the attribute nodes of the types that
 // declare no block type to the type migrations that declare them, field by field and in both
-// directions: each node is tied to the supertag its migration names it under and carries the
-// name, the store name (its own name, since none is a base attribute), the kind and the position
-// the migration gives it, and each attribute a migration declares is a node of the store. A node
-// no migration of typeMigrations declares fails, naming the node.
-func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, ctx context.Context, pool *store.Pool, nodes []graphstore.Node) {
+// directions: each node's one tie is to the supertag its migration names it under, and it carries
+// the name, the store name (its own name, since none is a base attribute), the kind and the
+// position the migration gives it, and each attribute a migration declares is a node of the store.
+// A node no migration of typeMigrations declares fails, naming the node.
+func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeOnlyNode) {
 	t.Helper()
 	type declaration struct {
 		supertag, name, kind, migration string
@@ -359,20 +366,17 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, ctx context.Co
 		t.Fatalf("no type migration declares an attribute of a type with no block type, so no node of one was held to its migration")
 	}
 	held := map[string]bool{}
-	for _, node := range nodes {
+	for _, attribute := range nodes {
+		node := attribute.node
 		held[node.ID] = true
 		want, ok := declared[node.ID]
 		if !ok {
 			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of typeMigrations declares", node.ID)
 			continue
 		}
-		ties, err := graphstore.CurrentOut(ctx, pool, schemanodes.KindAttribute, node.ID, []string{schemanodes.TupleAttributeOf})
-		if err != nil {
-			t.Fatalf("read the type attribute node %q is tied to: %v", node.ID, err)
-		}
-		if len(ties) != 1 || ties[0].ToKind != schemanodes.KindSupertag || ties[0].ToID != want.supertag {
-			t.Errorf("attribute node %q is tied to %v, want one %s tuple to supertag %q as %s declares it",
-				node.ID, ties, schemanodes.TupleAttributeOf, want.supertag, want.migration)
+		if tie := attribute.tie; tie.ToKind != schemanodes.KindSupertag || tie.ToID != want.supertag {
+			t.Errorf("attribute node %q is tied to %s:%s, want one %s tuple to supertag %q as %s declares it",
+				node.ID, tie.ToKind, tie.ToID, schemanodes.TupleAttributeOf, want.supertag, want.migration)
 		}
 		carried := node.Attributes
 		position, _ := carried["position"].(float64)

@@ -1271,10 +1271,12 @@ const (
 // tuple arm answers as its class `store` (migration 20261116091932) and a part_of out of a lens:
 // a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, written by
 // alice and changed by a run; a risk that a check block covers; and the target's r1, held to a
-// constraint. No writer of those kinds exists at this head, so the nodes are written as their
-// writers will write them, project-visible and live, in CORE. It answers the rows the view is to
-// answer of the class: those, each dated by its tuple and carrying no source_seq, and beside them
-// the lens catalogue's seeded sources (seededStoreClass).
+// constraint. Their writers are api's (writeReasoningNodes, recordGoingRequest), which this package
+// cannot import, so the nodes are written here through graphstore.Write, each project-visible and
+// live, in CORE: the view reads no visibility, so the run, which its own writer reserves for its
+// author, answers the same here.
+// It answers the rows the view is to answer of the class: those, each dated by its tuple and
+// carrying no source_seq, and beside them the lens catalogue's seeded sources (seededStoreClass).
 func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()
 	ctx := context.Background()

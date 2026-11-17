@@ -656,12 +656,8 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	// The nodes themselves, reserved for their author. The store's writer takes a node reserved
 	// for its author of no kind these reads answer (graphstore.ErrVisibilityNotAdmitted), so the
 	// rows a route that asked for `author` would store are seeded straight into the store
-	// (graphstoretest.SeedAuthorOnly), on a credential that proves an author
-	// (graphstore.VisibilityFor, which refuses one to a credential that proves none).
+	// (graphstoretest.SeedAuthorOnly).
 	author := privateNodeAuthor()
-	if _, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author); err != nil {
-		t.Fatalf("reserve the node for its author: %v", err)
-	}
 	if err := database.Pool.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&fixture.privateComment); err != nil {
 		t.Fatalf("draw the private comment's id: %v", err)
 	}

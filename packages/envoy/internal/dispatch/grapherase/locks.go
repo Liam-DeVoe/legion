@@ -121,18 +121,9 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 // for the erase while the erase waited for it, until Postgres ended one of them. Here the erase
 // waits at the row holding no row the arm writes, and the arm commits first.
 func (e *Erasure) lockProjectionRows(ctx context.Context, tx pgx.Tx) error {
-	for _, held := range projectedTables {
-		if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where node_kind = $1 and node_address = $2 order by `+
-			held.Key+` for update`, e.Kind, e.ID); err != nil {
-			return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-		}
-	}
-	if run, ok := e.run(); ok {
-		for _, held := range runTables {
-			if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where `+held.Column+` = $1::uuid order by `+
-				held.Key+` for update`, run); err != nil {
-				return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
-			}
+	for _, own := range e.ownRowSets() {
+		if _, err := tx.Exec(ctx, `select 1 from `+own.table+` where `+own.where+` order by `+own.key+` for update`, own.args...); err != nil {
+			return fmt.Errorf("lock the %s rows of %s:%s: %w", own.table, e.Kind, e.ID, err)
 		}
 	}
 	return nil

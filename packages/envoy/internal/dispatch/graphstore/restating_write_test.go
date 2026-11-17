@@ -124,7 +124,7 @@ func TestARestatingWriteKeepsAStateItDoesNotOwn(t *testing.T) {
 func TestEveryObjectWriterRestatesItsNode(t *testing.T) {
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
-	comment, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, VisibilityProject, "", "", "CORE", nil)
+	comment, _ := CommentFacts(nil, "11111111-1111-4111-8111-111111111111", who, at, NoEvent, "", "", "CORE", nil)
 	for name, node := range map[string]Node{
 		"IssueNode":    IssueNode("CORE-1", "CORE", who, at),
 		"ArtifactNode": ArtifactNode("CORE-1/spec", "CORE", "", who, at),

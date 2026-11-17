@@ -25,9 +25,10 @@ import (
 // Visibility and state values, the two base attributes every node carries. A node is visible to
 // its project or to its author alone. Its state is live, which every node a write makes starts
 // in, gone, which a node no longer held is stated, or one of proposed, settled and overtaken,
-// which a write marks a node with (dispatch://INFRA-1950). Each attribute takes these values and
-// no other: a write stating any other is refused (InvalidAttributeValueError), since a node at a
-// value nobody declared is drawn by no view and counted by no census.
+// which a request's write of the node's state marks it with (api's writeNodeState). Each
+// attribute takes these values and no other: a write stating any other is refused
+// (InvalidAttributeValueError), since a node at a value nobody declared is drawn by no view and
+// counted by no census.
 const (
 	VisibilityProject = "project"
 	VisibilityAuthor  = "author"

@@ -78,25 +78,9 @@ func writeRun(ctx context.Context, tx pgx.Tx, id string) (runWritten, error) {
 		return runWritten{}, fmt.Errorf("decode the author of run %s: %w", run.ID, err)
 	}
 	nodes, tuples := graphstore.InteractionFacts(run)
-	rows, err := tx.Query(ctx, `
-		select `+graphstore.FrameValueSQL("e.sequence", "e.name", "e.data")+`, e.created_at
-		from going_events e
-		where e.request_id = $1::uuid
-		order by e.sequence
-	`, run.ID)
+	frames, err := readRunFrames(ctx, tx, run.ID, false)
 	if err != nil {
-		return runWritten{}, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
-	}
-	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
-		var value string
-		var at time.Time
-		if err := row.Scan(&value, &at); err != nil {
-			return graphstore.Tuple{}, err
-		}
-		return graphstore.FrameTuple(run.ID, value, at), nil
-	})
-	if err != nil {
-		return runWritten{}, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
+		return runWritten{}, err
 	}
 	if err := graphstore.Write(ctx, tx, nodes, append(tuples, frames...)); err != nil {
 		return runWritten{}, fmt.Errorf("write the interaction node of run %s: %w", run.ID, err)
@@ -110,4 +94,37 @@ func writeRun(ctx context.Context, tx pgx.Tx, id string) (runWritten, error) {
 		}
 	}
 	return written, nil
+}
+
+// readRunFrames reads a frame value of each going_events row of run, in sequence, as the frame
+// path states one (graphstore.FrameTuple): its text read off the row in SQL
+// (graphstore.FrameValueSQL), dated at the row's created_at. owedOnly leaves out each frame the
+// run's interaction holds a value of already (runFrameHeld), the frames the backfill owes
+// (writeRunFrames); writeRun reads them all, for a run whose node it makes.
+func readRunFrames(ctx context.Context, tx pgx.Tx, run string, owedOnly bool) ([]graphstore.Tuple, error) {
+	owed, problem := "", "read the frames of run %s: %w"
+	if owedOnly {
+		owed, problem = ` and not `+runFrameHeld, "read the frames of run %s the store holds no value of: %w"
+	}
+	rows, err := tx.Query(ctx, `
+		select `+graphstore.FrameValueSQL("e.sequence", "e.name", "e.data")+`, e.created_at
+		from going_events e
+		where e.request_id = $1::uuid`+owed+`
+		order by e.sequence
+	`, run)
+	if err != nil {
+		return nil, fmt.Errorf(problem, run, err)
+	}
+	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		var value string
+		var at time.Time
+		if err := row.Scan(&value, &at); err != nil {
+			return graphstore.Tuple{}, err
+		}
+		return graphstore.FrameTuple(run, value, at), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf(problem, run, err)
+	}
+	return frames, nil
 }

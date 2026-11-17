@@ -327,7 +327,7 @@ func blockHeld(t *testing.T, database *store.Store, artifact, blockID, address s
 }
 
 // TestTheEraseTakesARunsRowsAfterItsNode holds the erase of a run of the command bar to its lock
-// steps (dispatch://INFRA-1950's plan, T15): a run stands under no owner row, so the erase takes
+// steps: a run stands under no owner row, so the erase takes
 // none - issue CORE-1's row, held for the whole run, is never queued behind - and starts at the
 // run's interaction node row, `for update`, then takes the run's going_requests row and then its
 // going_events rows, `for update` (lockProjectionRows, runTables), before it reads under its locks

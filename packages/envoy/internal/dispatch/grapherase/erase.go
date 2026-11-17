@@ -88,6 +88,34 @@ func (e *Erasure) run() (string, bool) {
 	return e.ID, true
 }
 
+// ownRows is one table's rows that are the node's own and go with it: where is the predicate over
+// the table that names them, over args, key the order the erase takes and lists them in, and
+// projected whether they are a projection's rows (projectedTables), which the rows of other
+// tables may reference, or a run's (runTables).
+type ownRows struct {
+	table, key, where string
+	args              []any
+	projected         bool
+}
+
+// ownRowSets is every table's rows of the node, in the order the erase takes them
+// (lockProjectionRows) and lists them (readRows): each projection's rows by the node's address,
+// in projectedTables' order, and for a run of the command bar each of runTables' rows by the run's
+// uuid, in theirs.
+func (e *Erasure) ownRowSets() []ownRows {
+	sets := make([]ownRows, 0, len(projectedTables)+len(runTables))
+	for _, held := range projectedTables {
+		sets = append(sets, ownRows{table: held.Table, key: held.Key, where: `node_kind = $1 and node_address = $2`,
+			args: []any{e.Kind, e.ID}, projected: true})
+	}
+	if run, ok := e.run(); ok {
+		for _, held := range runTables {
+			sets = append(sets, ownRows{table: held.Table, key: held.Key, where: held.Column + ` = $1::uuid`, args: []any{run}})
+		}
+	}
+	return sets
+}
+
 // connect opens the erase's one connection, named in pg_stat_activity (eraseApplicationName). The
 // erase uses no pool and migrates nothing: the schema it works on is the deployment's own.
 func connect(ctx context.Context, databaseURL string) (*pgx.Conn, error) {

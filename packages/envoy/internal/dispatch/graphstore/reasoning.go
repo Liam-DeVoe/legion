@@ -10,12 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The kinds of node that record how a piece of work was reasoned about (dispatch://INFRA-1950),
-// as the graph addresses each: the one spelling of them that every writer of one of these nodes,
-// and every read that names its kind, takes. An interaction is one run of the command bar, read
-// by the person whose run it was. A lens is one analysis invoked on a node and logged under it,
-// of the kind its lens_kind node names. A risk sits under its lens, and a constraint is what a
-// requirement is held to. Each is addressed `dispatch://<kind>/<uuid>`, and a lens kind
+// The kinds of node that record how a piece of work was reasoned about, as the graph addresses
+// each: the one spelling of them that every writer of one of these nodes, and every read that
+// names its kind, takes. An interaction is one run of the command bar, read by the person whose
+// run it was. A lens is one analysis invoked on a node and logged under it, of the kind its
+// lens_kind node names. A risk sits under its lens, and a constraint is what a requirement is
+// held to. Each is addressed `dispatch://<kind>/<uuid>`, and a lens kind
 // `dispatch://lens_kind/<slug>` (text.ParseRef), with no issue key in the address: where a node
 // stands is its TuplePartOf tuple, so a move changes no address.
 //
@@ -24,9 +24,8 @@ import (
 // KindLensBlock is its address form: the from_kind graph_edges writes for it and the key the read
 // registry knows it by (refs' nodeRegistry).
 //
-// A kind reaches the reads only in the commit that first writes a node of it, which registers
-// its loader, its predicate and its backlink arms there: until then a read answers nothing of it,
-// as it answers nothing of any kind this build does not know.
+// A read answers a node of these kinds through the loader, the predicate and the backlink arms
+// refs' registry holds for its kind, as it answers nothing of a kind the registry does not know.
 const (
 	KindInteraction = "interaction"
 	KindLens        = "lens"
@@ -55,7 +54,8 @@ const (
 )
 
 // LensKindPreMortem is the id of the lens_kind node of a pre-mortem (`dispatch://lens_kind/pre-mortem`):
-// the one kind of lens a risk stands under, and a kind a lens keeps once it holds it (D13a).
+// the one kind of lens a risk stands under, and a kind a lens keeps once it holds it, whether or
+// not a risk stands under it (ErrLensKindKept).
 const LensKindPreMortem = "pre-mortem"
 
 // The attributes the reads of those nodes answer as each node's text, as the tuple that states
@@ -77,10 +77,12 @@ const (
 // packages that may import refs, and this one may not. Every block carries the supertag block
 // alone, whatever its type, so a rule that names a block type - a requirement, a check - reads
 // that type off the block's document_blocks row, the projection of a document's block.
+// BlockTypeCheck is the type of a check, the one block a risk's prevented_by may point at
+// (pointerRules), which a route that names a check reads off that row too.
 const (
 	blockKind            = "block"
 	blockTypeRequirement = "requirement"
-	blockTypeCheck       = "check"
+	BlockTypeCheck       = "check"
 )
 
 // AddressKind is the kind the graph addresses a node of the store's kind and id by: the key the
@@ -148,7 +150,7 @@ var pointerRules = [...]pointerRule{
 	{kind: TupleConstrainedBy,
 		from: []pointerEnd{{kind: blockKind, blockType: blockTypeRequirement}, {kind: KindLensKind}},
 		to:   []pointerEnd{{kind: KindConstraint}}},
-	{kind: TuplePreventedBy, from: []pointerEnd{{kind: KindRisk}}, to: []pointerEnd{{kind: blockKind, blockType: blockTypeCheck}}},
+	{kind: TuplePreventedBy, from: []pointerEnd{{kind: KindRisk}}, to: []pointerEnd{{kind: blockKind, blockType: BlockTypeCheck}}},
 	{kind: TuplePartOf, from: []pointerEnd{{kind: KindRisk}}, to: []pointerEnd{{kind: KindLens}},
 		placement: true, underKind: LensKindPreMortem},
 }
@@ -189,13 +191,13 @@ func typesBlocks(ends []pointerEnd) bool {
 func namedEnds(ends []pointerEnd) string {
 	words := make([]string, len(ends))
 	for index, end := range ends {
-		words[index] = withArticle(end.word())
+		words[index] = WithArticle(end.word())
 	}
 	return strings.Join(words, " or ")
 }
 
-// withArticle is a kind or a type with the article it is read with: "a lens", "an issue".
-func withArticle(word string) string {
+// WithArticle is a kind or a type with the article it is read with: "a lens", "an issue".
+func WithArticle(word string) string {
 	if word != "" && strings.ContainsRune("aeiou", rune(word[0])) {
 		return "an " + word
 	}
@@ -243,7 +245,7 @@ func (e *PointerAlreadyAssertedError) Error() string { return e.Reason }
 func (e *PointerAlreadyAssertedError) Unwrap() error { return ErrPointerAlreadyAsserted }
 
 // The two refusals ErrPointerAlreadyAsserted wraps. ErrLensKindKept is one body whatever hangs
-// under the lens, so it tells nothing of a risk a reader may not see (D13a).
+// under the lens, so it tells nothing of a risk a reader may not see.
 var (
 	ErrLensKindAsserted = &PointerAlreadyAssertedError{Reason: "this lens holds a has_kind tuple already, and a lens " +
 		"holds exactly one kind: retarget that tuple rather than assert a second"}
@@ -290,10 +292,12 @@ type pointerEnds struct {
 // checkPointers holds every relation of tuples that pointerRules rules to its rule, in the write's
 // transaction, before the write appends a tuple, and answers the first breach: an
 // InvalidPointerError, or ErrLensKindAsserted or ErrLensKindKept. nodes are the nodes the write
-// writes (Write) or wrote (Caused), whose rows it holds already. A write no rule holds a tuple of
-// - every write of this store but those of the reasoning kinds above - sends no statement here
-// and makes nothing. A refusal ends the caller's transaction, which rolls the nodes it wrote back
-// with it, as ErrProjectMoved does.
+// writes (Write) or wrote (Caused), whose rows it holds already, and made which of them, by
+// position, the write's own insert made (writeNodes; nil where none, or unknown), which hold no
+// tuple of the store yet, so their kinds are read off this write alone. A write no rule holds a
+// tuple of - every write of this store but those of the reasoning kinds above - sends no
+// statement here and makes nothing. A refusal ends the caller's transaction, which rolls the
+// nodes it wrote back with it, as ErrProjectMoved does.
 //
 // An assertion is held to the kinds of both its ends. A retraction is held to nothing but the
 // has_kind rule: it ends what a write already took, and a block the index pass removes has no
@@ -308,7 +312,7 @@ type pointerEnds struct {
 // api/inbox_read.go's markInboxReadThreads says. A risk's part_of is read against the kinds its
 // lens holds once the whole write is read, so a write that makes a pre-mortem and its risks
 // together may state them in any order.
-func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
+func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple) error {
 	var ruled []int
 	for index := range tuples {
 		if tuple := &tuples[index]; tuple.ToKind != KindValue && pointerRuleOf(tuple.Kind, tuple.FromKind) != nil {
@@ -318,7 +322,7 @@ func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple)
 	if len(ruled) == 0 {
 		return nil
 	}
-	ends, err := readPointerEnds(ctx, tx, nodes, tuples, ruled)
+	ends, err := readPointerEnds(ctx, tx, nodes, made, tuples, ruled)
 	if err != nil {
 		return err
 	}
@@ -327,8 +331,9 @@ func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple)
 
 // readPointerEnds reads what the ruled tuples' rules ask of their ends: one statement for the
 // type of every block an end is ruled by, the lock of every lens whose has_kind tuples the write
-// states and does not write the node of, and the has_kind tuples each named lens holds now.
-func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple, ruled []int) (pointerEnds, error) {
+// states and does not write the node of, and one for the has_kind tuples each named lens holds
+// now, which a lens the write's insert made holds none of and is not read for.
+func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple, ruled []int) (pointerEnds, error) {
 	var blocks, lenses, locked []string
 	for _, index := range ruled {
 		tuple := &tuples[index]
@@ -372,19 +377,50 @@ func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tupl
 		slices.Sort(lenses)
 		lenses = slices.Compact(lenses)
 		ends.lensKinds = make(map[string][]pointerTarget, len(lenses))
+		stored := lenses[:0:0]
 		for _, lens := range lenses {
-			held, err := CurrentOut(ctx, tx, KindLens, lens, []string{TupleHasKind})
-			if err != nil {
+			at := slices.IndexFunc(nodes, func(node Node) bool { return node.Kind == KindLens && node.ID == lens })
+			if at >= 0 && made != nil && made[at] {
+				continue
+			}
+			stored = append(stored, lens)
+		}
+		if len(stored) > 0 {
+			if err := readLensKinds(ctx, tx, stored, ends.lensKinds); err != nil {
 				return pointerEnds{}, err
 			}
-			kinds := make([]pointerTarget, len(held))
-			for position, tuple := range held {
-				kinds[position] = pointerTarget{kind: tuple.ToKind, id: tuple.ToID}
-			}
-			ends.lensKinds[lens] = kinds
 		}
 	}
 	return ends, nil
+}
+
+// readLensKinds reads into kinds the has_kind tuples each of lenses holds now, in one statement,
+// each lens's in the order CurrentOut answers them (by far end).
+func readLensKinds(ctx context.Context, tx pgx.Tx, lenses []string, kinds map[string][]pointerTarget) error {
+	rows, err := tx.Query(ctx, `
+		select newest.from_id, newest.to_kind, newest.to_id from (
+			`+CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = $3 and t.to_kind <> '`+KindValue+`'`)+`
+		) newest
+		where newest.asserted
+		order by newest.from_id, newest.to_kind, newest.to_id
+	`, KindLens, lenses, TupleHasKind)
+	if err != nil {
+		return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var lens string
+		var target pointerTarget
+		if err := rows.Scan(&lens, &target.kind, &target.id); err != nil {
+			return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+		}
+		kinds[lens] = append(kinds[lens], target)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+	}
+	return nil
 }
 
 // readBlockTypes is the type of each block of ids that a document holds now, read off its
@@ -458,7 +494,7 @@ func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 	}
 	for _, lens := range emptied {
 		if len(e.lensKinds[lens]) == 0 {
-			return &InvalidPointerError{Kind: TupleHasKind, From: withArticle(KindLens), Retracted: true,
+			return &InvalidPointerError{Kind: TupleHasKind, From: WithArticle(KindLens), Retracted: true,
 				Rule: "a lens holds exactly one kind, so its has_kind tuple is retargeted, never retracted alone"}
 		}
 	}
@@ -473,7 +509,7 @@ func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 		}
 		kinds := e.lensKinds[tuple.ToID]
 		if !slices.Contains(kinds, pointerTarget{kind: KindLensKind, id: rule.underKind}) {
-			return e.breach(rule, tuple, withArticle(KindLens)+" of "+lensKindWords(kinds))
+			return e.breach(rule, tuple, WithArticle(KindLens)+" of "+lensKindWords(kinds))
 		}
 	}
 	return nil
@@ -490,9 +526,9 @@ func (e pointerEnds) allows(ends []pointerEnd, kind, id string) bool {
 // ends were read for one and a document holds it, and anything else by its kind.
 func (e pointerEnds) named(ends []pointerEnd, kind, id string) string {
 	if kind == blockKind && typesBlocks(ends) && e.blockTypes[id] != "" {
-		return withArticle(e.blockTypes[id] + " block")
+		return WithArticle(e.blockTypes[id] + " block")
 	}
-	return withArticle(kind)
+	return WithArticle(kind)
 }
 
 func (e pointerEnds) breach(rule *pointerRule, tuple *Tuple, far string) error {
@@ -532,9 +568,7 @@ func Retarget(ctx context.Context, tx pgx.Tx, pointer Tuple, toKind, toID string
 	if pointer.Kind == TuplePartOf {
 		return errors.New("a part_of tuple is the node's place, which its parent route moves: it is never retargeted")
 	}
-	if _, err := tx.Exec(ctx, `
-		select 1 from graph_nodes held where held.kind = $1 and held.id = $2 for no key update of held
-	`, pointer.FromKind, pointer.FromID); err != nil {
+	if _, err := tx.Exec(ctx, NodeRowLockSQL, pointer.FromKind, pointer.FromID); err != nil {
 		return fmt.Errorf("lock the node whose %s tuple moves: %w", pointer.Kind, err)
 	}
 	held, err := CurrentOut(ctx, tx, pointer.FromKind, pointer.FromID, []string{pointer.Kind})

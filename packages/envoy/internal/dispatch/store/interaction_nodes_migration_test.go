@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -28,7 +30,8 @@ const interactionNodesMigration = 20261116205055
 // each frame. A run whose author is nobody gets the node and no authored_by. One more run, asked
 // after the migration with the same row as one before it, is given its node by graphcensus.WriteRun,
 // the backfill's and the frame path's writer, and the two nodes and their tuples read the same,
-// byte for byte, but for the run's id. The store census then reads zero differences.
+// byte for byte, but for the run's id. The rest of the set is then migrated, since the census is
+// this build's and reads the whole of its schema, and the store census reads zero differences.
 func TestTheInteractionMigrationGivesEveryRecordedRunItsNode(t *testing.T) {
 	ctx := context.Background()
 	database := store.OpenEmptyTestStore(t)
@@ -119,19 +122,15 @@ func TestTheInteractionMigrationGivesEveryRecordedRunItsNode(t *testing.T) {
 		}
 	}
 
-	var facts []string
 	rows, err := database.Pool.Query(ctx, `
 		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id from graph_tuples
 		where kind in ($1, $2) order by 1`, graphstore.TupleAliasOf, graphstore.TupleRecordedAs)
 	if err != nil {
 		t.Fatalf("read the alias tuples: %v", err)
 	}
-	for rows.Next() {
-		var fact string
-		if err := rows.Scan(&fact); err != nil {
-			t.Fatalf("read an alias tuple: %v", err)
-		}
-		facts = append(facts, fact)
+	facts, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the alias tuples: %v", err)
 	}
 	want := []string{"person:alice recorded_as value:Alice", "session:sess-carol alias_of person:carol", "session:sess-erin alias_of person:erin"}
 	if !slices.Equal(facts, want) {
@@ -180,20 +179,19 @@ func TestTheInteractionMigrationGivesEveryRecordedRunItsNode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the tuples of run %s: %v", id, err)
 		}
-		lines := []string{node}
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				t.Fatalf("read a tuple of run %s: %v", id, err)
-			}
-			lines = append(lines, line)
+		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the tuples of run %s: %v", id, err)
 		}
-		return strings.Join(lines, "\n")
+		return strings.Join(append([]string{node}, lines...), "\n")
 	}
 	if migrated, written := shape(ids[0]), shape(after); migrated != written {
 		t.Errorf("the run the migration gave its node reads\n%s\nand the same row given its node by graphcensus.WriteRun reads\n%s", migrated, written)
 	}
 
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the rest of the set: %v", err)
+	}
 	census, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
