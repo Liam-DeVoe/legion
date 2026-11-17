@@ -99,7 +99,9 @@ need from the planner's plan into your task's text.
 ## Stopping and changing a task
 
 - `stop_task` (`issue`, `task`) stops a task that is not done. Legion ends its running step, stops
-  that step's process and keeps its session, and holds the issue, which keeps its admission slot.
+  that step's process and keeps its session, and holds the issue from the phase its task stood in.
+  The issue keeps its admission slot where that phase keeps one: a stop before `accepting` keeps
+  it, and a stop in `accepting`, `retro` or `merging` holds none.
   It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks) and one
   that is done or left the workflow with its issue (`409 TASK_DONE`). A stop of a task already
   stopped changes nothing.
