@@ -669,10 +669,11 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // (kvwatch.Watcher.Servable), and past it answers nothing: Opened is false, so a publish leaves its
 // counts out, and Get answers no record, so a send to a session with no entry answers 404, exactly
 // as on a listener with no bucket. Once the retry has moved the watcher and the moved watcher's
-// read has completed, the store answers again. The watcher's clock is the test's, so the bound is
-// passed without waiting it out.
+// read has completed, the store answers again. The watcher's clock is the test's, and it moves only
+// when the test moves it, so the bound is passed without waiting it out, and a failed move that
+// takes minutes on a busy machine does not pass it before the test asks the store inside it.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
-	watcherClock := &clock{}
+	watcherClock := &heldClock{now: time.Now()}
 	known, conn, grant, logged := knownOverGrant(t, 200*time.Millisecond, time.Second, withKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
@@ -724,6 +725,27 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
 		t.Errorf("the repair logged %d lines saying the store is back, want one:\n%s", lines, logged())
 	}
+}
+
+// heldClock is a clock that moves only when the test advances it, as kvwatch's own tests hold
+// theirs: a stale bound measured on it is passed by the test's advance, never by how long the
+// steps before that advance took. The package's other clock (clock) follows the real time, which
+// a stale episode would then measure too.
+type heldClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *heldClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *heldClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
 
 // A stop ends the retry wherever it is, and a store that stopped repairs nothing afterwards: its
