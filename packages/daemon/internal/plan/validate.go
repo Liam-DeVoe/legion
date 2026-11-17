@@ -26,14 +26,14 @@ var todaysOrder = func() string {
 	return strings.Join(names, ", ")
 }()
 
-// Validate is what Legion cannot carry out in any release (R14): a plan with no task; for each
-// task, each `needs` word that names no task of the plan, in the block's order (Task.Unresolved,
-// which FromBlocks fills), and each step that names a role neither d nor the
-// plan's own role blocks define, refused once for each role at the first step that names it
-// (B-11); then each cycle of needs (cycles), named by its first task in id order with the chain
-// from that task. It refuses no plan for a step the plan lacks. The other refusals of R14 need an
-// attribute or a block that Supported refuses in this release, so the release that lifts that
-// refusal adds them here.
+// Validate is what Legion cannot carry out in any release: a plan with no task; for each task,
+// each `needs` word that names no task of the plan, in the block's order (Task.Unresolved, which
+// FromBlocks fills), and each step that names a role neither d nor the plan's own role blocks
+// define, refused once for each role at the first step that names it; then each cycle of needs
+// (cycles), named by its first task in id order with the chain from that task. It refuses no plan
+// for a step the plan lacks. The other refusals of a plan no release carries out need an attribute
+// or a block that Supported refuses in this release, so the release that lifts that refusal adds
+// them here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -129,7 +129,7 @@ func shortestPath(needs map[string][]string, from, to string) []string {
 	return nil
 }
 
-// Supported is what this release does not carry out yet (C6): more than one task, more than one
+// Supported is what this release does not carry out yet: more than one task, more than one
 // task that no task needs (Sinks, over the task ids FromBlocks reads), whose work would each
 // merge by itself where this release merges an issue's work as one change, a role block, and,
 // for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on

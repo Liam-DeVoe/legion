@@ -198,7 +198,7 @@ func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock 
 
 // register_plan reads each need as the task it names (plan.FromBlocks) before either check, so
 // the reasons name the task a reference names, a task a reference names is needed (b alone ends
-// the first plan), and a word that names no task gets R14's reason rather than the reason of a
+// the first plan), and a word that names no task gets the reason no release lifts rather than the reason of a
 // need this release does not carry out yet; the plan recorded is the one both checks read. The
 // fault is a route that checks, and records, the words as the blocks write them; the control is
 // a FromBlocks that keeps each word whole, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`

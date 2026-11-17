@@ -19,7 +19,7 @@ func taskNeeding(id string, needs ...string) Block {
 	return Block{ID: id, Type: TaskBlockType, Attributes: attributes, Text: "What task " + id + " does."}
 }
 
-// exampleAToE is the spec's example plan, each need written as a reference to a block: c needs b,
+// exampleAToE is the plan of tasks a to e, each need written as a reference to a block: c needs b,
 // d needs a and c, and e needs d.
 func exampleAToE(t *testing.T) Plan {
 	t.Helper()
@@ -50,10 +50,10 @@ func TestFromBlocksReadsEachNeedAsTheTaskItNames(t *testing.T) {
 	}
 }
 
-// R14: a need that names no task of the plan waits for a task that never runs, so Validate refuses
+// A need that names no task of the plan waits for a task that never runs, so Validate refuses
 // it for good, once for each such word in the order the block writes them, naming the word as the
 // block writes it. The fault is such a plan taken; the control is a FromBlocks that keeps each
-// word whole, under which the reference to b-x is refused by its id and the spec's example A to E
+// word whole, under which the reference to b-x is refused by its id and the plan of tasks a to e
 // answers four refusals of a need of no task.
 func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
@@ -73,7 +73,7 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 			}},
 		{name: "a word written twice", plan: planOf(t, 1, taskNeeding("a"), taskNeeding("d", "x", "x")),
 			want: []Refusal{{Task: "d", Reason: "task d needs x, which names no task of this plan."}}},
-		{name: "the spec's example A to E", plan: exampleAToE(t)},
+		{name: "the plan of tasks a to e", plan: exampleAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
@@ -83,7 +83,7 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 	}
 }
 
-// R14: a task that needs itself through other tasks never starts, so Validate refuses each cycle
+// A task that needs itself through other tasks never starts, so Validate refuses each cycle
 // of needs for good, named by its first task in id order with the chain from that task. Each need
 // that lies on a cycle is in a chain of the answer, the shortest cycle through it, so the owner
 // reads every need that closes a cycle at once; a need that closes no cycle is in none. The fault
@@ -114,7 +114,7 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 			want: []Refusal{itself("a", "a needs b, b needs a"), itself("b", "b needs c, c needs b")}},
 		{name: "a need outside the cycle", plan: planOf(t, 1, taskNeeding("a", "b"), taskNeeding("b", "a"), taskNeeding("e", "a")),
 			want: []Refusal{itself("a", "a needs b, b needs a")}},
-		{name: "the spec's example A to E", plan: exampleAToE(t)},
+		{name: "the plan of tasks a to e", plan: exampleAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
@@ -124,7 +124,7 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 	}
 }
 
-// C6: the work of an issue merges as one change, at the end of the one task that no task needs, so
+// The work of an issue merges as one change, at the end of the one task that no task needs, so
 // a plan with more than one such task is refused as not carried out yet, naming them in id order.
 // A plan whose tasks all lead to one task is not refused for it (it is still refused for its
 // several tasks, until this release runs them). The fault is two tasks whose work would each

@@ -1,7 +1,7 @@
 // Package plan is the plan the owner of an issue gives Legion: its tasks, the steps of each task,
 // the roles those steps name, and the two checks a plan passes before Legion takes it — Validate,
 // what Legion cannot carry out in any release (R14), and Supported, what this release does not
-// carry out yet (C6). It reads the blocks of one version of the plan document, each need as the
+// carry out yet. It reads the blocks of one version of the plan document, each need as the
 // task it names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
 // nothing.
 //

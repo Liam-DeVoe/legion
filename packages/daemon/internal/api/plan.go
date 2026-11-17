@@ -89,7 +89,7 @@ func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
 // carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
 // nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version (R16) are the workflow's.
+// a later version are the workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
