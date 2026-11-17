@@ -2730,9 +2730,10 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the committed
-            # copies its text checks hold to the texts they copy, so the module's other files -
-            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
+            # every package of this module it imports - the prompt below, the committed copies
+            # its text checks hold to the texts they copy, and the store's migrations, so the
+            # module's other files - its other .sql, its .json and .md - are no input of this job
+            # and no pattern here matches them.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
@@ -2745,6 +2746,9 @@ jobs:
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
+              # The store's migrations, which phase_entry_migrations_doc_test.go reads through
+              # migrations.All to hold the guide's list of those above the phase entry to them.
+              - 'packages/daemon/internal/store/migrations/*.up.sql'
               # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
               # backs' (way_back_doc_test.go:70) and the troubleshooting page's refusal table's
