@@ -2797,7 +2797,7 @@ jobs:
               - 'packages/daemon/internal/store/migrations/*.up.sql'
               # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
-              # backs' (way_back_doc_test.go:70) and the troubleshooting page's refusal table's
+              # backs' (way_back_doc_test.go:79) and the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
               # own check reads it. They are .txt files, which the module's `**/*.go` above does
               # not match.
@@ -2830,7 +2830,7 @@ jobs:
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
-              # way_back_doc_test.go:94).
+              # way_back_doc_test.go:101).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:33-39).
