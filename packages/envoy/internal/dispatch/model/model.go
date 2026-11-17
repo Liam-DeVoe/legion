@@ -40,11 +40,16 @@ var Scopes = []string{ScopePerson, ScopeApprove}
 // token: a person who narrows a token afterwards narrows what it may do next, and must not
 // retroactively un-approve what it approved while it held approve (docs.carryVerdict reads these
 // scopes to decide whether an answer can carry an approval).
+//
+// SessionProven says the credential itself proved Session - a broker-issued token's own session -
+// rather than the request naming it (a personal token's `?session=` or body actor). Absent means
+// Dispatch did not see the credential prove it, which is also every act recorded before the mark.
 type ActorAct struct {
-	Session   string   `json:"session,omitempty"`
-	TokenID   string   `json:"token_id,omitempty"`
-	TokenName string   `json:"token_name,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Session       string   `json:"session,omitempty"`
+	SessionProven bool     `json:"session_proven,omitempty"`
+	TokenID       string   `json:"token_id,omitempty"`
+	TokenName     string   `json:"token_name,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
 }
 
 // Holds reports whether the act was made under one scope, as Credential.Holds reports it of the
@@ -103,6 +108,18 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
+	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
+	// broker-issued token its session, and actingPerson's person. It is set by the server and
+	// never read from a request body. An actor whose ID the body named - under the shared agent
+	// token, a personal token or a service-account token, none of which proves a session -
+	// carries none, and neither does any row recorded before the mark existed, so a reader that
+	// counts only proven writers counts no claimed one. A row Dispatch derives from an earlier
+	// write carries that write's actor, and so its mark, whatever credential the request that
+	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
+	// answer it gives the open approval request name the person whose review it carries, proven
+	// when that review's credential proved them, even when the request that wrote the version
+	// proved nobody.
+	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
@@ -120,7 +137,7 @@ type Actor struct {
 // own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
 // issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
 // write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope).
+// (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	return a
@@ -143,9 +160,9 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project and Act are not compared: they say where a write came from and who it acted
-// for, which two requests of one credential differ in, so comparing them would call one
-// credential two.
+// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
+// for and whether its credential proved its id, which two requests of one credential differ in,
+// so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }
@@ -1186,12 +1203,17 @@ type Artifact struct {
 	// Role is the part an issue's document plays beside its spec: ArtifactRoleVerification for
 	// the document created as verification.md, ArtifactRolePlan for the one created as plan.md,
 	// ArtifactRoleDecisions for the one created as decisions.md, "" for every other document.
-	// It is set from the document's slug when the row is created and never changes, as Primary
-	// never changes, and no request field sets it.
+	// It is set from the document's slug when the row is created, as Primary is, and no request
+	// field sets it; the one write that clears it is the document's retirement.
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
-	Versions  []Version `json:"versions"`
+	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
+	// is in no list of its issue's or its project's documents, plays no role, and its approval no
+	// longer stands, while its row, its versions and its address stay readable. No response
+	// carries it.
+	Retired  bool      `json:"-"`
+	Versions []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`
@@ -1241,7 +1263,8 @@ type ArtifactReview struct {
 // ArtifactApproval is a document's approval state as of its latest version:
 // draft (never reviewed or requested), awaiting (an approval ask is open),
 // approved (approved at the latest version), stale (approved at an older
-// version), or changes_requested (the latest review asks for changes). An
+// version, or approved before the document was retired, whose retirement
+// superseded the approval), or changes_requested (the latest review asks for changes). An
 // awaiting approval carries its request's WaitingOn: agent once a version moved
 // the request past the one its agent handed to the human, or a reply left it with
 // the agent; human otherwise (the ask reads' waiting_on). Seq is the latest
@@ -1288,6 +1311,32 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+}
+
+// DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
+// retires, on the document's owner.
+const DocumentRetiredEventType = "document.retired"
+
+// DocumentRetiredEventPayload is the payload of document.retired: the document, the role it
+// played until its retirement cleared it ("" for none), why it was retired, and the approval the
+// retirement superseded, nil where the document held none standing.
+type DocumentRetiredEventPayload struct {
+	ArtifactID         string              `json:"artifact_id"`
+	RefKey             string              `json:"ref_key"`
+	Name               string              `json:"name"`
+	Role               string              `json:"role,omitempty"`
+	Reason             string              `json:"reason"`
+	SupersededApproval *SupersededApproval `json:"superseded_approval"`
+}
+
+// SupersededApproval is an approval a write ended rather than carried: the review that gave it,
+// the version it approved, who gave it and of which kind (docs' ReviewKindPerson,
+// ReviewKindPlanReview).
+type SupersededApproval struct {
+	ReviewID        string `json:"review_id"`
+	ApprovedVersion int    `json:"approved_version"`
+	ApprovedBy      Actor  `json:"approved_by"`
+	Kind            string `json:"kind"`
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
@@ -1521,7 +1570,8 @@ type IssueCoverage struct {
 
 // RequirementCoverage is one `requirement` block of an issue's spec and what serves it: the
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
-// any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
+// any status, that name it in `serves`, but for a block at node state proposed, which is a
+// question still open and serves nothing yet. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
 // parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
 // are: the words with no link or reference, and the block's whole content as a tree. State is
@@ -1591,7 +1641,10 @@ type ArtifactHumanEditedEventPayload struct {
 // attributes in the order its type declares them, which is the order its opening line writes
 // them; a block of no declared type carries none. Embedding is where meaning search stands on
 // the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded), which the blocks route
-// sets and nothing that only indexes blocks does.
+// sets and nothing that only indexes blocks does. Document is, for a block of an issue room
+// indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
+// room holds it (dispatch://INFRA-1253 R5), which the block index states as the block's
+// in_document; "" for a block of the indexed document itself. No route answers it.
 type ArtifactBlock struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
@@ -1603,6 +1656,7 @@ type ArtifactBlock struct {
 	Table         *BlockTable           `json:"table,omitempty"`
 	Embedding     string                `json:"embedding,omitempty"`
 	DescendantIDs []string              `json:"-"`
+	Document      string                `json:"-"`
 }
 
 // BlockAttributeValue is one attribute a typed block carries: the name its type declares it
@@ -3207,11 +3261,15 @@ type ArtifactReferences struct {
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
 // last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
-// `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. Text and
-// Pin are set only on the node a reference read names: Text is the block's whole current text,
-// and Pin answers a reference pinned to a version.
+// `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. A run of
+// the command bar (kind `interaction`, id the run's uuid) stands under no issue, so it carries no
+// IssueKey and no Parent, and reaches the credential that asked it alone; it carries Frames, every
+// frame of its stream in sequence, which no other kind carries, so the member is absent from every
+// other node. Text and Pin are set only on the node a reference read names: Text is a block's
+// whole current text, or a run's whole words, which an edge at the run shows only the head of as
+// its excerpt, and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`
@@ -3229,6 +3287,19 @@ type GraphNode struct {
 	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
+	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, and
+	// absent for a run that holds none and for every other kind. A server of the release before
+	// never sends it, and `omitempty` keeps every other node's answer byte for byte as it was.
+	Frames []GraphFrame `json:"frames,omitempty"`
+}
+
+// GraphFrame is one frame of a run's stream as the run's interaction node holds it, one `frame`
+// value tuple (graphstore.FrameTuple): its sequence in the run, its name (contracts.GoingEvent*)
+// and its payload, the data the stream writes under that name.
+type GraphFrame struct {
+	Sequence int            `json:"sequence"`
+	Name     string         `json:"name"`
+	Data     map[string]any `json:"data"`
 }
 
 // NodeParent names the node a graph node belongs to: its kind and its node id (an artifact's

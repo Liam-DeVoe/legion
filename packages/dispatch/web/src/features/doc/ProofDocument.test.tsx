@@ -18,7 +18,7 @@ import {
   artifact as spec,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
+import type { ArtifactText, Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { appKeymap } from "../shell/keymap";
@@ -124,16 +124,19 @@ test("ProofDocument binds prosemirror once an artifact read that names no fragme
   }
 });
 
-/** The artifact read, answered with this file's artifact once `release` is called;
- *  `requested` once the page made it. */
-function heldArtifactRead(): { release(): void; requested(): boolean } {
+/** The artifact read, answered with `record` (this file's artifact unless named) once `release` is
+ *  called; `requested` once the page made it. */
+function heldArtifactRead(record: ArtifactWithFragment = artifact): {
+  release(): void;
+  requested(): boolean;
+} {
   const { promise, resolve } = Promise.withResolvers<void>();
   let requested = false;
   answerRequests(
     http.get("/api/v1/artifacts/:id", async () => {
       requested = true;
       await promise;
-      return Response.json(artifact);
+      return Response.json(record);
     })
   );
   return { release: resolve, requested: () => requested };
@@ -188,6 +191,53 @@ for (const [named, bound] of [
     }
   });
 }
+
+// The admission reads the text afresh before it connects (`admit`), and that read is the page's
+// own read of the text as well: one load of a document reads `/text` once, whether the page
+// connects at once on the fragment the artifact it was handed names, or waits for its own
+// artifact read to name one.
+test("ProofDocument reads the text once for a document whose artifact read names no fragment", async () => {
+  const read = heldArtifactRead(spec);
+  const getArtifactText = spyOn(api, "getArtifactText");
+  const queryClient = createQueryClient();
+  const { editors, sync, view } = renderSpec({ document: spec, queryClient });
+
+  try {
+    await waitFor(() => expect(read.requested()).toBe(true));
+    await act(async () => {});
+    read.release();
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.fragment).toBe("prosemirror");
+    expect(editors[0]?.root.textContent).toContain("The live document");
+    const liveText = queryClient.getQueryData<ArtifactText>(["artifact", spec.id, "text"]);
+    expect(liveText?.markdown).toBe("The live document");
+    await act(async () => {});
+    expect(getArtifactText.mock.calls).toEqual([[spec.id]]);
+  } finally {
+    read.release();
+    view.unmount();
+  }
+});
+
+test("ProofDocument reads the text once for a document handed with its fragment", async () => {
+  const getArtifactText = spyOn(api, "getArtifactText");
+  const queryClient = createQueryClient();
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options.fragment).toBe(ROOM_FRAGMENT);
+    expect(editors[0]?.root.textContent).toContain("The live document");
+    const liveText = queryClient.getQueryData<ArtifactText>(["artifact", artifact.id, "text"]);
+    expect(liveText?.markdown).toBe("The live document");
+    await act(async () => {});
+    expect(getArtifactText.mock.calls).toEqual([[artifact.id]]);
+  } finally {
+    view.unmount();
+  }
+});
 
 test("ProofDocument shows a failed artifact read as its load failure and opens no connection", async () => {
   answerRequests(

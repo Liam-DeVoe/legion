@@ -20,11 +20,18 @@ import {
   pageQuietText,
   pageWaitingBg,
 } from "../../theme/classes";
-import { isViewer } from "../refs/actor";
+import { isContentsEntry } from "./contents-entries";
 import { useFocusedNode } from "./focused-node";
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
+import {
+  drawnLine,
+  firstLineOf,
+  isCheck,
+  isStatement,
+  lineWordsRaw,
+  type TreeNode,
+} from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { CAP, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -45,21 +52,24 @@ export interface ContentsEntry {
 }
 
 /**
- * The entries of the list, read off the tree the outline draws: each ask and each comment or
- * message the reader wrote that begins a thread, each under the nearest such entry above it in
- * the tree, in the tree's own order. The issue itself is no entry: the header is the issue (the
- * architect's ruling 5), as the outline draws no row of it. A node drawn under a second parent is
- * listed once, at its own place, and counted once: a transcluded copy and the branch under it
- * are the same nodes as at the edited place, so they are neither listed nor counted again.
+ * The entries of the list, read off the tree the outline draws: each node the Contents rule
+ * makes an entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that
+ * begins a thread - each under the nearest such entry above it in the tree, in the tree's own
+ * order, so the list holds as many entries as the view row's Conversation count says
+ * (`contentsEntries`). The issue itself is no entry: the header is the issue, as the outline
+ * draws no row of it. A node drawn under a second parent is listed once, at its own place, and
+ * counted once: a transcluded copy and the branch under it are the same nodes as at the edited
+ * place, so they are neither listed nor counted again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
  * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
- * issues, and its statements a check under them failed. What sits under the issue and under no
- * entry is counted on none, since the issue has no entry; the filter row's signals count it.
+ * issues, and its statements a check under them failed. A statement and a check are what the
+ * filter row counts as one (`isStatement`, `isCheck`): a `requirement` or `check` block of any
+ * other document is counted as neither. What sits under the issue and under no entry is counted
+ * on none, since the issue has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
-  const TURNS: Partial<Record<TreeNode["type"], true>> = { comment: true, message: true };
   const tally = (): Record<ContentsMark, number> => ({
     children: 0,
     failing: 0,
@@ -67,9 +77,9 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
     statements: 0,
   });
   const count = (node: TreeNode, marks: Record<ContentsMark, number>): void => {
-    if (node.type === "requirement") {
+    if (isStatement(node)) {
       marks.statements += 1;
-      if (node.children.some((child) => child.type === "check" && child.state === "failed")) {
+      if (node.children.some((child) => isCheck(child) && child.state === "failed")) {
         marks.failing += 1;
       }
     }
@@ -83,12 +93,7 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
-      const begunByReader =
-        TURNS[child.type] === true &&
-        TURNS[node.type] !== true &&
-        child.author !== undefined &&
-        isViewer(child.author, viewer);
-      if (child.type === "ask" || begunByReader) {
+      if (isContentsEntry(node, child, viewer)) {
         const children: ContentsEntry[] = [];
         const own = tally();
         walk(child, children, own);
@@ -140,16 +145,17 @@ const ROW_TEXT_REM = 0.875;
 const MARK_TEXT_REM = 0.75;
 
 /**
- * The Contents list (dispatch://INFRA-1196 R14, the prototype's `#left`): its heading with the
- * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut from
- * its first block's words (`lineWords`) at a word to the row's width, with each reference in it
- * named in plain words once the line is cut (`referenceStandIns`); a node with no words is
- * named by its kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in
- * part D's pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It
- * is one tab stop, as the outline is: the arrow keys move inside it, the right and left arrows
- * unfold and fold an entry, and Enter or a press goes to that node in the outline. The entry the
- * reader is in - the one holding the node the focus is on, or last was on - is marked by a rule
- * and a ground of its own.
+ * The Contents list (R14, the prototype's `#left`): its heading with the Focus branch toggle,
+ * and one row per entry, each its node's first line by R1's rule, cut from its first block's
+ * words with each bare address as written (`lineWordsRaw`) at a word to the row's width, with
+ * each reference in it named once the line is cut (`referenceStandIns`): by the page's name for
+ * it, and by its short form only where the page knows none; a node with no words is named by its
+ * kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in the Contents
+ * pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It is one tab
+ * stop, as the outline is: the arrow keys move inside it, the right and left arrows unfold and
+ * fold an entry, and Enter or a press goes to that node in the outline. The entry the reader is
+ * in - the one holding the node the focus is on, or last was on - is marked by a rule and a
+ * ground of its own.
  */
 export function ContentsList({
   focusBranch,
@@ -231,7 +237,7 @@ export function ContentsList({
         // The line is cut with each reference it cites unnamed and measured with each named, so
         // no cut falls inside a name (`referenceStandIns`).
         const references = referenceStandIns(nameOf);
-        const held = references.standIn(lineWords(node));
+        const held = references.standIn(lineWordsRaw(node));
         const unnamed = held.trim() === "";
         const words = unnamed ? NODE_TYPE_NAMES[node.type] : held;
         const indent = ROW.inset + depth * ROW.indent;
@@ -274,11 +280,19 @@ export function ContentsList({
       }),
     [box, current, nameOf, rows]
   );
-  // The list's one tab stop: the row the reader last moved to, else the entry they are in,
-  // else the first.
+  // The list's one tab stop, always on a drawn row, so Tab never skips the list: the row the
+  // reader last moved to, else the nearest drawn entry at or above the entry they are in - a
+  // fold above that entry hides it - else the first.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const ids = rows.map((row) => row.entry.node.id);
-  const tabStop = stop !== undefined && ids.includes(stop) ? stop : (current ?? ids[0]);
+  const drawnAtOrAbove =
+    current === undefined
+      ? undefined
+      : (pathTo(root, current) ?? [])
+          .map((node) => node.id)
+          .filter((id) => ids.includes(id))
+          .at(-1);
+  const tabStop = stop !== undefined && ids.includes(stop) ? stop : (drawnAtOrAbove ?? ids[0]);
   const moveTo = (id: string | undefined) => {
     if (id === undefined) return;
     setStop(id);
@@ -320,10 +334,7 @@ export function ContentsList({
   return (
     <>
       <div className="flex shrink-0 items-center justify-between gap-2 pt-2.5 pr-2.5 pb-0.5 pl-3.5">
-        <h2
-          className={`text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`}
-          {...pageChrome}
-        >
+        <h2 className={CAP} {...pageChrome}>
           {CONTROL_LABELS.contents}
         </h2>
         <button

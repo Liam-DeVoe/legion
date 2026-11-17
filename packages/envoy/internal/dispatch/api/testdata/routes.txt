@@ -87,6 +87,7 @@ POST /api/v1/issues/{key}/artifacts any
 GET /api/v1/issues/{key}/artifacts/{slug} any
 GET /api/v1/issues/{key}/artifacts/{slug}/blocks any
 POST /api/v1/issues/{key}/artifacts/{slug}/edits any
+POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert any
 GET /api/v1/issues/{key}/artifacts/{slug}/text any
 POST /api/v1/issues/{key}/artifacts/{slug}/versions any
 GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number} any

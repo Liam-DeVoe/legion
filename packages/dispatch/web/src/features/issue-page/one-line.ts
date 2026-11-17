@@ -1,16 +1,31 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
+import type { IssueDetails } from "../../api/types";
+import { pageQuietText } from "../../theme/classes";
+import { shortForm } from "../refs/routes";
+import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
 import { chipWords } from "./node-row-chip";
 import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
-import { documentWord } from "./RowText";
+import { withoutDirectiveLines } from "./RowText";
 import { rowReferences } from "./row-references";
+import { treeContext } from "./tree-drafts";
+
+/** A small heading in capitals over the words it names, as the prototype's `.cap` draws one:
+ *  the head's "In short", the Contents list's heading and the Spec view's column heads. */
+export const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
+
+/** A leading label: a first word of at most five characters, holding a digit and ending in
+ *  `.` (`R1.`, `12.`, `1.2.`), which opens a sentence and ends none. A copy of the pattern
+ *  `issue-tree.ts`'s `firstLineOf` keeps to itself, imported in its place once that module
+ *  exports it. */
+export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
 /**
- * What the Contents pane reads once for every entry it draws on one line (dispatch://INFRA-1196
- * R1, R14): how wide its list is, and what an entry needs to say how wide its own words are
- * drawn. The outline's rows draw their words whole (the architect's ruling 1 on R1); an entry of
- * the list is one of the places the page draws one line for a node.
+ * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
+ * list is, and what an entry needs to say how wide its own words are drawn. The outline's rows
+ * draw their words whole; an entry of the list is one of the places the page draws one line for
+ * a node.
  *
  * An entry cuts its node's first line at a word to the room its own box leaves it, and no entry
  * may read its own layout to learn that room: that is a layout read per entry, and again on
@@ -109,6 +124,9 @@ export interface OneLineCut {
    *  where the line ends inside a sentence (`drawnLine`). */
   readonly cut: boolean;
   readonly line: string;
+  /** Whether `line` ends at its sentence's end (`firstLineOf`'s `sentence`), after which the
+   *  entry draws no ellipsis (`drawnLine`); a line cut at a word inside it ends at none. */
+  readonly sentence: boolean;
   /** Whether the line is drawn on a line of its own under the row's other words, because
    *  beside them it has less room than its first word takes. */
   readonly under: boolean;
@@ -157,9 +175,12 @@ export function oneLineCut({
   // The longest of the line's own words that fits `budget`. A run of more words is never
   // narrower than a run of fewer, so the runs are searched by halves; the whole line is read on
   // its own first, since it carries no ellipsis where the text ends with it or it is a whole
-  // sentence. A run cut at a word inside the line ends inside its sentence, so it always
-  // carries one.
-  const fitting = (budget: number): { cut: boolean; line: string } | undefined => {
+  // sentence. A run cut at a word inside the line ends inside its sentence (`sentence: false`),
+  // so it is measured as `drawnLine` draws such a line: with its ellipsis, unless the author's
+  // own ends it.
+  const fitting = (
+    budget: number
+  ): { cut: boolean; line: string; sentence: boolean } | undefined => {
     if (widthOf(drawnLine(first)) <= budget) return first;
     let found: number | undefined;
     let low = 0;
@@ -167,14 +188,18 @@ export function oneLineCut({
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
       const end = ends[middle] ?? 0;
-      if (widthOf(`${first.line.slice(0, end)}…`) <= budget) {
+      if (
+        widthOf(drawnLine({ cut: true, line: first.line.slice(0, end), sentence: false })) <= budget
+      ) {
         found = end;
         low = middle + 1;
       } else {
         high = middle - 1;
       }
     }
-    return found === undefined ? undefined : { cut: true, line: first.line.slice(0, found) };
+    return found === undefined
+      ? undefined
+      : { cut: true, line: first.line.slice(0, found), sentence: false };
   };
   const beside = fitting(room - before - after - ROUNDING);
   if (beside !== undefined) return { ...beside, under: false, wraps: false };
@@ -183,46 +208,58 @@ export function oneLineCut({
   const word = ends[0];
   return word === undefined
     ? { ...first, under: true, wraps: true }
-    : { cut: true, line: first.line.slice(0, word), under: true, wraps: true };
+    : { cut: true, line: first.line.slice(0, word), sentence: false, under: true, wraps: true };
 }
-
-/** A typed block's source line in a text: its opening `:::requirement{#r1}`, or its closing
- *  `:::`. A copy of part G's `DIRECTIVE_LINE` (`RowText.tsx`'s `withoutDirectiveLines`), which
- *  that module keeps to itself; this part imports G's export in its place, and deletes the copy,
- *  once G exports it and is under this part's base (decision 94). */
-const SOURCE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
 /** A text's words with each reference it cites unnamed while a line is cut from them, and the
  *  names put in after the cut (`referenceStandIns`). */
 export interface ReferenceStandIns {
-  /** A line cut from words `standIn` gave, with each reference in it named. */
+  /** A line cut from words `standIn` gave, with each reference in it named and each private-use
+   *  character its author wrote drawn as written. */
   readonly named: (line: string) => string;
   /** `text` as the words a line is cut from: its typed blocks' source lines left out, and each
-   *  reference it cites stood in for by its token. */
+   *  reference it cites and each private-use character it holds stood in for by its token. */
   readonly standIn: (text: string) => string;
 }
 
-/** The first character a reference's token is made of: the Basic Multilingual Plane's
- *  private-use characters, U+E000 to U+F8FF, which are no space, letter, digit or mark. */
+/** The first character a token is made of: the Basic Multilingual Plane's private-use
+ *  characters, U+E000 to U+F8FF, which are no space, letter, digit or mark. */
 const STAND_IN = 0xe000;
 
-/** How many references one holder stands in for, one private-use character each. */
+/** How many tokens one holder makes, one private-use character each: one for each reference it
+ *  stands in for, and one for each private-use character its texts hold of their own. */
 const STAND_INS = 0xf8ff - STAND_IN + 1;
 
-/** One reference's token: a run of one private-use character. */
-const TOKEN = /([\ue000-\uf8ff])\1*/gu;
+/** One private-use character, which an author may write of their own: an icon pasted from a
+ *  terminal or an icon font. */
+const PRIVATE_USE = /[\ue000-\uf8ff]/gu;
+
+/** One token in a line `named` is given: a run of one private-use character, with the ellipsis a
+ *  cut drew right after it where that ellipsis ends the line. */
+const TOKEN = /(([\ue000-\uf8ff])\2*)(…$)?/gu;
+
+/** How a name ends that a line draws no ellipsis after: with an ellipsis of its own, after which
+ *  `drawnLine` draws none. */
+const NAME_END = /…$/u;
+
+/** What a private-use character the author wrote is drawn as where its holder has no token left
+ *  for it: U+FFFD, the replacement character. */
+const NO_TOKEN = "\ufffd";
 
 /**
- * How the page draws a plain line that cites references (reading (b) of dispatch://INFRA-3939's
- * plan, the tester's F20): with every reference named in plain words, and named only after the
- * line is cut. A plain line is no link, so an address, a block id or a fence drawn in it is one
- * a reader can neither follow nor read: a typed block's source lines are markup and no word of
- * the text, so they are left out, and each `dispatch://` reference the row's reader finds
- * (`rowReferences`) is named by the words for what it names - an issue's key; else the page's
- * name for it (`nameOf`, `useReferenceNames`); else, for a whole document, the page's word for
- * it (`documentWord`); else the word for a document. A statement's name on an INFRA spec opens
- * with its label ("R2. Every address…"), so a cut made after the naming ended its author's
- * sentence at that label, inside the name.
+ * How the page draws a plain line that cites references: with every reference named in plain
+ * words, and named only after the line is cut. A plain line is no link, so an address, a block id
+ * or a fence drawn in it is one a reader can neither follow nor read: a typed block's source
+ * lines are markup and no word of the text, so they are left out, and each `dispatch://`
+ * reference the row's reader finds (`rowReferences`) is named by the words for what it names -
+ * an issue's key; else the page's name for it (`nameOf`, `useReferenceNames`); else its short
+ * form, as a link to it reads until its title resolves (`shortForm`). A one-line place names a
+ * reference by the page's name wherever the page knows one, and by its short form only where it
+ * does not. So the words `standIn` is given hold each bare address as its author wrote it
+ * (`lineWordsRaw`, `plainWordsRaw`), since one already written short leaves it nothing to name.
+ * A statement's name opens with its label where its spec numbers its statements ("R2. Every
+ * address…"), so a cut made after the naming ended its author's sentence at that label, inside
+ * the name.
  *
  * `standIn` stands in for each reference by a token as long as its name: one private-use
  * character of its own, repeated, so a token holds no space, letter, digit or sentence mark.
@@ -232,37 +269,79 @@ const TOKEN = /([\ue000-\uf8ff])\1*/gu;
  * draws of it, so the drawn line keeps to R1's limit. A limit that falls inside a token, which
  * only a token run into the words before it with no space can make, draws the whole name. One
  * holder may stand in for the references of several texts whose lines are read together, as a
- * summary's runs are; past the 6,400 references the private-use characters hold, a reference
- * is named in its place. A private-use character of the text itself is no word a reader reads.
+ * summary's runs are; past the 6,400 tokens the private-use characters make, a reference is
+ * named in its place, with each private-use character of its name stood in for as the author's
+ * own are, so `named` reads none of them as a token.
+ *
+ * A private-use character the author wrote is stood in for as a reference is, by a token whose
+ * name is that character, so `named` draws it as written and never as a reference's name. The
+ * name is one character long, as the character is, so the line's length and its cuts are the
+ * text's own. Every use of one character in the holder's texts takes the same token, and a run
+ * of that token draws the character as many times as the run is long. Where the holder has no
+ * token left for a character it has not met before, the character is drawn as U+FFFD, the
+ * replacement character, since drawn as written it would be read as a token.
+ *
+ * A cut's ellipsis is decided on the line before the names go in (`drawnLine`), and a line cut
+ * right after a reference ends in its token, not in its name's own last character. So `named`
+ * decides again, by `drawnLine`'s own rule, on an ellipsis that ends the line right after a
+ * token: where the name ends with an ellipsis of its own ("R2. Every address…", which
+ * `chipWords` cut), the line draws no second after it. A name that ends with a sentence's mark
+ * keeps the cut's ellipsis, since a line cut inside its sentence draws one whatever its last
+ * character. An ellipsis anywhere else stays as written.
+ *
  * A line no cut is made in is `named(standIn(text))`.
  */
 export function referenceStandIns(
   nameOf: (reference: string) => string | undefined
 ): ReferenceStandIns {
   const names: string[] = [];
+  // The token each private-use character the author wrote is stood in for by, one per character.
+  const owned = new Map<string, string>();
+  // The holder's next token, one private-use character, which `named` draws as `name`.
+  const tokenOf = (name: string): string => {
+    const token = String.fromCharCode(STAND_IN + names.length);
+    names.push(name);
+    return token;
+  };
+  // `words` with each private-use character the author wrote stood in for by its token.
+  const ownStandIns = (words: string): string =>
+    words.replace(PRIVATE_USE, (character) => {
+      let token = owned.get(character);
+      if (token === undefined && names.length < STAND_INS) {
+        token = tokenOf(character);
+        owned.set(character, token);
+      }
+      return token ?? NO_TOKEN;
+    });
   return {
     named: (line) =>
       names.length === 0
         ? line
-        : line.replace(TOKEN, (token) => names[token.charCodeAt(0) - STAND_IN] ?? token),
+        : line.replace(TOKEN, (whole: string, token: string, character: string, cut?: string) => {
+            const name = names[character.charCodeAt(0) - STAND_IN];
+            if (name === undefined) return whole;
+            // A reference's token stands in a line once, whole or cut inside it, and draws its
+            // whole name once; an author's character's token is one character long, and a run
+            // of it draws the character as many times as the run is long.
+            const drawn = name.repeat(Math.ceil(token.length / name.length));
+            return cut === undefined || NAME_END.test(name) ? drawn : `${drawn}${cut}`;
+          }),
     standIn: (text) => {
-      const words = text.includes(":::") ? text.replace(SOURCE_LINE, "") : text;
+      const words = withoutDirectiveLines(text);
       let held = "";
       let at = 0;
       for (const one of rowReferences(words, [])) {
+        // The author's words before the reference are stood in for first, so the holder's tokens
+        // are taken in the order the text holds them.
+        held += ownStandIns(words.slice(at, one.start));
         const name =
           one.route.kind === "issue"
             ? one.route.key
-            : (nameOf(one.reference) ?? documentWord(one.route) ?? NODE_TYPE_NAMES.document);
-        const stood = names.length < STAND_INS;
-        const token = stood
-          ? String.fromCharCode(STAND_IN + names.length).repeat(name.length)
-          : name;
-        if (stood) names.push(name);
-        held += `${words.slice(at, one.start)}${token}`;
+            : (nameOf(one.reference) ?? shortForm(one.route));
+        held += names.length < STAND_INS ? tokenOf(name).repeat(name.length) : ownStandIns(name);
         at = one.end;
       }
-      return `${held}${words.slice(at)}`;
+      return `${held}${ownStandIns(words.slice(at))}`;
     },
   };
 }
@@ -271,8 +350,8 @@ export function referenceStandIns(
  * How the page names a reference that a plain line cites (`referenceStandIns`), read once over
  * the whole tree: by the words of the first chip of the tree that names the same node, as a chip
  * draws them (`chipWords`); else, for a node the tree holds, by its kind's word; else not at
- * all. These are F's `chipOf` names, the page's one naming rule (decisions 49 and 66 of
- * dispatch://INFRA-1196), so no markdown is read here. `nodeIdOf` is how the issue addresses a
+ * all. These are the names a chip draws, the page's one naming rule, so no markdown is read
+ * here. `nodeIdOf` is how the issue addresses a
  * node (`treeContext`), so two addresses of one block are named alike.
  */
 export function useReferenceNames(
@@ -301,4 +380,23 @@ export function useReferenceNames(
       return names.get(id) ?? (type === undefined ? undefined : NODE_TYPE_NAMES[type]);
     };
   }, [nodeIdOf, root]);
+}
+
+/**
+ * How the page names a reference that a plain line cites, for one issue's tree
+ * (`useReferenceNames`), and how that issue addresses a node, which a caller that resolves a
+ * decision's tie reads too. Only the addressing of the issue's context is read and no chip's
+ * name, so the line that context names a block by is the whole reading's words (`wordsOf`),
+ * which nothing here reads.
+ */
+export function useIssueNames(
+  issue: IssueDetails,
+  root: TreeNode
+): {
+  readonly nameOf: (reference: string) => string | undefined;
+  readonly nodeIdOf: (reference: string) => string | undefined;
+} {
+  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  const nameOf = useReferenceNames(root, nodeIdOf);
+  return { nameOf, nodeIdOf };
 }

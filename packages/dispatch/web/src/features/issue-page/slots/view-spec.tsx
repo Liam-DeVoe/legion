@@ -15,7 +15,7 @@ import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { useIssueTree } from "../useIssueTree";
 
 /**
- * Filled by INFRA-1196 part J, "The Spec view": what the stage draws in place of the outline
+ * The Spec view's slot: what the stage draws in place of the outline
  * with Spec on (`slots/stage.tsx`). It is `SpecFilterBody` over the issue's one tree as the Spec
  * view leaves it (`presetView`), at the width the approved picture draws it (the prototype's
  * `.spec`, 1080 px), and reads everything else itself: the tree (`useIssueTree`), who is reading,
@@ -26,7 +26,9 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksRead, root } = useIssueTree(issue);
+  // The body watches the reads it draws from itself, under the keys the tree fills, so it waits
+  // on those alone (`SpecFilterBody`).
+  const { root } = useIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
@@ -47,11 +49,10 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match}
           // The words filter's Escape comes before the view is left; turning the view off with
-          // Escape is part N's step of the key table.
+          // Escape is a later step of the page's key table.
           holdsEscape={address.filter !== ""}
           issue={issue}
           reader={viewer}
-          reading={!blocksRead}
           {...(request === undefined ? {} : { request })}
           {...(revealed === undefined ? {} : { reveal: revealed })}
           root={root}

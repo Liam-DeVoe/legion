@@ -4,6 +4,8 @@ import {
   drawnLine,
   firstLineOf,
   heldBy,
+  isCheck,
+  isStatement,
   lineWords,
   nodeWords,
   type ParentLine,
@@ -20,8 +22,7 @@ import { treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
 
 /**
- * The page with no filter on, and the four filters, as views of the one tree
- * (dispatch://INFRA-1196 R1, R2).
+ * The page with no filter on, and the four filters, as views of the one tree.
  *
  * With no filter on - Conversation - the view is the whole tree, folded to the frontier by the
  * outline (`tree-fold.ts`). The words filter (`?q=`) narrows it to the nodes whose words hold
@@ -30,13 +31,17 @@ import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-re
  *
  * A filter draws as rows its own kinds and no other (R2): Spec the requirements; Verification
  * each requirement as context with the checks under it and their results; Plan the plan tasks;
- * Decisions the asks and the decisions. The issue itself is no row of a filter. Every other
- * parent of a drawn node - an ask, a comment, a message, a requirement under Plan - is one line
- * on its child's row (`TreeNode.parentLine`), never a row: a drawn node whose parent is no row
- * is drawn where that parent stood, under the nearest drawn node above it, or at the top. A
- * check serves several requirements and Verification draws it under each, as the outline does;
- * every other filter draws a node once, at its own place, since a plan task drawn under each
- * requirement it serves would be one step drawn several times (R26).
+ * Decisions the asks and the decisions. The issue itself is no row of a filter. A requirement
+ * is one only where it is a statement of the spec (`isStatement`), and a check only where it is
+ * a check of the Verification document (`isCheck`): a `requirement` or `check` block of any
+ * other document is a block and nothing more, which no filter draws or counts as its kind
+ * (`kindOf`). Every other parent of a drawn node - an ask,
+ * a comment, a message, a requirement under Plan - is one line on its child's row
+ * (`TreeNode.parentLine`), never a row: a drawn node whose parent is no row is drawn where that
+ * parent stood, under the nearest drawn node above it, or at the top. A check serves several
+ * requirements and Verification draws it under each, as the outline does; every other filter
+ * draws a node once, at its own place, since a plan task drawn under each requirement it serves
+ * would be one step drawn several times (R26).
  *
  * Spec, Verification and Plan are each drawn from the issue's view read of that filter once the
  * page holds it (`TreeNode.views` on the issue's node, `heldFilterView`): the view's query names
@@ -68,6 +73,12 @@ const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   spec: ["requirement"],
   verification: ["check", "result"],
 };
+
+/** The kinds `filter` draws as rows of its own (`ROW_KINDS`), for a part that draws a filter's
+ *  rows itself, so it reads them here rather than holding a copy. */
+export function rowKindsOf(filter: Filter): readonly NodeType[] {
+  return ROW_KINDS[filter];
+}
 
 /** The kinds a filter draws as context: rows that place its own, faint and marked, and drawn
  *  whether or not anything of the filter's sits under them (R2's "each requirement as
@@ -128,6 +139,16 @@ export interface PresetLine {
 
 /** No line on any row: a view read off the tree. */
 const NO_LINES: ReadonlyMap<string, readonly PresetLine[]> = new Map();
+
+/** The kind a filter reads `node` as: its type, but for a requirement that is no statement
+ *  (`isStatement`) and a check that is no check (`isCheck`), which are blocks of a document that
+ *  does not play that part and nothing more, so no filter draws or counts either as its kind;
+ *  undefined for both. */
+function kindOf(node: TreeNode): NodeType | undefined {
+  if (node.type === "requirement" && !isStatement(node)) return undefined;
+  if (node.type === "check" && !isCheck(node)) return undefined;
+  return node.type;
+}
 
 /** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
  *  The words are the ones a reader reads (`nodeWords`, R1, R4's "the nodes whose words hold
@@ -228,10 +249,16 @@ function filterView(
   const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
     if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
     const parts = node.children.map(lift);
-    const own = named.has(node.id) || (rows.includes(node.type) && holds(node, wanted));
+    // A `requirement` or `check` block of a document that does not play that part is of no
+    // kind a filter draws (`kindOf`): it is a row only where the address names it, and counted
+    // nowhere.
+    const kind = kindOf(node);
+    const own =
+      named.has(node.id) || (kind !== undefined && rows.includes(kind) && holds(node, wanted));
     const placing =
       !own &&
-      contextKinds.includes(node.type) &&
+      kind !== undefined &&
+      contextKinds.includes(kind) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
     const line = drawn || !parts.some((part) => part.drawn) ? undefined : lineOfParent(node);
@@ -241,7 +268,7 @@ function filterView(
         : part.rows
     );
     if (!drawn) return { drawn: false, rows: below };
-    if (own && counted.includes(node.type)) matched.add(node.id);
+    if (own && kind !== undefined && counted.includes(kind)) matched.add(node.id);
     if (placing) context.add(node.id);
     return { drawn: true, rows: [{ ...node, children: below, held: heldBy(below) }] };
   };
@@ -282,12 +309,18 @@ function heldFilterView(
   // parent. A view's node is matched by its id; a node the view does not hold, by the read's.
   const fromRead = new Map<string, TreeNode>();
   const byRead = new Map<string, TreeNode>();
+  const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
   const byId = new Map<string, { readonly node: TreeNode; readonly parent: TreeNode }>();
   const index = (parent: TreeNode): void => {
     for (const child of parent.children) {
       if (child.readId !== undefined) {
-        if (!fromRead.has(child.id)) fromRead.set(child.id, child);
+        if (!fromRead.has(child.id)) {
+          fromRead.set(child.id, child);
+          const same = ofRead.get(child.readId);
+          if (same === undefined) ofRead.set(child.readId, [child]);
+          else same.push(child);
+        }
         if (!byRead.has(child.readId)) byRead.set(child.readId, child);
         placements.set(`${child.id} ${parent.id}`, child);
       }
@@ -300,7 +333,9 @@ function heldFilterView(
   // two nodes of one read id, blocks of two documents, are two; else, for a view node that names
   // no document, the first of its read id. And each one's parent: the nearest node before it that
   // its `parent` names, since a parent comes before its children and two nodes can share a read
-  // id, else the tree's node of that read id.
+  // id, else the tree's node of that read id. Where the view names the parent's kind beside it
+  // (`parent_line`), the parent is a node of that kind: the view may hold another document's
+  // node of the same read id, or the tree hold it first.
   const treeOf = new Map<TreeAnswerNode, TreeNode>();
   const firstOf = new Map<string, TreeNode>();
   for (const node of answer.nodes) {
@@ -314,8 +349,13 @@ function heldFilterView(
   const parentOf = new Map<TreeAnswerNode, TreeNode>();
   const latest = new Map<string, TreeNode>();
   for (const node of answer.nodes) {
-    const parent =
+    const nearest =
       node.parent === null ? undefined : (latest.get(node.parent) ?? treeNodeOf(node.parent));
+    const kind = node.parent_line?.supertag;
+    const parent =
+      node.parent === null || kind === undefined || nearest?.type === kind
+        ? nearest
+        : (ofRead.get(node.parent)?.find((one) => one.type === kind) ?? nearest);
     if (parent !== undefined) parentOf.set(node, parent);
     const tree = treeOf.get(node);
     if (tree !== undefined) latest.set(node.id, tree);
@@ -521,11 +561,12 @@ export interface PresetSignal {
   readonly unit?: keyof typeof FILTER_SIGNAL_WORDS;
 }
 
-/** The distinct nodes of `type` the view draws that `counts` holds for. */
+/** The distinct nodes of `type` the view draws that `counts` holds for, each read as its kind
+ *  (`kindOf`), so a block that is no check is no failing check. */
 function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boolean): number {
   const found = new Set<string>();
   const walk = (node: TreeNode): void => {
-    if (node.type === type && counts(node)) found.add(node.id);
+    if (kindOf(node) === type && counts(node)) found.add(node.id);
     for (const child of node.children) walk(child);
   };
   walk(root);
@@ -577,7 +618,7 @@ export function filterSignals(
   };
   const verification = view("verification");
   const decisions = view("decisions");
-  // A check's state is the page's one reading of it at the commit the page names
+  // A check's state is the page's one reading of it, as the server reads its results
   // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");

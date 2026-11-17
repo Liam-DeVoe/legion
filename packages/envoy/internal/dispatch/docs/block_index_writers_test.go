@@ -484,6 +484,12 @@ var indexPasses = map[string]string{
 	// its version is indexed: the copies its own reconciliation read off the document, and the
 	// rows of the version it indexed, which name each copy's block node.
 	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read and the blocks its version indexed",
+	// Beside those claims, in the same name and under the same event, a settlement states on each
+	// ask node the readability of its block that the reconciliation read (G1): the reason a block
+	// fails the strict read for, as the node's `invalid` value, and that value's retraction once
+	// the block reads again. It reads the value each node holds only to state what moved, never a
+	// side of a projection to mend the other.
+	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
 	// The catch-up of a follow a process of the release before recorded: the follower rows that
 	// build wrote, stated on the ask's node where the node does not state them yet.
 	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
@@ -508,6 +514,32 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds.
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
+	// A document's retirement states its artifact node gone, keeping every other fact of the
+	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
+	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
+	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
+	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
+	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
+	// is named (changed_by_run). It reads no row of either side to decide what the other says.
+	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	// A run of the command bar: its interaction node, its author's node and their tuples, written
+	// from the POST alone before the going_requests row that projects them, and each frame's value,
+	// written from the frame its writer hands it before the going_events row that projects it.
+	// Neither reads a row of either side to decide what the other should say.
+	"api/going.go#recordGoingRequest": "the POST's question, its project and the credential it proved",
+	"api/going.go#appendGoingEvent":   "the frame its writer hands it and the run's last sequence",
+	// The backfill's writer for one run a pod of the release before recorded with no node: its
+	// input is that going_requests row's own content and the run's going_events rows, as the other
+	// backfill passes read each pre-store row's own, and a run whose node is already written it
+	// leaves alone rather than mending.
+	"graphcensus/interactions.go#writeRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	// The backfill's passes over what a process of the release before writes of a run during a
+	// roll: the frames it appended with no value, whose input is each going_events row's own
+	// content, found by an anti-join with the run's frame values and stated from the row, never
+	// read back; and a run whose row it deleted, whose input is that the row is gone and the node
+	// as the store holds it, of which it moves the state alone, never mending a row from the store.
+	"graphcensus/backfill.go#writeRunFrames": "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
+	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -517,16 +549,21 @@ var indexPasses = map[string]string{
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	"docs/settlement.go#commitVersion":              "the facts the settled version's index pass stated and the event that recorded it",
+	// An issue room's one pass, by a settlement of the room or its reconciliation: what it stated
+	// of each document's blocks, under the event that recorded that document's version.
+	"docs/block_index.go#causeRoomFacts": "the facts the room's index pass stated, by document, and the event that recorded each document's version",
 	// The facts of the documents and versions a write stores (dispatch://INFRA-1253): a later
 	// version's bytes on the node its row names, which reads that row's node column and nothing of
 	// the store; the node of each version every version insert writes, from the row its own insert
-	// returned; and a removal's document and versions stated gone, read off the nodes the store
-	// holds of them so each keeps its supertag and its values, which reads the store to state what
-	// it writes into that same node and mends no projection from it.
+	// returned; a removal's document and versions stated gone, read off the nodes the store holds
+	// of them so each keeps its supertag and its values, which reads the store to state what it
+	// writes into that same node and mends no projection from it; and an issue's tree artifact,
+	// its node and its part_of written from the issue its caller names, before the rows naming it.
 	"api/artifacts.go#statedVersionBytes":          "the upload's own bytes and the node its document's row names",
 	"docs/mutation.go#WriteVersionNode":            "the version row its write inserted and that row's document",
 	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes and the nodes the store holds of it and its versions",
 	"api/artifact_removal.go#removeArtifact":       "the facts removedDocumentNodes stated and the event the removal appended",
+	"api/artifacts.go#createIssueTree":             "the issue its caller names and the slugs its documents hold",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
@@ -542,8 +579,13 @@ var indexPasses = map[string]string{
 	// document it is in, its own source_seq - is what it writes into the store, and the
 	// store holds nothing about those rows for it to read. That is what makes it a writer
 	// and no repair: it never reads one side of a projection to decide what to put in the
-	// other, and a row whose node is already written it leaves alone rather than mending.
-	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content",
+	// other, and a row whose node is already written it leaves alone rather than mending. The
+	// block batch also marks the document each row is in owed this release's block index
+	// (store_owed_at), which is the row's own document and no reading of either side; and
+	// markStaleDocuments marks each document another release indexed after the store last
+	// stated it, read off the two versions the document's own row records (store_version below
+	// version). That pass writes neither a projected table nor the store, so it is no entry here.
+	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
@@ -629,8 +671,14 @@ var indexPasses = map[string]string{
 	// the one record of who decided, read to restate the same tie, never to mend a row. It also
 	// retracts the pointer tuples at each block the render drops (retractGonePointers), which it
 	// reads off the store: the store's own relations, which no projection holds, retracted because
-	// the render no longer holds their block, so it mends neither side from the other.
-	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, and the pointer tuples the store holds at each block the render drops",
+	// the render no longer holds their block, so it mends neither side from the other. Where
+	// another release indexed the document after the store last stated its blocks (refs'
+	// standsAtVersion), the rows it compares the render with no longer hold the blocks and links
+	// that release dropped, so it also reads what the store still asserts of the document
+	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
+	// that does not hold them, as reconcileBlockParents reads the parents the store asserts to
+	// state the render's.
+	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their

@@ -47,9 +47,10 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 // process restart between the close and the reopen, where the old service's room state is
 // unavailable. The restarted service's resumption settles the document on the closed issue, unless
 // the old service's shutdown drain already did: either way the block gets no ask, the version
-// shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
-// marks the document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the
-// block's ask, credited to that recorded author.
+// holds it with no state, as a fleet of one build saves every ask block (dispatch://INFRA-1150
+// R10), and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen marks the
+// document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the block's ask,
+// credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs
@@ -78,9 +79,9 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 	if asks := asksOn(t, restarted, artifactID); asks != 0 {
 		t.Fatalf("the closed issue's settlement left %d asks on the document, want none while the issue is closed", asks)
 	}
-	const resolved = `#closing-ask urgency="med" multiple="false" state="resolved"`
-	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, resolved) {
-		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved resolved: %s", markdown, resolved)
+	const saved = `:::ask{#closing-ask urgency="med" multiple="false"}` + "\n"
+	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, saved) {
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved with no state: %s", markdown, saved)
 	}
 	if recorded := recordedAskAuthors(t, restarted.store, artifactID); recorded["closing-ask"] != actor {
 		t.Fatalf("doc_ask_block_authors after the closed issue's settlement = %+v, want closing-ask recorded as %+v", recorded, actor)
@@ -564,7 +565,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 
-	dave := model.Actor{Kind: "user", ID: "dave"}
+	dave := model.Actor{Kind: "user", ID: "dave", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 	delta := model.Actor{Kind: "session", ID: "delta-session"}
 
@@ -637,7 +638,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	carol := model.Actor{Kind: "user", ID: "carol"}
+	carol := model.Actor{Kind: "user", ID: "carol", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, carol.ID)
@@ -674,7 +675,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, bob.ID)
@@ -732,7 +733,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	tx, err := service.store.Pool.Begin(ctx)
@@ -849,7 +850,7 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 	// Several versioned writes before the reload, each taking its own author out of what the
 	// document owes.
@@ -905,7 +906,7 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 		login := fmt.Sprintf("round%d-browser", round)
 		browser := connectBrowser(t, httpServer.URL, artifactID, login)
 		agent := model.Actor{Kind: "session", ID: fmt.Sprintf("round%d-agent", round)}
-		authors = append(authors, model.Actor{Kind: "user", ID: login}, agent)
+		authors = append(authors, model.Actor{Kind: "user", ID: login, Proven: true}, agent)
 
 		var wg sync.WaitGroup
 		wg.Add(2)

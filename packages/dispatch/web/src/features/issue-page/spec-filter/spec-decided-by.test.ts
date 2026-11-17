@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
 import type { CheckBlock, Decision } from "../../../api/types";
+import { wordsOf } from "../../refs/tree-fragment";
+import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT, chipWords } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
@@ -20,11 +22,6 @@ import {
   decisionNode,
   decisionsRead,
   issueDetails,
-  issueTree,
-  KEY,
-  node,
-  READER,
-  READER_ACTOR,
   shaped,
   statement,
   statementRef,
@@ -32,7 +29,7 @@ import {
 
 /**
  * What decided each statement of the Spec filter, read as the body draws it
- * (dispatch://INFRA-1196 R5, R17, R35).
+ * (R5, R17, R35).
  *
  * Each case builds the tree the page would build and hands it to the Spec filter's own view
  * (`presetView`), so the model is read over the rows the filter really draws, with their parent
@@ -40,16 +37,17 @@ import {
  * own (`treeContext`), so a `shaped` tie is resolved here exactly as the tree resolves one.
  */
 
-/** How this issue addresses a node, which is how a tie finds the statement it names. */
-const { nodeIdOf } = treeContext({ issue: issueDetails() });
+/** How this issue addresses a node, which is how a tie finds the statement it names. Only the
+ *  context's addresses are read here and no chip's name, so the line it names a block by is the
+ *  whole reading's words (`wordsOf`), which nothing below reads. */
+const { nodeIdOf } = treeContext({ issue: issueDetails() }, wordsOf);
 
 /** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
- *  is an issue, else by the page's word for a whole document (`documentWord`), else by the word
- *  for a document (`NODE_TYPE_NAMES.document`). */
+ *  is an issue, and else by its short form (`shortForm`). */
 const NO_NAMES = (): undefined => undefined;
 
-/** The Spec filter's body over `tree`, as the page reads it; `nameOf` is how the page names a
- *  reference a plain line cites (`useReferenceNames`). */
+/** The Spec filter's body over `tree`, as the page reads it once the asks read holds its answer;
+ *  `nameOf` is how the page names a reference a plain line cites (`useReferenceNames`). */
 function bodyOf(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -58,6 +56,7 @@ function bodyOf(
   nameOf: (reference: string) => string | undefined = NO_NAMES
 ): readonly SpecGroup[] {
   return specDecidedBy({
+    asksHeld: true,
     checks,
     decisions: decisionsRead(made),
     nameOf,
@@ -200,8 +199,9 @@ test("another person's answer is not drawn as the reader's own words", () => {
 });
 
 // R5: an agent's decision is drawn in its own text, with how sure it was and how it stands with
-// the reader. Departure 2 of dispatch://INFRA-3939's plan: the cell draws its words whole, as
-// stored and as the server read them, and the line under a statement quotes their first line.
+// the reader. A text drawn with its own links stands in no link, so the cell draws its words
+// whole, as stored and as the server read them, and the line under a statement quotes their
+// first line.
 test("an agent's decision is quoted by its own words, with how sure it was and how it stands", () => {
   const text = "One batched read names every address. The page asks the server once for them all.";
   const tree = { content: [{ content: [{ text, type: "text" }], type: "paragraph" }], type: "doc" };
@@ -244,7 +244,7 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
   expect(decided?.words).toEqual({ markdown: text, source, tree });
 });
 
-// R5 and departure 2 of dispatch://INFRA-3939's plan: an agent's decision is quoted on the
+// R5: an agent's decision is quoted on the
 // because line by its first line, by R1's one-line rule, and that rule cuts a node's line from
 // its reading's first block (`lineWords`, which the page's every other one-line place reads). A
 // decision's reading opens with its own `##` heading, and the whole reading joins that heading
@@ -274,10 +274,10 @@ test("an agent's decision is quoted by its first block's line, never its heading
 });
 
 // R5 with the tester's F20: a reference the quote cites is named in plain words, and naming it
-// changes no sentence its author wrote. A statement's name is its own first words, which on an
-// INFRA spec open with a label ("R2."), so a sentence end read after the naming ends the quote
-// inside the name (seen on a running build at 8caa4357: "... no link a person keeps breaks, as
-// R5.", where the author wrote "as dispatch://INFRA-1196/spec#b-r-home says.").
+// changes no sentence its author wrote. A statement's name is its own first words, which on a
+// spec that numbers its statements open with a label ("R2."), so a sentence end read after the
+// naming ends the quote inside the name (seen on a running build at 8caa4357: "... no link a
+// person keeps breaks, as R5.", where the author wrote "as dispatch://ACME-1/spec#b-r-home says.").
 test("a reference named in an agent's quote ends no sentence at its name's label", () => {
   const cited = statementRef("r2");
   const text = `Keep every address, as ${cited} says. Then more follows.`;
@@ -294,7 +294,7 @@ test("a reference named in an agent's quote ends no sentence at its name's label
 });
 
 // R5: every decision after the first that shaped a statement is named after "informed by" on
-// its line; reading (c) of dispatch://INFRA-3939's plan names it by its own words, cut as a
+// its line by its own words, cut as a
 // chip names its target, each reference in them named and never an address.
 test("a statement informed by two decisions names the second by its words within 32 characters", () => {
   const cited = statementRef("r2");
@@ -335,6 +335,50 @@ test("a replaced decision shapes nothing", () => {
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision).toBeUndefined();
+});
+
+// R5: a statement's decisions are its ties in order, the first heads its run, and each other
+// one is named after "informed by". While the asks read is out, a person's decision is drawn
+// as nothing, but it is still the first of the statements it shaped. Found by the tester on a
+// running build at d9344476, with the asks read refused on the seeded issue: the person's
+// decision shaped three statements and an agent's decision informed the second and the third,
+// and the view drew those two each in a run of its own, headed "Because an agent decided".
+test("a person's decision that waits on the asks read still heads its run, and no decision that only informed a statement takes its place", () => {
+  const tree = issueTree([
+    statement("r1"),
+    statement("r2"),
+    decisionNode("d1"),
+    decisionNode("d2"),
+  ]);
+  const { groups } = specDecidedBy({
+    asksHeld: false,
+    checks: [],
+    decisions: decisionsRead([
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      }),
+      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))] }),
+    ]),
+    nameOf: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  });
+  const runs = groups.flatMap((group) => group.runs);
+  const runOf = (block: string) =>
+    runs.find((run) => run.statements.some((one) => one.node.id === `spec#b-${block}`));
+  expect(
+    runOf("r2")?.decision?.id,
+    "a decision that only informed statement r2 heads its run while the person's decision waits"
+  ).not.toBe("decisions-md#b-d2");
+  expect(
+    runOf("r2"),
+    "statement r2 leaves the run of the person's decision that shaped it and r1"
+  ).toBe(runOf("r1"));
 });
 
 // R5: a statement that hangs under an answered question carries that answer the same way, with
@@ -414,7 +458,7 @@ test("a person's decision carries their whole answer where it says more than its
 });
 
 // R5: the focus draws the whole answer character for character. A quote names each reference in
-// words (reading (b) of dispatch://INFRA-3939's plan), so an answer of one sentence that cites a
+// words, so an answer of one sentence that cites a
 // block is not what its quote draws, and the stored text is carried beside it for the focus.
 test("a person's answer that cites a block carries its whole text for the focus, though it is one sentence", () => {
   const cited = statementRef("r2");
@@ -452,11 +496,12 @@ test("a person's decision whose question the tree does not hold is drawn as the 
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
 });
 
-// R17: the mark is how the statement stands at the commit the page names, in the Verification
-// filter's own reading, so one statement reads the same in both views: Met where every check of
-// it passed there, Not met where one failed there, Unknown otherwise, and no check where none
-// serves it. A pass recorded at another commit is no Met.
-test("a statement's mark is how it stands at the commit the page names", () => {
+// R17: the mark is how the statement stands in the Verification filter's own reading, so one
+// statement reads the same in both views: Met where every check of it passed, Not met where one
+// failed, Unknown otherwise, and no check where none serves it. Each check is read at the commit
+// the server names for it, so a pass the server reads at
+// another commit (`other_commit`, with no pass standing) is no Met.
+test("a statement's mark is how its checks stand at the commit the server names for each", () => {
   const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
   const failed = check({
     block_id: "c2",
@@ -465,7 +510,15 @@ test("a statement's mark is how it stands at the commit the page names", () => {
   });
   const elsewhere = check({
     block_id: "c3",
-    results: [result({ commit_sha: OTHER_COMMIT, created_at: "2026-11-13T00:00:00Z", id: "o1" })],
+    pass_stands: { answer: "no" },
+    results: [
+      result({
+        commit_sha: OTHER_COMMIT,
+        commit_stands: { answer: "other_commit" },
+        created_at: "2026-11-13T00:00:00Z",
+        id: "o1",
+      }),
+    ],
   });
   const unrun = check({ block_id: "c4", pass_stands: { answer: "no" }, results: [] });
   const groups = bodyOf(
@@ -501,6 +554,7 @@ test("a row the filter kept that is no statement is in no run", () => {
     node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
   ]);
   const read = specDecidedBy({
+    asksHeld: true,
     checks: [],
     decisions: decisionsRead([]),
     nameOf: NO_NAMES,
@@ -578,9 +632,21 @@ test("a person's quote is the first sentence of their answer's plain words", () 
   expect(groups[1]?.runs[0]?.decision?.quote).toBe("Keep snake_case as is.");
 });
 
-// R5, review finding 4590606160, decision 51: a leading label is no sentence end, so an answer
-// that opens with a numbered label is quoted with the sentence after it, never as the label
-// alone.
+// R5, of the tester's finding 1's kind, found by the implementer in test round 2: a person's quote
+// draws a private-use character they wrote of their own - an icon from an icon font or a
+// terminal - as they wrote it, and never as the punctuation that a code span's characters are
+// held as while the marks are taken off.
+test("a private-use character in a person's answer is quoted as written, beside a code span", () => {
+  const groups = bodyOf(
+    issueTree([
+      answeredAsk("ask-1", { text: "Keep \ue02a and \ue05f, and `a*b` too." }, [statement("r1")]),
+    ])
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe("Keep \ue02a and \ue05f, and a*b too.");
+});
+
+// R5, review finding 4590606160: a leading label is no sentence end, so an answer that opens with
+// a numbered label is quoted with the sentence after it, never as the label alone.
 test("a first sentence that opens with a numbered label holds the sentence after it", () => {
   expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
   expect(firstSentenceOf("R1. stands as written.")).toBe("R1. stands as written.");
@@ -589,7 +655,7 @@ test("a first sentence that opens with a numbered label holds the sentence after
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
 });
 
-/** The page's name for the statement r2, which opens with its label as an INFRA spec's does. */
+/** The page's name for the statement r2, which opens with its label ("R2."). */
 const LABELLED = (reference: string) =>
   reference === statementRef("r2") ? "R2. Every address…" : undefined;
 
@@ -608,7 +674,7 @@ test("a person's quote that cites a labelled statement ends where their sentence
 });
 
 // R1 and R5: the question line is the question's one line, cut from its first block's words
-// (`lineWords`) with each reference unnamed: a second block never runs into it, and a name's
+// (`lineWordsRaw`) with each reference unnamed: a second block never runs into it, and a name's
 // label ends none of it.
 test("a question line is its first block's line, cut before the reference in it is named", () => {
   const ask = {
@@ -620,10 +686,11 @@ test("a question line is its first block's line, cut before the reference in it 
 });
 
 // Review thread 4592007145: `presets.ts` cuts a parent's line by R1's rule with each reference
-// still its address, so the heading is read from the parent node, where each reference is named
-// after the cut and counted as the name it draws. 68 characters, the name's 18 and " says." are
-// 92: the first sentence is the heading. With the address's 27 it is 101, which `presets.ts`'s
-// line cuts inside the sentence; named first, the label ends the sentence at "R2.".
+// written as its short form (`lineWords`), so the heading is read from the parent node, where
+// each reference is named by the page's name after the cut and counted as the name it draws. 68
+// characters, the name's 18 and
+// " says." are 92: the first sentence is the heading. With the address's 27 it would be 101,
+// which cuts the line inside the sentence; named first, the label ends the sentence at "R2.".
 test("a group's heading counts a reference in its parent's line as its name, which ends no sentence", () => {
   const before = "The heading keeps every word its author wrote whole on one line, as ";
   const groups = bodyOf(
@@ -644,7 +711,7 @@ test("a group's heading counts a reference in its parent's line as its name, whi
 });
 
 // R5 and R1: an agent's decision the tree holds no node for is quoted from its own reading, else
-// its stored text, by the first block that holds any words, as `lineWords` reads a node's: its
+// its stored text, by the first block that holds any words, as `lineWordsRaw` reads a node's: its
 // `##` heading never runs into the paragraph under it, and an image or a rule is passed over.
 test("an agent's decision with no node is quoted by the first block of its own words", () => {
   const text = "## Keep it\n\nKeep the model pure.";

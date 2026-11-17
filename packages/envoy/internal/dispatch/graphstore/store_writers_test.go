@@ -70,12 +70,14 @@ var storeWriteCallSites = []string{
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
 	// proves the step): an upload, a version write's event, an issue's spec, the block-index tick,
-	// a settlement's version and the seed's documents.
+	// a settlement's version, an issue room's pass under each of its documents' events, and the
+	// seed's documents.
 	"api/artifacts.go#commitArtifactVersionEvent",
 	"api/artifacts.go#storeArtifact",
 	"api/issue_create.go#createIssue",
 	"cmd/dispatch-seed/write_docs.go#writeDocument",
 	"docs/block_index.go#indexOwedDocument",
+	"docs/block_index.go#causeRoomFacts",
 	"docs/settlement.go#commitVersion",
 	// The comment path: the comment's node before the comments row that names it, then its
 	// tuples and its cause under the event appended after both, and who wrote it.
@@ -108,6 +110,32 @@ var storeWriteCallSites = []string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner row writeReasoningNodes
 	// takes first too.
 	"api/reasoning_write.go#writeNodeState",
+	// An issue's own field write made for a run (api/issue_patch.go, D14 of dispatch://INFRA-1950):
+	// the issue's owner row (lockPatchRows), the issue's row, then, on a context that carries a
+	// run alone, the issue's node through WriteUncaused, the issue's own event, and what the node
+	// states with its changed_by_run under that event through Caused. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
+	"api/issue_patch.go#patchIssue",
+	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
+	// interaction node, its author's node and their tuples in one Write before the going_requests
+	// row, and each frame, in a transaction of its own, takes the run's interaction node row
+	// `for no key update`, then the run's row `for key share`, then appends the frame value through
+	// Write before the going_events row. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds
+	// both to their steps. A frame of a run a pod of the release before recorded with no node
+	// writes that node first through the backfill's writer for one run, which takes the run's
+	// going_requests row `for no key update` and then writes in one Write; its order is the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	"api/going.go#appendGoingEvent",
+	"api/going.go#recordGoingRequest",
+	"graphcensus/interactions.go#writeRun",
+	// The backfill's passes over what a process of the release before writes of a run during a
+	// roll (graphcensus' TestTheBackfillMendsWhatAnOlderPodWroteOfARun): a frame it appended with
+	// no value, stated through Write after the run's interaction node row `for no key update`, the
+	// frame path's own first lock, and a run whose row it deleted, whose node is written gone
+	// through Write after that same row. Neither takes an owner row, as no run stands under one;
+	// the order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	"graphcensus/backfill.go#writeGoneRun",
+	"graphcensus/backfill.go#writeRunFrames",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
@@ -125,8 +153,15 @@ var storeWriteCallSites = []string{
 	// document and of its versions stated gone, after the issue's row and before any row of the
 	// document is deleted, and removeArtifact appends what it stated under the artifact.removed
 	// event, through Caused (api's TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
+	// createIssueTree is an issue's tree artifact (dispatch://INFRA-1253 R5): its node and its
+	// part_of to the issue through WriteUncaused before the artifacts row that names the node and
+	// the issue_trees row, in its caller's transaction, which holds the issue's row and causes what
+	// the write stated under the event it appends - the order of the write it shares with
+	// createIssue's spec (WriteUncaused, then the row), which TestEveryStoreWriteTakesOneLockOrder
+	// proves of WriteUncaused.
 	"api/artifact_removal.go#removeArtifact",
 	"api/artifact_removal.go#removedDocumentNodes",
+	"api/artifacts.go#createIssueTree",
 	"api/artifacts.go#statedVersionBytes",
 	"api/broadcasts.go#writeBroadcast",
 	"api/message_delivery.go#insertSessionReply",
@@ -145,6 +180,11 @@ var storeWriteCallSites = []string{
 	// steps around it, and api's TestEveryVersionRowIsTheProjectionOfAVersionNode holds its node to
 	// its row's transaction at each site.
 	"docs/mutation.go#WriteVersionNode",
+	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
+	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
+	// document.retired and the node's facts under it.
+	"docs/retire.go#RetireDocument",
+	"docs/retire.go#writeRetiredNode",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
@@ -202,8 +242,9 @@ var storeWriteCallSites = []string{
 	// Caused: the answer, resolve and decline routes' transition, an issue's close and reopen, the
 	// approval carry's answer, and a settlement's retractions and restorations. The settlement
 	// states the copies among a document's ask blocks as claims once its version is indexed, and
-	// the backfill of the boot step's first phase states the asks and the followers written before
-	// this release, each batch with its rows locked first.
+	// beside them the readability of each ask whose block it read, as that ask node's `invalid`
+	// value (G1), and the backfill of the boot step's first phase states the asks and the
+	// followers written before this release, each batch with its rows locked first.
 	"api/ask_transitions.go#closeAskTx",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx",
 	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
@@ -212,6 +253,7 @@ var storeWriteCallSites = []string{
 	"docs/approval_carry.go#answerApprovalAsk",
 	"docs/ask_blocks.go#causeSettledAnswers",
 	"docs/ask_blocks.go#claimCopies",
+	"docs/ask_blocks.go#stateInvalidReasons",
 	"graphcensus/backfill.go#writeAskBatch",
 	"graphcensus/backfill.go#writeAskFollowerBatch",
 	// Retarget moves one pointer through Write, after the row of the node it moves it out of.

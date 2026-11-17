@@ -1168,6 +1168,10 @@ func commentStored(
 		return commentStoreWrite{unprojected: true}, nil
 	}
 	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, visibility, anchorAddress, ownerAddress, project, parties)
+	// The comment is the node this write creates, so a write made for a run names it as changed
+	// by that run (graphstore.Node's Changed) where its cause is appended (caused); its author's
+	// node, which graphstore.Authored writes, is never marked.
+	node.Changed = true
 	return commentStoreWrite{node: node, tuples: tuples}, nil
 }
 

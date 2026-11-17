@@ -41,7 +41,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice")
 	if reopened.Code != http.StatusOK {
 		t.Fatalf("reopen beside the unloadable notes: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -69,9 +69,13 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 // rebuilt from its latest version, saved while the issue was open and showing its decision block
 // open. The rebuild writes the close's states into the rebuilt document in its own transaction,
 // so once it commits the block reads resolved, as the withdrawn ask's row does, rather than open
-// on a closed issue until a reopen. The reopen then opens the block again with its ask.
+// on a closed issue until a reopen. The reopen then opens the block again with its ask. A block
+// holds its ask's state only while another build serves, for that build's pages (docs'
+// rollWindowAskAttributes); on a fleet of one build the text an agent reads renders the state from
+// the store. So the test registers a process of each of two builds and reads the live tree.
 func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlockResolved(t *testing.T) {
 	f := newRepairFixture(t)
+	registerTwoBuilds(t, f.database)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Rebuilding a closed issue's document", "Context\n")
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "notes.md",
@@ -94,20 +98,21 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rebuilt := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/rebuild", map[string]any{}, "alice")
 	if rebuilt.Code != http.StatusOK {
 		t.Fatalf("rebuild the notes: status=%d body=%s", rebuilt.Code, rebuilt.Body.String())
 	}
-	live, _ := documentTexts(t, f.handler, notes)
+	live := liveTree(t, f.documents, notes)
 	if !strings.Contains(live, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`) {
-		t.Fatalf("the rebuilt notes' live text:\n%s\nwant the withdrawn decision block resolved", live)
+		t.Fatalf("the rebuilt notes' live tree:\n%s\nwant the withdrawn decision block resolved", live)
 	}
 	if strings.Contains(live, open) {
-		t.Fatalf("the rebuilt notes' live text:\n%s\nshows the withdrawn decision block open on a closed issue", live)
+		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn decision block open on a closed issue", live)
 	}
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireLiveText(t, f.handler, notes, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`)
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -115,6 +120,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if got := readBlockAsk(t, f.handler, blockAsk); got.State != "open" || got.Resolution != nil {
 		t.Fatalf("ask %s after the reopen = %s %#v, want open with no record", blockAsk, got.State, got.Resolution)
 	}
+	requireLiveTree(t, f.documents, notes, open)
 	requireLiveText(t, f.handler, notes, open)
 }
 

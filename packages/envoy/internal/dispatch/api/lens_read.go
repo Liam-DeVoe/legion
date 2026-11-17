@@ -199,9 +199,9 @@ func lensRowsStatement(source, narrow, order, gone, viewer string) string {
 	where ` + narrow + ` and held.state <> ` + gone + ` and ` + refs.VisibleKindRow(graphstore.KindLens, "held", viewer) + order
 }
 
-// lensesOnNodeQuery reads the lenses invoked on one node, the store's kind and id of which are $1
-// and $2: each lens whose current part_of tuple points at that node, in the order those tuples
-// were appended, for the reader $4, gone being $3 (lensRowsStatement).
+// lensesOnNodeQuery reads the lenses invoked on one node, which their part_of tuples name by the
+// kind and the id $1 and $2 (farEndOf): each lens whose current part_of tuple points at that node,
+// in the order those tuples were appended, for the reader $4, gone being $3 (lensRowsStatement).
 var lensesOnNodeQuery = lensRowsStatement(`(
 		`+graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.to_kind, t.to_id, t.seq, t.asserted`,
 	`t.to_kind = $1 and t.to_id = $2 and t.kind = '`+graphstore.TuplePartOf+`'
@@ -543,7 +543,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	if !found {
 		return nodeLenses{}, notFound
 	}
-	on := storedEndOf(node, address)
+	on := farEndOf(node, address)
 	walk := lensWalk{ctx: ctx, q: q, viewer: refs.VisibilityArg(who), rows: map[string]*lensRow{}}
 	placed, err := scanLensRows(q.Query(ctx, lensesOnNodeQuery, on.kind, on.id, graphstore.StateGone, walk.viewer))
 	if err != nil {

@@ -52,6 +52,7 @@ import {
   SEEDS,
   type SeededIssue,
   type SeedFixture,
+  seedEventsLanded,
   seedKeys,
   sortedFields,
   steadily,
@@ -576,6 +577,7 @@ for (const [name, seed] of SEEDS) {
 /** The requests of the first load: every request until the page is quiet and draws the same rows
  *  twice, as the fixture's `loadRequests` counted them. */
 async function firstLoad(page: Page, traffic: ApiRequests, key: string) {
+  await seedEventsLanded(page);
   await gotoIssue(page, `/issues/${key}`);
   await expectIssuePageDrawn(page);
   const { total } = await steadily(page, traffic, `${key} as the page opens`, async () => ({

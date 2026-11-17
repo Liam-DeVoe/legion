@@ -5,6 +5,7 @@ import { api } from "../../../api/client";
 import type {
   Artifact,
   Ask,
+  CheckBlock,
   Comment,
   Decision,
   DecisionLink,
@@ -998,6 +999,29 @@ test("two documents' blocks with one block id are two rows, each its own documen
   ]);
 });
 
+// The same two blocks, and a comment the read hangs under the plan's task: the blocks of each
+// role count the comments hung under that very node, so the spec's statement of the same id
+// counts none.
+test("a role's block counts the comments hung under it, never another document's block of its id", () => {
+  const tree = answer(
+    [
+      block("a1", "requirement", KEY, SPEC, 0),
+      block("a1", "plan_task", KEY, PLAN, 0),
+      personsComment("c1", "a1", "2026-11-06T00:00:00Z"),
+    ],
+    [],
+    { converted: false, documents: { plan: PLAN.id, spec: SPEC.id }, tree: null }
+  );
+  const issue = issueDetails();
+  const comments = (role: "plan" | "spec") =>
+    blocksOfRole(tree, role, issue)?.map((one) => [one.id, one.references.comments]);
+
+  expect({ plan: comments("plan"), spec: comments("spec") }).toEqual({
+    plan: [["a1", 1]],
+    spec: [["a1", 0]],
+  });
+});
+
 // A child's Verification document carries its parent's slug, and the parent's read holds the
 // child's check beside the parent's own when they share a block id: the parent's check keeps its
 // document's id and its place under the statement it serves, and the child's draws no row.
@@ -1049,6 +1073,78 @@ test("a converted issue's spec blocks hold its criteria beside the statements it
   expect(blocksOfRole(tree, "plan", issue)?.map((one) => [one.id, one.from])).toEqual([["t1", 0]]);
 });
 
+// A node that names its document plays that document's role and no other: a requirement block
+// of the decisions document, which plays no role a view reads, is no block of the spec's, though
+// the spec's query takes its kind, while a criterion that names no document plays the spec's
+// role by its kind alone.
+test("a block of a document that plays no role is no role's block, whatever its kind", () => {
+  const tree = answer([
+    block("r9", "requirement", KEY, DECISIONS, 0),
+    node("criterion-1", "criterion", KEY),
+    block("r1", "requirement", "criterion-1", SPEC, 0),
+  ]);
+
+  expect(blocksOfRole(tree, "spec", issueDetails())?.map((one) => [one.id, one.from])).toEqual([
+    ["criterion-1", 2],
+    ["r1", 3],
+  ]);
+});
+
+// On an issue that has converted, a check that names no document plays Verification by its kind,
+// so it is a Verification block, and the results read's row of its block in the Verification
+// document tells about it: its row carries that row's address, keyed by the check's own id.
+test("a converted issue's check that names no document is Verification's and draws its results row", () => {
+  const issue = { ...issueDetails(), verification_artifact_id: VERIFICATION.id };
+  const check: CheckBlock = {
+    artifact_id: VERIFICATION.id,
+    block_id: "c1",
+    compared_with: null,
+    issue_key: KEY,
+    negative_control: "",
+    pass_stands: { answer: "yes" },
+    ref: `dispatch://${KEY}/artifact/verification-md#b-c1`,
+    results: [],
+    run: "bun test",
+    sha256: "sum",
+    surface: "web",
+    text: "Words of c1.",
+    version: 1,
+    when: "always",
+  };
+  const tree = answer([block("r1", "requirement", KEY, SPEC, 0), node("c1", "check", "r1")]);
+  const reads: IssueTreeReads = {
+    issue,
+    results: { checks: [check], issue: KEY, verification_artifact_id: VERIFICATION.id },
+  };
+
+  expect({
+    blocks: blocksOfRole(tree, "verification", issue)?.map((one) => one.id),
+    reference: nodeOf(drawn(tree, reads).root, "c1")?.reference,
+  }).toEqual({ blocks: ["c1"], reference: check.ref });
+});
+
+// On an issue that has converted, a statement carries the spec's `document`, so it is drawn by the
+// spec's id for it and the coverage read's row of that block tells about it: the row keeps that
+// row's counts and address.
+test("a converted issue's statement keeps the coverage read's counts and address", () => {
+  const tree = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const reads: IssueTreeReads = {
+    coverage: coverage([requirement("r1")]),
+    issue: issueDetails(),
+  };
+  const statement = nodeOf(drawn(tree, reads).root, blockNodeId("spec", "r1"));
+
+  expect({
+    counts: statement?.counts,
+    reference: statement?.reference,
+    statement: statement?.statement,
+  }).toEqual({
+    counts: { checks: 1, planTasks: 1 },
+    reference: `dispatch://${KEY}/spec#b-r1`,
+    statement: true,
+  });
+});
+
 // Owed: a tuple names its two ends by the read's bare id, so where this issue's plan task `t1`
 // and a child's plan task `t1` are both in the read, the child's `serves` tuple cannot be told
 // from the parent's, and the parent's task is placed again under the statement only the child's
@@ -1075,6 +1171,35 @@ test.skip("this issue's plan task is not placed by a child's plan task of the sa
     `${blockNodeId("spec", "r2")} requirement`,
     "CORE-2 child_issue",
   ]);
+});
+
+// Owed: a tuple names its two ends by the read's bare id, so where the spec's statement `a1` and
+// the plan's task `a1` are both in the read, a check's `serves` tuple to `a1` cannot be told from
+// one to the task, the first the walk reaches: the check is not placed again under the statement
+// it serves, and draws a gap for serving no requirement. It waits on the model naming a tuple's
+// ends by each node's own identity.
+test.skip("a check serving a block id two of this issue's documents share stands under the statement it serves @owed", () => {
+  const tree = answer(
+    [
+      block("a1", "plan_task", KEY, PLAN, 0),
+      block("r1", "requirement", KEY, SPEC, 0),
+      block("c1", "check", "r1", VERIFICATION, 0),
+      block("a1", "requirement", KEY, SPEC, 1),
+    ],
+    [tuple("serves", "c1", "r1"), tuple("serves", "c1", "a1")],
+    {
+      converted: false,
+      documents: { plan: PLAN.id, spec: SPEC.id, verification: VERIFICATION.id },
+      tree: null,
+    }
+  );
+  const check = blockNodeId("verification-md", "c1");
+  const { root } = drawn(tree);
+
+  expect({
+    gaps: nodeOf(root, check)?.gaps,
+    parents: placementsOf(root, check).map((one) => one.parent),
+  }).toEqual({ gaps: [], parents: [blockNodeId("spec", "r1"), blockNodeId("spec", "a1")] });
 });
 
 // The asks read says the ask `ask-1` was indexed from the spec's ask block `q-block`, so the two

@@ -332,7 +332,7 @@ test("the five controls are named in the order the row draws them, and none is c
   expect(DECLARED_WORDS.filter((word) => /requirement/iu.test(word))).toEqual([]);
 });
 
-// R22: the Spec view draws Statement, never Requirement (part J's R7), so no word of the list is
+// R22: the Spec view draws Statement, never Requirement (R7), so no word of the list is
 // the model's name for a statement.
 test("no word of the list is requirement", () => {
   expect(DECLARED_WORDS.filter((word) => /^requirements?$/iu.test(word))).toEqual([]);

@@ -187,7 +187,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	if s.deps.Answerer == nil {
-		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
+		if _, err := endGoingRun(storing, s.deps.Store.Pool, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
 		return
@@ -196,10 +196,10 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	defer endAnswering()
 	emit := func(event going.Event) error {
 		if event.Terminal() {
-			_, err := s.endGoingRun(storing, request.ID, event)
+			_, err := endGoingRun(storing, s.deps.Store.Pool, request.ID, event)
 			return err
 		}
-		_, err := s.appendGoingEvent(storing, request.ID, event)
+		_, err := appendGoingEvent(storing, s.deps.Store.Pool, request.ID, event)
 		return err
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
@@ -267,7 +267,11 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 // A run past its ends_at with no terminal frame stored is ended by this reader, with the
 // deadline's error, and the stream ends on whatever terminal frame that write answers
 // (endGoingRun settles which one). That is how a stream ends when the pod that took the POST is
-// gone: nothing else would ever store that run's ending until the sweep ran.
+// gone: nothing else stores that run's ending until the sweep reaches it (sweepGoingRequests,
+// once a maintenance pass, over the runs whose ends_at passed within goingSweepWindow, the last
+// day), and a run whose ends_at passed longer ago than that with no terminal frame stored is
+// read by no sweep, so it is ended by this reader, if it reads it first, or by the boot pass at
+// the next boot of any process (EndGoingRunsOverdueAtBoot).
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
@@ -294,15 +298,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
-	// would make any two personal tokens one writer: a run is read by the credential that
-	// asked it. A run whose author names nobody is read by nobody, and that is a test of its
-	// own - graphstore.ProvesAuthor again, asked here of the author the row holds - because
-	// SameCredential calls two credentials that name nobody the one credential: without it,
-	// such a row would be served to every holder of the deployment's shared token, which
-	// resolves as {} exactly as that author does. The POST refuses such an asker before
-	// anything is recorded, so no row this route writes carries one.
-	if !graphstore.ProvesAuthor(request.Author) || !request.Author.SameCredential(actor) {
+	if !goingRunIsTheCallers(request.Author, actor) {
 		writeGoingRequestNotFound(w)
 		return
 	}
@@ -330,8 +326,8 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	for {
 		frames, state, err := s.readGoingStream(ctx, id, after)
 		if err != nil {
-			// pgx.ErrNoRows is the sweep having deleted the run under this reader
-			// (contracts.GoingRequestTTL); either way there is nothing left to read.
+			// pgx.ErrNoRows is the run deleted under this reader, by an erase or by a process of
+			// the release before during a roll; either way there is nothing left to read.
 			return
 		}
 		for _, frame := range frames {
@@ -357,7 +353,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case state.PastDeadline:
-			if _, err := s.endGoingRun(ctx, id, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
+			if _, err := endGoingRun(ctx, s.deps.Store.Pool, id, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
 				slog.Warn("dispatch going: end the run at its deadline", "request", id, "error", err)
 				return
 			}
@@ -406,6 +402,19 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 // every run a caller may not read is answered with it.
 func writeGoingRequestNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRequestNotFound, http.StatusNotFound, "no answer run of that id is yours to read")
+}
+
+// goingRunIsTheCallers is whether a run whose recorded author is author is the caller's, the one
+// test of a run's owner the stream and a write made for a run (withinGoingRun) both apply. It is
+// the whole credential, through model.Actor.SameCredential and never SameAs alone, which would
+// make any two personal tokens one writer: a run is read by the credential that asked it. A run
+// whose author names nobody is nobody's, and that is a test of its own - graphstore.ProvesAuthor
+// again, asked here of the author the row holds - because SameCredential calls two credentials
+// that name nobody the one credential: without it, such a row would be served to every holder of
+// the deployment's shared token, which resolves as {} exactly as that author does. The POST
+// refuses such an asker before anything is recorded, so no row this route writes carries one.
+func goingRunIsTheCallers(author, caller model.Actor) bool {
+	return graphstore.ProvesAuthor(author) && author.SameCredential(caller)
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:

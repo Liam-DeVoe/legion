@@ -68,6 +68,31 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
  *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 
+/**
+ * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
+ * stage mounts the tree's slot again on every press of a view, so under the app's 30 s
+ * `staleTime` (`main.tsx`) a press more than 30 s after the load would read every one of the
+ * tree's reads again, though nothing they hold has changed.
+ * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
+ * them, `["comments", key]` on a comment event and on a document's upload or new version;
+ * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
+ * repaired or found invalid; `["decisions", key]` on an ask event, a Keep and a document's new
+ * version; `["issue-messages", key]` on a message event; `["issue", key, "coverage"]` on a
+ * document's upload or new version; `["issue", key, "results"]` on those too, on a result
+ * recorded or retracted and on a pull request moved to another issue; and the names reads
+ * (`["reference-targets", …]`, by that prefix) on a comment's edit, an ask's edit and a
+ * document's new version (`referenceNameTargets`). A names read's key is the set
+ * of addresses it names, so a tree that comes to hold another set reads again under a key of its
+ * own, and those three events are what change a target's words under an address the tree
+ * already names: a cited comment edited, a cited ask's question edited, a block of a document's
+ * new version. No rule there names `["whoami"]`: the reader's login does not change while the
+ * page is open. A gap in the feed refreshes every read the app holds (`refreshQueries`), these
+ * among them, and window focus fetches again only a read in error (`refetchFailedOnFocus`). The
+ * tree read and its views keep the same rule but for a focus, which reads them again only while
+ * the live feed is down (`TREE_FRESH`), since their events already reach them while it is up.
+ */
+const EVENT_FRESH = REFRESHED_BY_EVENTS;
+
 /** The reads a tree is built from (`IssueTreeReads`), each compared by identity. */
 const TREE_INPUTS = [
   "asks",
@@ -143,33 +168,33 @@ function builtTree(reads: IssueTreeReads): TreeNode {
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   const read = useTreeRead(issue);
-  // Each read an event refreshes is read again by that event alone, never by its age, so a slot
-  // the stage mounts again later sends none of them (`REFRESHED_BY_EVENTS`).
-  const coverage = useQuery({ ...issueCoverageQuery(key), ...REFRESHED_BY_EVENTS });
-  const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...REFRESHED_BY_EVENTS });
-  const results = useQuery({ ...issueResultsQuery(key), ...REFRESHED_BY_EVENTS });
+  // Every read here takes `EVENT_FRESH`: events refresh it, and a slot mounted again reads
+  // nothing.
+  const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
+  const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
+  const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
   const asks = useQuery({
-    ...REFRESHED_BY_EVENTS,
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
+    ...EVENT_FRESH,
   });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
   const comments = useQuery({
-    ...REFRESHED_BY_EVENTS,
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),
+    ...EVENT_FRESH,
   });
   // Under the key the history and the margin read too, and one of the reads the names wait on
   // (`answered`); the model reads no message from it, since the tree read answers each as a node.
   const messages = useQuery({
-    ...REFRESHED_BY_EVENTS,
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),
+    ...EVENT_FRESH,
   });
   // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
   // one read of who is signed in, so it costs no request of its own.
-  const who = useQuery(whoAmIQuery());
+  const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
   // and holds whatever `ViewReadProvider` read for the load; the answers in `TREE_FILTERS`' order.
@@ -218,12 +243,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // the asks an answer, the comments a Change moved under its decision - so asking while any is
   // still out would ask for the addresses known so far and ask again for the rest: measured on
   // this pod, that cost the first load two reads and sometimes three, where the design is "the
-  // names come last and all at once" (above) and the root issue's budget is 40 requests
-  // (its `c-requests` check). The reader's login is one of the reads this gate waits
-  // on: it adds no node, but the tree is built again when it answers, since it says which
-  // questions wait on the reader. Every one of these reads is always enabled, so each ends in an
-  // answer or an error and none of them holds the names for good. Nothing waits on the names:
-  // until they land the tree draws with each chip naming its target's address.
+  // names come last and all at once" (above) and the first load's budget is 40 requests. The
+  // reader's login is one of the reads this gate waits on: it adds no node, but the tree is
+  // built again when it answers, since it says which questions wait on the reader. Every one of
+  // these reads is always enabled, so each ends in an answer or an error and none of them holds
+  // the names for good. Nothing waits on the names: until they land the tree draws with each chip
+  // naming its target's address.
   const answered =
     !read.pending &&
     !asks.isPending &&
@@ -242,7 +267,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // long as one read, where a dropped one is the whole page's names at once.
   const targets = useQuery({
     ...referenceTargetsQuery(answered ? refs : []),
-    ...REFRESHED_BY_EVENTS,
+    ...EVENT_FRESH,
     placeholderData: keepPreviousData,
   });
   const first = useMemo(
@@ -264,7 +289,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   }, [first, firstTree, refs]);
   const more = useQuery({
     ...referenceTargetsQuery(extra),
-    ...REFRESHED_BY_EVENTS,
+    ...EVENT_FRESH,
     placeholderData: keepPreviousData,
   });
   // Both answers, the second's standing for an address both name. Where nothing is left for the
@@ -283,12 +308,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // document's word on the page, a question's or a comment's words with no markup. Beside the
   // names go the references the read answered ambiguous (`ambiguousTargets`), by that same
   // rule: a short reference two targets carry has no name, as a gone one has none, and a link
-  // draws it as written and links nothing (decision 62) where it reads a gone one's own, which
-  // the names alone would not tell it. A chip's name is read from the issue, the tree read and
-  // the names alone (`treeContext`), so the map and the set are built from those and nothing
-  // else: an answer of any other read - an ask, a comment, the coverage, the reader's login -
-  // publishes nothing new, which would draw every link beside the tree again. Until the names
-  // answer there is nothing to publish.
+  // draws it as written and links nothing where it reads a gone one's own, which the names alone
+  // would not tell it. A chip's name is read from the issue, the tree read and the names alone
+  // (`treeContext`), so the map and the set are built from those and nothing else: an answer of
+  // any other read - an ask, a comment, the coverage, the reader's login - publishes nothing new,
+  // which would draw every link beside the tree again. Until the names answer there is nothing to
+  // publish.
   const names = useMemo(
     () =>
       named === undefined

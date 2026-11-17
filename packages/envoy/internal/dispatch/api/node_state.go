@@ -7,13 +7,18 @@ package api
 //
 // The node state takes five values (graphstore.NodeStates) and no other: a word that is none of
 // them is graphstore's 400 INVALID_ATTRIBUTE_VALUE, refused before anything is read or stored. The
-// state route takes proposed and overtaken on any node, live on any node that is not gone, and
-// gone on a node that belongs to no document alone - a lens, a finding, a risk or a constraint -
-// because a document's own write removes its block. settled goes through the settle alone, which
-// a person makes on any proposal and any other caller on a proposal its own credential wrote. Both
-// write through writeNodeState, at graphstore.NoEvent: no event is appended and no delivery is
-// sent, as for every node of these kinds (reasoning_write.go), and the reads answer the new state
-// at once, since every one of them reads the node's row.
+// state route takes proposed and overtaken on any node the store holds, live on any such node that
+// is not gone, and gone on a node that belongs to no document alone - a lens, a finding, a risk or
+// a constraint - because a document's own write removes its block. settled goes through the settle
+// alone, which a person makes on any proposal and any other caller on a proposal its own
+// credential wrote. Both write through writeNodeState, at graphstore.NoEvent: no event is appended
+// and no delivery is sent, as for every node of these kinds (reasoning_write.go), and the reads
+// answer the new state at once, since every one of them reads the node's row.
+//
+// A block of an ask, a comment or a message is a node every read answers, and no node the store
+// holds: no writer, the backfill among them, writes a graph_nodes row for one, so every read
+// answers it live (refs.StoredStateAndVisibility). The state route refuses it every value, naming
+// why (itemBlockRefusal), and the settle refuses it as a node that is not proposed.
 //
 // `{id}` is the node's store address, one percent-encoded path segment that FindNodeUnderIssue
 // decodes (node_address.go). A node the caller may not see, a node of another issue and an address
@@ -52,6 +57,20 @@ const (
 // its document drops it, and an issue, a document, an ask, a comment and a message are taken out
 // by their own routes, so none of them is gone through this one.
 var standaloneKinds = []string{graphstore.KindConstraint, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk}
+
+// itemBlockRefusal is the 409 NODE_STATE_NOT_WRITABLE of a write of asked on target, held at held,
+// where target is a block of an ask, a comment or a message, which a tuple names by its item's
+// block kind (refs.ItemKind.BlockKind, farEndOf) and the store holds no row of; nil for any other
+// node. With no row there is nothing for the write to move.
+func itemBlockRefusal(target stateTarget, held, asked string) error {
+	item, _, _, isItemBlock := refs.ParseItemBlockNode(target.end.id)
+	if !isItemBlock || item.BlockKind() != target.end.kind {
+		return nil
+	}
+	return errorf(http.StatusConflict, codeStateNotWritable,
+		"the %s %s is %s and takes no %s: the store keeps no node of a block of an ask, a comment or a message, so every read answers such a block live and no write stores its state",
+		target.kind, target.address, held, asked)
+}
 
 // stateTarget is the node a write of its state names: its kind as the graph addresses it, the
 // address a refusal names it by, and the kind and the id the store keys it by.
@@ -124,9 +143,10 @@ func stateWritten(target stateTarget, node graphstore.Node, previous string) nod
 // nodeStateInput is the body of one write of a node's state.
 type nodeStateInput struct {
 	Actor *model.Actor `json:"actor"`
-	// State is the value the node's state is written at: proposed or overtaken on any node, live
-	// on any node that is not gone, gone on a lens, a finding, a risk or a constraint. settled is
-	// written by the settle alone, and any other word is no value of the node state.
+	// State is the value the node's state is written at: proposed or overtaken on any node the
+	// store holds, live on any such node that is not gone, gone on a lens, a finding, a risk or a
+	// constraint. settled is written by the settle alone, and any other word is no value of the
+	// node state.
 	State string `json:"state" required:"true" enum:"live,gone,proposed,overtaken"`
 }
 
@@ -155,13 +175,15 @@ func stateRefusal(target stateTarget, held, asked string) error {
 // (graphstore.CheckAttributeValue), so a word that is none of them is 400 INVALID_ATTRIBUTE_VALUE,
 // naming the attribute and the word, and nothing is read or stored. A node the caller may not see
 // under the issue is 404 NOT_FOUND. The node's kind and its state then decide (stateRefusal): the
-// route writes proposed and overtaken on any node, live on any node that is not gone, and gone on a
-// lens, a finding, a risk or a constraint alone, and refuses settled, gone on any other node and
-// any value on a gone node with 409 NODE_STATE_NOT_WRITABLE. A gone node takes no value at all,
-// live or any other, because proposed or overtaken would bring it back as surely as live, and a
-// block of a document a version dropped would then read as a present block no version holds. The
-// write appends one state tuple, written by the caller (writeNodeState); a write of the state the
-// node holds appends none.
+// route writes proposed and overtaken on any node the store holds, live on any such node that is
+// not gone, and gone on a lens, a finding, a risk or a constraint alone, and refuses settled, gone
+// on any other node and any value on a gone node with 409 NODE_STATE_NOT_WRITABLE. A gone node
+// takes no value at all, live or any other, because proposed or overtaken would bring it back as
+// surely as live, and a block of a document a version dropped would then read as a present block
+// no version holds. A node the store holds no row of is the same 409: a block of an ask, a comment
+// or a message, of which the store keeps none (itemBlockRefusal), and a node written before the
+// store existed that the backfill has not reached yet. The write appends one state tuple, written
+// by the caller (writeNodeState); a write of the state the node holds appends none.
 func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 	var input nodeStateInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -200,6 +222,9 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			if !held {
+				if err := itemBlockRefusal(target, stored.State, input.State); err != nil {
+					return err
+				}
 				return errorf(http.StatusConflict, codeStateNotWritable,
 					"the %s %s is %s and takes no %s yet: the store holds no row of it, which envoy-dispatch backfill-graph-store writes",
 					target.kind, target.address, stored.State, input.State)

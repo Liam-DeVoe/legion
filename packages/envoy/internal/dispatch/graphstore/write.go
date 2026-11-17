@@ -33,6 +33,12 @@ import (
 // to its rule once the nodes are written and before the first tuple is appended
 // (checkPointers), so a write that breaks one appends nothing; its refusal ends the caller's
 // transaction, which rolls back the nodes with it.
+//
+// On a context that carries a run (WithRun), the write also appends, with its own tuples, one
+// changed_by_run tuple from each node it marks changed (Node.Changed, Tuple.Changes) to that run's
+// interaction, dated, signed and caused as the node's write or the fact that marked it, or dated
+// and signed as a node's ChangedAt and ChangedBy say where it carries them, unless the node
+// already holds one to that run (changedByRun), read once the node rows are held.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	base, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
@@ -41,10 +47,14 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	if err := checkPointers(ctx, tx, nodes, tuples); err != nil {
 		return err
 	}
-	if len(base) == 0 {
+	changed, err := changedByRun(ctx, tx, changedByRunMarks(ctx, nodes, tuples))
+	if err != nil {
+		return err
+	}
+	if len(base)+len(changed) == 0 {
 		return appendTuples(ctx, tx, tuples)
 	}
-	return appendTuples(ctx, tx, append(base, tuples...))
+	return appendTuples(ctx, tx, append(append(base, tuples...), changed...))
 }
 
 // Uncaused is a write of this store whose cause did not exist while it ran, held by its writer
@@ -123,6 +133,12 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // writer appends facts of its own to what WriteUncaused answered (refs.IndexBlocks does), and
 // those reach the store through here alone. For the same reason a held relation whose kind the
 // pointer type rules hold is held to its rule here (checkPointers), before the nodes move.
+//
+// On a context that carries a run (WithRun), it appends with them one changed_by_run tuple from
+// each node the write marks changed (Node.Changed, Tuple.Changes) to that run's interaction, under
+// event as every fact of the write is, unless the node already holds one to that run
+// (changedByRun). The run is the context's, not the write's: WriteUncaused appends nothing, so a
+// writer whose nodes went in on another context still names the run its cause is appended for.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	tuples := make([]Tuple, len(write.Tuples))
 	for index, held := range write.Tuples {
@@ -142,6 +158,15 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
 		return err
 	}
+	marks := changedByRunMarks(ctx, write.Nodes, tuples)
+	for index := range marks {
+		marks[index].SourceEvent = event
+	}
+	changed, err := changedByRun(ctx, tx, marks)
+	if err != nil {
+		return err
+	}
+	tuples = append(tuples, changed...)
 	if len(tuples) == 0 {
 		return nil
 	}
@@ -334,7 +359,8 @@ func checkSupertags(ctx context.Context, tx pgx.Tx, nodes []Node) error {
 // knows neither, and is no word that the node has none. A node the write restates
 // (Node.Restates) keeps its row's visibility, and its row's state unless that state or the
 // node's is gone: its writer says only whether the node is there, so the row moves to gone when
-// the writer says gone, and to the writer's state only from gone.
+// the writer says gone, and to the writer's state only from gone. A node the write keeps the
+// cause of (Node.KeepsCause) keeps its row's source_event, whatever else of the row moves.
 //
 // It answers the base attributes this write states as tuples, one attribute at a time. A node
 // the insert made is stated `visibility` and `state`, and `project` and `parties` where it
@@ -404,14 +430,15 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	if err != nil {
 		return nil, err
 	}
-	// Whether the write restates each node rides beside nodeParams' eleven arrays, where
-	// incomingNodes binds it. Only moveNodes reads it: a node the insert makes has no stored
-	// state or visibility to keep.
+	// Whether the write restates each node, and whether it keeps each node's cause, ride beside
+	// nodeParams' eleven arrays, where incomingNodes binds them. Only moveNodes reads them: a node
+	// the insert makes has no stored state, visibility or cause to keep.
 	restates := make([]bool, len(nodes))
+	keepsCause := make([]bool, len(nodes))
 	for index := range nodes {
-		restates[index] = nodes[index].Restates
+		restates[index], keepsCause[index] = nodes[index].Restates, nodes[index].KeepsCause
 	}
-	args = append(args, restates)
+	args = append(args, restates, keepsCause)
 	// marks holds, by each node's position, the base attributes this write states for it: each
 	// one the node carries for a node the insert made, each one that moved for a node already
 	// there. It is made by the first node that states one, so a write that states none - a
@@ -476,12 +503,12 @@ const (
 
 // incomingNodes is the common table expression both of writeNodes' statements read the nodes
 // through, each with its position in the caller's list, from the arrays bound at $1 (nodeBound)
-// and, in the parameter after those (nodeArrayTypes), whether the write restates the node
-// (Node.Restates).
+// and, in the two parameters after those (nodeArrayTypes), whether the write restates the node
+// (Node.Restates) and whether it keeps the node's cause (Node.KeepsCause).
 var incomingNodes = `with incoming as (
-			select ` + nodeBound + `, restates, ordinality
-			from unnest(` + nodeArrays(1) + `, ` + arrayList(1+len(nodeArrayTypes), "boolean") + `)
-				with ordinality as node(` + nodeColumns + `, restates, ordinality)
+			select ` + nodeBound + `, restates, keeps_cause, ordinality
+			from unnest(` + nodeArrays(1) + `, ` + arrayList(1+len(nodeArrayTypes), "boolean", "boolean") + `)
+				with ordinality as node(` + nodeColumns + `, restates, keeps_cause, ordinality)
 		)`
 
 // writtenVisibility and writtenState are the visibility and the state moveNodes writes a row at,
@@ -553,10 +580,12 @@ func insertNodes(ctx context.Context, tx pgx.Tx, args []any, made func(position 
 // the row as its own snapshot holds it, which is the row insertNodes locked. A node the write
 // restates is written at the visibility and the state it keeps (writtenVisibility,
 // writtenState), and the update's condition compares the row against those, so an attribute it
-// keeps neither moves nor is stated. A node insertNodes made holds what this write states, so it
-// moves nothing here. It answers ErrProjectMoved for a node whose stored project this write
-// names another for, whether or not the update fired: the update keeps the stored project, and
-// the refusal ends the caller's transaction.
+// keeps neither moves nor is stated. A row the update moves takes the write's source_event, but
+// for a node whose cause the write keeps (Node.KeepsCause), which keeps the row's own. A node
+// insertNodes made holds what this write states, so it moves nothing here. It answers
+// ErrProjectMoved for a node whose stored project this write names another for, whether or not
+// the update fired: the update keeps the stored project, and the refusal ends the caller's
+// transaction.
 func moveNodes(ctx context.Context, tx pgx.Tx, args []any, nodes []Node, moved func(position int64, attributes byte)) error {
 	rows, err := tx.Query(ctx, incomingNodes+`,
 		stored as (
@@ -570,7 +599,7 @@ func moveNodes(ctx context.Context, tx pgx.Tx, args []any, nodes []Node, moved f
 				visibility = `+writtenVisibility+`,
 				state = `+writtenState+`,
 				attributes = incoming.attributes,
-				source_event = incoming.source_event,
+				source_event = case when incoming.keeps_cause then graph_nodes.source_event else incoming.source_event end,
 				project_key = coalesce(graph_nodes.project_key, incoming.project_key),
 				parties = coalesce(incoming.parties, graph_nodes.parties)
 			from incoming

@@ -86,7 +86,7 @@ import { type ArtifactWithFragment, carriesFragment, fragmentOf } from "./roots"
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, servedAskOf } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -323,11 +323,10 @@ export function ProofDocument({
   const documentRef = buildDispatchReference(documentRoute(artifact));
   const tooltips = useTooltips();
   // Inside `NoTooltips` each colour the document's own lines and controls draw is one of the new
-  // issue page's (dispatch://INFRA-3935 R6, decision 56 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md): a refusal is its failed red, a reading of
-  // the document its muted words, a count its label chip, the open decision a link in the ink,
-  // and a control its header control's rule and muted words on the paper. What the editor, the
-  // decision blocks and the references draw is theirs.
+  // issue page's: a refusal is its failed red, a reading of the document its muted words, a
+  // count its label chip, the open decision a link in the ink, and a control its header
+  // control's rule and muted words on the paper. What the editor, the decision blocks and the
+  // references draw is theirs.
   const failedText = tooltips ? dangerText : pageFailedText;
   const countChip = tooltips ? `${badgeMed.bg} ${badgeMed.text}` : pageLabelChip;
   const controlOnPage = `${pageLineBorder} ${pagePaperBg} ${pageMutedText}`;
@@ -347,7 +346,12 @@ export function ProofDocument({
       ? undefined
       : fragmentOf(artifactQuery.data);
   const fragmentReadError = fragmentName === undefined ? artifactQuery.error : null;
-  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  // The text is read once the page knows its fragment, beside the admission's own fresh read of
+  // it (`admit`), so the two are one request; read before it, the admission would read it again.
+  const liveTextQuery = useQuery({
+    ...liveTextQueryOptions(artifact.id),
+    enabled: fragmentName !== undefined,
+  });
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
   const repairUpload = useArtifactUpload(
@@ -425,6 +429,22 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // The answer state the server reads of the ask each block shows, by block id, which the
+  // editor's refusal of a reading in an open ask reads at each edit: a ref, so the editor made
+  // once reads the latest asks read.
+  const askStates = useRef<ReadonlyMap<string, string>>(new Map());
+  askStates.current = new Map(
+    askBlockHosts.flatMap((host) => {
+      const blockId = String(host.node.attrs.blockId);
+      const served = servedAskOf(
+        asksQuery.data ?? [],
+        artifact.id,
+        blockId,
+        owner.kind === "issue" ? undefined : owner.project
+      );
+      return served === undefined ? [] : [[blockId, served.ask.state] as const];
+    })
+  );
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
   // its own beside its button.
@@ -943,6 +963,7 @@ export function ProofDocument({
                     globalThis.document.documentElement.clientWidth < 1280)
                     ? null
                     : connection.awareness,
+                askStateOf: (blockId) => askStates.current.get(blockId),
                 heatMapMode: "hidden",
                 onAskBlockHosts: setAskBlockHosts,
                 onMarkAction: (action) => {
@@ -1136,9 +1157,14 @@ export function ProofDocument({
             version.
           </p>
           <button
+            // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
+            // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
+            // is `disabled` while it rebuilds, as on `main`.
+            aria-disabled={(!tooltips && rebuild.isPending) || undefined}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            disabled={rebuild.isPending}
+            disabled={tooltips && rebuild.isPending}
             onClick={() => {
+              if (rebuild.isPending) return;
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1169,8 +1195,7 @@ export function ProofDocument({
       {schemaReadOnly && !isClosed && connection === "connected" ? <p>Reload to edit.</p> : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
           list beside it. Inside `NoTooltips` no title gives back what an ellipsis cut, and the
-          question is a value, so it breaks anywhere and the row grows to hold it (decision 104 of
-          dispatch://INFRA-1196/artifact/part-decisions-md). */}
+          question is a value, so it breaks anywhere and the row grows to hold it. */}
       {page && version === undefined && openDecision !== undefined ? (
         <nav
           aria-label="Open decisions"
@@ -1255,6 +1280,12 @@ export function ProofDocument({
               owner={owner.kind === "document" ? owner : undefined}
               readOnly={blocksReadOnly}
               rowResolution={isClosed}
+              served={servedAskOf(
+                asksQuery.data ?? [],
+                artifact.id,
+                blockId,
+                owner.kind === "issue" ? undefined : owner.project
+              )}
             />
           );
         })}

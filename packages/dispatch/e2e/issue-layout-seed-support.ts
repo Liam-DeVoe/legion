@@ -5,7 +5,7 @@
 // draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
 
 import type { Actor } from "../web/src/api/types";
-import { checkState } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -44,8 +44,9 @@ import {
 
 export const PROJECT = "LAY";
 const ARCHITECTURE_REPO = "legion/issue-layout-arch";
-/** The repository the whole issue carries; the request baseline carries its own, so the two never
- *  share the App's cached answer about one repository. */
+/** The repository the whole issue carries, which each seed suffixes with a name of its own
+ *  (`seedIssueWithDocuments`); the request baseline carries its own, so the two never share the
+ *  App's cached answer about one repository. */
 export const WHOLE_REPO = "acme/issue-layout";
 export const BASELINE_REPO = "acme/issue-baseline";
 /** The commit the seeded pull request's head is at, so a result recorded there reads `current`. */
@@ -67,9 +68,9 @@ export const plannerActor: Actor = {
 };
 export const asPlanner = { actor: plannerActor, as: "agent" as const };
 /** The agent session that records every seeded result. An Envoy session id is a UUID
- *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place
- *  (dispatch://INFRA-1196 R9); the registry lists no such session, so the title the session
- *  stamped on its write is the only name it has. */
+ *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place;
+ *  the registry lists no such session, so the title the session stamped on its write is the
+ *  only name it has. */
 export const recorderActor: Actor = {
   id: "019a1c0a-6d4b-7e8a-bf39-4a1b5c8d9e07",
   kind: "session",
@@ -101,7 +102,7 @@ function wantedState(state: SeededCheckState, repositoryInstalled: boolean): str
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that
  *  came out in four states fails here and not inside the test that reads the fifth. The state is
- *  read with the page's own rule (`checkState` in `web/src/features/issue-page/tree-drafts.ts`), so
+ *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/tree-drafts.ts`), so
  *  the seed waits for what the page draws and never for a copy of that rule that has fallen
  *  behind it. With `only`, it waits for the checks seeded in that one state alone. */
 export async function awaitSeededCheckStates(
@@ -119,7 +120,9 @@ export async function awaitSeededCheckStates(
   const deadline = Date.now() + 20_000;
   for (;;) {
     const read = await getIssueResults(issueKey);
-    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, checkState(check)]));
+    const seen = new Map(
+      (read.checks ?? []).map((check) => [check.block_id, checkStanding(check).state])
+    );
     if ([...wanted].every(([block, state]) => seen.get(block) === state)) return;
     if (Date.now() > deadline) {
       throw new Error(
@@ -214,9 +217,7 @@ async function decisionBlockIds(artifactId: string, count: number): Promise<stri
  *  server keeps, so it stands with the App installed on nothing too. The result at a commit no
  *  branch holds is recorded after that read, since the server keeps an answer of "not there"
  *  as well: no read with the App installed compares it, and once the App is gone nothing can
- *  say where it stands. The pass whose check is then reworded comes last, so the newest result
- *  is at the pull request's head, the one commit the page reads every check at
- *  (`checkStanding`, `tree-drafts.ts`). */
+ *  say where it stands. */
 async function recordSeededResults(
   issueKey: string,
   checks: number,
@@ -245,16 +246,15 @@ async function recordSeededResults(
       });
     }
   };
-  const LATER: readonly SeededCheckState[] = ["unmarked", "older"];
-  const each = async (wanted: (state: SeededCheckState) => boolean): Promise<void> => {
-    for (let index = 1; index <= checks; index += 1) {
-      const state = checkStateOf(index);
-      if (state !== "no-result" && wanted(state)) await record(index, state);
-    }
-  };
-  await each((state) => !LATER.includes(state));
+  const unmarked: number[] = [];
+  for (let index = 1; index <= checks; index += 1) {
+    const state = checkStateOf(index);
+    if (state === "no-result") continue;
+    if (state === "unmarked") unmarked.push(index);
+    else await record(index, state);
+  }
   await awaitSeededCheckStates(issueKey, checks, true, "no-control");
-  for (const later of LATER) await each((state) => state === later);
+  for (const index of unmarked) await record(index, "unmarked");
 }
 
 export interface IssueShape {
@@ -304,17 +304,22 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     title: shape.title,
   });
   const specArtifactId = issue.primary_artifact_id ?? "";
-  await seedProjectSurroundings(issue.key, shape.repository);
+  // The server keeps what it last read of a repository - its default branch, or that the App
+  // cannot read it - for five minutes, across rows, and the after-merge checks stand on that
+  // answer once the App is gone. A repository of this seed's own is read afresh here, while the
+  // App is installed, so no answer an earlier row left behind decides them.
+  const repository = `${shape.repository}-${crypto.randomUUID().slice(0, 8)}`;
+  await seedProjectSurroundings(issue.key, repository);
   await seedSessions(issue.key, [PLANNER, REVIEWER, TESTER]);
   await patchIssue(issue.key, {
     assignee: "alice",
     components: { ids: COMPONENT_IDS, mode: "explicit" },
     external_links: [
-      { kind: "github_pr", url: `https://github.com/${shape.repository}/pull/${PULL_NUMBER}` },
+      { kind: "github_pr", url: `https://github.com/${repository}/pull/${PULL_NUMBER}` },
     ],
     labels: ["dispatch", "layout", "redesign"],
     priority: 1,
-    repo: shape.repository,
+    repo: repository,
     route: `session:${PLANNER}`,
     status: "in_progress",
   });

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -144,7 +145,10 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // tuple arm answers its class `store`, the relations the store holds with no projection row behind
 // them, which no arm of the previous release answers: one tuple of each such kind, and a part_of
 // out of a lens, which the fixture states, and in every reading exactly those, from the tuple arm
-// alone.
+// alone. Every reading counts as well: for every node kind its arm table declares,
+// refs.BacklinkCounts must answer what the previous release's count statement answers over that
+// release's view, at every id of the kind an edge of that view, a tuple or a block reference
+// points at and at one id nothing points at.
 //
 // The readings, in order. Before the backfill, one document's rows and the comments name no node
 // beside documents the index wrote, and each of the four arms answers rows of its own. After the
@@ -154,9 +158,8 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // a stamped block row, a stamped block reference and a stamped comment deleted with no
 // retraction, as a build of the previous release deletes them, answer from no arm; a second
 // stamped block row and block reference deleted and written again naming no node answer once
-// each, from the old arm. refs.BacklinkCounts moves exactly as the previous release's rows do,
-// for every node kind its arm table declares, and the store census reports a difference for each
-// of the three deleted rows, which is what the release that deletes an old arm reads first.
+// each, from the old arm. The store census then reports a difference for each of the three
+// deleted rows, which is what the release that deletes an old arm reads first.
 //
 // Last, the announcement: a build of the previous release announced itself naming only its
 // commit, and once every live process serves this build its announcement lists the kinds the
@@ -182,7 +185,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	unwriteTheStoreOfADocument(t, database, graphEdgeLegacyRefKey)
 	before := readEachArm(t, database, "before the backfill", moved, tuple, fixture.stored)
 	projected := before.view
-	projectedCounts := graphEdgeBacklinkCounts(t, database, projected)
+	projectedCounts := before.counts
 	// Each of the four answers rows of its own before the backfill, so finding it empty after
 	// it is the per-row test at work and not an arm with nothing to say.
 	for index, arm := range moved {
@@ -206,7 +209,6 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	}
 	after := readEachArm(t, database, "after the backfill", moved, tuple, fixture.stored)
 	stored := after.view
-	storedCounts := graphEdgeBacklinkCounts(t, database, projected)
 	for index, arm := range moved {
 		if rows := after.arms[index]; len(rows) != 0 {
 			t.Errorf("arm %d (%s, %s) answers %d rows once every row of its table names a node, want none: the store's arm answers them now",
@@ -221,14 +223,10 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 		len(projected), len(stored), strings.Join(edgeShapes(projected), "\n  "))
 	requireEveryMovedKind(t, projected)
 	requireSameEdges(t, "the backfill", "the view answers it before the backfill", projected, "the view answers it after the backfill", stored)
-	for _, kind := range refs.BacklinkKinds() {
-		if !maps.Equal(projectedCounts[kind], storedCounts[kind]) {
-			t.Errorf("the %s backlink counts are %v before the backfill and %v after it",
-				kind, projectedCounts[kind], storedCounts[kind])
-		}
-	}
-	// A count map that holds nothing compares equal to another that holds nothing, so the kinds
-	// the four arms point at must each be counted at all.
+	// Each reading held its counts to the previous release's count over the rows that release
+	// reads, and those rows are the same on both sides of the backfill, so the counts after it are
+	// the counts before it. A count map that holds nothing compares equal to another that holds
+	// nothing, so the kinds the four arms point at must each be counted at all.
 	for _, kind := range []string{"artifact", "issue", refs.BlockNodeKind} {
 		if len(projectedCounts[kind]) == 0 {
 			t.Errorf("the %s backlink counts before the backfill are empty, so their comparison proves nothing", kind)
@@ -257,8 +255,6 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	for _, edge := range rewritten {
 		requireAnsweredOnceByItsOldArm(t, "a row the previous release deleted and wrote again", rolledBack, moved, edge)
 	}
-	rolledBackCounts := graphEdgeBacklinkCounts(t, database, projected)
-	requireCountsMoveWithTheRows(t, moved, storedCounts, after.previous, rolledBack.previous, rolledBackCounts)
 	requireTheCensusReportsEachDeletedRow(t, takeStoreCensus(t, database), deleted)
 
 	requireTheAnnouncementListsTheArmsKinds(t, database)
@@ -375,11 +371,13 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 
 // graphEdgesReading is one reading of the view: the whole view, the previous release's view over
 // the same rows, each of the four arms over a moved kind on its own in the order movedArms
-// answers them, and the tuple arm on its own.
+// answers them, the tuple arm on its own, and refs.BacklinkCounts for every node kind its arm
+// table declares, kind by kind.
 type graphEdgesReading struct {
 	view, previous []graphEdgeRow
 	arms           [][]graphEdgeRow
 	tuple          []graphEdgeRow
+	counts         map[string]map[string]int
 }
 
 // answering is how often the reading answers edge: from the whole view, from each of the four
@@ -408,6 +406,8 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // `store` (storeClass), which the previous release has no arm for, are set apart from both
 // readings first and held, in the whole view and in the tuple arm alike, to exactly the rows the
 // fixture stated of them (stored).
+// It fails as well unless this build's backlink counts are the previous release's over the
+// same rows (requireBacklinkCountsAsThePreviousRelease).
 func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm, stored []graphEdgeRow) graphEdgesReading {
 	t.Helper()
 	reading := graphEdgesReading{
@@ -442,6 +442,7 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	}
 	requireSameEdges(t, fmt.Sprintf("%s, arm %d (graph_tuples)", stage, tuple.place),
 		"the tuple arm answers it", tupled, "the previous release reads it from a row that carries its node", marked)
+	reading.counts = requireBacklinkCountsAsThePreviousRelease(t, database, stage, viewStored)
 	return reading
 }
 
@@ -574,9 +575,10 @@ func requireEveryMovedKind(t *testing.T, rows []graphEdgeRow) {
 
 // requireTheTupleArmRendersTheList fails unless every kind the tuple arm answers is one of
 // refs.TupleKinds, a block's part_of to its document read as the in_document it renders, and
-// every kind of that list but the pointer kinds the fixture writes none of and the kinds in
-// unwritten, which another test's fixture writes, is answered: the arm renders the list the
-// announcement carries and nothing else. The list holds authored_by and part_of for the class
+// every kind of that list but the pointer kinds the fixture writes none of, the kinds in
+// unwritten, which another test's fixture writes, and the build's capabilities, which name no
+// relation (processes.Capabilities), is answered: the arm renders the list the announcement
+// carries and nothing else. The list holds authored_by and part_of for the class
 // `store`, so the tuples of those kinds the fixture holds out of other nodes - a comment's
 // authored_by, a block's part_of its parent - are kept out of the arm by the reading itself,
 // which holds every row outside that class to the previous release's (readEachArm).
@@ -596,7 +598,8 @@ func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow, unwritt
 	}
 	pointers := pmdoc.LinkKinds()
 	for _, kind := range list {
-		if answered[kind] == 0 && !slices.Contains(unwritten, kind) && (!slices.Contains(pointers, kind) || kind == "serves") {
+		if answered[kind] == 0 && !slices.Contains(unwritten, kind) && !slices.Contains(processes.Capabilities, kind) &&
+			(!slices.Contains(pointers, kind) || kind == "serves") {
 			t.Errorf("the tuple arm answers no %s edge, which refs.TupleKinds lists and the fixture writes: %v", kind, answered)
 		}
 	}
@@ -756,63 +759,77 @@ func scanGraphEdgeRows(t *testing.T, database *store.Store, what, statement stri
 	return read
 }
 
-// graphEdgeBacklinkCounts counts the inbound edges of every node the view points at, kind by
-// kind, as a list beside a row counts them. The addresses come from the reading taken over the
-// projections and are the same every time, so a node that gains or loses an inbound edge is
-// counted on both sides rather than falling out of one.
-func graphEdgeBacklinkCounts(t *testing.T, database *store.Store, rows []graphEdgeRow) map[string]map[string]int {
+// backlinkTargets is every id of kind that an edge of the previous release's view, a tuple or a
+// block reference points at when it is read, sorted, and one id nothing points at, which must be
+// absent from every answer. The tuples and the block references are read beside the view because
+// each can point where the view does not: a tuple outlives the row a build of the previous
+// release deleted, and a pointer at a block retyped out of its allowed types is listed by no arm,
+// so a count that answered either would rise at an id no edge of the view names.
+func backlinkTargets(t *testing.T, database *store.Store, kind string) []string {
 	t.Helper()
-	targets := map[string][]string{}
-	for _, row := range rows {
-		if !slices.Contains(targets[row.toKind], row.toID) {
-			targets[row.toKind] = append(targets[row.toKind], row.toID)
-		}
+	rows, err := database.Pool.Query(context.Background(), `
+		select to_id from `+previousGraphEdges+` where to_kind = $1
+		union select to_id from graph_tuples where to_kind = $1
+		union select to_id from block_refs where to_kind = $1
+		order by to_id
+	`, kind)
+	if err != nil {
+		t.Fatalf("read the %s ids an edge, a tuple or a block reference points at: %v", kind, err)
 	}
-	counts := map[string]map[string]int{}
-	for _, kind := range refs.BacklinkKinds() {
-		ids := targets[kind]
-		slices.Sort(ids)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the %s ids an edge, a tuple or a block reference points at: %v", kind, err)
+	}
+	return append(ids, "nothing-points-at-this")
+}
+
+// requireBacklinkCountsAsThePreviousRelease fails unless refs.BacklinkCounts answers, for every
+// node kind its arm table declares and at every id backlinkTargets reads for that kind, what the
+// previous release's count statement (docstest.ViewBacklinkCountSQL) answers over
+// previousGraphEdges plus one for each row of the tuple arm's class `store` that points there
+// (stored, which readEachArm holds to the fixture on its own), naming the reading, the kind, the
+// id and both counts at each id the two differ at. The previous release has no arm for that
+// class, so its count statement counts none of those rows. It answers this build's counts, kind
+// by kind.
+func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Store, stage string, stored []graphEdgeRow) map[string]map[string]int {
+	t.Helper()
+	// The arm table declares a kind for each node kind the registry resolves and for no other, so
+	// its kinds are the node kinds this build reads, the list refs binds where the statement
+	// binds $3.
+	kinds := refs.BacklinkKinds()
+	counts := make(map[string]map[string]int, len(kinds))
+	for _, kind := range kinds {
+		ids := backlinkTargets(t, database, kind)
 		count, err := refs.BacklinkCounts(context.Background(), database.Pool, model.Actor{}, kind, ids, nil)
 		if err != nil {
-			t.Fatalf("count %s backlinks: %v", kind, err)
+			t.Fatalf("%s: count %s backlinks: %v", stage, kind, err)
+		}
+		previous := docstest.ViewBacklinkCounts(t, database.Pool, previousGraphEdges, kind, ids, kinds, nil)
+		for _, row := range stored {
+			if row.toKind == kind && slices.Contains(kinds, row.fromKind) && slices.Contains(ids, row.toID) {
+				previous[row.toID]++
+			}
+		}
+		if !maps.Equal(count, previous) {
+			named := false
+			for _, id := range ids {
+				if count[id] != previous[id] {
+					named = true
+					t.Errorf("%s: refs.BacklinkCounts counts %d at the %s %s, and the previous release's count statement over %s with the store class's rows counts %d",
+						stage, count[id], kind, id, previousGraphEdges, previous[id])
+				}
+			}
+			// Both answer only ids they were asked about, and never a zero, so this is reached
+			// only by an answer neither statement can give; it is reported whole rather than
+			// passed over.
+			if !named {
+				t.Errorf("%s: refs.BacklinkCounts counts the %s backlinks %v, and the previous release's count statement over %s with the store class's rows counts %v",
+					stage, kind, count, previousGraphEdges, previous)
+			}
 		}
 		counts[kind] = count
 	}
 	return counts
-}
-
-// requireCountsMoveWithTheRows fails unless refs.BacklinkCounts moved between two readings exactly
-// as the previous release's view did over the rows of the moved kinds: each node's count is the
-// count before, plus each such row pointing at it that the previous release reads now and did not
-// then, less each it read then and does not now. The rows of every other arm are the same in both
-// readings, so this is what the previous release's count reads over the same rows.
-func requireCountsMoveWithTheRows(t *testing.T, moved []movedArm, before map[string]map[string]int, previousBefore, previousNow []graphEdgeRow, now map[string]map[string]int) {
-	t.Helper()
-	want := map[string]map[string]int{}
-	for kind, counts := range before {
-		want[kind] = maps.Clone(counts)
-	}
-	move := func(rows []graphEdgeRow, by int) {
-		for _, row := range rows {
-			if _, ok := movedArmOf(moved, row); !ok {
-				continue
-			}
-			if want[row.toKind] == nil {
-				want[row.toKind] = map[string]int{}
-			}
-			want[row.toKind][row.toID] += by
-			if want[row.toKind][row.toID] == 0 {
-				delete(want[row.toKind], row.toID)
-			}
-		}
-	}
-	move(previousNow, 1)
-	move(previousBefore, -1)
-	for _, kind := range refs.BacklinkKinds() {
-		if !maps.Equal(now[kind], want[kind]) {
-			t.Errorf("after the rollback the %s backlink counts are %v; the previous release's rows count %v", kind, now[kind], want[kind])
-		}
-	}
 }
 
 // requireTheCensusReportsEachDeletedRow fails unless the store census reports a difference at each
@@ -1444,7 +1461,7 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	// ones every migrated store holds and no other.
 	stored := seededCatalogueRows(t, database)
 	before := readEachArm(t, database, "before the backfill", moved, tuple, stored)
-	projectedCounts := graphEdgeBacklinkCounts(t, database, before.view)
+	projectedCounts := before.counts
 	for index, arm := range asked {
 		t.Logf("arm %d (%s, %s) answers %d rows before the backfill", arm.place, arm.relation, arm.renders, len(before.arms[firstAsked+index]))
 		if len(before.arms[firstAsked+index]) == 0 {
@@ -1481,12 +1498,10 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 		}
 	}
 	requireSameEdges(t, "the backfill", "the view answers it before the backfill", before.view, "the view answers it after the backfill", after.view)
-	storedCounts := graphEdgeBacklinkCounts(t, database, before.view)
-	for _, kind := range refs.BacklinkKinds() {
-		if !maps.Equal(projectedCounts[kind], storedCounts[kind]) {
-			t.Errorf("the %s backlink counts are %v before the backfill and %v after it", kind, projectedCounts[kind], storedCounts[kind])
-		}
-	}
+	// Each reading held its counts to the previous release's count over the rows that release
+	// reads, and those rows are the same on both sides of the backfill, so the counts after it are
+	// the counts before it. A count map that holds nothing compares equal to another that holds
+	// nothing, so the kinds the ask arms point at must each be counted at all.
 	for _, kind := range []string{"artifact", graphstore.KindSession} {
 		if len(projectedCounts[kind]) == 0 {
 			t.Errorf("the %s backlink counts before the backfill are empty, so their comparison proves nothing", kind)
@@ -1523,8 +1538,6 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	for _, edge := range rewritten {
 		requireAnsweredOnceByItsOldArm(t, "a row the previous release deleted and wrote again", rolledBack, moved, edge)
 	}
-	rolledBackCounts := graphEdgeBacklinkCounts(t, database, before.view)
-	requireCountsMoveWithTheRows(t, moved, storedCounts, after.previous, rolledBack.previous, rolledBackCounts)
 }
 
 // askArmsFixture is what seedAskArmsFixture wrote that the later steps name: the issue's document

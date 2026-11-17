@@ -484,6 +484,10 @@ An append queued behind that commit finds a consumed credit and writes nothing t
 Each author is therefore in exactly one of F, R, or a committed version's list.
 A later edit gets a new credit and remains pending for the next version, even when the earlier edit's version is still committing.
 A settlement that writes no version leaves R intact.
+In an issue room, whose settlement writes a version of each document whose fragment changed, a browser update's credit also names the documents whose fragments the update changed (`noteChangedFragments`, `inflightCredit.documents`).
+Its append writes its R rows under each of those documents rather than under the tree artifact that stored the update, a row for the tree's own fragment under the tree (`pendingAuthorsIn`), so a row's `artifact_id` is the document it credits.
+The room's settlement reads R for every document of the room (`readRoomPendingAuthors`), lists on each document's version that document's R rows and in-flight credits alone (`roomCredit`), and deletes only the rows of the documents it versions;
+a document it writes no version of keeps its rows for its next version.
 An upload whose replacement changed the document lists its uploader, deletes only the R rows whose writing update its room's instance held (each row records that update's version, `written_through`;
 the instance holds every update through the head it loaded and each it took since, `roomHold`), and consumes only the F credits that existed at its last room read (`liveWrite.forkSeq`);
 a row another task's room stored, and a later credit, remain pending.
@@ -727,12 +731,10 @@ every document write takes its transaction from the ledger and refuses a context
 `SeedText`, a rebuild (`RebuildDocument`), the version writes, every write that runs through `applyLive` (`docs/mutation.go`) - an upload's replacement, an edit batch, an accepted or rejected suggestion, an ask's edited text and its answer or resolution, a comment's anchor mark - and a comment's or suggestion's margin record, which runs through `applyMargin` on the same steps that open and record an `applyLive` write (`openLiveOperation`, `recordLiveOperation`).
 `applyLive` weighs each of its writes by what it leaves (`docs/growth.go`);
 a margin record leaves the rendering and the anchor marks as they were, so `applyMargin` weighs it by the margin bound alone and reuses the rendering the transaction's last operation kept (`liveWrite.tree`) rather than reading and rendering the document again.
-An answer the document has no room for is left out of its block, which records who answered and when, and kept on its ask.
+An answer is no text of the document's: it is held on its ask's node alone (dispatch://INFRA-1150 R3), and the copy the server keeps in its block for the release before's pages while two builds serve (`rollWindowAskAttributes`) is weighed by no write.
 The server writes outside `applyLive` and `applyMargin` are a rebuild, settlement's repairs, the block-id backfill and the sweep of unrecorded marks.
-Of those, a rebuild and settlement's repairs carry caller text.
-A rebuild's supplied markdown is weighed as a new document's rendering is (`SeedText`), and its latest version, the server's own text, is restored whatever it weighs.
-Settlement's is the answer an ask keeps, written back into a block that returns to the document:
-settlement weighs each such answer and leaves out the ones the document has no room for (`withholdAnswers`).
+Of those, a rebuild alone carries caller text:
+its supplied markdown is weighed as a new document's rendering is (`SeedText`), and its latest version, the server's own text, is restored whatever it weighs.
 A joined operation never writes the room:
 it runs on the transaction's fork of the room's document (`docs/livewrite.go`), appends its update inside the transaction, and reads through the same fork.
 A document no room holds is forked from the store (`coldFork`), and the write loads no room while it runs.
@@ -868,7 +870,7 @@ the document websocket's admission check (`loadTree`), a read outside any transa
 a repair reads the tree inside the transaction that writes it (`rewriteLive`), and the unrecorded-mark sweep (`sweepUnrecordedMarks`) inside the transaction that unmarks it.
 A room's load reads the live tree before ygo hands the room to anyone (`onLoadDocument`).
 A write reads its transaction's fork, with no exception:
-every operation that changes the document - `ReplaceText`, `MarkQuote`, `SetBlockAttributes` and the rest of `applyLive`'s callers - takes it from a transaction its caller joined first (`Docs.Join`), and refuses one that didn't (`errUnjoined`).
+every operation that changes the document - `ReplaceText`, `MarkQuote`, `KeepAskBlockInStep` and the rest of `applyLive`'s callers - takes it from a transaction its caller joined first (`Docs.Join`), and refuses one that didn't (`errUnjoined`).
 Main's own `applyLive`/`applyJoined` fold (#1693) removed the unjoined branch this used to carve out as a tests-only exception, which walked the room's own live document directly inside `Server.Apply`, holding no lock across its callback, and so could read a peer's write halfway through as a tree outside the schema;
 every write now reads through its own transaction's fork instead, which is always a consistent copy no peer's concurrent write can tear.
 A tree a read returns shares no map or slice with the document it was read from (`pmdoc.Read` copies each mark's attributes and every list or object an attribute holds), so a reader that edits its tree changes nothing a later read of the replica meets (`TestEditingALiveReadsTreeChangesNoLaterRead`).
@@ -978,7 +980,7 @@ its connected browsers, writer slot, settlement timer, pending authors) only whi
 `unusedLocked` is the one list of those holders.
 Every lookup takes a state through `lockState` or `lockExistingState`, which never hand out a forgotten state, and ends with `unlockState`, which forgets a state that holds nothing once its room has gone, so whatever ends last - ygo's `OnUnloadDocument` when the room goes, or a holder's own end - releases it.
 The `doc_settlements_pending` row (migration 0063) says only that a settlement is owed and records its latest edit source;
-migration `0084`'s `doc_pending_authors` rows hold the authors.
+migration `0084`'s `doc_pending_authors` rows hold the authors, each under the document it credits: an issue room's update writes one row for each document whose fragment it changed.
 A browser update credits only the peers connected for that update, never the room's accumulated state, in the room-local F record.
 Its append moves an unconsumed credit to R under the document lock; a joined write records its own authors in R when its content commits.
 A version reads R under that lock and F from its own room, deletes the R rows it listed and consumes its local F only after its commit.
@@ -1849,7 +1851,7 @@ The step ticks at `docs.BlockIndexReconcileInterval` for as long as the process 
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, on the shared pool, and dials no connection (`TestATickWithNothingOwedReadsNoTableWhole`).
 `graphcensus.AsksOwed` reads its tables to the end when nothing is owed, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, until it finds nothing: this build's create sites write their nodes and markers, so only another build writes a row it finds.
 A session advisory lock keeps two processes from running it together: a booting process waits for it, and a tick that finds it held skips.
-The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed` once a pass has run, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
+The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed`, one number, once a tick has counted it, and whose three parts each count logs, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, beside `DISPATCH_TEST_HOOKS=1`, keeps every phase from running, and `backfill-graph-store` runs the first phase.
 
 A node's `state` takes five values (`graphstore.NodeStates`): `live`, `gone`, `proposed`, `settled` and `overtaken`, and its `visibility` two, `project` and `author`.
@@ -1865,6 +1867,18 @@ In the caller's transaction it takes the issue's row `for no key update`, then w
 Each node's visibility is `graphstore.VisibilityFor` of what it asked for and the proving credential: a node at `author` is made by the proving credential, so its author's reads match it, and one at `project` by the recorded actor, the session a bearer's body names, as a comment's is;
 a node written on the shared bearer states no `authored_by` and makes no node of the session its body claims.
 `envoy-dispatch census --store` owes a `person` or `session` node to the author of each such node that holds an asserted `authored_by` (`graphcensus`'s `reasoningAuthored`).
+
+A run of the command bar is an `interaction` node (dispatch://INFRA-1950), and `going_requests` and `going_events` are its projections (`api/going.go`).
+`recordGoingRequest` writes, in its one transaction and through `graphstore.InteractionFacts`, the node at the run's uuid, always `author` and made by the whole credential the `POST` proved, carrying `words`, `ends_at` and the run's project, with its `authored_by` and the author's node where `graphstore.AuthorOf` names one, and then the `going_requests` row, whose `author` is that `made_by`.
+`appendGoingEvent` is the one path of every frame - the answer's, its ending, a reader's at the deadline and the sweep's, through `endGoingRun` - each in a transaction of its own that takes the run's interaction node row `for no key update` first, then the run's row `for key share`, appends one `frame` value tuple (`graphstore.FrameTuple`, its text `graphstore.FrameValueSQL`), then writes the `going_events` row, and takes no revision fence;
+a run with no node, which a pod of the release before records, gets it first from its row through `graphcensus.WriteRun`, the backfill's writer for one run.
+The read registry holds `interaction` through `credentialAuthoredKind`, so a run reaches the credential that asked it alone, and its backlink count is the `changed_by_run` tuples into it.
+An edge at a run shows its words cut at 240 runes, as every edge's excerpt is, and a read of the run's own address, `dispatch://interaction/<uuid>` (`refs.Node`), answers them whole as the node's `text`, behind the same predicate; the person page lists a run to the credential that asked it, titled by its words and opening nothing.
+A run is kept, row, frames and node, until `envoy-dispatch erase --node interaction:<uuid>` removes all three (`grapherase`'s `runTables`, locked after the node row, the run's row before its frames); `sweepGoingRequests` ends the overdue runs whose `ends_at` passed within the last day (`goingSweepWindow`) and deletes none, the boot pass ends every older one, and `contracts.GoingRequestTTL` is read by nothing in this build.
+The sweep reads that day as one range of `going_requests_ends_at` (`goingOverdueRuns`, migration `20261116232634`, built concurrently), so its read does not grow with the runs kept; a run whose `ends_at` passed longer ago with no terminal frame stored is ended by the boot pass, which every process runs once at boot before `RunMaintenanceSweep`'s first tick and under no lease (`EndGoingRunsOverdueAtBoot`, reading `goingEveryOverdueRun`, the same index from its first entry up to now, and logging how many runs it ended and how long it took), or by its reader if one reads it first (`streamGoingAnswer`, on `readGoingStream`'s `PastDeadline`), each through `endGoingRun`.
+Migration `20261116205055_interaction_nodes` writes the node, author and `frame` values of every run recorded before it; `backfill-graph-store` mends what an older pod writes during a roll by anti-join, row by row (`graphcensus`'s `backfillRuns`, `backfillRunFrames`, `backfillGoneRuns`, the last stating `gone` an interaction whose row is gone).
+`census --store` holds `interaction` to `going_requests`, `frame` to `going_events`, and the `visibility` and `state` columns of each interaction, lens, finding, risk, constraint and lens kind to its newest tuples (`baseAttributeCensus`); none refuses on zero rows.
+The erase's blockers are only the tuple kinds the census digests for the stating node's row (`graphcensus.DigestedTuple`), plus a finding or risk under an erased lens and a reasoning node or run whose `authored_by` names an erased person.
 
 The pointer tuples of those kinds and a risk's place are held to one table of type rules (`graphstore`'s `pointerRules`, dispatch://INFRA-1950/spec#b-r-constraint-risk):
 
@@ -2265,7 +2279,7 @@ Text a caller writes reaches the parser with line feeds alone:
 in every edit operation's text before any check reads it (`applyOperation`:
 a replace's `with`, an insert's markdown whether it becomes blocks or table rows, a retype's attributes);
 in a suggestion's `replace_with` when it is created and when it is accepted;
-in the attributes written onto a typed block (`SetBlockAttributes`, `pmdoc.LineFeedAttrs`), and in an answer's text, which its ask block carries;
+in an answer's text, which the ask's node holds;
 and in a block ask's edited question and options.
 A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
 the block ids an edit carries are the browser editor's own offsets, and a ProseMirror document holds no carriage return, so that normalisation shortens no offset a caller sent.
@@ -2990,53 +3004,31 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Each writes its row through `docs.WriteReview`, which appends the review's event and keeps that event's sequence on the owner in the row (`artifact_reviews.event_seq`, migration 0120, in the same transaction; null for a review recorded before it).
   Migration 0120's deferred constraint trigger `artifact_reviews_event_seq` writes the same column at the commit of any transaction that inserted a review without it - the release before 0120, still serving during a rollout and again during a rollback, inserts every review naming no `event_seq` - from that transaction's own event of the review's type, document and version on the owner, which the owner's row lock keeps the newest there until the commit;
   a row `WriteReview` already sequenced is left as it is.
-  The third review is the carry (`docs.carryApproval`, `docs/approval_carry.go`, run by `writeVersionTx` after `MoveApprovalAsk` inside the version's own transaction, and by an issue's reopen for a version that a settlement wrote while the issue was closed, after the reopen's move of the request):
-  a human's answer to a decision block, when it is the whole change since the version he approved, carries his approval to the version it writes rather than leaving it stale and asking him to approve again what he just decided.
-  Who answered what is the asks rows of this document (`block_artifact_id` and `block_id`, read and locked by `loadAskBlocks` as settlement reads them, under the owner row every version write holds), never N's block attributes:
-  a peer on the document socket writes those as it likes, and settlement writes them back from the row only for a block it can read.
+  The third review is the carry (`docs.carryApproval`, `docs/approval_carry.go`, run by `writeVersionTx` after `MoveApprovalAsk` inside the version's own transaction, by an issue's reopen for a version that a settlement wrote while the issue was closed, after the reopen's move of the request, and by the one route that writes a later document version outside `writeVersionTx`, an upload replacing a document, through `docs.CarryUploadedApproval` after `MoveApprovalAsk`):
+  the document's newest review, an approval of version A, is carried to the version N just written when every difference between the two is one the carry rule admits, rather than leaving it stale and asking its reviewer to approve again what nobody changed.
+  A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3), so answering changes no byte of a document once the fleet is one build and supersedes no approval of it;
+  what changes the bytes is the old second copy of the answer leaving every ask block on the first accepted write (R10), and, while two builds serve, the roll window keeping it in step with the asks row (`rollWindowAskAttributes`).
 
-- Every ask node of N must be held once (`askNodes`;
-  a repeated block id, which settlement reads no block under, refuses the carry), backed by a row of this document, read by settlement, and as its row has it - a node no row backs (one forged over the socket, or one whose update the room has not credited yet), one whose server attributes are not what settlement's own writer leaves from its row (`blockAsItsRowHasIt`:
-  `setAskServerAttributes` run on a copy of the attributes, with the answer and without it, must change nothing one way or the other - so a copy's `copied_from`, an unreadable block's `invalid`, a `state`, `answered_by`, `answered_at`, `selected` or `answer` other than the row's, a selection a peer forged onto a decided block, or a block inserted again under an answered row's id, which shows `open` until settlement writes the answer back, each refuse it, while an answer settlement withheld for room (`withholdAnswers`) is as the row has it), or the block of a decided row (`answered` or `resolved`) that settlement cannot read (`parseAskBlock`) or that asks other wording than the row was decided on (`askBlock.asks` against `model.NewAskEditPrevious`, the test settlement makes before it writes the decided wording back) refuses the carry (`rowBackedBlocks`, whose test of one node against its row is `blockAsSettlementLeavesIt`); an open row's body is free.
-  N is then compared with the version the candidate approved, A, alone - no version between them is read:
-  each person who answered a block of N (`answerers`, the distinct `model.CanonicalLogin` of the answers' users) is a candidate H whose latest review of the document, in any state, must be `approved` (at version A) with no `changes_requested` by anyone newer than it, and A readable (`candidateApproval`;
-  A's ask nodes are read as N's are, through `askNodes`, and a stored version's read-back repairs a repeated block id by minting the second block a fresh one, so an A that held an id twice shows a block N never had and carries nothing);
-  `CutDecisionBlocks` of A's stored markdown and of N's (cut once for every candidate, `sync.OnceValues`) must be equal byte for byte (`docs.CutDecisionBlocks`:
-  the markdown parsed and rendered again with every ask block left out wherever it stands - a blockquote, a list item, a callout - both sides through today's renderer, so a version an older renderer stored compares as this one writes it, and a container the cut empties keeps one empty paragraph), every ask block of N that is not as A held it - A holds a block under its id, and that stored block is as the row of N's block has it by the same test N's own blocks pass (`heldAsItsRow`, `blockAsSettlementLeavesIt`:
-  the whole server-owned set, and a decided row's wording, against the row at N's write, which is exact since a decided row's wording is frozen and its selection, text and state move only with a new `answered_at` or a resolution, LEGION-752) - added since A, answered or re-answered since by anyone, resolved since, or shown by A other than its row has it (a selection, an answer, a copy's provenance or a question other than its row's, approved inside the settle window before settlement wrote the row back over it) - must be answered by H after his approval (the row's `answer.at` after the review's `created_at`:
-  a block A did not hold, back with an answer he gave before A, is his but no action of his since, and a block A showed other than its row carries only when H himself answered it again since his approval), at least one block of N must not be as A held it, while a block A held as its row has it is content he approved whoever answered it before, and every ask block of A must still stand in N (`carryVerdict`, a pure rule over the rows;
-  `carryApproval` does the reads and the writes around it).
+- Every ask node of N must agree with its node (`asksAgreeWithTheirNodes`):
+  held once (`askNodes`; a repeated block id, which settlement reads no block under, refuses the carry), and either indexed by a row of this document (`loadAskBlocks`, read and locked as settlement reads them, under the owner row every version write holds) that it agrees with (`askAgreesWithItsNode`: no `invalid`, none of the server-owned attributes or exactly what the roll window writes from the row, and, for a decided row, the wording it was decided on, `askBlock.asks` against `model.NewAskEditPrevious`), or a copy of an ask on another document of its owner (`readCopiedAskSources`, settlement's own classification) that agrees with that source the same way (`copyAgreesWithItsSource`).
+  A node no row backs and no source explains - one forged over the socket, or one whose update the room has not credited yet - leaves N's decisions unknown, and nothing is carried.
 
-- Two candidates' verdicts can both hold, their approved versions straddling a block's absence; should two pass, nothing is carried rather than one guessed.
-  The carry writes an `approved` review pinned to N in the approval's own actor, `reason` `Carried forward from the approval of version <A>: the answer to a decision block was the whole change since it.`, and `artifact.approved`, ahead of the version's own `artifact.version`;
-  an approval request open at the carry is answered first, `Approve` in H's name with that reason as its text (`update asks`, `ask.answered` with H's actor), and the review's `ask_id` names it, null otherwise.
-  A version holding no ask block carries nothing by the answer and reads no row;
-  one holding no answered block, or holding every block as A held it - an answered block the agent deleted and inserted again, whose row stayed answered, is no change of his - carries nothing by the answer, whatever a comparison would say.
-  An edit outside the blocks before the answer, an approval by someone else only, H's latest review requesting changes, a newer `changes_requested` by another person, a block added since A left open or resolved, a block A held open that another person answered since (or that was resolved since), a block A held that the agent removed, an agent's reword of a decided block or a selection forged onto one landing in the version his answer writes (the version settlement then writes the row back into is compared on its own), an approved version that showed a decided block other than its row (a reword or a selection the human approved inside the settle window, before settlement wrote the row back), a block he answered deleted and inserted again, whether A held it or not, two people's answers in one version, a copy's document when its source is answered, and a copy planted in the document since A (answered in H's name through its source, but no row of this document's) all carry nothing by the answer, and the approval reads `stale` or `changes_requested` as before unless the version's text is the approved text (the restore, below);
-  a stored version this release's parser or renderer refuses (`pmdoc.ErrSchema`) is logged at WARN and carries nothing rather than failing the version write.
-
-- The carry's second rule is the restore (`restoresVersionText`), which runs when the answer carries nothing, and alone on the one route that writes a later document version outside `writeVersionTx`, an upload replacing a document (`storeArtifact` calls `docs.CarryRestoredApproval` after `MoveApprovalAsk`; an upload writes no answer, since the server takes a block's server-owned attributes off it):
-  a version whose stored markdown is byte for byte that of the version the document's newest review approved, A - an accidental edit undone exactly, or a version a route wrote over a document that changed nothing - and whose every ask block is as its row has it (`askNodes` and `rowBackedBlocks` over the version's own tree, read once for all three rules on a version write, `versionBlocks`, and on the upload route over its read-back only once the bytes match) carries that approval, since it holds nothing its reviewer has not agreed to.
-  The row test is what the bytes cannot say: a block A showed open that someone answered since comes back in A's bytes, showing open, while its row holds that answer, which settlement writes into the next version, so it carries nothing, and an approval request open then stays open.
-  Only the newest review carries so: a newest `changes_requested` leaves no approval standing, and an older approval was superseded by the newest one.
+- The first rule is the restore (`restoresApprovedText`): N's stored markdown byte for byte that of A - an accidental edit undone exactly, or a version a route wrote over a document that changed nothing - carries the approval, since it holds nothing its reviewer has not agreed to.
   Only a stored A of N's size is read (`octet_length`, which reads a stored text's size without decompressing it), so the write of any other text reads no document.
-  A's markdown is compared as it was stored, so a renderer change between A and N leaves N a change, as N's diff against A shows, and a version whose decision blocks differ from A's is the answer carry's to judge, or the third rule's.
-  The restore writes the review, the event and the request's answer the answer carry writes, with `reason` `Carried forward from the approval of version <A>: this version's text is that version's, unchanged.`, whose opening is the daemon's `intake.CarriedApprovalReasonPrefix`, so the restored approval queues no parked root and reopens a design gate as a carried approval does;
-  the write that restores supersedes no approval, so its advice carries no `superseded_approval`.
-  A carried review records the `kind` of the review it carries, since it is that review's approval it follows: the newest review of a `plan.md` is the plan review that approved A, so a restored plan version reads `kind` `plan_review` and its chip still says "Approved by plan review", never a person's approval in the restoring session's name.
+  Its `reason` is `Carried forward from the approval of version <A>: this version's text is that version's, unchanged.`
 
-- The carry's third rule is the reopen carry (`reopenedApproval`), which runs when the restore carries nothing:
-  a version N whose every ask block is as its row has it, that holds a block whose row is open, that renders, with every such block shown `state="resolved"` as an issue's close writes it (`withOpenBlocksResolved`), byte for byte as the version the document's newest review approved, A (`restoresVersionText`, which reads only a stored A of that rendering's size), and whose every open row is an ask the close withdrew before A was written and the reopen restored after it (`reopenRestoredSince`), carries that approval.
-  It is the approval a person gives from the document's header after a reopen and before the settlement the reopen left owed: the review names the latest version, which a settlement while the issue was closed wrote with the close's resolved blocks, and the next version differs from it only in the blocks that the reopen wrote open.
-  Before a closed issue's document settled, such an approval named the version from before the close and the settlement after the reopen wrote no version, so it stood.
-  So the rule carries over exactly the questions the close withdrew and the reopen opened again, each open when the issue closed, and no other question:
-  an open row passes only when, of its ask's state events (`ask.opened`, `ask.answered` and `ask.resolved`, read through `events_ask_payload_id`), the last before the `artifact.version` that recorded A is the close's `ask.resolved` of kind `withdrawn` and the one after it is the `ask.opened` that `restoreIssueAsksTx` appended;
-  every transaction appending an issue's event locks the issue's row first, so those events' ids follow the order their transactions committed in.
-  A block A shows resolved for any other reason carries nothing, though the settlement after the reopen opens it:
-  a block the closed issue's settlement saved resolved with no ask (typed inside the close margin, written by a process that had not heard the close, or left unindexed by a settlement before the close that stopped short), whose ask that settlement opens new, and the block of an ask a settlement retracted, back inside the close margin, which that settlement restores;
-  a block A did not hold, or held open, makes the rendering differ from A.
-  The asks' events are read first, and N is rendered with its open blocks resolved only once every open row passes, so a version write whose open blocks hold any other ask renders nothing more.
-  Its review, event and request's answer are the restore's, with `reason` `Carried forward from the approval of version <A>: this version's text is that version's, with the questions it showed resolved open again.`
+- The second is the carry cases (`carryVerdict` over `carryCases`, which compose): A's stored tree and N's, each taken through every case, which takes out of a tree what the case may change, must render byte for byte the same, at least one case must have taken something out, A's stored markdown must be what this build renders A's tree to (so what is compared is the bytes the person approved, and a renderer change between A and N is a difference no case carries), and every typed block id of A must still stand in N (`blockIDsStand`).
+  The one case today is R10's (`attributeRemovalCase`): the eight server-owned attributes of every ask block (`askServerAttributeNames`, the one place the eight are spelled, read by the carry alone), which the first accepted write on a fleet of one build drops, and which an answer, a close or a reopen written while two builds serve keeps in step with the asks row, so the release before's answer carry and reopen carry are cases of it.
+  Its `reason` is `Carried forward from the approval of version <A>: ` and the change of each case that took something out.
+  The readings of R2, the conversion of D6 and the restore of D1 join `carryCases` as further cases of the same rule.
+
+- Every carried `reason` opens with the daemon's `intake.CarriedApprovalReasonPrefix`, so a carried approval queues no parked root and reopens a design gate as a carried approval does;
+  the write that carries supersedes no approval, so its advice carries no `superseded_approval`.
+  The carry writes an `approved` review pinned to N in the approval's own actor and `artifact.approved`, ahead of the version's own `artifact.version`;
+  an approval request open at the carry is answered first, `Approve` in that actor's name with the reason as its text, and the review's `ask_id` names it, null otherwise.
+  A carried review records the `kind` of the review it carries, since it is that review's approval it follows: the newest review of a `plan.md` is the plan review that approved A, so a restored plan version reads `kind` `plan_review` and its chip still says "Approved by plan review", never a person's approval in the restoring session's name.
+  Only the newest review carries: a newest `changes_requested` leaves no approval standing, and an older approval was superseded by the newest one.
+  A stored version this release's parser or renderer refuses (`pmdoc.ErrSchema`) is logged at WARN and carries nothing rather than failing the version write.
 
 - Every document read carries `approval` (`draft | awaiting | approved | stale | changes_requested`, with `latest_version`, the latest review's `version/by/at/reason/ask_id` and `seq`, and `requested_by` and `waiting_on` while awaiting, the request's turn by `waitingOnExpression`, so an agent whose own revision moved its request, which sends it no event, reads that the request waits on it);
   `at` is the review's `created_at`, which its event shares, and `seq` that event's sequence on the document's owner, absent for a review recorded before migration 0120 and on every read the release before it serves during a rollout or a rollback, so a missing `seq` does not prove an older review:
@@ -3345,13 +3337,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
   a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
-  with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
+  with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2, with a line that names `--allow-empty`.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
   `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
   `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
-  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
-  Those two read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
+  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read, for arguments it does not take, and for a file or a device on stdout that does not take all of its text, such as a full disk, with `spec-check: <subcommand>: cannot write standard output: <error>` on stderr.
+  A pipe whose reader has gone ends the command by SIGPIPE instead, with no line.
+  A stdout that is closed at the start reads as `/dev/null`, since the Go runtime opens `/dev/null` on it before the program starts, so the text is lost as with `>/dev/null`.
+  `changes` and `checks` read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
   the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
   `runnerlog.Say` writes every line but the usage and the JSON, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
@@ -3362,6 +3356,77 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Its cache entry is `spec-check-<os>-<arch>-go<version>-<hash>`, saved only on a miss in a `push`, `schedule` or `workflow_dispatch` run, and `ci-caches.yaml`'s `spec-check` job, a job of its own, fills it on every push to main.
   `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
   a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
+
+- `specgraph.ApprovedFile` is the one definition of `approved.json`, the approved spec as a file holds it: `{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}`, with `at` an RFC 3339 time as `time.RFC3339Nano` writes it, with an upper-case `T` and `Z`.
+  The reader refuses an `at` with a lower-case `t` or `z`, which RFC 3339 allows, since the writer writes upper case.
+  `specgraph.WriteApproved` writes it as `specgraph.ReadApproved` reads it, so the writer and the commands that read the file share that one definition; no route of the Dispatch server writes the file yet.
+  `ReadApproved` reads it through the package's one strict JSON reader (`decodeJSON`), which refuses a field that it does not know or that is written in other letters, a field that one object gives two times, and a byte that is not UTF-8;
+  it names a value of another type than the form needs, such as a string in the place of a version number or a time that is not RFC 3339, in its own words, `specgraph: approved spec: it is not in the form <form>: the value at "<JSON pointer>" is of another type`, where the form gives the type of each value, since `encoding/json/v2` names a Go type and picks its verb, "cannot" or "unable to", once in each process;
+  then `ReadApproved` refuses a file with no `nodes` list (`null`, `{}` or `"nodes": null`), and it reads the whole file, with no bound on its size.
+
+- `cmd/spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]` compares the spec files of one directory with an approved spec in the form of `approved.json` (`cmd/spec-check/compare.go`), by `specgraph.Compare`'s rules: unapproved-id, unapproved-text and removed-id.
+  A node in a text the approved spec never held is exit 1, one line on stderr for each, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, and `spec-check: <dir>: the comparison fails on <n> nodes` on stdout.
+  Otherwise it is exit 0, with `spec-check: <dir>: the approved spec held every text that the files hold; <m> of <n> approved statements are in the files at their current text`, which counts statements only:
+  the verb and its pronoun are in the singular for 1 held, and the noun for 1 of 1 alone, so it reads `0 of 1 approved statements are` and `1 of 3 approved statements is`.
+  Then comes one line for each other current approved node, of each kind (R2: the change that lands a statement writes it and its checks into the files): `spec-check: <kind> <id>: not in the files`, or `spec-check: <kind> <id>: the files hold approved version 1, and version 2 is current`.
+  Then one line for each node that the files hold and the approved spec removed, `spec-check: <kind> <id>: the files hold it, and the approved spec removed it` (`specgraph.Comparison.Removed`):
+  R28 counts it as a difference, and the person approves a removal before the change that takes the node out of the files, so it does not fail the comparison.
+  The kind is statement, check, component, interface or term, and the lines go statements, then checks, components and interfaces, then terms, each by id.
+  Files with a problem of `Parse` that can lose a node or change one (its `Effect` is `specgraph.LosesNode`, which `Parse` sets on each such problem: a block whose opening line the grammar refuses or that a block before it swallows, a line outside a block, a line that a node leaves out, or an attribute that a node drops) are exit 2 and no comparison, since the comparison would not see that text;
+  each such problem is a line on stderr, then `spec-check: <dir>: the files do not parse, so no comparison was made`.
+  A directory that does not exist or holds no spec file is exit 2 too, since every text of no file is approved, with a line that names `--allow-empty`.
+  With `--allow-empty`, `compare` reads it as the empty tree, as `tree` does, with a line on stderr that says so:
+  git keeps no empty directory, so a revert of the change that added the last spec file leaves none, and each approved node then reads `not in the files` (R2: the revert "takes it out of the files").
+  A problem of `Parse` that keeps each node (`specgraph.KeepsEachNode`), such as a heading that names code, is `tree`'s to judge, and `compare` compares those files: each node holds the text that the files write, except a raw `0xA0` or `0x85` byte where its opening line's attributes take white space (after `{`, between two attributes or before `}`), which it drops as white space.
+  A heading is no node, so `compare` never compares it.
+  `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
+  the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
+  Its blocks do not pass through `runnerlog.Say`, so the output of `print` must not reach a CI log: a line of a block that starts with `::` would be a workflow command there.
+  An id the approved spec does not hold, or removed, is exit 2 with nothing on stdout.
+
+- No CI job compares the spec files with the approved spec: R2 gives that comparison at each push to Dispatch.
+  No route of the Dispatch server calls `specgraph.Compare` yet.
+  `spec-check compare` is the comparison that a writer or a reviewer runs.
+  Two parts hold the refusal for the routes below.
+  `spec-check compare` refuses to run in a CI job (`cmd/spec-check/compare.go`): when `GITHUB_ACTIONS` is `true`, it exits 2 before it reads an argument, with one line on stderr, `spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch`.
+  Each CI job of this repository is a GitHub Actions job, and GitHub sets `GITHUB_ACTIONS=true` in every step of every job.
+  `compare` does not read `CI`: an agent's shell sets `CI=true`, and an agent's step is no CI job (R12), so `compare` runs there.
+  The refusal reads the environment of its own process, so it covers each route that passes the runner's environment on to the command: a step, a package script, a make target, a script in any directory, or a link to one.
+  It does not cover a route that drops that environment, such as `sudo` with its default `env_reset` or a container that `docker run` starts without `-e GITHUB_ACTIONS`: there the command compares (the built-binary row "compare compares behind a boundary that drops the environment" holds that with `env -i`).
+  The guard names such a line in the files it reads only when the command's name and `compare` stand next to each other, as in `sudo -n spec-check compare`.
+  `docker run --entrypoint spec-check <image> compare` puts another word between the two, and a block list of a command (`- spec-check`, then `- compare`) a line break and a `-`, so such a line passes both parts, and so does a `sudo` or `docker run` call in a file that the guard does not read, such as a make target.
+  The refusal is the command's, not `specgraph`'s, since the library's tests run in CI.
+  The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
+
+- `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
+  `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) reads each file as text, and knows nothing of shell or of YAML.
+  The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas, `(` or `[` between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
+  The name is `spec-check`, under any path, as a word of its own: a word that only holds it, such as `envoy-spec-check` or `spec-checker`, is another name, and a suffix such as `.exe` keeps it.
+  `compare` is a word of its own too, and the next item gives the two bounds of the rule.
+  A list of arguments in a script, such as `spawnSync('spec-check', ['compare'])` or `subprocess.run(["spec-check","compare"])`, is named too.
+  The guard also names a comment or a quoted text that no shell runs, and the author rewords that line.
+  It is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
+  A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line names the command that compares the files with the approved spec, and no CI job runs that command (R2). If the line only mentions the command, for example in a comment, a quoted text, a pattern or a name, reword it.` on stderr for each, at the line where the command's name stands, and `spec-check: <dir>: <n> lines of CI files name the command that compares the files` on stdout.
+  No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
+  a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files names the command that compares the files`.
+  The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those when the step passes the runner's environment on.
+  A Go program that calls `specgraph.Compare` is outside both the guard and the refusal of `compare`.
+  The guard follows no symbolic link at or under the four directories (the path to them, `--root` and `.github` included, resolves as the system resolves it), and it reads each file whole, with no bound on its size.
+  `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
+
+- Each bound of the guard's rule reads the file's own bytes (`nameStart` and `compareEnds` in `cmd/spec-check/cifiles.go`).
+  Right before the name, a letter, a digit, `_` or `-` makes the name part of another word.
+  Right after `compare`, a letter, a digit, `_`, `-`, `.` or `/` makes `compare` part of another word or a path, such as `compare-all`, `compare.sh` or `compare/`.
+  Each other byte ends the word: white space, a quote, `;`, `|`, `&`, `(`, `)`, `<`, `>`, a comma, a bracket, and the start or the end of the file.
+  A backslash right after `compare` is an escape, and the byte after it takes its place.
+  A quote there ends the word only when no letter, digit or `_` follows the quote, so `"compare"d` and `compare\"d` are other words.
+  After a backslash, `n`, `t` and `r` stand for white space, so `\n`, `\t` and `\r` end the word on each side, as a backslash before a space or a line break does after `compare`.
+  PowerShell reads a lone carriage return as a line break, and Bash reads it as a byte of the word, so for Bash a `\r` beside the two words names a line that runs no comparison.
+  So a name right after `\7` or `\-` is not named, nor `compare` before `\x20` or `\x64`.
+  So `run: "set -e\nspec-check compare …"`, `run: "spec-check compare\ --dir …"` and `"spec-check compare".split()` are named, and `needs: [spec-check, compare-baselines]` is not.
+  The rule reads the file's bytes and runs no shell expansion, so it does not find a command that an expansion, an escape or an alias builds, one with another word between the two, such as a redirection, a here-document or an image (`docker run --entrypoint spec-check <image> compare`), or a `run: |` block whose two line continuations need the indentation after one kept and after the other removed.
+  Before the name, only `\n`, `\t` and `\r` of the escapes stand for white space; each other escape or expansion of one language that builds the boundary is outside the claim (`\x20`, `\x0a`, `\012`, `\u000a`, PowerShell's `` `n ``, a batch file's `%~dp0`, `$1`), and so are `\0` right before the name or right after `compare`, a NUL byte that Bash skips or stops at, `\t` between the two words, and a letter, a digit or `_` right after the quote that ends `compare`, which Bash reads as more of the word and another language can read as its next token, such as Python's `f` or `r` prefix (`"compare"f" --dir"`).
+  `TestCIFilesThatCompareLeavesAFormOutsideTheClaim` holds each of these limits, and `TestCIFilesThatCompareNamesEachCallThatAHeadNamed` each calling line that a head of #4183 named (`cmd/spec-check/testdata/ci-files/named-calls.txt`).
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
@@ -4085,6 +4150,10 @@ It is the only credential that proves a session of its own, so its caller writes
 a body `actor` naming the same session is taken, for its `Origin`, which nothing else carries, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A named project scope rides on `model.Actor.Project`, set from the token and never from a body, as `Service` is;
 a person-scoped token names no single project and carries none.
+Every actor a write records says whether the write's credential proved it (`model.Actor.Proven`, `proven` on the wire):
+this token's session, a browser's person (the API's cookie and the document socket's) and `actingPerson`'s person carry `true`, and a session a body names under the shared token, a personal token or a service-account token carries none, as does every row recorded before the mark.
+An act's `session_proven` (`model.ActorAct.SessionProven`) is the same mark for the session beside a person, set only for this token's own session and never for one a `?session=` or a body names.
+A document version's author is every write of one writer merged by kind and id (`docs.mergeAuthor`, and the pending-author upsert in SQL), and it is proven only when every one of those writes was.
 A read-only token is the token a read entry mints (`BROKER_EXCHANGE_READ_ACCOUNTS`): it holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks its caller `brokertoken.Caller.ReadOnly`.
 `brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.
@@ -5546,6 +5615,15 @@ a caller that is another person, compared as `model.CanonicalLogin` compares the
 Another tab can sign someone else in in place, and a retry can go out on the new cookie before this tab knows;
 the page drops the presser's writes on that answer.
 A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
+
+A write made for a run of the command bar names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), which `api.GoingCaller.Do` sends on every write for its `Run`.
+`withinGoingRun` (`internal/dispatch/api/going_run_header.go`) is its one reader, wrapped around every `POST`, `PATCH`, `PUT` and `DELETE` route inside the project and session scope checks and outside the key layer.
+The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.ProvesAuthor` and `model.Actor.SameCredential`);
+anything else, a header sent twice or no uuid among it, is `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
+A request without the header costs nothing new: it resolves no caller there and sends no query.
+The admitted run rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed (`graphstore.Node.Changed`, `graphstore.Tuple.Changes`) to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run.
+The writers that mark: `refs.IndexBlocks` (each block whose words a version adds, changes or restores, and each it drops), the comment path, the issue, document, ask and message creates, an issue's own `PATCH` (`patchIssue`, which for a run alone writes the issue's node, restating it, when it changes any field, and states it under the `PATCH`'s own event), `writeReasoningNodes`, the pointer route (the node the pointer goes out of) and `writeNodeState`; an author's `person` or `session` node is never marked.
+A write on a context with no run appends none, so the block-index reconciliation tick, which indexes a version above `deferBlockIndexBlocks` or one with no rendering, names no run.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.

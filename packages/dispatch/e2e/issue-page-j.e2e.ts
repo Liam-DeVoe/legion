@@ -3,6 +3,7 @@ import type { Locator } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
@@ -79,7 +80,6 @@ import {
   contentsLineFaults,
   decidedByCells,
   focusBranchControl,
-  IPHONE_13,
   ownWords,
   rowAuthor,
   seedChildWithSpec,
@@ -88,6 +88,7 @@ import {
   threeThings,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
+import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -95,25 +96,24 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * Part J's rows of the new issue page (dispatch://INFRA-3939, part J of dispatch://INFRA-1196):
- * the issue's three sentences, the Contents list and the Spec view, read on the real stack,
- * because they read the server's stored decisions, asks, coverage and results. Each row turns
- * the new page on for alice with `withIssuePage` through D's `phase`, seeds what it reads with
- * the seeds of `e2e/issue-layout-seed.ts`, and reads the page through D's `e2e/issue-page.ts`,
- * G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts`, the typeface's
- * `e2e/issue-page-typeface.ts` and this part's `e2e/issue-page-j.ts`.
+ * The Spec view's rows of the new issue page: the issue's three sentences, the Contents list and
+ * the Spec view, read on the real stack, because they read the server's stored decisions, asks,
+ * coverage and results. Each row turns the new page on for alice with `withIssuePage` through
+ * the page's `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts`, and
+ * reads the page through `e2e/issue-page.ts`, `e2e/issue-page-g.ts`, `e2e/issue-page-i.ts`, the
+ * typeface's `e2e/issue-page-typeface.ts` and this view's own `e2e/issue-page-j.ts`.
  *
  * The rows come from the checkpoint's `e2e/issue-layout.e2e.ts`, each under the title its
- * check names (`verification.md` of dispatch://INFRA-3939, c-rows).
+ * check names in the view's `verification.md` (c-rows).
  */
 
-// c-three-things, as the architect's ruling 5 reads R8 (build-rulings-md): the three sentences
-// stand each after its label; with no view on they are in the Contents pane at 1440 px and in
-// the Outline sheet at 390 px, never above the outline; under Spec they are the view's first
-// group; under Verification, Plan and Decisions they are not drawn; no Contents pane is drawn
-// under a view; and the two rows "How it gets done" and "What you will be shown" are drawn
-// nowhere. Partial on today's data: who wrote the sentences and when they were last read back
-// are dispatch://INFRA-1278, so the head draws neither and this test never asserts an author.
+// c-three-things, as the architect reads R8: the three sentences stand each after its label;
+// with no view on they are in the Contents pane at 1440 px and in the Outline sheet at 390 px,
+// never above the outline; under Spec they are the view's first group; under Verification, Plan
+// and Decisions they are not drawn; no Contents pane is drawn under a view; and the two rows
+// "How it gets done" and "What you will be shown" are drawn nowhere. Partial on today's data:
+// who wrote the sentences and when they were last read back wait on a read that holds them, so
+// the head draws neither and this test never asserts an author.
 // SLOW(>=2s): two seeded issues and twelve loads of the page, each read for its head and the
 // page's own draw.
 test("the three sentences stand with their labels in the Contents pane, the Spec filter and the Outline sheet @phone", async ({
@@ -171,7 +171,7 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       "the Contents pane is not at the left of the outline"
     ).toBeLessThanOrEqual((outline?.x ?? 0) + 1);
 
-    // Who wrote the sentences and when they were last read back wait on dispatch://INFRA-1278,
+    // Who wrote the sentences and when they were last read back wait on a read that holds them,
     // and no issue holds either, so the head draws no author and no gap for them.
     expect(
       await rowAuthor(threeThings(page)).count(),
@@ -249,10 +249,11 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
   });
 });
 
-// c-tree, the places that draw one line for a node (the architect's ruling 1): a Contents entry
-// is the node's first line by R1's rule, cut at a word, never cut again mid-word by its box, and
-// a line that is a whole sentence carries no ellipsis after its own full stop. The issue itself
-// is no entry of the list (ruling 5). The crumb half of the checkpoint's row is part I's.
+// c-tree, the places that draw one line for a node: a Contents entry is the node's first line by
+// R1's rule, cut at a word, never cut again mid-word by its box, and a line that is a whole
+// sentence carries no ellipsis after its own full stop. The issue itself is no entry of the list:
+// the header is the issue. The crumb half of the checkpoint's row reads the outline, and the
+// outline's own rows read it.
 // SLOW(>=2s): the whole seeded issue, its comments and asks read back, and the page's load.
 test("a Contents entry draws a node's first line, cut at a word", async ({ browser }) => {
   test.setTimeout(120_000);
@@ -412,14 +413,14 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
   });
 });
 
-// R2 (part J), from the Contents clause of the checkpoint's `one panel of properties holds no
+// R2, from the Contents clause of the checkpoint's `one panel of properties holds no
 // conversation list @phone`: each question and each of the reader's own threads is an entry, a
 // press or Enter goes to its node in the outline, the entry the reader is in is marked, and Focus
 // branch draws that branch alone, then the whole outline again. Below 1024 px the list is in the
 // Outline sheet, which a choice closes, by pointer and by Enter from the foot of the page; where
-// that choice leaves the focused row is the next row's (decision 113). No view is turned on
-// between the two readings of Focus branch: the outline drawn again after a view is part I's
-// (reading (k) of the part's plan).
+// that choice leaves the focused row is the next row's. No view is turned on between the two
+// readings of Focus branch: the outline drawn again after a view is the outline's own rows' to
+// read.
 // SLOW(>=2s): the whole seeded issue, two loads of the page, and six moves of the focus and the
 // toggle, each waited on until the outline redraws.
 test("a Contents entry goes to its node, and Focus branch draws that branch alone @phone", async ({
@@ -523,15 +524,14 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
   });
 });
 
-// A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (4)'s
-// choice in the Outline sheet, by pointer and by Enter from the foot of the page, leaves the
-// focused row below the sticky view row, not behind it (decision 113). Where the row stands is
-// part D's `scroll-padding-top` - the larger of the band's and the view row's heights - and part
-// G's `useRowOnScreen` correction, so until both are under J the row is skipped. Its `@owed` tag
-// is what c-rows' run leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
+// Row (4)'s choice in the Outline sheet, by pointer and by Enter from the foot of the page,
+// leaves the focused row below the sticky view row, not behind it. Where the row stands is the
+// page's `scroll-padding-top` - the larger of the band's and the view row's heights - and the
+// row's own placing (`useRowOnScreen`), both in this branch now, so this row, which skipped until
+// they were, is one of c-rows' own.
 // SLOW(>=2s): the whole seeded issue, a load of the page at 390 px, and two choices in the
 // Outline sheet, each waited on until the focus lands and the page redraws.
-test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only @owed", async ({
+test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only", async ({
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -547,9 +547,9 @@ test("a choice in the Outline sheet leaves the focused row below the sticky view
         viewRow: style.getPropertyValue("--issue-view-row-height").trim(),
       };
     });
-    test.skip(
-      root.viewRow === "" || root.padding === "auto",
-      "owed: the Outline sheet's focused row below the sticky view row needs part D's scroll-padding-top and part G's useRowOnScreen correction (decision 113, skipped by decision 127)"
+    expect(root.viewRow, "the view row publishes no --issue-view-row-height").not.toBe("");
+    expect(root.padding, "the page keeps no scroll-padding-top for its sticky rows").not.toBe(
+      "auto"
     );
     // The focused row's top less the sticky view row's bottom, once the move has been drawn:
     // -1 or more where the row stands below the view row.
@@ -614,11 +614,10 @@ test("a choice in the Outline sheet leaves the focused row below the sticky view
 // came from, and one line on each statement's own row (R5), drawn with the focus elsewhere and
 // the pointer off the page; the tester's F7 is read here too - the line is a link to the
 // decision, and `w` moves the focus to it - and F20: no text of the view is a raw address or a
-// fence. Partial on today's data: a statement carries no `from` (dispatch://INFRA-1098 item 21),
-// so no statement hangs under an answered ask and the body draws one group with no heading; a
-// criterion is dispatch://INFRA-1253's; an agent decision's level of uncertainty and its reason
-// are dispatch://INFRA-1150's; and the versions of a view's query are dispatch://INFRA-1253 R8,
-// so this row reads the live Spec view.
+// fence. Partial on today's data: a statement carries no `from` yet, so no statement hangs under
+// an answered ask and the body draws one group with no heading; a criterion, an agent decision's
+// level of uncertainty and its reason, and the versions of a view's query wait on reads of their
+// own, so this row reads the live Spec view.
 // SLOW(>=2s): the whole seeded issue, its decisions and answer read back, and the pointer and
 // the focus moved across the view, each waited on until it redraws.
 test("a spec node shows the decisions that shaped it at every version", async ({ browser }) => {
@@ -900,7 +899,7 @@ test("the Spec view draws statements alone, each parent once, and no check once"
 
     // Enter on a statement opens it where it is edited: the issue's own address at its block,
     // with the focus on its row of the outline. A statement draws no body, so it is focused
-    // directly rather than by G's `focusRow`, which waits for one.
+    // directly rather than by the outline's `focusRow`, which waits for one.
     const third = nodeRow(page, statement(3)).first();
     await third.focus();
     await expect(third).toBeFocused();
@@ -946,7 +945,7 @@ test("the Spec view draws statements alone, each parent once, and no check once"
  *  after a reference to one of the issue's children. */
 const LONG_BLOCK_ID = "r-long";
 
-// R4, R5 and R6 against the approved picture `page-v3-spec-1440.png` (ruling 5). At 1440 px, from
+// R4, R5 and R6 against the approved picture `page-v3-spec-1440.png`. At 1440 px, from
 // the top: the legend's four marks, each a shape and its word; the column heads; the three
 // sentences; the first group. The page's own words never say "Requirement" and are each a word
 // of `page-words.ts` (R7, reading (g) of the part's plan). A cell is 280 px wide and 20 px left of
@@ -955,7 +954,7 @@ const LONG_BLOCK_ID = "r-long";
 // focus; a statement's chips stand after its last word, and a link in its words is the words'
 // colour, read on the long statement, whose words open on a child's reference: an issue's
 // reference is a link in a row's words, where a block's or a document's is a chip in place
-// (`RowText.tsx`). Where the sticky heads stand after a scroll, against part P's
+// (`RowText.tsx`). Where the sticky heads stand after a scroll, against the header's
 // `--issue-identity-height`, is the next row's (reading (l)). At 390 px, as
 // `page-v3-spec-390.png` draws it, a run is one column, each cell above its first statement, and
 // the page fits its viewport.
@@ -1105,8 +1104,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       ).toBeLessThanOrEqual(1);
     }
 
-    // A statement's chips stand after its last word (G's `rowGroups`; reading (a) of the part's
-    // plan).
+    // A statement's chips stand after its last word (`rowGroups`).
     const row = (await rowGroups(page)).find((one) => one.id === cites);
     for (const chip of row?.chips ?? []) {
       expect(
@@ -1185,7 +1183,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       })
       .toBe(true);
 
-    // R11 of dispatch://INFRA-1196: the focused row is never under a sticky header, and the
+    // R11: the focused row is never under a sticky header, and the
     // view's column heads stay at the top as one (R4). Each move up the statements scrolls the
     // one it reaches into view, which must leave it below the heads, not behind them. Found by
     // the tester on a running build at 8caa4357, where each statement the arrows moved up to
@@ -1212,14 +1210,12 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
   });
 });
 
-// A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (7)'s
-// column heads stay at the top after a scroll, under the header's band, whose height part P
-// publishes on the document's root as `--issue-identity-height` (reading (l) of the part's plan,
-// decision 80). Until P does, the row is skipped. Its `@owed` tag is what c-rows' run leaves out
-// (`--grep-invert @owed`), since a pass counts no skipped case.
+// Row (7)'s column heads stay at the top after a scroll, under the header's band, whose height
+// the header publishes on the document's root as `--issue-identity-height`. That header is in
+// this branch now, so this row, which skipped until it was, is one of c-rows' own.
 // SLOW(>=2s): the whole seeded issue, a load of the Spec view and a scroll, waited on until the
 // page redraws.
-test("the Spec view's column heads stay under the header's band after a scroll @owed", async ({
+test("the Spec view's column heads stay under the header's band after a scroll", async ({
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -1235,10 +1231,7 @@ test("the Spec view's column heads stay under the header's band after a scroll @
     const band = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue("--issue-identity-height").trim()
     );
-    test.skip(
-      band === "",
-      "owed: the Spec view's sticky heads against --issue-identity-height need part P (reading (l) of J's plan, decision 80, skipped by decision 127)"
-    );
+    expect(band, "the header publishes no --issue-identity-height").not.toBe("");
     // The page is scrolled once its statements are drawn, so it is tall enough to scroll.
     await expect
       .poll(() => body.locator("[data-spec-statement]").count(), {
@@ -1289,5 +1282,42 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
       ).toBeVisible();
       await assertPageFits(page);
     }
+  });
+});
+
+// R7 and R9, owed: the Spec view opened at its own address while the spec's blocks cannot be
+// read draws the statements' line saying so over its tree, and that line's Retry takes the
+// focus, since nothing else holds it on a fresh load and Tab from the tree never reaches the
+// line. The rule that gives a refused read's Retry the focus on a page load belongs to the
+// page's stage as another branch draws it, and that branch is not under this one yet, so the row
+// skips right after its setup until it is. It is written whole, so that only its skip goes then.
+// SLOW(>=2s): a seeded issue and a load of the Spec view with one read refused, waited on until
+// the refused read's line is drawn.
+test("the Spec view opened at its address with the spec's blocks refused puts the focus on that read's Retry @owed", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const blocks = `/api/v1/artifacts/${seeded.specArtifactId}/blocks`;
+    // Every read of the spec's blocks is refused, from the page's first load on.
+    await page.route(
+      (url) => url.pathname === blocks,
+      (route) =>
+        route.fulfill({ json: { code: "INTERNAL", error: "blocks unavailable" }, status: 500 })
+    );
+    test.skip(
+      true,
+      "owed: the stage that gives a refused read's Retry the focus on a page load is not under this branch yet"
+    );
+    await gotoIssue(page, presetPath(seeded.key, "spec"));
+    const line = issuePage(page).locator('[data-spec-unreadable="statements_unreadable"]');
+    await expect(
+      line,
+      "the Spec view draws no line saying its statements could not be loaded"
+    ).toContainText(ANSWER_LINES.statements_unreadable);
+    await expect(
+      line.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the statements' Retry does not hold the focus after the page's load"
+    ).toBeFocused();
   });
 });

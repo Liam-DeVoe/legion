@@ -3,22 +3,23 @@ package api
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
 // graph, and serves it at GET /api/v1/going/catalogue.
 //
-// The catalogue is the dispatch tools that write, all but two: the specs in
+// The catalogue is the dispatch tools that write, all but three: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-eight of the forty-five tools
+// what a model chooses on, and its own argument schema. Twenty-nine of the forty-six tools
 // write, and the catalogue holds twenty-six of them, so the list is read whole: nothing searches
 // it, and no second schema is authored per route. Twenty was the count this header called under
 // the one where a model's choice measurably falls apart; dispatch://INFRA-1950 added six writes
 // of the reasoning nodes (dispatch_lens, dispatch_finding, dispatch_risk, dispatch_constraint,
 // dispatch_pointer and dispatch_state) and did not measure a model's choice against the
-// twenty-six again, so whether twenty-six is still under that count is unmeasured. The two the
-// catalogue leaves out are left out on purpose, for one reason: each records a person's decision.
-// dispatch_review records an approval or a changes request in a person's name, and
-// dispatch_settle, written by a person's credential, records that the person settled a proposal,
-// which is the person's own call (dispatch://INFRA-1950/spec#b-r-proposed). The loop that
-// proposes operations on Dispatch's graph must never propose either, so goingToolRoutes names no
-// row for them.
+// twenty-six again, so whether twenty-six is still under that count is unmeasured. The three the
+// catalogue leaves out are left out on purpose. Two record a person's decision: dispatch_review
+// records an approval or a changes request in a person's name, and dispatch_settle, written by a
+// person's credential, records that the person settled a proposal, which is the person's own call
+// (dispatch://INFRA-1950/spec#b-r-proposed). The third, dispatch_premortem_convert, retires a
+// document once (dispatch://INFRA-1950/spec#b-r-premortem-nodes). The loop that proposes
+// operations on Dispatch's graph must never propose any of them, so goingToolRoutes names no row
+// for them.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
@@ -27,7 +28,8 @@ package api
 // or a relation in neither edge family refuses to mount (register). The other direction is a
 // report rather than a refusal, since a write no tool in the catalogue performs is not an error:
 // most are work still to do, and the two review routes, the document header's and the one
-// dispatch_review performs, and the settle dispatch_settle performs are kept out on purpose.
+// dispatch_review performs, the settle dispatch_settle performs and the pre-mortem conversion
+// dispatch_premortem_convert performs are kept out on purpose.
 // TestTheMutatingRoutesNoToolSpecNames names every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
@@ -80,16 +82,17 @@ type goingToolRoute struct {
 }
 
 // goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
-// name, and so the tools the catalogue holds: twenty-six of the twenty-eight tools that write, of
-// the forty-five tool specs, six of them the writes of the reasoning nodes dispatch://INFRA-1950
+// name, and so the tools the catalogue holds: twenty-six of the twenty-nine tools that write, of
+// the forty-six tool specs, six of them the writes of the reasoning nodes dispatch://INFRA-1950
 // added, whose effect on a model's choice among the catalogue that child did not measure. A tool
 // this map does not name is not in the catalogue: the read tools, `dispatch_constraints`,
 // `dispatch_lenses` and `dispatch_proposed` among them; `dispatch_related`, whose POST row writes
-// nothing (it runs the related-item check and records none of it); and `dispatch_review` and
-// `dispatch_settle`, which write and are left out on purpose. A review records an approval or a
-// changes request in a person's name, and a settle written by a person's credential records that
-// the person settled a proposal: the loop that proposes operations on Dispatch's graph must never
-// propose either, so neither gets a row here.
+// nothing (it runs the related-item check and records none of it); and `dispatch_review`,
+// `dispatch_settle` and `dispatch_premortem_convert`, which write and are left out on purpose. A
+// review records an approval or a changes request in a person's name, a settle written by a
+// person's credential records that the person settled a proposal, and the pre-mortem conversion
+// retires a document once: the loop that proposes operations on Dispatch's graph must never
+// propose any of them, so none gets a row here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
 // it satisfies and whose placeholders it fills: a document write names its issue, else its
@@ -524,7 +527,13 @@ type GoingCaller struct {
 	// follow records this session as the ask's follower. A caller that is no session leaves it
 	// empty, and the rows needing one are passed over.
 	Session string
-	Doer    GoingDoer
+	// Run is the run of the command bar the caller acts for, the id its POST answered, which Do
+	// names in contracts.GoingRunHeader on every write it makes, so each node the write creates or
+	// changes carries a changed_by_run tuple to that run's interaction. A caller acting for no run
+	// leaves it empty, and no header is sent. Nothing in this package builds a caller: the loop
+	// that chooses an action, which would set it, is not here.
+	Run  string
+	Doer GoingDoer
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -553,7 +562,8 @@ func (e GoingArgumentError) Error() string {
 // fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
 // other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
 // action and the tool's own schema accepts the call. An argument naming a document by slug is
-// the caller's to resolve to the id a row's path takes.
+// the caller's to resolve to the id a row's path takes. Every action of the catalogue writes, so
+// every request Do sends names the caller's Run, where it has one.
 func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string]any) (*http.Response, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -586,6 +596,9 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if c.Run != "" {
+		request.Header.Set(contracts.GoingRunHeader, c.Run)
+	}
 	return c.Doer.Do(request)
 }
 

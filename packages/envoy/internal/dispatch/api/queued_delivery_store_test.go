@@ -34,12 +34,6 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	issue := rig.seedRoutedIssue(t)
 
-	// The proved session's own comment ties it to the person it belongs to (the alias_of tuple
-	// graphstore.AuthorFacts states), which is what carries a delivery to that session onto
-	// that person's page.
-	rig.created(t, "the proved session's comment", rig.serve(caller.presenting(t, http.MethodPost,
-		"/api/v1/issues/"+issue+"/comments", token, map[string]any{"body": "Written by the session the broker proved."})))
-
 	mention := decodeMentionedComment(t, dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
 		"body":     "Pick this up when you are back.",
 		"mentions": []map[string]any{{"target": "session:" + brokerTestSession}},
@@ -50,8 +44,14 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 		t.Fatalf("the mention's settled attempts = %#v, want one queued attempt pinned to %s", attempts, brokerTestSession)
 	}
 	if _, held, err := graphstore.ReadNode(context.Background(), rig.database.Pool, graphstore.KindSession, brokerTestSession); err != nil || !held {
-		t.Fatalf("the store holds the queued attempt's session as a node: %t (err %v), want it from the settle on", held, err)
+		t.Errorf("the store holds the queued attempt's session as a node: %t (err %v), want it from the settle on", held, err)
 	}
+	// The proved session's comment ties it to its person (the alias_of tuple graphstore.AuthorFacts
+	// states), which carries a delivery to the session onto that person's page. It is written after
+	// the node check because it writes the same node (graphstore.Authored). That check does not stop
+	// the test, so the page below is read whatever the check found.
+	rig.created(t, "the proved session's comment", rig.serve(caller.presenting(t, http.MethodPost,
+		"/api/v1/issues/"+issue+"/comments", token, map[string]any{"body": "Written by the session the broker proved."})))
 	rig.publish(t, issue)
 
 	page := rig.page(t, brokerTestPerson, brokerTestPerson)
