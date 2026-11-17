@@ -3,7 +3,6 @@ package specgraph
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -116,7 +115,7 @@ func (p *printer) attr(name, value string) {
 
 // list writes one list attribute, its ids sorted and separated by one space.
 func (p *printer) list(name string, ids []string) {
-	p.attr(name, strings.Join(slices.Sorted(slices.Values(ids)), " "))
+	p.attr(name, recordList(ids))
 }
 
 // text writes a body that is the block's text.

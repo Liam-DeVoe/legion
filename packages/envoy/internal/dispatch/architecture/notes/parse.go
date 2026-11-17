@@ -5,9 +5,9 @@
 // those two, and Parse validates the set and returns its model. IsNote and
 // CheckSize are the one note rule and bound that both the Dispatch server's
 // GitHub reader (githubapp's Dir and DirFiles) and the architecture-check
-// command (cmd/architecture-check, through ReadSet) call. The package is
-// pure, with no database and no network; the architecture package's importer
-// owns fetching and projection.
+// and spec-check commands (cmd/architecture-check and cmd/spec-check, through
+// ReadSet) call. The package is pure, with no database and no network; the
+// architecture package's importer owns fetching and projection.
 package notes
 
 import (

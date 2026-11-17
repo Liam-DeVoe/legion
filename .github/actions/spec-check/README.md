@@ -24,17 +24,20 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
 
 - **The blocks.**
   A statement is a `requirement` block, a check a `check` block, and the files also hold `component` and `term` blocks.
-  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, and text outside a block other than headings and blank lines.
+  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, text outside a block other than headings and blank lines, a heading that names code, and a claim of more than one line or more than one sentence.
 
 - **Every rule of `specgraph.Validate`.**
-  These rules include ids (one id on two nodes, an id that is not lower-case words joined by hyphens), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text.
+  These rules include ids (one id on two nodes, an id that is not words of lower-case ASCII letters and digits joined by single hyphens, or that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name included.
+  The rule on a name of code reads a word by its shape alone, so it also refuses a plain word or a product name of that shape: a slash between two ASCII letters (`I/O`, `and/or`, `client/server`, `https://example.com/docs`, but not `https://example.com/2024` or `https://10.0.0.1/api`), small ASCII letters and then an ASCII capital and a small letter in a word of ASCII letters and digits only (`mmHg` and `ownCloud`, but not `mmHg-based` or `véloCity`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`, `https://bun.sh`), and the form of a Go test's name (`TestFlight`).
+  Of the words of such a shape, only the product names that the rule lists, such as `Node.js`, pass.
+  Say such a word in other words, for example "input and output" or "the client and the server".
   `go doc ./internal/dispatch/specgraph Validate` in `packages/envoy` lists each rule.
 
 ## What it does not check
 
 - An id that the approved spec removed.
   `spec-check tree` checks ids against such a list only with `--retired <file>`, and the action gives no list.
-  So the log of each run holds the line `spec-check: <directory>: no --retired list, so no id is checked against the ids the approved spec removed`.
+  So the log of each run that judges the tree, on exit 0 and on exit 1, holds the line `spec-check: <directory>: no --retired list, so no id is checked against the ids the approved spec removed`.
 
 - Whether the statements are the statements that a person approved.
   The action reads only the files of the caller's checkout.
@@ -68,7 +71,7 @@ A caller sets `allow-empty: true` only while it has no spec file, and reads `cou
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line that the command prints about the directory or an entry of it names the directory by its absolute path.
-`<counts>` below is `<n> statements, <n> checks, <n> components, <n> interfaces, <n> terms`, each noun in the singular for one, where an interface is a component with `kind="interface"`.
+`<counts>` below is `<n> statements, <n> checks, <n> components, <n> interfaces, <n> terms`, each noun in the singular for one, where `<n> components` counts the components other than interfaces and `<n> interfaces` counts the components with `kind="interface"`.
 
 - **Exit 0: the tree is valid.**
   The log holds the line `spec-check: <directory>: <counts>; the tree is valid`.
@@ -80,10 +83,12 @@ Each line that the command prints about the directory or an entry of it names th
 - **Exit 1: the tree is refused.**
   The log holds one line for each problem, `spec-check: <directory>/<file>:<line>: <node>: <rule>: <detail>`, which names the file, the line and the id of the node.
   Then it holds the line `spec-check: <directory>: <counts>; the tree is refused`.
+  A spec file that is larger than 1 MiB gives the line `spec-check: file too large: <directory>/<file> is <n> bytes (limit 1048576)` in place of the problem lines.
+  In that case, each count is 0, because the command parses no spec file.
 
 - **Exit 2: the command did not judge the tree.**
   The directory does not exist or holds no spec file (without `allow-empty: true`), or the directory or a spec file in it cannot be read.
-  The log holds one line that names the directory and the case, and the file when a file cannot be read.
+  The log holds a warning for each entry that is not a spec file (see [Warnings](#warnings)), then one line that names the directory and the case, and the file when a file cannot be read.
   The command prints no count line, so the action sets no `count`.
 
 ## Warnings
@@ -124,6 +129,7 @@ A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environme
 The build also sets `GOWORK=off`, because the root `go.work` of this repository is above the action.
 It sets `GOTOOLCHAIN=local` and an empty `GOFLAGS`, and it unsets `GOOS` and `GOARCH`.
 So a Go flag or a target platform of the caller's job does not change the build.
+The script `.github/scripts/build-envoy-command.sh` of this repository makes this build, and the build of the [architecture-note check](../architecture-check/README.md#the-go-toolchain) too, so the two actions build with the same settings.
 
 ## The cache
 

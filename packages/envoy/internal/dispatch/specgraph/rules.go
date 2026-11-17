@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Options are the inputs of Validate beyond the files.
@@ -18,8 +19,9 @@ type Options struct {
 // Validate finds each fault of the tree that a program can find, sorted by file, line, node and
 // rule:
 //
-//   - an id: doubled-id (one id on two nodes of any kind), bad-id (not lower-case words joined by
-//     hyphens, or a word that states a position), retired-id (an id the approved spec removed);
+//   - an id: doubled-id (one id on two nodes of any kind), bad-id (not words of lower-case ASCII
+//     letters and digits joined by single hyphens, or a word that states a position), retired-id
+//     (an id the approved spec removed);
 //   - a statement: no-text, bad-kind, no-parent, missing-target (a serves or about relation to a
 //     node the files do not hold as a statement, or as a component or interface), no-about (a
 //     structure statement about no component), leaf-without-check, supported-without-check (a
@@ -34,8 +36,9 @@ type Options struct {
 //     components joined, or a joined node that is no component);
 //   - a term: bad-term (no name or definition);
 //   - any text: code-in-text, a name of code in a statement's text, a check's claim, procedure or
-//     failing example, a component's name or purpose, or a term's definition (R4 and R15). A
-//     check's test part and job name code by design and are not read.
+//     failing example, a component's name or purpose, or a term's name or definition (R4 and R15).
+//     A check's test part and job name code by design and are not read. Parse reads each heading
+//     for code too, and refuses a claim of more than one sentence (bad-field).
 func Validate(t Tree, o Options) []Problem {
 	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
 	for _, id := range o.Retired {
@@ -52,9 +55,10 @@ func Validate(t Tree, o Options) []Problem {
 		v.component(c)
 	}
 	for _, term := range t.Terms {
-		if term.Name == "" || term.Definition == "" {
+		if !hasWord(term.Name) || !hasWord(term.Definition) {
 			v.problem(term.Pos, term.ID, "bad-term: a term has a name and a definition")
 		}
+		v.code(term.Pos, term.ID, "name", term.Name)
 		v.code(term.Pos, term.ID, "definition", term.Definition)
 	}
 	for _, cycle := range findLoops(v.edges) {
@@ -136,7 +140,7 @@ func (v *validator) ids() {
 			v.problem(h.pos, "-", "bad-id: the block has no id")
 			continue
 		case !IsID(h.id):
-			v.problem(h.pos, h.id, fmt.Sprintf("bad-id: %q is lower-case words joined by hyphens, with no word that states a position", h.id))
+			v.problem(h.pos, h.id, fmt.Sprintf("bad-id: %q is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position", h.id))
 		}
 		if v.retired[h.id] {
 			v.problem(h.pos, h.id, "retired-id: the approved spec removed this id")
@@ -165,7 +169,7 @@ func (v *validator) target(pos Position, node, attribute, id string, wanted ...s
 }
 
 func (v *validator) statement(s Statement) {
-	if s.Text == "" {
+	if !hasWord(s.Text) {
 		v.problem(s.Pos, s.ID, "no-text: a statement has a text")
 	}
 	switch s.Kind {
@@ -217,7 +221,7 @@ func (v *validator) check(c Check) {
 		{c.ProcedureText, "no-procedure: the check has no procedure"},
 		{c.FailingExample, "no-failing-example: the check has no failing example"},
 	} {
-		if part.value == "" {
+		if !hasWord(part.value) {
 			v.problem(c.Pos, c.ID, part.detail)
 		}
 	}
@@ -266,8 +270,14 @@ const sentenceSpace = `\s\v\x{1c}-\x{1f}\x{85}\p{Z}`
 // Node.js, ends no sentence.
 var sentenceEnd = regexp.MustCompile(`[.!?][` + sentenceSpace + `]+[^` + sentenceSpace + `]`)
 
+// hasWord reports whether s holds a letter or a digit: a name or a purpose of only spaces, or of
+// only a format character such as U+200B, is a missing one (R15).
+func hasWord(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
+}
+
 func (v *validator) component(c Component) {
-	if c.Name == "" || c.Purpose == "" || sentenceEnd.MatchString(c.Purpose) {
+	if !hasWord(c.Name) || !hasWord(c.Purpose) || sentenceEnd.MatchString(c.Purpose) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
