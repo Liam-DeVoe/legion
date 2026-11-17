@@ -17,6 +17,7 @@ const tables = [
   "agent_tokens",
   "repo_projects",
   "architecture_sources",
+  "legion_current",
   "legion_observations",
   "legion_reads",
   "legion_settings",
