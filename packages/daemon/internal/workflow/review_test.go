@@ -1726,18 +1726,27 @@ func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
 	}
 }
 
+// reviewWaitsLine is the one line the workflow logs for a review-App review that decides nothing
+// because the reviewer's claim records no session yet (workflow's RoundRefusal.Waits).
+const reviewWaitsLine = "workflow: a review of the review App waits: the reviewer's claim records no session, so the next read of the pull request's reviews judges it again"
+
 // In the reviewer's first round its row names no claim (seedRoundOneRows): the reviewer submits the
 // review of its first round before it completes, and only a completion writes a row's claim. The
 // reviewer's session is the one the claims record holds for the claim the daemon starts the
 // reviewer under, in that round as in every later one, so another review-App session's APPROVE or
 // REQUEST_CHANGES at the head - the controller's, here - decides nothing in round 1 either: it is
 // set aside as in a later round, the issue stays in reviewing and the round has no decision. The
-// reviewer's own review decides, and records the commit it read. With no session on the
-// reviewer's claim - a claim recorded before the daemon kept sessions, or no claims row at all -
-// the login decides by itself, as it always has, and the commit does not move, since nothing says
-// the review is the reviewer's own. Each review is the review App's as production delivers it:
-// the daemon never reads write access for the review App's login, so AuthorCanWrite is false.
+// reviewer's own review decides, and records the commit it read. Until the reviewer's agent
+// registers, that claim records no session - the outbox makes the claim with none, and before the
+// outbox takes the start it has no row - and a review-App review then decides nothing, whoever
+// submitted it: nothing recorded can say it is the reviewer's, and the reviewer, with no task yet,
+// has submitted none. It waits, and moves no commit, and the reviewer's row keeps nothing of it,
+// since it is no decision the round lost; a later read judges it by the session recorded then
+// (TestAReviewThatWaitedForTheReviewersSessionIsJudgedByTheSessionRecordedThen). Each review is the
+// review App's as production delivers it: the daemon never reads write access for the review App's
+// login, so AuthorCanWrite is false.
 func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
+	const setAside = "workflow: a review decides nothing: the review App submitted it from a session that is not the reviewer's"
 	for _, tc := range []struct {
 		name    string
 		state   string
@@ -1748,13 +1757,18 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 		decides  bool
 		want     phase.Phase
 		reviewed string
+		// logged is the line the review is logged with: setAside, reviewWaitsLine, or "" for a
+		// review that decides.
+		logged string
 	}{
-		{name: "another session's approval", state: "approved", session: "ses-controller", claim: "recorded", want: phase.Reviewing},
-		{name: "another session's request for changes", state: "changes_requested", session: "ses-controller", claim: "recorded", want: phase.Reviewing},
+		{name: "another session's approval", state: "approved", session: "ses-controller", claim: "recorded", want: phase.Reviewing, logged: setAside},
+		{name: "another session's request for changes", state: "changes_requested", session: "ses-controller", claim: "recorded", want: phase.Reviewing, logged: setAside},
 		{name: "the reviewer's own approval", state: "approved", session: "ses-reviewer", claim: "recorded", decides: true, want: phase.Accepting, reviewed: headOne},
 		{name: "the reviewer's own request for changes", state: "changes_requested", session: "ses-reviewer", claim: "recorded", decides: true, want: phase.Implementing, reviewed: headOne},
-		{name: "no session on the reviewer's claim: the login decides", state: "changes_requested", session: "ses-controller", claim: "empty", decides: true, want: phase.Implementing},
-		{name: "no claims row for the reviewer: the login decides", state: "changes_requested", session: "ses-controller", claim: "absent", decides: true, want: phase.Implementing},
+		{name: "no session on the reviewer's claim: another session's approval waits", state: "approved", session: "ses-controller", claim: "empty", want: phase.Reviewing, logged: reviewWaitsLine},
+		{name: "no session on the reviewer's claim: another session's request for changes waits", state: "changes_requested", session: "ses-controller", claim: "empty", want: phase.Reviewing, logged: reviewWaitsLine},
+		{name: "no claims row for the reviewer: another session's approval waits", state: "approved", session: "ses-controller", claim: "absent", want: phase.Reviewing, logged: reviewWaitsLine},
+		{name: "no claims row for the reviewer: another session's request for changes waits", state: "changes_requested", session: "ses-controller", claim: "absent", want: phase.Reviewing, logged: reviewWaitsLine},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -1781,22 +1795,29 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 			}
 			switch {
 			case !tc.decides && row.Decision != nil:
-				t.Fatalf("the round's decision = %+v, want none: the review came from %s, not the reviewer's ses-reviewer", row.Decision, tc.session)
+				t.Fatalf("the round's decision = %+v, want none: the review came from %s, and only ses-reviewer recorded on the reviewer's claim decides", row.Decision, tc.session)
 			case tc.decides && (row.Decision == nil || row.Decision.State != tc.state || row.Decision.Head != headOne):
 				t.Fatalf("the round's decision = %+v, want the review's %s at %s", row.Decision, tc.state, headOne)
 			}
 			if row.ReviewedHead != tc.reviewed {
 				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q", row.ReviewedHead, tc.reviewed)
 			}
-			setAside := strings.Contains(logs.String(), "a review decides nothing: the review App submitted it from a session that is not the reviewer's")
-			if setAside == tc.decides {
-				t.Fatalf("logs = %s, want the set-aside line only for a review that decides nothing", logs.String())
+			for _, line := range []string{setAside, reviewWaitsLine} {
+				if got := strings.Contains(logs.String(), line); got != (tc.logged == line) {
+					t.Fatalf("logs = %s, want %q logged: %t", logs.String(), line, tc.logged == line)
+				}
 			}
-			if !tc.decides && (!strings.Contains(logs.String(), "footer_session=ses-controller") || !strings.Contains(logs.String(), "reviewer_session=ses-reviewer")) {
-				t.Fatalf("logs = %s, want the set-aside line naming both sessions", logs.String())
-			}
-			if loginDecides := strings.Contains(logs.String(), "the reviewer's session is not recorded; the review App's login decides"); loginDecides != (tc.claim != "recorded") {
-				t.Fatalf("logs = %s, want the unrecorded-session line only where the reviewer's claim records no session", logs.String())
+			switch tc.logged {
+			case setAside:
+				if !strings.Contains(logs.String(), "footer_session=ses-controller") || !strings.Contains(logs.String(), "reviewer_session=ses-reviewer") {
+					t.Fatalf("logs = %s, want the set-aside line naming both sessions", logs.String())
+				}
+			case reviewWaitsLine:
+				for _, field := range []string{"issue=LEGION-208", "pull_request=42", "reviewer_claim=" + string(reviewClaim)} {
+					if !strings.Contains(logs.String(), field) {
+						t.Fatalf("logs = %s, want the waiting line naming %s", logs.String(), field)
+					}
+				}
 			}
 		})
 	}
@@ -1856,24 +1877,92 @@ func TestAReviewWithNoFooterWhileTheReviewersSessionIsRecordedIsSetAside(t *test
 	}
 }
 
-// With no session recorded on the reviewer's claim - a claim a daemon recorded before it kept the
-// session of the claim's agent - the login decides a round by itself, as it always has, since
-// there is nothing recorded to tell its sessions apart; this is logged once at info.
-func TestWithNoRecordedReviewerSessionTheLoginDecides(t *testing.T) {
+// A review-App review that came while the reviewer's claim recorded no session waited
+// (TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides), even one whose footer names the session
+// the reviewer's agent registers later: nothing recorded said it was the reviewer's when it came.
+// A later read of the pull request's reviews judges that same review again by the session recorded
+// then. Naming another session, it is set aside, as any other session's review is; naming the
+// recorded session, it is the reviewer's own review, and it decides the round and records the
+// commit it read.
+func TestAReviewThatWaitedForTheReviewersSessionIsJudgedByTheSessionRecordedThen(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		session  string
+		want     phase.Phase
+		decides  bool
+		reviewed string
+	}{
+		{name: "its footer names another session", session: "ses-controller", want: phase.Reviewing},
+		{name: "its footer names the session recorded then", session: "ses-reviewer", want: phase.Accepting, decides: true, reviewed: headOne},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			seedClaimSession(t, pool, reviewClaim, "")
+			var logs bytes.Buffer
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
+			review := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne, Author: testReviewApp,
+				Body:        "ship it\n\n<!-- legion: {\"session\":\"" + tc.session + "\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",
+				SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)}
+			apply("the review's webhook", review)
+			if got := issuePhase(t, pool); got != phase.Reviewing {
+				t.Fatalf("while the reviewer's claim records no session the issue is in %s, want reviewing", got)
+			}
+			if row := reviewerRow(t, pool); row.Decision != nil || row.ReviewedHead != "" {
+				t.Fatalf("while the reviewer's claim records no session the reviewer's row holds the decision %+v and the reviewed commit %q, want neither", row.Decision, row.ReviewedHead)
+			}
+			if got := logs.String(); !strings.Contains(got, reviewWaitsLine) {
+				t.Fatalf("logs = %s, want the waiting line", got)
+			}
+
+			seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
+			logs.Reset()
+			review.ReadFromList = true
+			apply("the read of the pull request's reviews", review)
+			if got := issuePhase(t, pool); got != tc.want {
+				t.Fatalf("once the reviewer's session is recorded the issue is in %s, want %s", got, tc.want)
+			}
+			row := reviewerRow(t, pool)
+			switch {
+			case !tc.decides && row.Decision != nil:
+				t.Fatalf("the round's decision = %+v, want none: the review names ses-controller, not the recorded ses-reviewer", row.Decision)
+			case tc.decides && (row.Decision == nil || row.Decision.State != "approved" || row.Decision.Head != headOne):
+				t.Fatalf("the round's decision = %+v, want the review's approval at %s", row.Decision, headOne)
+			}
+			if row.ReviewedHead != tc.reviewed {
+				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q", row.ReviewedHead, tc.reviewed)
+			}
+			setAside := strings.Contains(logs.String(), "a review decides nothing: the review App submitted it from a session that is not the reviewer's")
+			if setAside == tc.decides || strings.Contains(logs.String(), reviewWaitsLine) {
+				t.Fatalf("logs = %s, want the set-aside line only for the review naming another session, and no waiting line", logs.String())
+			}
+		})
+	}
+}
+
+// A person's review is no review-App review: no session decides who wrote it, so the reviewer's
+// claim recording none changes nothing for it. An account with write access decides the round as
+// before, and leaves the reviewer's commit where it stands, since the reviewer never read it.
+func TestAPersonsReviewDecidesWhileTheReviewersClaimRecordsNoSession(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	seedClaimSession(t, pool, reviewClaim, "")
 	var logs bytes.Buffer
-	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
-	apply := applyFacts(t, pool, engine)
-	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
-	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne, Author: testReviewApp,
-		Body: reviewBody("ship it", headOne), SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
+	apply("a writer's approval", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne,
+		Author: "a-writer", AuthorCanWrite: true, Body: "looks good", SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 	if got := issuePhase(t, pool); got != phase.Accepting {
-		t.Fatalf("after the review the issue is in %s, want accepting", got)
+		t.Fatalf("after the writer's approval the issue is in %s, want accepting", got)
 	}
-	if got := logs.String(); !strings.Contains(got, "the reviewer's session is not recorded; the review App's login decides") {
-		t.Fatalf("logs = %s, want the unrecorded-session line", got)
+	row := reviewerRow(t, pool)
+	if row.Decision == nil || row.Decision.State != "approved" || row.Decision.Head != headOne {
+		t.Fatalf("the round's decision = %+v, want the writer's approval at %s", row.Decision, headOne)
+	}
+	if row.ReviewedHead != "" {
+		t.Fatalf("the reviewer's row reads the reviewed commit %q, want none: a person's review moves no commit", row.ReviewedHead)
+	}
+	if got := logs.String(); strings.Contains(got, reviewWaitsLine) {
+		t.Fatalf("logs = %s, want no waiting line for a person's review", got)
 	}
 }
 

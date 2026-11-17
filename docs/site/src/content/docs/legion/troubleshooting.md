@@ -1385,9 +1385,14 @@ These arrive as messages on the Dispatch issue:
   nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
   a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and
   `body_truncated`. The reviewer's session is the one the claims record holds for the claim the
-  daemon starts the reviewer under, in its first round as in every later one. While that claim
-  records no session, or has no row, the login alone decides, logged as `workflow: the reviewer's
-  session is not recorded; the review App's login decides`.
+  daemon starts the reviewer under, in its first round as in every later one, recorded when the
+  reviewer's agent registers. While that claim records no session, or has no row - from the
+  reviewer's start until its agent registers, and again after its session is forgotten until the
+  next one registers - a review-App review decides nothing and moves no commit, whoever submitted
+  it, logged at warn as `workflow: a review of the review App waits: the reviewer's claim records
+  no session, so the next read of the pull request's reviews judges it again`. That read, which
+  the daemon makes when a role of the issue hands off and when it starts, judges the review again
+  by the session recorded then.
   Envoy caps review bodies at 2048 runes, so the daemon restores a truncated review-App body from
   GitHub before reading its footer; a review it cannot restore (no review id) stays set aside with
   `body_truncated=true`. The remedy for this stall: the reviewer re-submits its review with the

@@ -697,7 +697,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"no entry into a phase clears it",
 		"`reviewedCommit.part` in `packages/daemon/internal/workflow/effects.go` writes it into the task",
 		"Your session is the one the daemon recorded on the claim it started you under, in your first round as in every later one;",
-		"while that claim records no session, the review App's login decides the round and no review sets the commit.",
+		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"A `COMMENT`, a review the daemon set aside and a person's review leave it where it stands.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"over the diff that round reads, when that diff touches runtime code",

@@ -134,10 +134,12 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // because the record had not yet reached the head its footer names is judged again by the next
 // read of the issue - the read the runtime makes as it starts, and the one a handoff of the issue
 // queues, there being no other moment it reads one (readIssuePullRequest) - and decides the round
-// once that head has arrived. The refusal a reviewer's own mistake leaves on its row for the
-// stuck notice (record.ReviewDecision.Refused) is the webhook's to record, and the reviewer's row
-// carries it only for a review whose webhook arrived; a review this read alone saw leaves nothing
-// on the row, so the stuck notice of its round carries its base reason and no refusal.
+// once that head has arrived. So is one that waits because the reviewer's claim records no session
+// yet (workflow.RoundRefusal.Waits), which that next read judges by the session recorded then.
+// The refusal a reviewer's own mistake leaves on its row for the stuck notice
+// (record.ReviewDecision.Refused) is the webhook's to record, and the reviewer's row carries it
+// only for a review whose webhook arrived; a review this read alone saw leaves nothing on the row,
+// so the stuck notice of its round carries its base reason and no refusal.
 //
 // A review is judged once per daemon process for the half of the judgement that stands at every
 // head, as a webhook's review is judged once when it is delivered: a review whose author the
@@ -205,7 +207,8 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 			"state", resolved.State, "refused", refusal.Reason, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
 		// Only a refusal that stands at every head is remembered: a review refused for the head
 		// its footer names is refused at the head the record holds now, and the next read of the
-		// issue judges it at the head the record holds then.
+		// issue judges it at the head the record holds then; one that waits for the reviewer's
+		// session (workflow.RoundRefusal.Waits), by the session the reviewer's claim records then.
 		if refusal.AtEveryHead {
 			w.refuseReview(review.ID)
 		}
@@ -215,8 +218,9 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 
 // reviewRefused is whether this process has already judged the review GitHub lists under id and
 // found the workflow refuses it at every head (workflow.RoundRefusal.AtEveryHead), and
-// refuseReview records one it has. A review refused for the head it read is in neither: it is
-// judged again at the head the record holds then (reviewToApply). The per-issue
+// refuseReview records one it has. A review refused for the head it read, or one that waits for the
+// reviewer's session, is in neither: it is judged again at the head the record holds, and by the
+// session the reviewer's claim records, then (reviewToApply). The per-issue
 // read (readIssuePullRequest) judges reviews on a goroutine of its own for each issue, so the set
 // is kept under readMemoMu rather than by whichever read touched it last.
 func (w *workflowRuntime) reviewRefused(id int64) bool {
