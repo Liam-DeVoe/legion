@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -387,6 +388,22 @@ type stepRecordsRig struct {
 	claims   map[claim.Token]*stepClaimant
 	// reviews counts the reviews published, which numbers each.
 	reviews int
+	// waits names the claim of each agent's request that began its wait for the claim's machine
+	// (overrides.streamWaitBegan), as heldRequest reads it; a wait sent while it is full is not
+	// kept.
+	waits chan claim.Token
+	// held is the answer heldRequest holds on its claim's feed (overrides.beforeDecision), nil
+	// while it holds none.
+	held atomic.Pointer[heldAnswer]
+}
+
+// heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine
+// decides the answer naming model, says so by closing reached, and decides it once release closes.
+type heldAnswer struct {
+	token   claim.Token
+	model   string
+	reached chan struct{}
+	release chan struct{}
 }
 
 // newStepRecordsRig is newStepRecordsRigOn over the package's broker and a Dispatch of this
@@ -417,7 +434,8 @@ func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatc
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, number: int(number) + 1, claims: map[claim.Token]*stepClaimant{}}
+	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, number: int(number) + 1, claims: map[claim.Token]*stepClaimant{},
+		waits: make(chan claim.Token, 16)}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -494,6 +512,19 @@ func (r *stepRecordsRig) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
+	o.streamWaitBegan = func(token claim.Token) {
+		select {
+		case r.waits <- token:
+		default:
+		}
+	}
+	o.beforeDecision = func(token claim.Token, ev supervise.Event) {
+		held := r.held.Load()
+		if answered, ok := ev.(supervise.StreamAnswered); ok && held != nil && token == held.token && answered.Model == held.model {
+			close(held.reached)
+			<-held.release
+		}
+	}
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
 }
 
@@ -764,9 +795,15 @@ func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
 // waitSteps waits for the issue's read to satisfy hold, and fails with hold's last answer.
 func (r *stepRecordsRig) waitSteps(what string, hold func(stepRecordsRead) error) {
 	r.t.Helper()
+	r.waitStepsOf(r.key, what, hold)
+}
+
+// waitStepsOf waits for issue's read to satisfy hold, and fails with hold's last answer.
+func (r *stepRecordsRig) waitStepsOf(issue, what string, hold func(stepRecordsRead) error) {
+	r.t.Helper()
 	var last error
 	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
-		read, err := r.readSteps()
+		read, err := r.readStepsOf(issue)
 		if err != nil {
 			last = err
 			return false
@@ -1183,18 +1220,7 @@ func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
 // approval moves it to accepting, and the root's architect signs it off through its own route.
 func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
 	r := newStepRecordsRig(t)
-	child, number := r.seedChildInReviewing()
-	r.reviews++
-	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "APPROVED",
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "the child's round",
-		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number), "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
-	r.waitPhaseOf(child, phase.Accepting)
+	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
 	architect.ownTurn()
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(), "issue": child}, false); status != http.StatusOK {
@@ -1229,6 +1255,131 @@ func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
 		return last == nil
 	}) {
 		t.Fatalf("the child's acceptance never reached Dispatch as the tree architect's: %v", last)
+	}
+}
+
+// childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing) and has a
+// person approve its pull request's head, which moves it to accepting, the tree architect's step;
+// it answers the child's key once the child stands there.
+func (r *stepRecordsRig) childInAccepting() string {
+	t := r.t
+	t.Helper()
+	child, number := r.seedChildInReviewing()
+	r.reviews++
+	payload, err := json.Marshal(map[string]string{
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "APPROVED",
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "the child's round",
+		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number), "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
+	r.waitPhaseOf(child, phase.Accepting)
+	return child
+}
+
+// v-records on the architect's own step: a move back out of accepting ends the acceptance, the
+// tree architect's step, as its sign-off does, so its record names the model whose answer the
+// architect's stream read ahead of the request, though the claim's machine has not decided that
+// answer yet when the request arrives (heldRequest). The architect answers with one model and then
+// with another, and the child's acceptance ends failed, back at implementing, with the architect's
+// session and the second model.
+func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
+	r := newStepRecordsRig(t)
+	child := r.childInAccepting()
+	architect := r.worker(claim.RoleArchitect)
+	architect.answerWith("stand-in/architect-first")
+	architect.send(shimwire.AgentStart{})
+	architect.waitState(supervise.StateWorking)
+	grant := architect.grant()
+	if status, body := r.heldRequest(architect, "stand-in/architect-second", "/legion/v1/phase/backward", map[string]any{
+		"grantId": grant, "issue": child, "to": "implementing", "reason": "the acceptance found a gap",
+	}); status != http.StatusOK {
+		t.Fatalf("the tree architect's move back of %s = %d %s, want 200", child, status, body)
+	}
+	r.waitPhaseOf(child, phase.Implementing)
+	tree := r.token(claim.RoleArchitect)
+	r.waitStepsOf(child, "the acceptance the architect moved back", func(read stepRecordsRead) error {
+		switch got := read.find("step", 5, 1); {
+		case got.ID == "" || got.EndedAt == nil || got.Result != "failed" || got.ReturnedTo == nil || *got.ReturnedTo != 2:
+			return fmt.Errorf("the acceptance of %s is %+v, want it ended failed, returned to step 2", child, got)
+		case got.Agent != string(tree) || got.Session != architect.session || got.Model != "stand-in/architect-second":
+			return fmt.Errorf("the acceptance of %s names agent %q, session %q and model %q; want %s, %s and the model that answered last, stand-in/architect-second",
+				child, got.Agent, got.Session, got.Model, tree, architect.session)
+		}
+		return nil
+	})
+}
+
+// heldRequest sends c's request to path, one that ends c's step, while the answer c's model gave
+// last waits on the claim's feed, and answers the request's status and body. c's model answers as
+// model, and the feed stops before the machine decides that answer (overrides.beforeDecision):
+// the stream has read it, so whatever the stream reads after it comes after it, and the machine
+// holds no lock while it waits, so the request reads the claim's machine as it reads any live
+// claim's. A hold inside a decision would not do: the request's grant check reads the claim
+// (supervise.Machine.Claim), which waits for the decision in flight. The request is sent once the
+// answer is held; the hold ends once the daemon says the request began its wait for c's machine
+// (overrides.streamWaitBegan), or once the request has answered without one.
+func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body any) (int, []byte) {
+	t := r.t
+	t.Helper()
+	held := &heldAnswer{token: c.token, model: model, reached: make(chan struct{}), release: make(chan struct{})}
+	r.held.Store(held)
+	release := sync.OnceFunc(func() {
+		r.held.Store(nil)
+		close(held.release)
+	})
+	t.Cleanup(release)
+	c.answerWith(model)
+	select {
+	case <-held.reached:
+	case <-time.After(stepRecordsWait):
+		t.Fatalf("the feed of %s never came to the answer of %s within %s", c.token, model, stepRecordsWait)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, r.d.base+path, bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for len(r.waits) > 0 {
+		<-r.waits
+	}
+	type answer struct {
+		status int
+		body   []byte
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		response, err := r.d.client.Do(request)
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		defer response.Body.Close()
+		read, err := io.ReadAll(response.Body)
+		answered <- answer{status: response.StatusCode, body: read, err: err}
+	}()
+	deadline := time.After(stepRecordsWait)
+	for {
+		select {
+		case token := <-r.waits:
+			if token == c.token {
+				release()
+			}
+		case got := <-answered:
+			release()
+			if got.err != nil {
+				t.Fatalf("POST %s: %v", path, got.err)
+			}
+			return got.status, got.body
+		case <-deadline:
+			t.Fatalf("POST %s for %s neither began its wait nor answered within %s", path, c.token, stepRecordsWait)
+		}
 	}
 }
 

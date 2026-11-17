@@ -42,6 +42,9 @@ type supervisor struct {
 	// durableState is the one callback every machine of this supervisor reports its durable
 	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
+	// beforeDecision is overrides.beforeDecision, run on a claim's feed before its machine decides
+	// each event (add); nil runs nothing. It is set before the first machine is added.
+	beforeDecision func(claim.Token, supervise.Event)
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -272,6 +275,9 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 				continue
 			}
 			ev := item.ev
+			if s.beforeDecision != nil {
+				s.beforeDecision(token, ev)
+			}
 			ended := m.TurnsEnded()
 			if err := m.Handle(working, ev); err != nil {
 				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
@@ -390,6 +396,9 @@ func (s *supervision) awaitStreamWithin(ctx context.Context, token claim.Token, 
 	}
 	started := time.Now()
 	done := s.stream.Drain(token)
+	if s.plan.streamWaitBegan != nil {
+		s.plan.streamWaitBegan(token)
+	}
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
