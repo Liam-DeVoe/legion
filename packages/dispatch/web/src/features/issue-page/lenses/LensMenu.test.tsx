@@ -16,10 +16,10 @@ import { writesOf } from "../../writes/write-store";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPES, type NodeType } from "../page-words";
-import { issueDetails, node, READER_ACTOR } from "../spec-filter/spec-fixtures";
+import { issueDetails, node, READER_ACTOR, statementRef } from "../spec-filter/spec-fixtures";
 import { TreeRows } from "../TreeRows";
 import type { DrawnRow } from "../tree-fold";
-import { rowKeyOf } from "../tree-keys";
+import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { type TreeAnswer, type TreeAnswerNode, useTreeRead } from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
@@ -38,7 +38,7 @@ import { lensActFor } from "./LensMenu";
 const KEY = "CORE-1";
 
 /** The statement the act is offered on, and its row. */
-const STATEMENT = `dispatch://${KEY}/spec#b-r1`;
+const STATEMENT = statementRef("r1");
 const STATEMENT_ID = "spec/r1";
 
 const statement = node({
@@ -214,17 +214,12 @@ function answerTreeReads(): { readonly reads: number } {
   return asked;
 }
 
-/** Every node under `root`, each before its children. */
-function everyNode(root: TreeNode): TreeNode[] {
-  return root.children.flatMap((child) => [child, ...everyNode(child)]);
-}
-
 /** The rows of the issue's tree as the page reads and builds it (`useTreeRead`,
  *  `buildIssueTree`), every node at the top level: none until the read answers, and every node
  *  each read answers after it. */
 function TreeReadRows() {
   const { answer } = useTreeRead(ISSUE);
-  return <Rows nodes={everyNode(buildIssueTree({ issue: ISSUE, tree: answer }))} />;
+  return <Rows nodes={nodesInOrder(buildIssueTree({ issue: ISSUE, tree: answer })).slice(1)} />;
 }
 
 /** A client signed in as alice, as the page is, whose reads are held once read and whose failed
@@ -315,7 +310,7 @@ function menuLine(view: RenderResult): string | null {
 }
 
 /** Lets whatever a press would send go out and be answered. */
-async function settle(): Promise<void> {
+async function letRequestsSettle(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 50);
   await act(() => promise);
@@ -344,7 +339,7 @@ test("the menu lists the catalogue in order", async () => {
     expect(control.tabIndex, "the act is in the tab order").toBe(-1);
     expect(control.getAttribute("aria-haspopup")).toBe("menu");
     expect(control.getAttribute("aria-expanded")).toBe("false");
-    await settle();
+    await letRequestsSettle();
     expect(catalogue.reads, "the focus read the catalogue").toBe(0);
 
     await user.click(control);
@@ -411,7 +406,7 @@ test("the menu lists the catalogue in order", async () => {
       "inversion",
     ]);
     expect(document.activeElement).toBe(items(view)[0]);
-    await settle();
+    await letRequestsSettle();
     expect(catalogue.reads, "a second opening read the catalogue again").toBe(1);
   } finally {
     out.resolve();
@@ -463,7 +458,7 @@ test("a failed catalogue read says so and reads again at the next opening", asyn
 
     await user.keyboard("{Escape}");
     await user.click(control);
-    await settle();
+    await letRequestsSettle();
     expect(catalogue.reads, "an opening after the answer read the catalogue again").toBe(2);
   } finally {
     view.unmount();
@@ -488,14 +483,13 @@ test("a pick sends on and kind alone", async () => {
     await user.click(drawn[1] as HTMLElement);
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toStrictEqual({ kind: "pre-mortem", on: STATEMENT });
-    expect(Object.keys(bodies[0] as object).sort()).toEqual(["kind", "on"]);
     expect(menuLine(view)).toBe(LENS_ANSWERS.examining);
     expect(items(view)).toHaveLength(3);
     expect(items(view).some((item) => item.hasAttribute("disabled"))).toBe(false);
 
     // One invocation at a time.
     await user.click(items(view)[2] as HTMLElement);
-    await settle();
+    await letRequestsSettle();
     expect(bodies, "a pick while one was out sent another").toHaveLength(1);
 
     out.resolve();
@@ -545,7 +539,7 @@ test("a refusal adds no row", async () => {
     expect(document.activeElement, "the focus did not go back to the row").toBe(
       rowOf(view, read.id)
     );
-    await settle();
+    await letRequestsSettle();
     expect(tree.reads, "the refusal read the tree again").toBe(1);
     expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows);
 
@@ -644,8 +638,8 @@ test("Escape gives the focus back", async () => {
 });
 
 /** The kinds of node the invoke route takes (R4), written out rather than read from the code:
- *  every block of the issue's documents, so the criterion and the reading the schema added
- *  since the plan take it as a statement does. */
+ *  every block of the issue's documents, a criterion and a reading as much as a statement, and
+ *  an ask, a comment, a message, a lens, a finding, a risk and a constraint. */
 const OFFERED: readonly NodeType[] = [
   "requirement",
   "check",
@@ -778,7 +772,7 @@ test("no key pressed in the menu reaches the tree", async () => {
     await user.keyboard("{Escape}");
     expect(menuOf(view)).toBeNull();
     out.resolve();
-    await settle();
+    await letRequestsSettle();
 
     await user.click(control);
     await user.keyboard("{Tab}");

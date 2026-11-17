@@ -1,3 +1,4 @@
+import { buildDispatchReference } from "../../refs/routes";
 import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
 import { blank, type Draft, plainWords } from "../tree-drafts";
@@ -18,10 +19,14 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
 /** One chip that names another node of the tree: a lens, a check or a constraint. */
 export interface LensChip {
-  /** The target's `dispatch://` address. */
+  /** The target's `dispatch://` address, but a check's id in the tree read where the read knows
+   *  no document of it (`checkAddress`). */
   readonly address: string;
   /** The target's words, cut by `chipWords`. */
   readonly words: string;
+  /** Set only where `words` are the page's and not the author's: the page's word for a lens,
+   *  which names a lens whose kind has no words (`lensChipWords`). */
+  readonly chrome?: true;
   /** The target's id in the tree read, only where a step drafted it: the link's `?node=`. */
   readonly id?: string;
   /** The target's state and visibility, as the tree read gives them (part X). */
@@ -60,6 +65,20 @@ export interface LensFacts {
  *  lens draw them (R1, R2). A chain entry and a menu item draw the words as the node holds them. */
 export function kindWords(words: string): string {
   return sentenceCase(words);
+}
+
+/** The words of a chip that names a lens (R2): its kind's words `kind`, capitalised and cut as
+ *  its tag is; where `kind` holds none, the page's word for a lens, which the chip marks as the
+ *  page's (`chrome`). The outline's trigger chips and the chain's last chip are named alike. */
+export function lensChipWords(kind: string | undefined): Pick<LensChip, "chrome" | "words"> {
+  return filled(kind)
+    ? { words: chipWords(kindWords(kind)) }
+    : { chrome: true, words: chipWords(kindWords(NODE_TYPE_NAMES.lens)) };
+}
+
+/** Whether a stored string has words to draw. */
+export function filled(text: string | undefined): text is string {
+  return text !== undefined && text !== "";
 }
 
 /** The four kinds `lensDrafts` draws, as the tree names them. */
@@ -172,7 +191,7 @@ export function lensChips(
       const address = target.supertag === "constraint" ? addressOf(target, context) : undefined;
       return address === undefined
         ? []
-        : [chipTo(target, address, chipWords(constraintWords(target)), context)];
+        : [chipTo(target, address, { words: chipWords(constraintWords(target)) }, context)];
     })
   );
   if (draft.lens === undefined && constrainedBy.length === 0) return;
@@ -195,7 +214,7 @@ export function lensChips(
           chipTo(
             check,
             checkAddress(check, context),
-            chipWords(context.lineOf(check.id) ?? ""),
+            { words: chipWords(context.lineOf(check.id) ?? "") },
             context
           )
         )
@@ -332,19 +351,17 @@ function lensChipsTo(lenses: readonly TreeAnswerNode[], context: TreeDraftContex
     lenses.flatMap((lens) => {
       const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
       if (address === undefined) return [];
-      const kind = kindOf(lens, context);
-      const words = chipWords(kindWords(kind === "" ? NODE_TYPE_NAMES.lens : kind));
-      return [chipTo(lens, address, words, context)];
+      return [chipTo(lens, address, lensChipWords(kindOf(lens, context)), context)];
     })
   );
 }
 
-/** The chip naming `target` at `address` by `words`, linked by its read id where a step drafted
- *  it. */
+/** The chip naming `target` at `address` by `named`'s words, linked by its read id where a step
+ *  drafted it. */
 function chipTo(
   target: TreeAnswerNode,
   address: string,
-  words: string,
+  named: Pick<LensChip, "chrome" | "words">,
   context: TreeDraftContext
 ): LensChip {
   return {
@@ -352,7 +369,7 @@ function chipTo(
     ...(context.drafted(target.id) ? { id: target.id } : {}),
     state: target.state,
     visibility: target.visibility,
-    words,
+    ...named,
   };
 }
 
@@ -365,10 +382,23 @@ function uniqueChips(chips: readonly LensChip[]): LensChip[] {
   return [...unique.values()];
 }
 
-/** A check's address: the one the results read gives it, which its row carries as T's step
- *  drafts it; where that read holds no row for it, its id in the tree read keys the chip. */
+/**
+ * A check's address, as T's step gives its row one (`tree-read/tree-nodes.ts`' `referenceOf`):
+ * the one the results read gives it, where that read holds a row for it; else its block's in
+ * the document the read says it is written in (`document`), in its own issue. Only where the
+ * read knows no document of the check does its id in the tree read key the chip, which is no
+ * `dispatch://` address.
+ */
 function checkAddress(check: TreeAnswerNode, context: TreeDraftContext): string {
-  return context.kept.checks.get(context.treeIdOf(check.id))?.ref ?? check.id;
+  const kept = context.kept.checks.get(context.treeIdOf(check.id))?.ref;
+  if (kept !== undefined) return kept;
+  if (check.document === undefined) return check.id;
+  return buildDispatchReference({
+    block: { id: check.id },
+    key: check.issue ?? context.key,
+    kind: "artifact",
+    slug: check.document.slug,
+  });
 }
 
 /** For each lens, the lenses whose `triggered_by` tuples name it, in the answer's order: indexed

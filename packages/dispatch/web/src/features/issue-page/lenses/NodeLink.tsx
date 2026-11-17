@@ -2,8 +2,9 @@ import type { MouseEvent, ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { pageMutedText } from "../../../theme/classes";
+import { isPlainClick } from "../../refs/picture-lightbox";
 import { buildIssuePath } from "../../refs/routes";
-import { authorText } from "../page-structure";
+import { authorText, pageChrome } from "../page-structure";
 import type { LensChip } from "./lens-drafts";
 
 /**
@@ -20,15 +21,18 @@ import type { LensChip } from "./lens-drafts";
  *
  * The link is out of the tab order, as every other control inside a row is, unless `tabStops`
  * holds: `f` steps to it and Enter follows it (`useTreeKeymap.ts`'s `rowStops`). The words are
- * one element right inside the chip, so part X's marks stand after them.
+ * one element right inside the chip, so part X's marks stand after them. They are the author's
+ * (`authorText`), but where the chip marks them as the page's own (`chip.chrome`, the page's
+ * word for a lens whose kind has no words), as G's `Chip` marks the page's word for a document.
  */
 export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean }): ReactNode {
   const { key = "" } = useParams<{ key: string }>();
   const id = chip.id;
+  const marks = chip.chrome === true ? pageChrome : authorText;
   return (
     <span className="min-w-0 [overflow-wrap:anywhere]" data-node-chip="">
       {id === undefined || key === "" ? (
-        <span className="whitespace-nowrap" data-chip-name="" {...authorText}>
+        <span className="whitespace-nowrap" data-chip-name="" {...marks}>
           {chip.words}
         </span>
       ) : (
@@ -38,7 +42,7 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
           onClick={(event) => focusDrawnRow(event, id)}
           tabIndex={tabStops ? undefined : -1}
           to={`${buildIssuePath({ key, kind: "issue" })}?node=${encodeURIComponent(id)}`}
-          {...authorText}
+          {...marks}
         >
           {chip.words}
         </Link>
@@ -56,9 +60,7 @@ export function NodeLink({ chip, tabStops }: { chip: LensChip; tabStops: boolean
  * Shift or Alt held, or with a button other than the first - leaves the focus where it is.
  */
 function focusDrawnRow(event: MouseEvent<HTMLAnchorElement>, id: string): void {
-  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
-    return;
-  }
+  if (!isPlainClick(event.nativeEvent)) return;
   event.currentTarget
     .closest('[role="tree"]')
     ?.querySelector<HTMLElement>(`[data-node-row][data-node-read-id="${CSS.escape(id)}"]`)

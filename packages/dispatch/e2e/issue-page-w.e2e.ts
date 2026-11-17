@@ -1,4 +1,5 @@
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
 import { kindWords } from "../web/src/features/issue-page/lenses/lens-drafts";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
@@ -9,6 +10,7 @@ import {
   type Preset,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
+import { getIssueCoverage } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { gotoIssue, issuePage, issueRead, phase } from "./issue-page";
@@ -129,9 +131,10 @@ function rowSize(): { readonly height: number; readonly width: number } {
   return test.info().project.name === "iphone" ? PHONE : DESKTOP;
 }
 
-/** The kind of the catalogue a lens was invoked as, by the id or the address its 201 names. */
+/** The kind of the catalogue a lens was invoked as, by the id its 201 names: the server answers
+ *  a lens's `kind` as the catalogue's id of the kind. */
 function kindNamed(kinds: readonly LensKind[], kind: string): LensKind {
-  const found = kinds.find((one) => one.id === kind || one.ref === kind);
+  const found = kinds.find((one) => one.id === kind);
   if (found === undefined) throw new Error(`the lens catalogue holds no kind ${kind}`);
   return found;
 }
@@ -184,7 +187,7 @@ interface LineReading {
 }
 
 /** The line `line` of `lines`, or undefined where the row draws none. */
-function lineReading(lines: readonly LensLine[], line: string): LineReading | undefined {
+function lineReading(lines: readonly LensLine[], line: LineName): LineReading | undefined {
   const found = lines.find((one) => one.line === line);
   return found === undefined
     ? undefined
@@ -283,24 +286,32 @@ async function invokeThroughMenu(
   ).toBe(targetId);
 }
 
-/** Puts the focus on each row a view draws in turn and fails where one offers the Lens act: the
- *  act is the outline's alone (R4). */
-async function expectNoLensAct(page: Page, key: string, view: Preset): Promise<void> {
+/** Puts the focus on each row a view draws in turn - each of `ids` alone, where they are given -
+ *  and fails where one offers the Lens act: the act is the outline's alone (R4). */
+async function expectNoLensAct(
+  page: Page,
+  key: string,
+  view: Preset,
+  ids?: readonly string[]
+): Promise<void> {
   await gotoIssue(page, presetPath(key, view));
   await expect
     .poll(() => nodeRows(page).count(), { message: `the ${view} view draws no row` })
     .toBeGreaterThan(0);
-  const ids = new Set(
-    (await drawnRows(page)).flatMap((row) => (row.visible && row.id !== null ? [row.id] : []))
-  );
-  for (const id of ids) {
+  const focused =
+    ids ??
+    new Set(
+      (await drawnRows(page)).flatMap((row) => (row.visible && row.id !== null ? [row.id] : []))
+    );
+  for (const id of focused) {
     const row = nodeRow(page, id).first();
+    await expect(row, `the ${view} view draws no row ${id}`).toHaveCount(1);
     await row.focus();
     await expect(row, `the ${view} view's row ${id} takes no focus`).toBeFocused();
     // A row draws its acts in the frame after it takes the focus.
     await nextFrames(page);
     await expect(
-      issuePage(page).locator("[data-row-lens]"),
+      lensAct(issuePage(page)),
       `the ${view} view's row ${id} offers the Lens act`
     ).toHaveCount(0);
   }
@@ -308,20 +319,17 @@ async function expectNoLensAct(page: Page, key: string, view: Preset): Promise<v
 
 /** The reads of a lens (`GET /api/v1/lenses?on=`) `requests` hold, by the address each names. */
 function chainReads(requests: readonly ApiRequest[]): (string | null)[] {
-  return requests.flatMap((request) => {
-    const url = new URL(request.path, "http://page.invalid");
-    return request.method === "GET" && url.pathname === "/api/v1/lenses"
-      ? [url.searchParams.get("on")]
-      : [];
-  });
+  return requests.flatMap((request) =>
+    request.method === "GET" && request.route === "/api/v1/lenses"
+      ? [new URL(request.path, "http://page.invalid").searchParams.get("on")]
+      : []
+  );
 }
 
 /** The reads of the lens catalogue (`GET /api/v1/schema/blocks`) `requests` hold. */
 function catalogueReads(requests: readonly ApiRequest[]): string[] {
   return requests.flatMap((request) =>
-    new URL(request.path, "http://page.invalid").pathname === "/api/v1/schema/blocks"
-      ? [request.path]
-      : []
+    request.route === "/api/v1/schema/blocks" ? [request.path] : []
   );
 }
 
@@ -603,6 +611,10 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     const kinds = await lensCatalogue();
     expect(kinds, "the lens catalogue does not hold its 22 kinds").toHaveLength(22);
     const statementTwo = await drawnId(page, ids.statements[1] ?? "", "statement 2");
+    // Statement 2's address, as the coverage read gives it (as `seedLenses` reads statement 1's):
+    // the `on` its row sends.
+    const statementTwoAddress = (await getIssueCoverage(key)).requirements?.[1]?.ref;
+    expect(statementTwoAddress, "the coverage read holds no statement 2").toBeDefined();
     const row = await focusRow(page, statementTwo);
     await pressFTo(page, lensAct(row), "the focused row offers the Lens act");
 
@@ -672,7 +684,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
       write.resolve();
     }
     expect(sent, "the pick does not send the statement and the third kind alone").toEqual([
-      { kind: kinds[2]?.id, on: expect.any(String) },
+      { kind: kinds[2]?.id, on: statementTwoAddress },
     ]);
     const made = await newLens(tree, before, "the pick on statement 2");
     await page.unroute(INVOKE_ROUTE, holdWrite);
@@ -705,20 +717,10 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
       "after a reload the lens invoked on statement 2 is not its last lens"
     ).toBe(madeId);
 
-    // The act is the outline's alone: no row of the four views offers it.
-    await gotoIssue(page, presetPath(key, "spec"));
-    const specRow = nodeRow(page, statementTwo).first();
-    await expect(specRow, "the Spec view draws no row for statement 2").toHaveCount(1);
-    await specRow.focus();
-    await expect(specRow, "statement 2's row of the Spec view takes no focus").toBeFocused();
-    // A row draws its acts in the frame after it takes the focus.
-    await nextFrames(page);
-    await expect(
-      issuePage(page).locator("[data-row-lens]"),
-      "under Spec, statement 2's row offers the Lens act"
-    ).toHaveCount(0);
-    for (const view of ["verification", "plan", "decisions"] as const) {
-      await expectNoLensAct(page, key, view);
+    // The act is the outline's alone: no row of the four views offers it - statement 2's row of
+    // the Spec view, and every row of the other three.
+    for (const view of VIEWS) {
+      await expectNoLensAct(page, key, view, view === "spec" ? [statementTwo] : undefined);
     }
 
     // Each kind of node the route takes by its address takes the act: an open question, a

@@ -1,9 +1,9 @@
+import type { LensInvoked } from "@legion/contracts";
 import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api, writeRequest } from "../../../api/client";
-import type { Result } from "../../../api/paths";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { LENS_WORDS } from "../page-words";
 import { issueTreeKey } from "../tree-read/tree-read";
@@ -15,30 +15,31 @@ import { issueTreeKey } from "../tree-read/tree-read";
  * app's retries stand.
  */
 
-/** What `POST /api/v1/issues/{key}/lenses` answers: the lens it made. */
-export type LensInvoked = Result<"/api/v1/issues/{key}/lenses", "post">;
+/** What makes a read held once in a load: an answer never goes stale or is let go, and the
+ *  window taking the focus reads nothing again. */
+const HELD_FOR_THE_LOAD = {
+  gcTime: Number.POSITIVE_INFINITY,
+  refetchOnWindowFocus: false,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
 
 /** The lens read of the lens at `address`, read at a press of `LENS_WORDS.show_chain` (R2). */
 export const lensChainQuery = (address: string, enabled: boolean) =>
   queryOptions({
+    ...HELD_FOR_THE_LOAD,
     enabled,
-    gcTime: Number.POSITIVE_INFINITY,
     queryFn: () => api.getLenses(address),
     queryKey: ["lens-read", address],
-    refetchOnWindowFocus: false,
-    staleTime: Number.POSITIVE_INFINITY,
   });
 
 /** The lens catalogue, in its own order, read when the menu of lens kinds opens (R4). A failed
  *  read is read again at the next opening. */
 export const lensKindsQuery = (enabled: boolean) =>
   queryOptions({
+    ...HELD_FOR_THE_LOAD,
     enabled,
-    gcTime: Number.POSITIVE_INFINITY,
     queryFn: async () => (await api.getBlockSchema()).lens_kinds ?? [],
     queryKey: ["lens-kinds"],
-    refetchOnWindowFocus: false,
-    staleTime: Number.POSITIVE_INFINITY,
   });
 
 /**

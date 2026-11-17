@@ -239,15 +239,7 @@ function ActAndMenu({
     if (to !== undefined) items[to]?.focus();
   };
 
-  // What the menu's line says: that a pick is out, else, while the menu lists no kind, that the
-  // catalogue's read failed or is out; nothing once the kinds are listed.
-  const line: { readonly failed: boolean; readonly words: string } | undefined = examining
-    ? { failed: false, words: LENS_ANSWERS.examining }
-    : listed !== undefined
-      ? undefined
-      : kinds.isError && !kinds.isFetching
-        ? { failed: true, words: LENS_ANSWERS.kinds_failed }
-        : { failed: false, words: LENS_ANSWERS.loading_kinds };
+  const line = menuLine(examining, listed !== undefined, kinds);
 
   return (
     <>
@@ -364,4 +356,23 @@ function step(key: string, at: number, count: number): number | undefined {
   if (key === "ArrowDown") return at < 0 ? 0 : (at + 1) % count;
   if (key === "ArrowUp") return at < 0 ? count - 1 : (at - 1 + count) % count;
   return undefined;
+}
+
+/** One line the menu says of its reads: its words, and whether they say a read failed. */
+interface MenuLine {
+  readonly failed: boolean;
+  readonly words: string;
+}
+
+/** What the menu's line says: that a pick is out, else, while the menu lists no kind, that the
+ *  catalogue's read failed or is out; nothing once the kinds are listed. */
+function menuLine(
+  examining: boolean,
+  listed: boolean,
+  read: { readonly isError: boolean; readonly isFetching: boolean }
+): MenuLine | undefined {
+  if (examining) return { failed: false, words: LENS_ANSWERS.examining };
+  if (listed) return undefined;
+  if (read.isError && !read.isFetching) return { failed: true, words: LENS_ANSWERS.kinds_failed };
+  return { failed: false, words: LENS_ANSWERS.loading_kinds };
 }

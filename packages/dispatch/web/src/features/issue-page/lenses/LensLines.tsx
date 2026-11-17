@@ -4,12 +4,12 @@ import { pageQuietText } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_WORDS } from "../page-words";
-import { kindWords, type LensChip } from "./lens-drafts";
+import { filled, kindWords, type LensChip } from "./lens-drafts";
 import { NodeLink } from "./NodeLink";
 
 /** What a line is marked with (`data-lens-line`): the `LENS_WORDS` key of its label, and for a
  *  line with no label, what it draws. */
-type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
+export type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
 
 /**
  * The lines a row draws under its words from its lens facts (dispatch://INFRA-4065 R1, R2, R3,
@@ -109,11 +109,6 @@ export function LensLines({
     }
   }
   return lines.length === 0 ? null : lines;
-}
-
-/** Whether a stored string has words to draw. */
-function filled(text: string | undefined): text is string {
-  return text !== undefined && text !== "";
 }
 
 /** One line: its label, where `LENS_WORDS` holds one for it, then what it holds. Styled as the

@@ -19,7 +19,7 @@ import {
   LENS_WORDS,
   NODE_TYPE_NAMES,
 } from "../page-words";
-import { node } from "../spec-filter/spec-fixtures";
+import { node, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
@@ -45,7 +45,7 @@ const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
 /** The statement both lenses read, and its first line as the tree drew it. */
-const STATEMENT = "dispatch://CORE-1/spec#b-r1";
+const STATEMENT = statementRef("r1");
 const STATEMENT_LINE = "Store the notices for a day";
 
 function facts(partial: Partial<LensFacts>): LensFacts {
@@ -207,7 +207,7 @@ function chainEntries(view: RenderResult) {
 }
 
 /** Lets whatever a press or a focus would send go out and be answered. */
-async function settle(): Promise<void> {
+async function letRequestsSettle(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 50);
   await act(() => promise);
@@ -233,7 +233,7 @@ test("the chain is read at a press and not at the focus", async () => {
     expect(control.textContent).toBe(LENS_WORDS.show_chain);
     expect(control.hasAttribute("data-page-chrome")).toBe(true);
     expect(control.tabIndex, "the control is in the tab order").toBe(-1);
-    await settle();
+    await letRequestsSettle();
     expect(asked, "the focus sent the lens read").toEqual([]);
     expect(chainStatus(first)).toBeNull();
 
@@ -246,7 +246,7 @@ test("the chain is read at a press and not at the focus", async () => {
     expect(showChain(first), "the control went with the answer").toBe(control);
 
     await user.click(control);
-    await settle();
+    await letRequestsSettle();
     expect(asked, "a second press sent the lens read again").toEqual([PREMORTEM]);
     expect(chainAddresses(first)).toEqual([TRADE_OFF, PREMORTEM]);
   } finally {
@@ -262,7 +262,7 @@ test("the chain is read at a press and not at the focus", async () => {
     await user.click(control);
     expect(chainStatus(again)).toBeNull();
     expect(chainAddresses(again)).toEqual([TRADE_OFF, PREMORTEM]);
-    await settle();
+    await letRequestsSettle();
     expect(asked, "a press on the row focused again sent the lens read").toEqual([PREMORTEM]);
   } finally {
     again.unmount();
@@ -340,12 +340,14 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
       await waitFor(() => expect(chainAddresses(view)).toEqual([TRADE_OFF, PREMORTEM]));
       const last = view.container.querySelector("[data-lens-chain]")?.lastElementChild;
       const label = last?.firstElementChild;
+      const name = last?.querySelector("[data-node-chip] [data-chip-name]");
       return {
         href: last?.querySelector("[data-node-chip] a")?.getAttribute("href") ?? null,
         label: label?.textContent,
         labelMarked: label?.hasAttribute("data-page-chrome"),
         more: last?.hasAttribute("data-lens-chain-more"),
-        words: last?.querySelector("[data-node-chip] [data-chip-name]")?.textContent,
+        words: name?.textContent,
+        wordsMarked: name?.hasAttribute("data-author-text") ? "author" : "page",
       };
     } finally {
       view.unmount();
@@ -364,14 +366,17 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
     labelMarked: true,
     more: true,
     words: chipWords(kindWords(furtherKind)),
+    wordsMarked: "author",
   });
-  // A lens the tree drew no row for is named by the page's word for a lens, with no link.
+  // A lens the tree drew no row for is named by the page's word for a lens, marked as the
+  // page's, with no link.
   expect(await drawnEnd(PLACES)).toEqual({
     href: null,
     label: LENS_WORDS.more_lenses,
     labelMarked: true,
     more: true,
     words: kindWords(NODE_TYPE_NAMES.lens),
+    wordsMarked: "page",
   });
 });
 

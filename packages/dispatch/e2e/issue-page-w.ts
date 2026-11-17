@@ -1,3 +1,11 @@
+import type {
+  ConstraintRead,
+  LensFinding,
+  LensInvoked,
+  LensKindRead,
+  PointerWritten,
+  RiskWritten,
+} from "@legion/contracts";
 import { expect, type Locator, type Page, type Response } from "@playwright/test";
 
 import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
@@ -9,6 +17,7 @@ import {
   type Result,
   routeUrl,
 } from "../web/src/api/paths";
+import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
@@ -45,36 +54,25 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t";
  *   T's gates: a `Gate` of T's, read by T's `owedUnless`.
  */
 
-/** What `POST /api/v1/issues/{key}/lenses` answers: the lens, with its findings. */
-export type LensInvoked = Result<"/api/v1/issues/{key}/lenses", "post">;
+/** What the writers answer, each the 201 body of its route as `@legion/contracts` names it:
+ *  `POST /api/v1/issues/{key}/lenses` the lens with its findings, `…/nodes/{id}/findings` the
+ *  finding, `…/risks` the risk, `…/constraints` the constraint, and `…/nodes/{id}/pointers` both
+ *  ends of the tuple. Part X's rows name them from here. */
+export type { ConstraintRead, LensFinding, LensInvoked, PointerWritten, RiskWritten };
 
-/** What `POST /api/v1/issues/{key}/nodes/{id}/findings` answers: the finding. */
-export type LensFinding = Result<"/api/v1/issues/{key}/nodes/{id}/findings", "post">;
-
-/** What `POST /api/v1/issues/{key}/risks` answers: the risk. */
-export type RiskWritten = Result<"/api/v1/issues/{key}/risks", "post">;
-
-/** What `POST /api/v1/issues/{key}/constraints` answers: the constraint. */
-export type ConstraintRead = Result<"/api/v1/issues/{key}/constraints", "post">;
-
-/** What `POST /api/v1/issues/{key}/nodes/{id}/pointers` answers: both ends of the tuple. */
-export type PointerWritten = Result<"/api/v1/issues/{key}/nodes/{id}/pointers", "post">;
+/** What `POST /api/v1/issues/{key}/constraints` takes. */
+type ConstraintBody = Body<"/api/v1/issues/{key}/constraints", "post">;
 
 /** Who a write is for: `project`, the default, or `author`, which keeps it to alice. */
-type Visibility = Pick<Body<"/api/v1/issues/{key}/constraints", "post">, "visibility">;
+type Visibility = Pick<ConstraintBody, "visibility">;
 
 /** A constraint that is a standard, with the reference to the part of it that applies. */
-export interface StandardConstraint {
-  readonly reference: string;
-  readonly standard: string;
-}
+export type StandardConstraint = Required<Pick<ConstraintBody, "reference" | "standard">>;
 
 /** A constraint that is a measurement, with its value and where it was taken. */
-export interface MeasurementConstraint {
-  readonly measurement: string;
-  readonly taken_where: string;
-  readonly value: string;
-}
+export type MeasurementConstraint = Required<
+  Pick<ConstraintBody, "measurement" | "taken_where" | "value">
+>;
 
 /** One write as alice: `body` posted as JSON to `pattern` with `params` in its path, each value
  *  percent-encoded as one segment (`routeUrl`), under an `Idempotency-Key` of its own. */
@@ -220,7 +218,7 @@ export async function seedLenses(key: string): Promise<LensSeed> {
   const [coverage, results, catalogue] = await Promise.all([
     getIssueCoverage(key),
     getIssueResults(key),
-    read("/api/v1/schema/blocks", {}),
+    lensCatalogue(),
   ]);
   const statement = (place: number): string => {
     const ref = coverage.requirements?.[place - 1]?.ref;
@@ -231,7 +229,7 @@ export async function seedLenses(key: string): Promise<LensSeed> {
   const statements = { five: statement(5), one: statement(1), six: statement(6) };
   const check1 = results.checks?.[0]?.ref;
   if (check1 === undefined) throw new Error(`the results read of ${key} holds no check`);
-  const catalogueConstraint = catalogue.lens_kinds?.[0]?.sources?.[0]?.ref;
+  const catalogueConstraint = catalogue[0]?.sources?.[0]?.ref;
   if (catalogueConstraint === undefined) {
     throw new Error("the catalogue's first lens kind holds no source");
   }
@@ -437,7 +435,7 @@ export function focusedRowReadId(page: Page): Promise<string | null> {
 
 /** The links of the chips one line of the row `row` locates draws (`data-lens-line`, the
  *  `LENS_WORDS` key of its label). */
-export function lensChipLinks(row: Locator, line: string): Locator {
+export function lensChipLinks(row: Locator, line: LineName): Locator {
   return row.locator(`${SELECTORS.lensLine}[data-lens-line="${line}"] ${SELECTORS.chip} a[href]`);
 }
 
@@ -470,7 +468,7 @@ export function lensMenuLine(page: Page): Locator {
 }
 
 /** One kind of the lens catalogue, as `GET /api/v1/schema/blocks` answers it. */
-export type LensKind = NonNullable<Result<"/api/v1/schema/blocks", "get">["lens_kinds"]>[number];
+export type LensKind = LensKindRead;
 
 /** The lens catalogue, in its own order, read as alice: what the menu of lens kinds lists. */
 export async function lensCatalogue(): Promise<LensKind[]> {
@@ -530,15 +528,22 @@ export interface TreePage {
 
 /** Keeps each page of the tree read with no view the page receives from now on, so a row counts
  *  the pages a read has against the requests it sent; the answer reads them, in the order they
- *  arrived, once every page received so far has been read. */
+ *  arrived, once every page received so far has been read. A page whose body the browser let go
+ *  of before it was read is none, as part T's `treeAnswerOf` reads it. */
 export function treePagesOf(page: Page): () => Promise<TreePage[]> {
-  const kept: Promise<TreePage>[] = [];
+  const kept: Promise<TreePage | undefined>[] = [];
   page.on("response", (response) => {
     if (!treeReadAnswer(response)) return;
     const cursor = new URL(response.url()).searchParams.get("cursor");
-    kept.push(response.json().then((body: IssueTreeAnswer) => ({ cursor, next: body.cursor })));
+    kept.push(
+      response.json().then(
+        (body: IssueTreeAnswer) => ({ cursor, next: body.cursor }),
+        // A body the browser let go of before it was read, as the page moved on, is no page.
+        () => undefined
+      )
+    );
   });
-  return () => Promise.all(kept);
+  return async () => (await Promise.all(kept)).filter((one) => one !== undefined);
 }
 
 /** The read ids of what `seedLenses` wrote, as the issue's tree read holds them. */

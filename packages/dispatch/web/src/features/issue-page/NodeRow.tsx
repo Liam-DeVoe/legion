@@ -227,6 +227,8 @@ export function NodeRow({
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
   // drawing of a node is cut, so a heading never runs into the paragraph after it.
   const first = firstLineOf(lineWords(node));
+  // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place (INFRA-4065 R1).
+  const noVerdict = node.type === "lens" && node.text === "";
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
@@ -305,7 +307,7 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              {node.type === "lens" && node.text === "" ? (
+              {noVerdict ? (
                 <span data-node-first-line="" {...pageChrome}>
                   {LENS_WORDS.no_verdict}
                 </span>
@@ -330,7 +332,7 @@ export function NodeRow({
               {editing !== undefined ? (
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
-                node.type === "lens" && node.text === "" ? (
+                noVerdict ? (
                   <p className="break-words" {...pageChrome}>
                     {LENS_WORDS.no_verdict}
                   </p>
