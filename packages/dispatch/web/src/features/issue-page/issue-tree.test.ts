@@ -25,6 +25,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { askResolutionBadge } from "../refs/actor";
+import { parseNodeReference } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import { agentsOnlyItem } from "./issue-address";
 import {
@@ -467,11 +468,12 @@ interface Written {
  * under its head, an ask's thread under the ask, a comment anchored inside a typed block under
  * that block, and every thread a person wrote in, a thread only agents wrote in being no node
  * (`agents-only.ts`). A decision of the decisions read is no node of it: a section of
- * `decisions.md`. Each block pointer is a tuple, to the node it names where the answer holds it
- * and to its address where not. Ranks are the read's, which a case does not state, so ranked
- * siblings stand in the order F drew them - each document's blocks in turn, the spec's first,
- * then the statements the coverage read holds, then the children - and the rest after them by
- * time, then id, as the read orders them.
+ * `decisions.md`. Each block pointer is a tuple, to the node it names where the answer holds it,
+ * and to its address where not or where it pins a version of that node, which is no node of the
+ * answer. Ranks are the read's, which a case does not state, so ranked siblings stand in the
+ * order F drew them - each document's blocks in turn, the spec's first, then the statements the
+ * coverage read holds, then the children - and the rest after them by time, then id, as the
+ * read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
   const { documents, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
@@ -681,12 +683,20 @@ function answered(fixture: Fixture): IssueTreeReads {
     });
   };
   visit(key);
+  const pinned = (ref: string): boolean => {
+    const route = parseNodeReference(ref);
+    return (
+      route !== undefined &&
+      (("block" in route && route.block?.pin !== undefined) ||
+        ("version" in route && route.version !== undefined))
+    );
+  };
   const tuples: TreeTuple[] = [
     ...pointers.flatMap((pointer) =>
       pointer.refs.map((ref) => ({
         from: pointer.from,
         kind: pointer.name,
-        to: byId.get(nodeIdOf(ref) ?? "") ?? ref,
+        to: (pinned(ref) ? undefined : byId.get(nodeIdOf(ref) ?? "")) ?? ref,
       }))
     ),
     ...(tied ?? []),
@@ -1079,6 +1089,64 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   ]);
 });
 
+// Decision 143: one needs chip per task needed. The server accepts a task needed by a pinned and
+// an unpinned pointer at once, and both need the one task, so it is one chip: its unpinned
+// pointer's, which names the block's current words. A task only pinned pointers name is one chip,
+// the first one's, and two tasks stay two chips, in the order their pointers first name them.
+test("a task needed by a pinned and an unpinned pointer is one needs chip", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = (id: string): string => `dispatch://${KEY}/artifact/plan-md#b-${id}`;
+  const root = treeOf({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("a1", "plan_task"),
+          block("a2", "plan_task"),
+          block("t1", "plan_task", { needs: `${task("a1")}@v1 ${task("a1")}` }),
+          block("t2", "plan_task", { needs: `${task("a1")}@v1 ${task("a1")}@v2` }),
+          block("t3", "plan_task", {
+            needs: `${task("a2")} ${task("a1")}@v1 ${task("a2")}@v3 ${task("a1")}`,
+          }),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#a1}\nAdd the routes.\n:::",
+        ref: task("a1"),
+        text_tree: readingOf("Add the routes."),
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#a1}\nAdd the old routes.\n:::",
+        ref: `${task("a1")}@v1`,
+        text_tree: readingOf("Add the old routes."),
+      },
+    ],
+  });
+  const needs = (id: string) =>
+    nodeOf(root, blockNodeId("plan-md", id))?.chips.map(({ label, name, ref }) => ({
+      label,
+      name,
+      ref,
+    }));
+
+  expect(needs("t1")).toEqual([{ label: "needs", name: "Add the routes.", ref: task("a1") }]);
+  expect(needs("t2")).toEqual([
+    { label: "needs", name: "Add the old routes.", ref: `${task("a1")}@v1` },
+  ]);
+  expect(needs("t3")).toEqual([
+    { label: "needs", name: "", ref: task("a2") },
+    { label: "needs", name: "Add the routes.", ref: task("a1") },
+  ]);
+});
+
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
 // which is the chip's by one rule (`targetNames`) - draws its plain words and no `**`, backtick
@@ -1300,6 +1368,27 @@ test("a stored text read to plain words drops the markers of a quote and of a li
   }
 });
 
+// R21: an author's own private-use character - an icon font's, a pasted terminal glyph - is a
+// word of the text and no stand-in. The stand-ins what markdown reads literally is held as are
+// chosen for each text from the private-use code points it does not hold, so U+E02A and U+E05F,
+// which once stood in for an escaped `*` and `_`, read as written outside code, inside a code
+// span and beside an escape, and a text holding one still reads its escapes and code spans as
+// it did. One holding the first code points a stand-in would take reads past them.
+test("a stored text read to plain words keeps the author's private-use characters as written", () => {
+  const star = "\ue02a";
+  const low = "\ue05f";
+  for (const [stored, words] of [
+    [`an icon ${star} and ${low} here`, `an icon ${star} and ${low} here`],
+    [`Run \`a${star}b${low}c\` now`, `Run a${star}b${low}c now`],
+    [`\\*${star} and ${low}\\_`, `*${star} and ${low}_`],
+    [`${star} \\*not emphasis\\* and \`a*b\``, `${star} *not emphasis* and a*b`],
+    ["\ue000\\! and `\ue020!`", "\ue000! and \ue020!"],
+  ] as const) {
+    expect(plainWords(stored), stored).toBe(words);
+    expect(plainWordsRaw(stored), stored).toBe(words);
+  }
+});
+
 // Ruling 1 and row 20 of the differences: a line that is a whole sentence ends on its own mark,
 // so a cut after it draws no ellipsis - "Thread 1 opens here.…" reads as four dots - and a cut
 // that ended inside a sentence draws one.
@@ -1315,6 +1404,20 @@ test("a first line draws its ellipsis only where the cut ended inside a sentence
   // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
   // line draws the ellipsis all the same.
   expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
+});
+
+// Ruling 1: a line cut just after an ellipsis of the author's own draws no second one, since
+// `wait……` reads as six dots. The ellipsis is no sentence end, since it often stands inside one,
+// so a cut that ended inside a sentence on any other character still draws one.
+test("a first line cut after the author's own ellipsis draws no second one", () => {
+  const words = `${"word ".repeat(19)}wait…`;
+  const trailing = firstLineOf(`${words} and then more words follow here.`);
+  expect(trailing).toEqual({ cut: true, line: words, sentence: false });
+  expect(drawnLine(trailing)).toBe(words);
+  expect(drawnLine({ cut: true, line: "Hold on, wait…" })).toBe("Hold on, wait…");
+  const plain = firstLineOf(`${"word ".repeat(30)}and the end.`);
+  expect(plain.sentence).toBe(false);
+  expect(drawnLine(plain)).toBe(`${plain.line}…`);
 });
 
 // A decision's reading opens with its own `##` heading, and the words of the whole reading join

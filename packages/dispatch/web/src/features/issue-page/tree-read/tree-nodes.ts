@@ -11,7 +11,11 @@ import type {
   RequirementCoverage,
 } from "../../../api/types";
 import { compiledBlockSchema } from "../../doc/schema";
-import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
+import {
+  buildDispatchReference,
+  parseDispatchReference,
+  parseNodeReference,
+} from "../../refs/routes";
 import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import { decisionNodeChanges, decisionNodes, inReviewList } from "../decision-review";
@@ -344,10 +348,11 @@ function draftRequirement(
 /**
  * A check or a plan task of this issue: under the parent the read answers, and again under each
  * other requirement of this issue its `serves` tuples name, transcluded there as F places it
- * (root R4); its `needs` tuples are chips, labelled as F labels them. It carries F's two gaps of
- * the chain: a `serves` naming a node that is no requirement, and a plan task naming nothing it
- * serves and nothing it attempts. A check stands as the results read answers it, at the commit
- * the page names, and draws that read's facts; a check that read does not hold has no result.
+ * (root R4); its `needs` tuples are chips, one per task needed (`needsChips`). It carries F's two
+ * gaps of the chain: a `serves` naming a node that is no requirement, and a plan task naming
+ * nothing it serves and nothing it attempts. A check stands as the results read answers it, at
+ * the commit the page names, and draws that read's facts; a check that read does not hold has no
+ * result.
  */
 function draftServing(
   node: TreeAnswerNode,
@@ -379,10 +384,7 @@ function draftServing(
   ) {
     draft.gaps.push("nobody_asked");
   }
-  draft.chips = tupleChips(node, "needs", context).map((chip) => ({
-    ...chip,
-    label: blockAttributeLabel("needs"),
-  }));
+  draft.chips = needsChips(node, context);
   if (node.supertag === "check") {
     const check = context.kept.checks.get(draft.id);
     draft.state =
@@ -626,6 +628,49 @@ function tupleChips(node: TreeAnswerNode, kind: string, context: TreeDraftContex
     if (chip !== undefined && !chips.has(chip.ref)) chips.set(chip.ref, chip);
   }
   return [...chips.values()];
+}
+
+/**
+ * The chips of what a check or a plan task `needs`, one per task needed (dispatch://INFRA-1196
+ * decision 143), in the order its tuples first name each, labelled as F labels them. The server
+ * accepts one task needed by a pinned and an unpinned pointer at once (`#b-a1@v1 #b-a1`), and
+ * both need the one task, so the chips are told apart by what they name with any version pin
+ * dropped (`pinDropped`). A task named both ways is drawn by its unpinned chip, which names the
+ * task's current words; one only pinned ties name, by the first one's.
+ */
+function needsChips(node: TreeAnswerNode, context: TreeDraftContext): NodeChip[] {
+  const needed = new Map<string, { readonly chip: NodeChip; readonly pinned: boolean }>();
+  for (const tuple of context.tuplesFrom(node.id)) {
+    const chip = tuple.kind === "needs" ? chipTo(tuple.to, context) : undefined;
+    if (chip === undefined) continue;
+    const { pinned, target } = pinDropped(chip.ref);
+    const held = needed.get(target);
+    if (held === undefined || (held.pinned && !pinned)) needed.set(target, { chip, pinned });
+  }
+  return [...needed.values()].map(({ chip }) => ({
+    ...chip,
+    label: blockAttributeLabel("needs"),
+  }));
+}
+
+/**
+ * What `reference` names with any version pin dropped, a block's (`#b-a1@v1`) and a document's
+ * (`artifact/plan-md@v1`), as the reference its route writes with none (`target`), and whether
+ * it pinned one (`pinned`). A reference that does not parse is its own target, pinning nothing.
+ */
+function pinDropped(reference: string): { readonly pinned: boolean; readonly target: string } {
+  const route = parseNodeReference(reference);
+  if (route === undefined) return { pinned: false, target: reference };
+  const block = "block" in route ? route.block : undefined;
+  const version = "version" in route ? route.version : undefined;
+  return {
+    pinned: block?.pin !== undefined || version !== undefined,
+    target: buildDispatchReference({
+      ...route,
+      ...(block === undefined ? {} : { block: { id: block.id } }),
+      ...(version === undefined ? {} : { version: undefined }),
+    }),
+  };
 }
 
 /**
