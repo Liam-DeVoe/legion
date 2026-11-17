@@ -3202,9 +3202,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
   a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
 
-- `specgraph.ApprovedFile` is the one definition of `approved.json`, the approved spec as a file holds it: `{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}`, with `at` an RFC 3339 time.
+- `specgraph.ApprovedFile` is the one definition of `approved.json`, the approved spec as a file holds it: `{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}`, with `at` an RFC 3339 time as `time.RFC3339Nano` writes it, with an upper-case `T` and `Z`.
+  The reader refuses an `at` with a lower-case `t` or `z`, which RFC 3339 allows, since the writer writes upper case.
   `specgraph.WriteApproved` writes it as `specgraph.ReadApproved` reads it, so the writer and the commands that read the file share that one definition; no route of the Dispatch server writes the file yet.
   `ReadApproved` reads it through the package's one strict JSON reader (`decodeJSON`), which refuses a field that it does not know or that is written in other letters, a field that one object gives two times, and a byte that is not UTF-8;
+  it names a value of another type than the form needs, such as a string in the place of a version number or a time that is not RFC 3339, in its own words, `specgraph: approved spec: it is not in the form <form>: the value at "<JSON pointer>" is of another type`, where the form gives the type of each value, since `encoding/json/v2` names a Go type and picks its verb, "cannot" or "unable to", once in each process;
   then `ReadApproved` refuses a file with no `nodes` list (`null`, `{}` or `"nodes": null`), and it reads the whole file, with no bound on its size.
 
 - `cmd/spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]` compares the spec files of one directory with an approved spec in the form of `approved.json` (`cmd/spec-check/compare.go`), by `specgraph.Compare`'s rules: unapproved-id, unapproved-text and removed-id.
@@ -3215,13 +3217,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Then one line for each node that the files hold and the approved spec removed, `spec-check: <kind> <id>: the files hold it, and the approved spec removed it` (`specgraph.Comparison.Removed`):
   R28 counts it as a difference, and the person approves a removal before the change that takes the node out of the files, so it does not fail the comparison.
   The kind is statement, check, component, interface or term, and the lines go statements, then checks, components and interfaces, then terms, each by id.
-  Files with a problem of `Parse` that can lose a node or change one (`specgraph.LosesNode`: a block whose opening line the grammar refuses or that a block before it swallows, a line outside a block, a line that a node leaves out, or an attribute that a node drops) are exit 2 and no comparison, since the comparison would not see that text;
+  Files with a problem of `Parse` that can lose a node or change one (its `Effect` is `specgraph.LosesNode`, which `Parse` sets on each such problem: a block whose opening line the grammar refuses or that a block before it swallows, a line outside a block, a line that a node leaves out, or an attribute that a node drops) are exit 2 and no comparison, since the comparison would not see that text;
   each such problem is a line on stderr, then `spec-check: <dir>: the files do not parse, so no comparison was made`.
   So is an `approved.json` that `ReadApproved` refuses, with one line that names the file and the fault.
   A directory that does not exist or holds no spec file is exit 2 too, since every text of no file is approved, with a line that names `--allow-empty`.
   With `--allow-empty`, `compare` reads it as the empty tree, as `tree` does, with a line on stderr that says so:
   git keeps no empty directory, so a revert of the change that added the last spec file leaves none, and each approved node then reads `not in the files` (R2: the revert "takes it out of the files").
-  It does not judge the tree, which is `tree`'s work: a problem of `Parse` that leaves each node as the files write it, such as a heading that names code, is no reason to refuse, and `compare` compares those files.
+  It does not judge the tree, which is `tree`'s work: a problem of `Parse` that leaves each node as the files write it (`specgraph.KeepsEachNode`), such as a heading that names code, is no reason to refuse, and `compare` compares those files.
+  A heading is no node, so `compare` never compares it.
   `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
   the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
   Its blocks do not pass through `runnerlog.Say`, so the output of `print` must not reach a CI log: a line of a block that starts with `::` would be a workflow command there.
@@ -3237,14 +3240,17 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The refusal reads the environment of its own process, so it covers each route that passes the runner's environment on to the command: a step, a package script, a make target, a script in any directory, or a link to one.
   It does not cover a route that drops that environment, such as `sudo` with its default `env_reset` or a container that `docker run` starts without `-e GITHUB_ACTIONS`: there the command compares (the built-binary row "compare compares behind a boundary that drops the environment" holds that with `env -i`).
   The guard names such a line in the files it reads only when the command's name and `compare` stand next to each other, as in `sudo -n spec-check compare`.
-  `docker run --entrypoint spec-check <image> compare` and a block list of a command (`- spec-check`, then `- compare`) put another word between the two, so such a line passes both parts, and so does a `sudo` or `docker run` call in a file that the guard does not read, such as a make target.
+  `docker run --entrypoint spec-check <image> compare` puts another word between the two, and a block list of a command (`- spec-check`, then `- compare`) a line break and a `-`, so such a line passes both parts, and so does a `sudo` or `docker run` call in a file that the guard does not read, such as a make target.
   The refusal is the command's, not `specgraph`'s, since the library's tests run in CI.
   The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
 
 - `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
   `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) reads each file as text, and knows nothing of shell or of YAML.
-  The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas or opening brackets between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
+  The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas, `(` or `[` between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
   The name is `spec-check`, under any path, as a word of its own: a word that only holds it, such as `envoy-spec-check`, `myspec-check`, `spec-checker` or `spec-check-linux`, is another name, and a suffix such as `.exe` or `@v1` keeps it.
+  `compare` is a word of its own too: a letter, a digit, `_`, `-`, `.` or `/` right after it makes another word or a path, so `needs: [spec-check, compare-baselines]`, `spec-check compare-all`, `spec-check compare.sh` and `paths: ['cmd/spec-check', 'compare/**']` are not named.
+  A letter right after a backslash ends an escape, which a double-quoted YAML value or a string of a script turns into a character of its own, so `run: "set -e\nspec-check compare …"` and `execSync("set -e\nspec-check compare …")` are named, and after `compare` a `\n` or a `\t` ends the word.
+  A name right after an escape that ends in a digit or that another character starts, such as `\x20`, PowerShell's `` `n `` or a batch file's `%~dp0`, is not named, nor `compare` before a `\x20`.
   A list of arguments in a script, such as `spawnSync('spec-check', ['compare'])` or `subprocess.run(["spec-check","compare"])`, is named too.
   The guard also names a comment or a quoted text that no shell runs, and the author rewords that line.
   It does not find a command that an expansion, an escape or an alias builds, or one with another word between the two, and it is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
@@ -3268,9 +3274,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A scenario it reads is exit 0 with nothing on stderr.
   A file or a field that the format does not hold, a missing file, or a spec file that does not parse is exit 2 with one line on stderr, `spec-check: <dir>/<file>: <fault>`.
   Every JSON file of the scenario goes through the strict reader that `compare` uses, and the spec files of each commit through `Validate`, as `tree` judges them, with the file and line of the first problem.
+  A value of another type in a JSON file is refused with the form of that file, which gives the type of each value, and the place of the value, `it is not in the form <form>: the value at "<JSON pointer>" is of another type`: the form of an array file is `[<element>, …]`, and a fault of an element names it, such as `result 1: it is not in the form <element>: …`.
   Beyond what `ReadApproved` refuses, the reader refuses in `approved.json` only a loop of parent and support relations (R5), since the person approves a level before the checks of its statements exist.
   `ties.json` holds the tie of each check by commit, `{"<commit>":{"<check id>":["<path or pattern>", …]}}` (`specgraph.ReadCommitTies`), and the reader refuses a commit there of no letter and no digit, as it refuses such a commit of a subject.
-  A value of another type there, such as ties by check alone, is refused with that form and the place of the value: `it is not in the form <form>: the value at "<JSON pointer>" is of another type`.
+  `ties.json` by check alone is such a value of another type, so it is refused with that form.
   The statement, check and wait lines have no `spec-check: ` prefix: each starts with its fixed word and passes through `runnerlog.Printable`.
   `TestScenarios` runs the built binary on each scenario and compares its stdout with `want.txt` byte for byte.
   No flag of a test writes `want.txt`, so a difference is a fault of the code or a question about the spec.

@@ -174,10 +174,52 @@ func testGuard(t *testing.T, binary string) {
 		writeFile(t, filepath.Join(root, "scripts", "a.sh"), []byte(strings.Join(wordsThatOnlyHoldTheName, "\n")+"\n"))
 		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{stdout: "spec-check: " + root + ": no line of 2 CI files names the command that compares the files\n"})
 	})
+	// A word after the command's name that only holds compare, such as a job, another subcommand,
+	// a script or a path (wordsThatOnlyHoldCompare), is another word, so its line passes the guard.
+	t.Run("guard passes a word that only holds compare", func(t *testing.T) {
+		t.Parallel()
+		root, _ := workflowTree(t, "      - run: echo ok\n")
+		if err := os.Mkdir(filepath.Join(root, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(root, "scripts", "a.sh"), []byte(strings.Join(wordsThatOnlyHoldCompare, "\n")+"\n"))
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{stdout: "spec-check: " + root + ": no line of 2 CI files names the command that compares the files\n"})
+	})
+	// Each other byte after compare ends the word: the comparison at the end of a line, and before a
+	// space, a quote, ), ;, | or &, is named.
+	t.Run("guard names compare before each byte that ends a word", func(t *testing.T) {
+		t.Parallel()
+		root, workflow := workflowTree(t, "      - run: spec-check compare\n"+
+			"      - run: spec-check compare --dir .dispatch/spec --approved a.json\n"+
+			"      - run: bash -c \"spec-check compare\"\n"+
+			"      - run: (spec-check compare)\n"+
+			"      - run: spec-check compare; echo done\n"+
+			"      - run: spec-check compare| tee out\n"+
+			"      - run: spec-check compare& wait\n")
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), named(root, workflow, 5, 6, 7, 8, 9, 10, 11))
+	})
+	// A double-quoted YAML value, and a string of JavaScript or Python, turn \n and \t into a line
+	// break and a tab, so the shell runs the comparison: a letter right after a backslash ends an
+	// escape before the command's name, and a \n after compare ends the word.
+	t.Run("guard names the comparison beside an escape in a quoted text", func(t *testing.T) {
+		t.Parallel()
+		root, workflow := workflowTree(t, `      - run: "set -e\nspec-check compare --dir .dispatch/spec --approved a.json"`+"\n"+
+			`      - run: "spec-check compare\n--dir .dispatch/spec --approved a.json"`+"\n")
+		if err := os.Mkdir(filepath.Join(root, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := filepath.Join(root, "scripts", "a.ts")
+		writeFile(t, script, []byte(`execSync("set -e\nspec-check compare --dir a");`+"\n"))
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 3 lines of CI files name the command that compares the files\n",
+			stderr: "spec-check: " + workflow + ":5" + guardHit + "spec-check: " + workflow + ":6" + guardHit + "spec-check: " + script + ":1" + guardHit,
+		})
+	})
 	// The guard names a line only when the command's name and compare stand next to each other. Each
-	// form outside that claim passes it: another word between the two (docker run's --entrypoint, a
-	// block list of a command), an expansion that builds compare (a command substitution, a glob, a
-	// brace sequence, printf -v), and an alias.
+	// form outside that claim passes it: another word between the two (docker run's --entrypoint), a
+	// line break and a - between them (a block list of a command), an expansion that builds compare
+	// (a command substitution, a glob, a brace sequence, printf -v), and an alias.
 	t.Run("guard passes each form outside its claim", func(t *testing.T) {
 		t.Parallel()
 		root, _ := workflowTree(t, "      - run: docker run --rm --entrypoint spec-check debian:bookworm-slim compare --dir .dispatch/spec --approved a.json\n"+
