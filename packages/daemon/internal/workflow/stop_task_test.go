@@ -27,8 +27,8 @@ func ownersStop(t *testing.T, key, task string) intake.TaskStopped {
 // stopped with.
 const stopsBy = "task a of LEGION-208 was stopped by its owner"
 
-// The owner's stop_task of a task that is not done stops it where it stands, in one transaction
-// (R16; C2-1): the task is stopped with its reason and keeps its place, its issue is held from
+// The owner's stop_task of a task that is not done stops it where it stands, in one transaction:
+// the task is stopped with its reason and keeps its place, its issue is held from
 // the phase of that place for the stopped task, keeping the slot of that phase and writing no
 // Dispatch status, the record of the running step ends stopped, and the process of the step's
 // role is stopped with its session kept (step_stop, whose source is the daemon's). The caller
@@ -37,7 +37,7 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
 // stopped at its merge closes the issue, as it closes an issue with no plan rows held from
 // merging. A stopped task whose issue then leaves the workflow is left, and keeps why it was
-// stopped. An issue with no plan rows has no task to stop (R20), and a stop of a member of a
+// stopped. An issue with no plan rows has no task to stop, and a stop of a member of a
 // lingering tree, whose phase and running task the linger keeps, changes nothing.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 	t.Run("at testing", func(t *testing.T) {
@@ -213,7 +213,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("the merger's step record ends %v, want the one end of the stop, stopped", ends)
 		}
 
-		// The R20 twin: an issue with no plan rows held from merging, by a failed merger's claim,
+		// The twin: an issue with no plan rows held from merging, by a failed merger's claim,
 		// is closed by its merge too: a hold from merging awaits that merge (awaitsMerge), as the
 		// close and the boot's sweep read it, so the architect is told no "not merging".
 		unplanned := migratedPool(t)
@@ -316,7 +316,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("task a after its issue left = %s (%q) at %+v, want left at step 1 with the reason %q", task.State, task.StoppedReason, task.Place, stopsBy)
 		}
 
-		// The R20 twin: an issue with no plan rows leaves as today, and has no task rows after it.
+		// The twin: an issue with no plan rows leaves as today, and has no task rows after it.
 		unplanned := migratedPool(t)
 		bare := stepRoot(t, unplanned, phase.Implementing)
 		leave(unplanned, bare.Key)

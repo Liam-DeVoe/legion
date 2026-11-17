@@ -18,7 +18,7 @@ import (
 // from testing (record.HoldTaskStopped), a parent whose plan has no acceptance step, held for the
 // open issue beneath it in place of its retro (record.HoldForChildren), and the twin of each, an
 // issue with no plan rows standing in the phase that hold is from, which each path resumes as
-// today (R20). The twins are the control: a path that gave no issue work would pass the held ones
+// today. The twins are the control: a path that gave no issue work would pass the held ones
 // too.
 type heldWork struct {
 	name   string
@@ -74,7 +74,7 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 	return issue
 }
 
-// A stopped task and a parent held for its children stand in held (C2-1), and each path that
+// A stopped task and a parent held for its children stand in held, and each path that
 // brings an issue back to work picks the role it gives work to by the role of the issue's phase,
 // which held has none of (phase.RoleFor, OpenPhaseRole). So none of these paths gives either one
 // work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
@@ -183,14 +183,14 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 	})
 }
 
-// No release of a hold resumes a hold of an owner's plan (C2-1): the architect's retry_or_escalate,
+// No release of a hold resumes a hold of an owner's plan: the architect's retry_or_escalate,
 // both of its decisions, and the operator's restart of the role (restartPhase; `legion claims
 // retry` sends a held issue's retry as the architect's, api's retryClaim) refuse a stopped task
 // 409 TASK_STOPPED and a parent held for its children 409 HELD_FOR_CHILDREN, each naming why and
 // what starts the work again, and change nothing: the hold stays with its reason, no role starts
 // and no notice is written. An escalation is refused the same way, since it would overwrite the
 // reason. The twin of each is a hold of an issue with no plan rows, a failed claim's (reason
-// none), which each release resumes as today (R20): the retry and the restart give back the phase
+// none), which each release resumes as today: the retry and the restart give back the phase
 // and start its role, and the escalation records `escalated` and tells the controller.
 func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 	const beneath = heldBeneath

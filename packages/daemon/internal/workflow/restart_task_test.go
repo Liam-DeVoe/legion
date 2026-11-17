@@ -60,7 +60,7 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 // step 1 is written. The Dispatch status of step 1's phase is written over the todo Dispatch
 // shows. A todo on a root held for the issues beneath it leaves the hold, and one log line says
 // why. A task that is done, or left the workflow with its issue, under such a hold is a state no
-// production writer makes, and a todo on it starts nothing. The twin (R20): a
+// production writer makes, and a todo on it starts nothing. The twin: a
 // todo on a root with no plan rows that a failed claim holds puts back the phase the hold is from
 // and starts its role, as today.
 func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {

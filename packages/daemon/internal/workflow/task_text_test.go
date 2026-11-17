@@ -68,8 +68,8 @@ func lacks(t *testing.T, who, task string, words ...string) {
 }
 
 // The task each agent of an owner's plan is told names its working copy, its task and its step in
-// it, each step of the task in order, the task's text and the report of each earlier step (R4,
-// R21, B-10): the reviewer of the task `implementer reviewer` reads the implementer's report, and
+// it, each step of the task in order, the task's text and the report of each earlier step: the
+// reviewer of the task `implementer reviewer` reads the implementer's report, and
 // the retro and the merger, which run no step, are told the task and its steps alone, and read the
 // runs of the steps from Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
@@ -207,7 +207,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 }
 
 // An issue with no plan rows, which started before plans existed, is told today's task with the
-// working copy line after its continue line and no other new line (R20): the prompts read a task
+// working copy line after its continue line and no other new line: the prompts read a task
 // with no `Task:` line as such an issue. With no runtime to place the working copy (a nil
 // Config.WorkspaceDir), the line names the branch alone.
 func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T) {

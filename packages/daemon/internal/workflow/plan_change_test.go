@@ -151,14 +151,14 @@ func architectOf(t *testing.T) claim.Token {
 	return claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 }
 
-// The owner's plan is stored where its task has not started (R5; C2-2): for a root the daemon
+// The owner's plan is stored where its task has not started: for a root the daemon
 // recorded at admitted, at the root's generation, so that its gate opens to the plan's first step;
 // for an issue the daemon has not recorded, at generation 0, where a later version replaces a
 // waiting task's steps. The version is the owner's, of its document, by its giver, at the
 // engine's clock, and each task waits at no act with the steps its block names, each with the type
 // of its role. A block that names no steps runs the default steps, and given again it changes no
 // task, also while the task runs: the held plan is read as its block was given, not from its steps.
-// The version taken while the task runs queues one row, the run's plan node at that version (C9).
+// The version taken while the task runs queues one row, the run's plan node at that version.
 // An issue that started its work before Legion took plans is refused and walks today's line, and
 // so is a plan given at a generation the issue has left, and one given to a member of a lingering
 // tree, which the linger keeps admitted; each refusal writes nothing and leaves the fact unspent.
@@ -340,17 +340,17 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 	})
 }
 
-// running is the refusal of a version that changes or removes task a while it runs (R16, B-3).
+// running is the refusal of a version that changes or removes task a while it runs.
 func runningRefusal() *intake.Refusal {
 	reason := "task a is running: stop it with stop_task before you change it."
 	return &intake.Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + reason,
 		Reasons: []plan.Refusal{{Task: "a", Reason: reason}}}
 }
 
-// A later version changes only a task that waits or is stopped (R16; B-3, B-24; C2-1). While
+// A later version changes only a task that waits or is stopped. While
 // task a runs, a version that changes its steps, or only its text, is refused naming a, and writes
 // nothing. A version that leaves a's block as it is, and changes only the prose outside it, is
-// taken, a goes on at its step, and the run's plan node is written again at that version (C9). A
+// taken, a goes on at its step, and the run's plan node is written again at that version. A
 // version at or below the one in force, and a version of another document, are refused. A version
 // given while a is stopped that leaves its block as it is
 // is taken and a stays stopped; one with other steps is taken, and starts a again at its first
@@ -376,7 +376,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, key, gen, id,
 			apply(id, ownersPlan(t, key, gen, 3, givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer"))), runningRefusal(), before)
 
-		// The control (B-24): the same block, with only the prose outside it changed, which no
+		// The control: the same block, with only the prose outside it changed, which no
 		// plan.Plan holds, is taken, and a goes on at its step.
 		mustTake(t, "version 4 with a's block as it is", apply(planID(key, gen, 4), ownersPlan(t, key, gen, 4, built)))
 		kept := planStandingOf(t, pool, engine, key, gen)
@@ -415,7 +415,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		prompts := len(hookPrompts(t, pool))
 
 		// A version that leaves the stopped task's block as it is changes no task: a stays stopped,
-		// and the one row queued is the run's plan node at version 5 (C9).
+		// and the one row queued is the run's plan node at version 5.
 		mustTake(t, "version 5 with a's block as it is", apply(planID(key, gen, 5), ownersPlan(t, key, gen, 5, built)))
 		still := planStandingOf(t, pool, engine, key, gen)
 		if task := still.task(t); task.State != record.TaskStopped || task.Place != stopped.task(t).Place || still.issue.Phase != phase.Held ||
@@ -525,7 +525,7 @@ func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
 	}
 }
 
-// seedDefaultPlan writes the plan key's run holds at generation when its owner gave none (R5): the
+// seedDefaultPlan writes the plan key's run holds at generation when its owner gave none: the
 // default steps of a project that names none (config.Project.RunsByDefault) as version 0 of the
 // source default, with no document and no giver, and one task default whose block names no steps
 // and so runs the default steps, each with the type of its role, waiting at no act.
@@ -545,8 +545,8 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	})
 }
 
-// A version that replaces the stopped task of the default steps starts the new task (C2-2; R5,
-// R16). An issue on the project's default steps runs its planner. While the task default runs, a
+// A version that replaces the stopped task of the default steps starts the new task. An issue on
+// the project's default steps runs its planner. While the task default runs, a
 // version whose one block is a, which removes default, is refused naming default and writes
 // nothing. The owner stops default: the issue is held from planning for the stopped task, and the
 // planner's process is stopped. The same version given again is taken: the default version stays
@@ -649,7 +649,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 			startsOfA[0].Type != "implementation" || startsOfA[0].ID != StepID(key, gen, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 1}, 1) {
 			t.Fatalf("the start records of task a = %+v, want one, of step 1 (implementer, implementation) at attempt 1", startsOfA)
 		}
-		// The version taken writes the run's plan node again, as the plan of task a (C9).
+		// The version taken writes the run's plan node again, as the plan of task a.
 		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], ownersNode(1)) {
 			t.Fatalf("the plan nodes of %s after version 1 = %+v, want the newest %+v", key, nodes, ownersNode(1))
 		}
@@ -691,8 +691,8 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 	return at
 }
 
-// A version of the plan document that nobody gave Legion changes nothing (R5, R16; the review
-// focus of the part, case 2). Legion reads a plan document only at the version an owner gives
+// A version of the plan document that nobody gave Legion changes nothing. Legion reads a plan
+// document only at the version an owner gives
 // with register_plan (api's planAt, the one caller of dispatch.HTTPClient.PlanDocument), so
 // version 2, which Dispatch holds and nobody registered, never reaches the workflow. The issue
 // walks the line of version 1, implementing, reviewing, retro, merging and done, and its run's plan

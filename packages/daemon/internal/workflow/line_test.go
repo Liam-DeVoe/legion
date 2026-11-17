@@ -51,7 +51,7 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 
 // An issue whose run has no plan rows walks today's line, phase.Order, and the table of that line
 // is today's (TestTableOfTodaysOrderIsTodaysTable): what an issue that ran before this release
-// walks (R20). Plan rows of another run of the issue are not its run's. Once its run has rows, the
+// walks. Plan rows of another run of the issue are not its run's. Once its run has rows, the
 // walk is theirs: the task, its steps, its line, and where the task stands.
 func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 	pool := migratedPool(t)
@@ -107,7 +107,7 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 }
 
 // The task's place and issues.phase move in one write: after each move of an issue with plan rows,
-// the phase the store holds is the one the task's place derives (B-12, A-8, C2-6). A root and a
+// the phase the store holds is the one the task's place derives. A root and a
 // child with the plan `implementer reviewer` each walk it from admitted to their merge, and then
 // leave as done: the root through its linger (beginLinger), the child through its own write
 // (leave). A root and a child parked at backlog in the middle of their first step leave before

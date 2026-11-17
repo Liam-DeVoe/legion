@@ -100,7 +100,7 @@ func implementerView(t *testing.T, pool *pgxpool.Pool, key string) api.PhaseView
 	return state.Issues[key].Workers[claim.RoleImplementer]
 }
 
-// An issue with plan rows counts each return on its task (B-12): the pass, the rounds, the cap
+// An issue with plan rows counts each return on its task: the pass, the rounds, the cap
 // told and each move back under its pair live on the task's plan_tasks row, where the walk keeps
 // where the task stands, and the implementer's phases row counts nothing. Three reviews that
 // request changes and two failed tests on the plan `implementer tester reviewer` count five
@@ -133,7 +133,7 @@ func TestAnIssueWithPlanRowsCountsOnItsTask(t *testing.T) {
 	}
 }
 
-// An issue with no plan rows counts as it did before plans (R20): the same returns on today's line
+// An issue with no plan rows counts as it did before plans: the same returns on today's line
 // count on the implementer's phases row, and no task row is written. The control is the same
 // issue given plan rows in the middle of its run: the returns after that count on the task, so
 // the first check of this test, the implementer's row, fails for it.
