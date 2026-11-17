@@ -630,18 +630,21 @@ test("a Reply on another row keeps the reply typed in the box", async () => {
   expect(writeField().value).toBe("My reply to bob");
 });
 
-/** The page with the planner's comment after the outline's others, in the outline and in the
- *  comments read: a Reply on it starts the box with a mention of the planner. */
+/** The outline with the planner's comment after its others: a Reply on it starts the box with a
+ *  mention of the planner. */
+function plannerOutline(): TreeNode {
+  const root = outline();
+  return {
+    ...root,
+    children: [...root.children, commentNode("comment-3", PLANNER, "The relay is fixed")],
+  };
+}
+
+/** The page with the planner's comment in the outline (`plannerOutline`) and in the comments
+ *  read. */
 function renderWithPlannerComment() {
   reads.comments.push(commentRecord("comment-3", PLANNER, "The relay is fixed"));
-  const root = outline();
-  return renderPage(
-    {},
-    {
-      ...root,
-      children: [...root.children, commentNode("comment-3", PLANNER, "The relay is fixed")],
-    }
-  );
+  return renderPage({}, plannerOutline());
 }
 
 /** Replies to the planner's comment, which writes the planner's mention into the empty box. */
@@ -748,6 +751,111 @@ test("a mention of the agent the reader wrote stays when the box turns to a pers
     delivery: "steer",
     reply_to: "comment-1",
   });
+});
+
+// A finding of the reviewer's on the same rule: the box takes out only the mention it wrote,
+// while that mention still stands at the front of the draft as written. A reader who empties the
+// box and writes the planner's link after a word of their own names the planner themself, and
+// the reply under a person's comment still reaches the planner.
+test("a link to the agent the reader writes after their own word, in place of the box's, stays through a new target", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "cc"))
+  );
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  // The reader empties the box, then picks the planner after their own word, which writes the
+  // link the box wrote.
+  await user.keyboard("{Control>}a{/Control}{Backspace}cc ");
+  await user.paste(PLANNER_SEED);
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  const draft = writeField().value;
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  // The reply reaches the agent the reader named.
+  expect(createComment.mock.calls[0]?.[1]).toEqual({
+    body: `cc ${PLANNER_SEED}`,
+    delivery: "steer",
+    reply_to: "comment-1",
+  });
+  expect(draft).toBe(`cc ${PLANNER_SEED}`);
+});
+
+/** A reply to the planner's comment: the planner's mention the box wrote, and the reader's words
+ *  typed straight after it. */
+const PLANNER_REPLY = `${PLANNER_SEED}please look`;
+
+/** Replies to the planner's comment with `PLANNER_REPLY`, which Dispatch refuses once and takes
+ *  after, then mounts the page again in the same tab over the refused send, as coming back to the
+ *  issue or a reload brings the box back: the box takes the held draft, on the held reply. */
+async function remountOverRefusedPlannerReply(user: UserEvent) {
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockRejectedValueOnce(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+      )
+      .mockResolvedValue(commentRecord("comment-9", ALICE, "please look"))
+  );
+  const first = renderWithPlannerComment();
+  await replyToPlanner(user, first);
+  await user.keyboard("please look{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+  expect(createComment.mock.calls[0]?.[1]).toEqual({
+    body: PLANNER_REPLY,
+    delivery: "steer",
+    reply_to: "comment-3",
+  });
+
+  first.view.unmount();
+  const again = renderPage({}, plannerOutline(), first.client);
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  expect(again.writer().reply?.id).toBe("comment-3");
+  expect(writeField().value).toBe(PLANNER_REPLY);
+  return { again, createComment };
+}
+
+// The reviewer's finding 5945015185 on the same rule: a box that mounts again over a refused
+// reply to the agent's comment - after the reader left the issue and came back, or a reload -
+// still takes out the agent's mention the box wrote when the reply ends, so the send that follows
+// is a comment on the issue delivered to nobody.
+test("a box mounted again over a refused reply to an agent's comment takes the agent's mention out when the reply ends", async () => {
+  const user = userEvent.setup();
+  const { createComment } = await remountOverRefusedPlannerReply(user);
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+  const draft = writeField().value;
+  await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  expect(createComment.mock.calls[1]?.[1]).toEqual({ body: "please look" });
+  expect(draft).toBe("please look");
+});
+
+// The same finding: on a box mounted again over the refused reply, Escape ends the reply and `r`
+// on a person's comment turns the box to it, and the reply under that comment is delivered to
+// nobody.
+test("a box mounted again over a refused reply to an agent's comment sends a reply on a person's comment to nobody", async () => {
+  const user = userEvent.setup();
+  const { again, createComment } = await remountOverRefusedPlannerReply(user);
+  await user.click(writeField());
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+
+  await again.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  const draft = writeField().value;
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  expect(createComment.mock.calls[1]?.[1]).toEqual({ body: "please look", reply_to: "comment-1" });
+  expect(draft).toBe("please look");
 });
 
 // R5: an answer sends the options picked and the reader's words, and a change of the reader's own
