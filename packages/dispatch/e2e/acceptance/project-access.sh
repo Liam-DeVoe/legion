@@ -12,7 +12,8 @@
 #         alice's token that lists PRIV, carol's token that lists no project, and the shared
 #         token. Each project holds an issue whose spec is a document with blocks, a comment, an
 #         ask, a message, an issue document, a project document, an agent session of its own
-#         that the fake Envoy lists, and a repository mapped to it.
+#         that the fake Envoy lists, and a repository mapped to it; PRIV also holds ses-priv-worker,
+#         a session main's fake Envoy alone lists, recorded as having acted in PRIV.
 #   twin  the same seed with PRIV never written: the same PUB, the same people, carol's token
 #         that lists no project, and alice's token, whose list names PRIV, a project the twin
 #         never holds.
@@ -59,8 +60,8 @@
 # It needs no harness: the run starts every process it reads, and reads DATABASE_URL only for the
 # server it names, on which it makes a database for each of its servers and drops it at the end.
 # It prints `ok <section>` once a section has run to its end, whatever it found, and fails at the
-# end (verdict), naming every pair of answers that differed and everything it could not run, with
-# why.
+# end (verdict), naming every answer that failed its judgement, a pair that differed or a read that
+# broke its own rule, and everything it could not run, with why.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -102,10 +103,7 @@ esac
 two_builds_setup 'project access e2e'
 main_pid='' twin_pid='' nats_main_pid='' nats_twin_pid='' envoy_main_pid='' envoy_twin_pid='' fake_github_pid=''
 access_cleanup() {
-  local pid
-  for pid in "$main_pid" "$twin_pid" "$nats_main_pid" "$nats_twin_pid" "$envoy_main_pid" "$envoy_twin_pid" "$fake_github_pid"; do
-    stop_pid "$pid"
-  done
+  stop_all "$main_pid" "$twin_pid" "$nats_main_pid" "$nats_twin_pid" "$envoy_main_pid" "$envoy_twin_pid" "$fake_github_pid"
   drop_own_databases
   cleanup "$1"
 }
@@ -221,18 +219,33 @@ priv_object() {
   esac
 }
 
+# await_reported NAME VAR PATTERN WHAT waits, bounded, for the service NAME, which bound port 0
+# itself, to report the port it got in its log (lib/rig.sh's report_port, PATTERN), and assigns VAR
+# that port.
+await_reported() {
+  local pid_var=${1}_pid
+  await_start "$1" "${!pid_var}" 60 "$4 to report its port" report_port "$evidence/logs/$1.log" "$3"
+  printf -v "$2" '%s' "$(report_port "$evidence/logs/$1.log" "$3")"
+}
+
 begin services
-# Read through ${!port_var} below.
-# shellcheck disable=SC2034
-main_port=$(free_port)
-# shellcheck disable=SC2034
-twin_port=$(free_port)
+# Every service serves on a port the kernel chose, so no other process can serve on it in its
+# place: each fake and each NATS binds port 0 itself and reports what it got (report_port), and each
+# Dispatch serves on a socket held from that choice until it serves on it (start_server, given no
+# port, through lib/rig.sh's start_held). The fake GitHub, both NATS servers and both fake Envoys
+# start at once, and each is awaited before anything is sent to it. FAKE_*_PORT is set empty, since
+# a caller under with-harness.sh exports the harness's own.
 # shellcheck disable=SC2034 # read through ${!database_var} below
 main_database_url='' twin_database_url=''
-github_port=$(free_port)
-FAKE_GITHUB_PORT=$github_port start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
-await_start fake_github "$fake_github_pid" 60 "the fake GitHub to answer /healthz" \
-  curl -fsS --max-time 2 "http://127.0.0.1:$github_port/healthz"
+# Assigned by await_reported below.
+github_port='' envoy_port=''
+FAKE_GITHUB_PORT='' start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
+for server in main twin; do
+  mkdir -p "$work/nats-$server"
+  start_process "nats_$server" "$work/bin/natsd" -p -1 -store_dir "$work/nats-$server"
+  FAKE_ENVOY_PORT='' start_process "envoy_$server" bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+done
+await_reported fake_github github_port 'fake github listener on 127\.0\.0\.1:' "the fake GitHub"
 # The App is installed on both projects' repositories and on no other.
 curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$github_port/__fixture/repos" \
   -d '{"acme/pub-repo":{"contents":"read","installation_id":71},"acme/priv-repo":{"contents":"read","installation_id":72}}' \
@@ -241,21 +254,23 @@ agent_token=$(openssl rand -hex 24)
 signin_key=$(openssl rand -hex 32)
 app_pem=$(openssl genrsa 2048 2>/dev/null)
 for server in main twin; do
-  port_var=${server}_port
-  nats_port=$(free_port)
-  envoy_port=$(free_port)
-  mkdir -p "$work/nats-$server"
-  start_process "nats_$server" "$work/bin/natsd" -p "$nats_port" -store_dir "$work/nats-$server"
   nats_pid_var=nats_${server}_pid
-  await_start "nats_$server" "${!nats_pid_var}" 30 "the $server NATS to listen" port_answers "$nats_port"
-  FAKE_ENVOY_PORT=$envoy_port start_process "envoy_$server" bun "$root/packages/dispatch/e2e/fake-envoy.ts"
-  envoy_pid_var=envoy_${server}_pid
-  await_start "envoy_$server" "${!envoy_pid_var}" 60 "the $server fake Envoy to answer /healthz" \
-    curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
+  await_start "nats_$server" "${!nats_pid_var}" 30 "the $server NATS to be ready" \
+    grep -q 'Server is ready' "$evidence/logs/nats_$server.log"
+  nats_port=$(report_port "$evidence/logs/nats_$server.log" 'Listening for client connections on [^ ]*:') ||
+    fail "the $server NATS logged no client port; see $evidence/logs/nats_$server.log"
+  await_reported "envoy_$server" envoy_port 'fake envoy listener on 127\.0\.0\.1:' "the $server fake Envoy"
   # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
-  # PRIV wrote, so the twin holds PRIV's session too.
+  # PRIV wrote, so the twin holds PRIV's session too. Main's alone also holds ses-priv-worker,
+  # which the seed records as having acted in PRIV: a restricted reader or a listing token is shown
+  # a session only for its history in a project it sees (agents.go's visibleRosterSessions), not
+  # for the projects the listener names, so ses-priv-session, which has none, is never in their
+  # agents list. A session with history in PRIV alone is PRIV's, as hidden as its objects, and the
+  # twin, which never holds PRIV, holds no such session.
   sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"capabilities":["aside","btw","steer"]}'
   sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
+  [ "$server" = twin ] ||
+    sessions+=',{"session_id":"ses-priv-worker","title":"Worked in PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
   curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/sessions" \
     -d "$sessions]" >/dev/null || fail "the $server fake Envoy refused its sessions"
   database_var=${server}_database_url
@@ -267,10 +282,10 @@ for server in main twin; do
   # tokens as. DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects a deployment
   # has provisioned as private (cmd/dispatch privateProjectsSetting, which refuses the boot for
   # any entry that is no project key): main provisions PRIV, and the twin, which never makes a
-  # project private, sets none.
+  # project private, sets none. Given no port, start_server sets <server>_port.
   private_projects=()
   [ "$server" = twin ] || private_projects=(DISPATCH_PRIVATE_PROJECTS=PRIV)
-  envoy_port=$envoy_port database_url=${!database_var} start_server "$server" "$work/bin/dispatch" "${!port_var}" \
+  envoy_port=$envoy_port database_url=${!database_var} start_server "$server" "$work/bin/dispatch" '' \
     DISPATCH_NATS_DISABLED= \
     NATS_URLS="nats://127.0.0.1:$nats_port" \
     "${private_projects[@]}" \
@@ -280,6 +295,7 @@ for server in main twin; do
     DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
     DISPATCH_APP_PEM_B64="$app_pem" \
     DISPATCH_GITHUB_API_BASE="http://127.0.0.1:$github_port"
+  port_var=${server}_port
   build_url[$server]=http://127.0.0.1:${!port_var}
 done
 await_start main "$main_pid" 120 "main to answer /healthz" curl -fsS --max-time 2 "${build_url[main]}/healthz"
@@ -361,6 +377,16 @@ map_repository main acme/priv-repo PRIV
 map_repository main acme/priv.lane.walk PRIV
 send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
+# ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined). Only
+# a session its own credential proves records history (events.queueSessionProjects: a
+# broker-issued token's session; the shared token only names one), and this stack has no broker.
+# So the row is a stand-in for a broker-proven session's write, as --private-by-sql's store write
+# stands in for the visibility route: it is written as that write writes it, and the stand-in goes
+# once the stack can mint a broker-issued session token. No event names the session, so it is no
+# node.
+psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 \
+  -c "insert into session_projects (session_id, project_key) values ('ses-priv-worker', 'PRIV')" >/dev/null ||
+  fail "main: could not record ses-priv-worker's history in PRIV"
 # The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result and a
 # going run. A file of an agent's conversation is no project's, so it is seeded on both servers
 # in the loop above.
@@ -469,12 +495,13 @@ for caller in "${listed_callers[@]}"; do
   for path in "${object_reads[@]}"; do
     path=${path//\{P\}/PRIV}
     send main "$caller" GET "$(resolve main "$path")"
+    problem=''
     if [ "$status" = 200 ] && grep -q "PRIV" "$work/body"; then
       found=$((found + 1))
     else
-      printf '%s GET %s: HTTP %s, want 200 naming PRIV: %s\n' "$caller" "$path" "$status" "$(head -c 300 "$work/body")" >>"$work/differences"
-      differed=$((differed + 1))
+      problem="$caller GET $path: HTTP $status, want 200 naming PRIV: $(head -c 300 "$work/body")"
     fi
+    judge "$status" "$problem"
   done
 done
 note "$found of $((${#listed_callers[@]} * ${#object_reads[@]})) reads of PRIV's objects found them"
@@ -528,32 +555,56 @@ for caller in bob carol-priv-token; do
   done
   send main "$caller" GET /api/v1/projects
   keys=$(jq -c '[.[].key]' "$work/body" 2>/dev/null || echo "not a list: $(head -c 200 "$work/body")")
-  [ "$keys" = '["PRIV"]' ] || {
-    printf '%s GET /api/v1/projects: lists %s, want ["PRIV"]\n' "$caller" "$keys" >>"$work/differences"
-    differed=$((differed + 1))
-  }
+  problem=''
+  [ "$keys" = '["PRIV"]' ] || problem="$caller GET /api/v1/projects: lists $keys, want [\"PRIV\"]"
+  judge "$status" "$problem"
   # A person of PUB is one of PRIV's people only while PRIV is public (R2: every full member reads a
   # public project, and so is one of its people), so the people a restricted member and a token that
-  # lists PRIV read is held to PRIV's own only once PRIV is private.
+  # lists PRIV read is held to PRIV's own only once PRIV is private. Each list must be answered 200
+  # and name what the caller sees, carol and the session with history in PRIV (ses-priv-worker), or
+  # the name it must not hold could be missing from an error or an empty list.
   if [ "$priv_private" = 1 ]; then
     send main "$caller" GET /api/v1/users
-    if grep -q "$alice" "$work/body"; then
-      printf '%s GET /api/v1/users: names %s, who is outside PRIV\n' "$caller" "$alice" >>"$work/differences"
-      differed=$((differed + 1))
+    problem=''
+    if [ "$status" != 200 ]; then
+      problem="$caller GET /api/v1/users: HTTP $status, want 200: $(head -c 300 "$work/body")"
+    elif ! grep -q "$carol" "$work/body"; then
+      problem="$caller GET /api/v1/users: names no $carol, one of PRIV's people, so it shows nothing: $(head -c 300 "$work/body")"
+    elif grep -q "$alice" "$work/body"; then
+      problem="$caller GET /api/v1/users: names $alice, who is outside PRIV"
     fi
+    judge "$status" "$problem"
   else
     note "$caller GET /api/v1/users not compared: PRIV is public, so every full member is one of its people (R2)"
   fi
   send main "$caller" GET /api/v1/agents
-  if grep -q ses-pub-session "$work/body"; then
-    printf '%s GET /api/v1/agents: lists ses-pub-session, an agent of PUB\n' "$caller" >>"$work/differences"
-    differed=$((differed + 1))
+  problem=''
+  if [ "$status" != 200 ]; then
+    problem="$caller GET /api/v1/agents: HTTP $status, want 200: $(head -c 300 "$work/body")"
+  elif ! grep -q ses-priv-worker "$work/body"; then
+    problem="$caller GET /api/v1/agents: lists no ses-priv-worker, the session with history in PRIV, which $caller sees, so it shows nothing: $(head -c 300 "$work/body")"
+  elif grep -q ses-pub-session "$work/body"; then
+    problem="$caller GET /api/v1/agents: lists ses-pub-session, an agent of PUB"
   fi
+  judge "$status" "$problem"
+  # PUB's session is answered as one nobody holds (404 SESSION_NOT_FOUND), or its messages are
+  # read without carol's direct message to it.
   send main "$caller" GET /api/v1/agents/ses-pub-session/messages
-  if grep -q "$(recalled main "PUB direct message")" "$work/body"; then
-    printf '%s GET /api/v1/agents/ses-pub-session/messages: holds carol'"'"'s direct message to it\n' "$caller" >>"$work/differences"
-    differed=$((differed + 1))
-  fi
+  problem=''
+  case "$status" in
+    200)
+      if grep -q "$(recalled main "PUB direct message")" "$work/body"; then
+        problem="$caller GET /api/v1/agents/ses-pub-session/messages: holds carol's direct message to it"
+      fi
+      ;;
+    404)
+      if [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != SESSION_NOT_FOUND ]; then
+        problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP 404, want its code SESSION_NOT_FOUND: $(head -c 300 "$work/body")"
+      fi
+      ;;
+    *) problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP $status, want 200 or 404 SESSION_NOT_FOUND: $(head -c 300 "$work/body")" ;;
+  esac
+  judge "$status" "$problem"
 done
 note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
 pass
@@ -580,6 +631,73 @@ reconciled() {
   done
 }
 
+# Each server pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
+# server can answer a read before that horizon has passed what the seed wrote, so one server's log
+# would read short beside the other's. The walk compares the log as each unseeing caller, so each
+# server is read only once its log, as each caller that wrote in the seed as itself reads it, holds
+# that caller's own newest event, which a caller always reads: carol, who wrote last, and alice. A
+# token wrote nothing, and the shared token's writes name a session it does not prove and are in
+# PRIV, which it does not see. After carol's newest event the seed writes only bob's answers in
+# PRIV, which no unseeing caller reads.
+#
+# own_newest_event BUILD PERSON prints the id of the newest event of BUILD's database that PERSON
+# wrote as themself, or 0 when they wrote none.
+own_newest_event() {
+  local url_var=${1}_database_url
+  psql "${!url_var}" -X -tAc "select coalesce(max(id), 0) from events
+    where actor->>'kind' = 'user' and actor->>'id' = '$(email_of "$2")'"
+}
+
+# event_log_reaches BUILD CALLER ID: BUILD's event log, as CALLER reads it, holds an event at ID or
+# above.
+event_log_reaches() {
+  send "$1" "$2" GET "/api/v1/events/log?after=$(($3 - 1))&limit=1"
+  [ "$status" = 200 ] && jq -e --argjson id "$3" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
+}
+
+# logs_hold_own_writes waits, bounded, on each server until the log as carol and as alice holds
+# that caller's own newest event.
+logs_hold_own_writes() {
+  local server caller newest
+  for server in main twin; do
+    for caller in carol alice; do
+      newest=$(own_newest_event "$server" "$caller") || fail "$server: could not read $caller's newest event"
+      [ "$newest" -gt 0 ] || continue
+      until_true 120 "$server's event log, as $caller reads it, to hold $caller's newest event, $newest" \
+        event_log_reaches "$server" "$caller" "$newest"
+    done
+  done
+}
+
+# route_rows SELECT prints, in their order, the rows of the route index that the jq filter SELECT
+# keeps, each with what its Probe (RouteProbe, read once from probes.json) says of it, one line a
+# row and its fields joined by the unit separator (\x1f), a byte no compact JSON holds: the method;
+# the path; 1 when a Probe names the row; its test_hook; its no_project; its body as compact JSON;
+# 1 when its Probe map is not null; and that map, each wildcard and its kind joined by \x1d and the
+# pairs by \x1e (read_probe). A field the Probe does not hold is empty.
+route_rows() {
+  jq -r --slurpfile probes "$work/probes.json" "$1"' | . as $row
+    | ($probes[0] | map(select(.method == $row.method and .pattern == $row.path))[0]) as $entry
+    | [$row.method, $row.path,
+       (if $entry == null then "" else "1" end),
+       ($entry.test_hook // false | tostring),
+       ($entry.no_project // ""),
+       ((($entry.body // empty) | tojson) // ""),
+       (if $entry.probe == null then "" else "1" end),
+       ([$entry.probe // {} | to_entries[] | "\(.key)\u001d\(.value // "")"] | join("\u001e"))]
+    | join("\u001f")' "$work/routes"
+}
+
+# read_probe PAIRS sets probe_kind to the kind of each wildcard PAIRS names (route_rows' last field).
+declare -A probe_kind=()
+read_probe() {
+  local pair
+  probe_kind=()
+  while IFS= read -r -d $'\x1e' pair; do
+    probe_kind[${pair%%$'\x1d'*}]=${pair#*$'\x1d'}
+  done <<<"${1:+$1$'\x1e'}"
+}
+
 # walk_rows SELECT walks the rows of the route index that the jq filter SELECT keeps: a row whose
 # path names an object is filled from its Probe with PRIV's objects and with missing ones, and
 # each unseeing caller is answered the same for both; a GET row that names no object is a list,
@@ -590,29 +708,24 @@ reconciled() {
 # shows to an open viewer as it does today, and both servers hold the same ones: a row whose every
 # wildcard is one of them is filled alike on both servers and answered as the twin answers it.
 walk_rows() {
-  local row method pattern wildcards entry hidden none skip wildcard kind object body caller no_project target
+  local method pattern has_entry test_hook no_project body has_probe pairs wildcards hidden none skip wildcard kind object caller target
   walked=0 lists=0 refused=0
-  while IFS= read -r row; do
-    method=$(jq -r .method <<<"$row")
-    pattern=$(jq -r .path <<<"$row")
-    entry=$(jq -c --arg m "$method" --arg p "$pattern" 'map(select(.method == $m and .pattern == $p))[0] // empty' "$work/probes.json")
-    if [ "$(jq -r '.test_hook // false' <<<"${entry:-null}")" = true ]; then
+  while IFS=$'\x1f' read -r method pattern has_entry test_hook no_project body has_probe pairs; do
+    if [ "$test_hook" = true ]; then
       note "left out: $method $pattern is a test hook, which only DISPATCH_TEST_HOOKS mounts"
       continue
     fi
-    no_project=$(jq -r '.no_project // empty' <<<"${entry:-null}")
     if [ -n "$no_project" ]; then
       # The object belongs to no project, so there is no object of PRIV to hide: the row is held
       # to its class's refusal (scopeDeployment) of every caller that is not open.
       target=$(sed -E 's/\{[^}]+\}/project-access-walk/g' <<<"$pattern")
       for caller in bob alice-priv-token carol-priv-token; do
-        send main "$caller" "$method" "$target" "$(jq -c '.body // empty' <<<"$entry")"
+        send main "$caller" "$method" "$target" "$body"
         refused=$((refused + 1))
-        [ "$status" = 403 ] || {
-          printf '%s %s %s (%s): HTTP %s, want 403 for a caller that is not open: %s\n' "$caller" "$method" "$pattern" \
-            "$no_project" "$status" "$(head -c 300 "$work/body")" >>"$work/differences"
-          differed=$((differed + 1))
-        }
+        problem=''
+        [ "$status" = 403 ] ||
+          problem="$caller $method $pattern ($no_project): HTTP $status, want 403 for a caller that is not open: $(head -c 300 "$work/body")"
+        judge "$status" "$problem"
       done
       continue
     fi
@@ -624,17 +737,18 @@ walk_rows() {
       fi
       continue
     fi
-    if [ -z "$entry" ] || [ "$(jq -c '.probe' <<<"$entry")" = null ]; then
+    if [ -z "$has_entry" ] || [ -z "$has_probe" ]; then
       unrun "$method $pattern names an object and has no Probe"
       continue
     fi
+    read_probe "$pairs"
     hidden=$pattern
     none=$pattern
     : >"$work/fill-hidden"
     : >"$work/fill-missing"
     skip=''
     for wildcard in $wildcards; do
-      kind=$(jq -r --arg w "$wildcard" '.probe[$w] // empty' <<<"$entry")
+      kind=${probe_kind[$wildcard]:-}
       if [[ "$projectless_kinds" == *" $kind "* ]]; then
         skip=projectless
         note "not walked: $method $pattern: {$wildcard} is a $kind, which no project owns"
@@ -666,17 +780,16 @@ walk_rows() {
     if [ "$hidden" = "$none" ]; then
       # Every wildcard is a no-project node: the path is the same on both servers.
       for caller in "${unseeing_callers[@]}"; do
-        compare_twin "$caller" "$hidden" "$method" "$(jq -c '.body // empty' <<<"$entry")"
+        compare_twin "$caller" "$hidden" "$method" "$body"
       done
       lists=$((lists + 1))
       continue
     fi
-    body=$(jq -c '.body // empty' <<<"$entry")
     for caller in "${unseeing_callers[@]}"; do
       compare_missing "$caller" "$method" "$pattern" "$hidden" "$none" "$work/fill-hidden" "$work/fill-missing" "$body"
     done
     walked=$((walked + 1))
-  done < <(jq -c "$1" "$work/routes")
+  done < <(route_rows "$1")
 }
 
 # The query parameters of the GET rows, read from the OpenAPI this checkout's server serves (`go run
@@ -744,16 +857,21 @@ query_fill() {
 # way a hidden and a missing answer would be alike whatever the server hides, so the parameter did
 # not run.
 walk_queries() {
-  local row pattern entry wildcards wildcard kind path param fixed values hidden none caller
+  local pattern test_hook pairs wildcards wildcard kind path param fixed values hidden none caller
+  local -A query_params=()
   queried=0
-  while IFS= read -r row; do
-    pattern=$(jq -r .path <<<"$row")
-    entry=$(jq -c --arg p "$pattern" 'map(select(.method == "GET" and .pattern == $p))[0] // empty' "$work/probes.json")
-    [ "$(jq -r '.test_hook // false' <<<"${entry:-null}")" != true ] || continue
+  # Each GET path's query parameters, in the OpenAPI's order, one per line, read in one pass.
+  while IFS=$'\x1f' read -r pattern param; do
+    query_params[$pattern]+=$param$'\n'
+  done < <(jq -r '.paths | to_entries[] | .key as $p | .value.get.parameters[]? | select(.in == "query") | [$p, .name] | join("\u001f")' \
+    "$root/packages/contracts/schemas/dispatch-openapi.json")
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+    [ "$test_hook" != true ] || continue
+    read_probe "$pairs"
     path=$pattern
     wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
     for wildcard in $wildcards; do
-      case "$(jq -r --arg w "$wildcard" '.probe[$w] // empty' <<<"${entry:-null}")" in
+      case "${probe_kind[$wildcard]:-}" in
         project) path=${path//"{$wildcard}"/PUB} ;;
         issue) path=${path//"{$wildcard}"/PUB-1} ;;
         *)
@@ -816,13 +934,14 @@ walk_queries() {
         compare_missing "$caller" GET "$pattern?$param=<$kind>" "$hidden" "$none" "$work/fill-hidden" "$work/fill-missing"
       done
       queried=$((queried + 1))
-    done < <(jq -r --arg p "$pattern" '.paths[$p].get.parameters[]? | select(.in == "query") | .name' "$root/packages/contracts/schemas/dispatch-openapi.json")
-  done < <(jq -c 'select(.method == "GET")' "$work/routes")
+    done <<<"${query_params[$pattern]:-}"
+  done < <(route_rows 'select(.method == "GET")')
 }
 
 if [ "$priv_private" = 1 ]; then
   begin walk
   until_true 120 "both servers to reconcile delivery once" reconciled
+  logs_hold_own_writes
   # The route index this server serves, and the Probes of its own tables.
   send main carol GET /api/v1
   expect_status 200 "main: carol reads the route index"
@@ -858,6 +977,9 @@ if [ "$priv_private" = 1 ]; then
   [ -n "$schema_version" ] || fail "the block schema names no version"
   printf 'document\t%s\n' "$(recalled main "PRIV spec")" >"$work/fill-hidden"
   printf 'document\t%s\n' "${missing[document]}" >"$work/fill-missing"
+  declare -A live_pid=()
+  # live_settled READY PID: the live probe PID has written its ready file READY, or has exited.
+  live_settled() { [ -e "$1" ] || ! kill -0 "$2" 2>/dev/null; }
   for caller in "${unseeing_callers[@]}"; do
     for side in hidden missing; do
       id=${missing[document]}
@@ -867,38 +989,49 @@ if [ "$priv_private" = 1 ]; then
       keep_answer "$side" main "$work/fill-$side"
     done
     same_answers "$caller /ws/doc/{room}" hidden missing
-    # The live socket, live: the caller subscribes with no resume on each server, and while its
-    # socket is open carol comments on PRIV's issue (main only: the twin holds no PRIV) and then on
-    # PUB's. Each server's answer is the frames the caller was sent; each comment's id is
-    # remembered under one label on both servers, so the mask names it alike. A PRIV event on main
-    # differs from the twin's answer. Every unseeing caller but alice's PRIV token sees PUB, so the
-    # twin sends it the PUB comment, and an answer holding no event fails the pair: the compare
-    # must see the socket send something. alice's PRIV token sees no project, so both servers send
-    # it nothing, which the compare holds them to.
+    # The live socket, live: the caller subscribes with no resume on each server, both at once, and
+    # while both sockets are open carol comments on PRIV's issue (main only: the twin holds no
+    # PRIV) and then on PUB's, on each server. Each server's answer is the frames the caller was
+    # sent by that server; each comment's id is remembered under one label on both servers, so the
+    # mask names it alike. A PRIV event on main differs from the twin's answer. Every unseeing
+    # caller but alice's PRIV token sees PUB, so the twin sends it the PUB comment, and an answer
+    # holding no event fails the pair: the compare must see the socket send something. alice's PRIV
+    # token sees no project, so both servers send it nothing, which the compare holds them to.
     for server in main twin; do
-      rm -f "$work/live-ready" "$work/live-written"
+      rm -f "$work/live-ready-$server" "$work/live-written-$server"
       bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" \
-        "$work/live-ready" "$work/live-written" >"$work/live-body" 2>&1 &
-      live_pid=$!
-      until_true 10 "$caller's live socket on $server to start" test -e "$work/live-ready"
-      if [ "$server" = main ]; then
-        send main carol POST /api/v1/issues/PRIV-1/comments '{"body":"A live remark on PRIV."}'
-        expect_status 201 "main: carol comments on PRIV-1 while $caller's live socket is open"
-      fi
+        "$work/live-ready-$server" "$work/live-written-$server" >"$work/live-body-$server" 2>&1 &
+      live_pid[$server]=$!
+    done
+    # A probe that ends before it is ready, as one whose upgrade is refused does (it prints
+    # `http <status> <body>` and writes no ready file), ends the wait at once: its output is its
+    # answer, kept and compared as any other.
+    for server in main twin; do
+      until_true 10 "$caller's live socket on $server to start, or its probe to end" \
+        live_settled "$work/live-ready-$server" "${live_pid[$server]}"
+    done
+    send main carol POST /api/v1/issues/PRIV-1/comments '{"body":"A live remark on PRIV."}'
+    expect_status 201 "main: carol comments on PRIV-1 while $caller's live socket is open"
+    for server in main twin; do
       send "$server" carol POST /api/v1/issues/PUB-1/comments '{"body":"A live remark on PUB."}'
       expect_status 201 "$server: carol comments on PUB-1 while $caller's live socket is open"
       remember "$server" "live comment for $caller" "$(jq -r .id "$work/body")"
-      : >"$work/live-written"
+    done
+    for server in main twin; do
+      : >"$work/live-written-$server"
+    done
+    for server in main twin; do
       status=socket
-      wait "$live_pid" || status=error
-      cp "$work/live-body" "$work/body"
+      wait "${live_pid[$server]}" || status=error
+      cp "$work/live-body-$server" "$work/body"
       keep_answer "$server" "$server"
     done
-    [ "$caller" = alice-priv-token ] || grep -q '"type":"event"' "$work/answers/twin.body" || {
-      printf '%s /ws/live: the twin sent no event of carol'"'"'s PUB comment, so the compare saw nothing: %s\n' \
-        "$caller" "$(head -c 300 "$work/answers/twin.body")" >>"$work/differences"
-      differed=$((differed + 1))
-    }
+    if [ "$caller" != alice-priv-token ]; then
+      problem=''
+      grep -q '"type":"event"' "$work/answers/twin.body" ||
+        problem="$caller /ws/live: the twin sent no event of carol's PUB comment, so the compare saw nothing: $(head -c 300 "$work/answers/twin.body")"
+      judge "$(<"$work/answers/twin.status")" "$problem"
+    fi
     same_answers "$caller /ws/live (beside the twin)" main twin
   done
   # The document socket admits a person by their cookie alone, at the merge base as now, so a
@@ -907,10 +1040,9 @@ if [ "$priv_private" = 1 ]; then
   # "find each object of PRIV" is read as "refused alike".
   for caller in bob carol; do
     answer=$(bun "$(dirname "$0")/socket-access.ts" doc "${build_url[main]}" "$work/auth/main-$caller" "$(recalled main "PRIV spec")" "$schema_version" 2>&1) || true
-    [[ "$answer" == authenticated* ]] || {
-      printf '%s /ws/doc/{PRIV spec}: %s, want authenticated\n' "$caller" "$answer" >>"$work/differences"
-      differed=$((differed + 1))
-    }
+    problem=''
+    [[ "$answer" == authenticated* ]] || problem="$caller /ws/doc/{PRIV spec}: $answer, want authenticated"
+    judge socket "$problem"
   done
   printf 'document\t%s\n' "$(recalled main "PUB spec")" >"$work/fill-pub"
   for side in pub hidden; do
@@ -943,8 +1075,8 @@ if [ "$priv_private" = 1 ]; then
 fi
 
 begin verdict
-note "$compared pairs of answers compared; by status: $(statuses)"
-[ "$compared" -gt 0 ] || unrun "no pair of answers was compared"
+note "$compared answers judged, each pair compared and each read held to a rule of its own; by status: $(statuses)"
+[ "$compared" -gt 0 ] || unrun "no answer was judged"
 if [ -s "$work/unrun" ]; then
   fail "$(wc -l <"$work/unrun") things did not run:
 $(<"$work/unrun")

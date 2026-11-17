@@ -49,9 +49,9 @@
 # says `Dispatch-Private-Projects: 1` where the declared addition is `0`, and the run must fail
 # naming the header.
 #
-# The ports are the kernel's, chosen at the start. The work directory, under TMPDIR, holds the
-# base tree, both binaries, every process's log and every answer: removed when the run passes,
-# kept and printed when it fails.
+# The ports are the kernel's, each chosen as its service starts and held by that service from the
+# choice on. The work directory, under TMPDIR, holds the base tree, both binaries, every process's
+# log and every answer: removed when the run passes, kept and printed when it fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -108,17 +108,16 @@ case "$control" in
   *) fail "unknown control '$control': the controls are private-pub and private-header" ;;
 esac
 
-base_port=$(free_port)
-head_port=$(free_port)
-envoy_port=$(free_port)
+# Every port is one the kernel chooses as its service starts (two-builds.sh's empty ports): the
+# fake Envoy binds port 0 and reports it, and each build serves on a socket held from the kernel's
+# choice until it serves on it, so no other process can take one in between.
+base_port='' head_port='' envoy_port=''
 two_builds_setup 'project access blob e2e' "${forwarded[@]}"
-# Both servers stop before the databases they serve are dropped; two-builds' cleanup stops the
-# rest and exits with the run's status.
+# Both servers and the fake Envoy stop before the databases the servers serve are dropped;
+# two-builds' cleanup stops the rest and exits with the run's status.
 blob_cleanup() {
-  stop_pid "$head_pid"
-  stop_pid "$base_pid"
-  head_pid=''
-  base_pid=''
+  stop_all "$head_pid" "$base_pid" "$fake_envoy_pid"
+  head_pid='' base_pid='' fake_envoy_pid=''
   drop_own_databases
   cleanup "$1"
 }
@@ -194,21 +193,22 @@ two_builds_fake_envoy
 pass
 
 two_builds_identity
-build_url[base]=$base_url
-build_url[head]=$head_url
 
 # Both builds run with the test hooks on and no embedder, so search answers its keyword leg alone
-# and no answer waits on a model call or on a queue that drains in its own time.
+# and no answer waits on a model call or on a queue that drains in its own time. Each is given no
+# port, so start_server holds one and sets base_port and head_port.
 begin servers
-database_url=$base_database_url start_server base "$work/bin/dispatch-base" "$base_port" \
+database_url=$base_database_url start_server base "$work/bin/dispatch-base" '' \
   DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1
 head_private=()
 [ "$control" != private-header ] || head_private=(DISPATCH_PRIVATE_PROJECTS=PRIV)
-database_url=$head_database_url start_server head "$work/bin/dispatch-head" "$head_port" \
+database_url=$head_database_url start_server head "$work/bin/dispatch-head" '' \
   DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1 "${head_private[@]}"
-await_start base "$base_pid" 120 "the base build to answer /healthz" curl -fsS --max-time 2 "$base_url/healthz"
-await_start head "$head_pid" 120 "this build to answer /healthz" curl -fsS --max-time 2 "$head_url/healthz"
-note "the base build serves $base_url, this build $head_url"
+build_url[base]=http://127.0.0.1:$base_port
+build_url[head]=http://127.0.0.1:$head_port
+await_start base "$base_pid" 120 "the base build to answer /healthz" curl -fsS --max-time 2 "${build_url[base]}/healthz"
+await_start head "$head_pid" 120 "this build to answer /healthz" curl -fsS --max-time 2 "${build_url[head]}/healthz"
+note "the base build serves ${build_url[base]}, this build ${build_url[head]}"
 pass
 
 # The seven callers, in the order verification v17 names their kinds: the three people at a
@@ -313,9 +313,10 @@ keep_headers() {
 
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
 # made as CALLER, are the same status and, masked, the same bytes (same_answers), and the same
-# headers but the declared addition.
+# headers but the declared addition. The pair is one answer compared, so however many of these it
+# breaks, each written to the differences, it counts once among those that differ.
 compare() {
-  local caller=$1 method=$2 path=$3 body=${4:-} build target
+  local caller=$1 method=$2 path=$3 body=${4:-} build target before=$differed headers_differ=0
   for build in base head; do
     target=$(resolve "$build" "$path")
     send "$build" "$caller" "$method" "$target" "$body"
@@ -324,7 +325,7 @@ compare() {
   done
   same_answers "$caller $method $path" base head
   if ! grep -qx "$declared_header" "$work/answers/head.headers"; then
-    differed=$((differed + 1))
+    headers_differ=1
     printf '%s %s %s: this build answered no "%s": %s\n' "$caller" "$method" "$path" "$declared_header" \
       "$(grep -i '^dispatch-private-projects:' "$work/answers/head.headers" || echo 'the header is absent')" >>"$work/differences"
   fi
@@ -335,10 +336,11 @@ compare() {
     grep -vx "$declared_header" "$work/answers/$build.headers" >"$work/answers/$build.headers.compared" || true
   done
   if ! cmp -s "$work/answers/base.headers.compared" "$work/answers/head.headers.compared"; then
-    differed=$((differed + 1))
+    headers_differ=1
     printf '%s %s %s: the headers differ:\n%s\n' "$caller" "$method" "$path" \
       "$(diff "$work/answers/base.headers.compared" "$work/answers/head.headers.compared" | grep -E '^[<>]' | sed 's/^</   base:/; s/^>/   this build:/')" >>"$work/differences"
   fi
+  [ "$headers_differ" = 0 ] || [ "$differed" -gt "$before" ] || differed=$((differed + 1))
 }
 
 begin create-projects
@@ -352,7 +354,39 @@ no_difference
 note "every caller's project answer is the same at both builds"
 pass
 
+# event_log_reaches BUILD ID: BUILD's event log, as carol reads it, holds an event at ID or above.
+event_log_reaches() {
+  send "$1" carol GET "/api/v1/events/log?after=$(($2 - 1))&limit=1"
+  [ "$status" = 200 ] && jq -e --argjson id "$2" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
+}
+
+# spec_blocks_windowed BUILD PROJECT: every block of PROJECT's spec on BUILD, as carol reads it, is
+# in a window of the meaning index: its embedding reads other than "none", which is a block no
+# window covers yet (refs.BlockEmbeddingStates). With no embedder, "pending" is where it stays.
+spec_blocks_windowed() {
+  send "$1" carol GET "$(resolve "$1" "/api/v1/artifacts/{$2 spec}/blocks")"
+  [ "$status" = 200 ] && jq -e 'length > 0 and all(.[]; .embedding != "none")' "$work/body" >/dev/null
+}
+
 begin reads
+# A build pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
+# build can answer a read before that horizon has passed what the seed wrote: one run read [] from
+# the merge base's log where this build listed the seed's events. So each build is read only once
+# its log, as carol reads it, holds the newest event its database holds after the projects above,
+# the project.created of a public project. Likewise the windows of each spec's blocks are written
+# behind the write, in each build's own time: two runs in five read `"embedding":"pending"` at the
+# merge base where this build still read `"none"`. So each spec is read only once every one of its
+# blocks is in a window on that build. A build that never writes them fails the wait, naming it.
+for build in base head; do
+  url_var=${build}_database_url
+  newest=$(psql "${!url_var}" -X -tAc 'select coalesce(max(id), 0) from events') ||
+    fail "$build: could not read the newest event of its database"
+  [ "$newest" -gt 0 ] || fail "$build: its database holds no event after the seed"
+  until_true 120 "the $build build's event log to reach its newest event, $newest" event_log_reaches "$build" "$newest"
+  for project in PUB PRIV; do
+    until_true 120 "the $build build to window every block of $project-1's spec" spec_blocks_windowed "$build" "$project"
+  done
+done
 for caller in "${callers[@]}"; do
   for path in "${reads[@]}"; do
     compare "$caller" GET "$path"

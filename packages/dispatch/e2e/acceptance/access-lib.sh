@@ -28,11 +28,17 @@ readonly alice=alice@example.com bob=bob@outside.example carol=carol@example.com
 # The session the shared token's writes name as their actor.
 readonly seed_session=project-access-seed
 
-# free_port prints a port the kernel chose and nothing holds. Another process can take it before
-# the server binds it; two_builds_prerequisites refuses a port that answers, and a server that
-# loses the race fails to bind, so a run that loses it fails rather than talking to a stranger.
-free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+# stop_all PID... stops each PID as lib/rig.sh's stop_pid does, but sends every one its TERM before
+# it waits on any, so they stop together rather than each after the one before has gone. It is a
+# cleanup's, so it never fails.
+stop_all() {
+  local pid
+  for pid in "$@"; do
+    [ -z "$pid" ] || ! signalable "$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in "$@"; do
+    stop_pid "$pid"
+  done
 }
 
 # own_database VAR NAME makes a database for the server NAME, on the server DATABASE_URL names,
@@ -221,8 +227,9 @@ mint_token() {
 #                 the run made (GET /api/v1/related-checks)
 #   since         the start of a window that ends at the read, an RFC 3339 instant
 #                 (GET /api/v1/agents/{session_id}/answers); and, as a decimal event id, the
-#                 cursor the live socket's events_start frame names, which is the event log's
-#                 head, so it counts every event of the server, a hidden one's included
+#                 cursor the live socket's events_start frame names, which is the newest event
+#                 the caller can see (viewerEventHead), so no event of a project it does not see
+#                 moves it
 #   from          the default start of a delivery window, seven days before the read
 #                 (GET /api/v1/delivery/timeline, /measures)
 #   last_seen     a session's last heartbeat as the listener reports it, in epoch milliseconds
@@ -288,6 +295,9 @@ first_difference() {
   esac
 }
 
+# Every answer judged counts in compared, a pair as one and a read held to a rule of its own as
+# one, and an answer that fails its judgement counts once in differed, so no_difference can never
+# name more answers that differ than it judged.
 compared=0
 differed=0
 # same_answers WHAT LEFT RIGHT: the answers kept as LEFT and RIGHT (keep_answer) are the same
@@ -307,6 +317,19 @@ same_answers() {
       "$2" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$left.body" | head -c 240)" \
       "$3" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$right.body" | head -c 240)" >>"$work/differences"
   fi
+}
+
+# judge STATUS PROBLEM counts one answer held to a rule of its own rather than beside another (a
+# status it must have, a name it must or must not hold): STATUS joins the statuses, and PROBLEM,
+# when it is not empty, is how the answer broke the rule, written to $work/differences as one that
+# differed.
+judge() {
+  compared=$((compared + 1))
+  printf '%s\n' "$1" >>"$work/statuses"
+  [ -z "$2" ] || {
+    differed=$((differed + 1))
+    printf '%s\n' "$2" >>"$work/differences"
+  }
 }
 
 # no_difference fails the check when any pair so far differed, printing every one.
