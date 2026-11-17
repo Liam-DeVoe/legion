@@ -459,13 +459,14 @@ func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string
 	legion.NewSampler(database.Pool).Pass(t.Context())
 }
 
-// TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries: the board answers the newest good
-// read, and the metrics' reported set is the board's. The first read carries three issues of one
-// chain, with the root's architect and implementer in a turn; the second no longer carries the
-// middle issue or the implementer's claim. The board then shows neither, and the middle issue is
-// out of both readers' reported set, which the bottom issue shows: its chain climbed through the
-// middle issue, and now that issue is neither reported nor carrying phase work, so the bottom issue
-// is a root of its own on the board and in the metrics.
+// TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries: the board's cards are the newest
+// good read's, and an issue the daemon stopped carrying is still a Legion issue for both readers'
+// tree walk (dispatch://INFRA-1077's spec, "The top issue of a tree": the daemon reports an issue
+// Dispatch observed a phase of). The first read carries three issues of one chain, with the root's
+// architect and implementer in a turn; the second no longer carries the middle issue or the
+// implementer's claim. The board then shows neither, and the bottom issue stays in the root's
+// tree on the board and in the metrics: its chain climbs through the middle issue, which left the
+// daemon's state after Dispatch observed it in `testing` and so is still Legion's.
 func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
@@ -507,16 +508,55 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"architect"}) {
 		t.Errorf("INFRA-1's roles are %v, want the architect alone: the newest read carries no implementer's claim", roles)
 	}
-	if tree := legionCard(t, board, "INFRA-3").Tree; tree != "INFRA-3" {
-		t.Errorf("the board puts INFRA-3 in tree %q, want itself: the middle issue is no longer reported", tree)
+	if tree := legionCard(t, board, "INFRA-3").Tree; tree != "INFRA-1" {
+		t.Errorf("the board puts INFRA-3 in tree %q, want INFRA-1: the middle issue left the daemon's state and is still Legion's", tree)
 	}
 	now := time.Now().UTC()
 	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
-	if root := population.TreeRoot("INFRA-3"); root != "INFRA-3" {
-		t.Errorf("the metrics put INFRA-3 in tree %q, want itself: the middle issue is out of the reported set", root)
+	if root := population.TreeRoot("INFRA-3"); root != "INFRA-1" {
+		t.Errorf("the metrics put INFRA-3 in tree %q, want INFRA-1, as the board does", root)
+	}
+}
+
+// TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree is the reviewer's probe of
+// dispatch://INFRA-1077's spec, "The top issue of a tree": the daemon reports an issue that is in
+// its state or that Dispatch observed a phase of. The top issue was observed `planning` and then
+// left the daemon's state, which writes its phase `null`; its child is still `implementing`, and
+// neither carries a worker event or a handoff. The top issue carries no card, and both readers put
+// the child in its tree rather than making the child a root of its own.
+func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	hour := func(hours int) time.Time { return now.Add(time.Duration(hours-4) * time.Hour) }
+	seedLegionIssue(t, database, "INFRA", 6, "The top issue", "a", nil, "")
+	seedLegionIssue(t, database, "INFRA", 7, "Its child", "b", nil, "INFRA-6")
+	seedLegionObservation(t, database, "INFRA", "INFRA-6", legion.FieldPhase, `"planning"`, hour(1))
+	seedLegionObservation(t, database, "INFRA", "INFRA-6", legion.FieldPhase, `null`, hour(3))
+	seedLegionObservation(t, database, "INFRA", "INFRA-7", legion.FieldPhase, `"implementing"`, hour(1))
+	seedLegionRead(t, database, "INFRA", hour(3), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	for _, column := range board.Columns {
+		for _, card := range column.Cards {
+			if card.Key == "INFRA-6" {
+				t.Errorf("the board holds INFRA-6 in the %s column, want no card: the newest read does not carry it", column.ID)
+			}
+		}
+	}
+	if tree := legionCard(t, board, "INFRA-7").Tree; tree != "INFRA-6" {
+		t.Errorf("the board puts INFRA-7 in tree %q, want INFRA-6: Dispatch observed a phase of its parent", tree)
+	}
+	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	if err != nil {
+		t.Fatalf("read the metrics population: %v", err)
+	}
+	if root := population.TreeRoot("INFRA-7"); root != "INFRA-6" {
+		t.Errorf("the metrics put INFRA-7 in tree %q, want INFRA-6: Dispatch observed a phase of its parent", root)
 	}
 }
 
