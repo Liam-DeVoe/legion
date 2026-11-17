@@ -237,3 +237,53 @@ func TestValidateRefusesARoleThePlanCannotRun(t *testing.T) {
 		t.Fatal("a caller that changed one answer of LegionNames changed the next")
 	}
 }
+
+// One agent runs on one model and one harness, so Validate refuses a key whose steps name roles of
+// two models, or of two harnesses, at the first step that differs from the key's first, once for
+// each key. Two roles of no model run on one model, the deployment's default. The steps of no key
+// are each an agent of their own. The owner does a step of the key owner in its own session, so
+// only its model is compared with the role's, and a role on another harness is taken there.
+func TestValidateRefusesOneAgentOnRolesOfTwoModels(t *testing.T) {
+	deployment := func(implementerBackend string) Deployment {
+		roles := BuiltinRoles()
+		for name, role := range roles {
+			role.Backend = "omp"
+			roles[name] = role
+		}
+		implementer := roles["implementer"]
+		implementer.Backend = implementerBackend
+		roles["implementer"] = implementer
+		return Deployment{Roles: roles, Models: []string{"m-one", "m-two"}, Owner: RoleDef{Name: "architect", Backend: "omp"}}
+	}
+	withRoles := func(steps string, roles ...PlanRole) Plan {
+		p := oneTask("a", steps)
+		p.Roles = roles
+		return p
+	}
+	prober := func(model string) PlanRole { return PlanRole{Name: "prober", Type: TypeTesting, Model: model} }
+	for _, tc := range []struct {
+		name    string
+		plan    Plan
+		backend string
+		want    []Refusal
+	}{
+		{name: "a key on roles of two models", plan: withRoles("implementer:a prober:a", prober("m-two")), backend: "omp",
+			want: []Refusal{{Task: "a", Reason: "the key a names one agent for implementer at step 1 of task a and prober at step 2 of task a, whose roles run on two models (the default model, m-two); one agent runs on one model."}}},
+		{name: "a key on roles of two harnesses", plan: withRoles("implementer:a prober:a", prober("")), backend: "claude",
+			want: []Refusal{{Task: "a", Reason: "the key a names one agent for implementer at step 1 of task a and prober at step 2 of task a, whose roles run on two harnesses (claude, omp); one agent runs on one harness."}}},
+		{name: "a key on two roles of one model and one harness", plan: withRoles("implementer:a reviewer:a"), backend: "omp"},
+		{name: "two steps of no key", plan: withRoles("implementer prober", prober("m-two")), backend: "omp"},
+		{name: "the owner on a role of another model", plan: withRoles("prober:owner", prober("m-two")), backend: "omp",
+			want: []Refusal{{Task: "a", Reason: "step 1 of task a names prober:owner, whose model m-two is not the owner's (the default model); the owner runs on its own model."}}},
+		{name: "a key on three roles, two of another model", plan: withRoles("implementer:a prober:a critic:a", prober("m-two"),
+			PlanRole{Name: "critic", Type: TypeTesting, Model: "m-two"}), backend: "omp",
+			want: []Refusal{{Task: "a", Reason: "the key a names one agent for implementer at step 1 of task a and prober at step 2 of task a, whose roles run on two models (the default model, m-two); one agent runs on one model."}}},
+		{name: "the owner on a role of another harness", plan: withRoles("implementer:owner"), backend: "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Validate(tc.plan, deployment(tc.backend)); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}

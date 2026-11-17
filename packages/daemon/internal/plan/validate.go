@@ -37,16 +37,18 @@ const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 character
 // with no task; each role the plan defines whose name or type Dispatch's step record cannot hold,
 // or whose name the deployment or Legion holds already (LegionNames); each role whose model the
 // deployment does not list, at the first step of each task that names it, or for the whole plan
-// where no step names it; and each step that names a role neither d nor the plan defines, at the
-// first step of each task that names it (B-11). A type no list holds, and a role with no type or
-// no model, are taken. It refuses no plan for a step the plan lacks, and it holds a role's prompt
-// to no bound of its own.
+// where no step names it; each agent (AgentOf) whose steps name roles of two models or two
+// harnesses, and each step of the key owner whose role's model is not the owner's; and each step
+// that names a role neither d nor the plan defines, at the first step of each task that names it
+// (B-11). A type no list holds, and a role with no type or no model, are taken. It refuses no plan
+// for a step the plan lacks, and it holds a role's prompt to no bound of its own.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
 	}
 	roles := RolesOf(p, d)
 	refusals := append(roleReasons(p, d), modelReasons(p, d, roles)...)
+	refusals = append(refusals, agentReasons(p, d, roles)...)
 	for _, task := range p.Tasks {
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
@@ -113,6 +115,68 @@ func modelReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
 			"the plan defines the role %s with the model %s, which the deployment does not list; %s", role.Name, role.Model, listed)})
 	}
 	return refusals
+}
+
+// agentReasons is Validate's causes in the agents of p's steps (AgentOf), each step's role as roles
+// answers it, in task and step order: for each agent of a key but owner, the first step whose role
+// runs on another model or another harness than the role of the agent's first step, once for each
+// agent; and for the key owner, in each task, the first step of each role whose model is not the
+// owner's (d.Owner). Two roles of no model run on one model, the deployment's default. The owner
+// does its step in its own session, so its harness is not compared. A step whose role nobody
+// defines is passed over: Validate refuses it on its own.
+func agentReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
+	type firstStep struct {
+		task, role string
+		place      int
+		def        RoleDef
+	}
+	first := map[Agent]firstStep{}
+	refused := map[Agent]bool{}
+	var refusals []Refusal
+	for _, task := range p.Tasks {
+		ownersRefused := map[string]bool{}
+		for i, step := range task.Steps {
+			role, ok := roles[step.Role]
+			if !ok {
+				continue
+			}
+			agent := AgentOf(task.ID, i+1, step)
+			if agent.Owner() {
+				if role.Model != d.Owner.Model && !ownersRefused[step.Role] {
+					ownersRefused[step.Role] = true
+					refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
+						"step %d of task %s names %s, whose model %s is not the owner's (%s); the owner runs on its own model.",
+						i+1, task.ID, step, modelName(role.Model), modelName(d.Owner.Model))})
+				}
+				continue
+			}
+			was, seen := first[agent]
+			if !seen {
+				first[agent] = firstStep{task: task.ID, role: step.Role, place: i + 1, def: role}
+				continue
+			}
+			if refused[agent] || (role.Model == was.def.Model && role.Backend == was.def.Backend) {
+				continue
+			}
+			refused[agent] = true
+			runOn := fmt.Sprintf("two models (%s, %s); one agent runs on one model.", modelName(was.def.Model), modelName(role.Model))
+			if role.Model == was.def.Model {
+				runOn = fmt.Sprintf("two harnesses (%s, %s); one agent runs on one harness.", was.def.Backend, role.Backend)
+			}
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
+				"the key %s names one agent for %s at step %d of task %s and %s at step %d of task %s, whose roles run on %s",
+				agent.Key, was.role, was.place, was.task, step.Role, i+1, task.ID, runOn)})
+		}
+	}
+	return refusals
+}
+
+// modelName is a model as a reason writes it: "" is the default model.
+func modelName(model string) string {
+	if model == "" {
+		return "the default model"
+	}
+	return model
 }
 
 // Supported is what this release does not carry out yet (C6): more than one task, a role block,
