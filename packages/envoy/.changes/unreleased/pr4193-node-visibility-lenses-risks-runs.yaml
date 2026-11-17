@@ -10,8 +10,8 @@ body: |-
   `constrained_by` from a block to its constraints). When a block goes, its `constrained_by`
   pointers and the `prevented_by` pointers at it are retracted. `GET /api/v1/lenses?on=<address>`
   reads the lenses invoked on a node in invocation order, and a trigger walks at most 50 lenses
-  down a chain. The lens kinds are a catalogue that two migrations seed with ten kinds, and
-  `envoy-dispatch lens-kind-add` is its one writer.
+  down a chain. The lens kinds are a catalogue that two migrations seed with 22 kinds, ten and then
+  twelve more, and `envoy-dispatch lens-kind-add` is its one writer.
 
   `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
   /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
@@ -27,5 +27,8 @@ body: |-
 
   `envoy-dispatch premortem-convert` and
   `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a
-  lens with one risk for each numbered risk, each with `prevented_by` pointers to the checks that a
-  map names.
+  lens with one risk for risk 0 and for each numbered risk, each with `prevented_by` pointers to the
+  checks that a map names. It then retires the document: the document leaves its issue's document
+  list, takes no new text, and holds one `document.retired` event whose reason names the lens. Its
+  old address answers that lens on `GET /api/v1/references?to=` and in the reference closure of any
+  issue that cites it.

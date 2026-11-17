@@ -3166,9 +3166,19 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one artifact in an issue's reference closure.
+// ReferenceMember is one member of an issue's reference closure (refs.Closure): Artifact is the
+// document a citation reaches, at Depth through Via, and Kind and Address are the member's own
+// kind and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
+// address where the citation names a document whose address moved to a lens, as the pre-mortem
+// conversion moves the address of the document it retires to the lens it writes in its place.
+// Artifact is then that retired document, whose versions stay readable. A server of the release
+// before answers neither Kind nor Address during a roll, so the OpenAPI document marks them
+// optional (`required:"false"`) and a reader takes a member that carries neither as the document
+// Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
+	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
+	Address  string       `json:"address" required:"false"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }

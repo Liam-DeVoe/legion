@@ -1,3 +1,4 @@
+import type { GraphNode, NodeStateInput, PointerInput } from "./dispatch-api.generated";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
@@ -697,10 +698,41 @@ const REASONING_WRITE_RULE =
   "The write appends no event and notifies nobody: a reader finds what it wrote by reading it. " +
   "A refused write stores nothing.";
 
+/** Who a node the reasoning tools write is for: every reader of its project, or its author alone
+ *  (graphstore's VisibilityProject and VisibilityAuthor). */
+export const NODE_VISIBILITIES = ["project", "author"] as const satisfies readonly NonNullable<
+  GraphNode["visibility"]
+>[];
+export type NodeVisibility = (typeof NODE_VISIBILITIES)[number];
+
+/** The pointer tuples dispatch_pointer writes out of a node, each held to its type rule by
+ *  graphstore's pointerRules. */
+export const POINTER_KINDS = [
+  "has_kind",
+  "triggered_by",
+  "constrained_by",
+  "prevented_by",
+] as const satisfies readonly PointerInput["kind"][];
+
+/** What dispatch_pointer does with one pointer tuple. */
+export const POINTER_ACTIONS = [
+  "append",
+  "retract",
+  "retarget",
+] as const satisfies readonly PointerInput["action"][];
+
+/** The node states dispatch_state writes; settled is dispatch_settle's alone. */
+export const WRITABLE_NODE_STATES = [
+  "proposed",
+  "overtaken",
+  "live",
+  "gone",
+] as const satisfies readonly NodeStateInput["state"][];
+
 /** The `visibility` argument of the tools that write a reasoning node, `what` naming the node. */
 function reasoningVisibility<E extends SchemaNode<E>>(z: SchemaApi<E>, what: string): E {
   return z
-    .enum(["project", "author"])
+    .enum(NODE_VISIBILITIES)
     .describe(
       `Who ${what} for: project (the default), or author, which keeps it to you alone and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author.`
     )
@@ -711,12 +743,6 @@ function reasoningVisibility<E extends SchemaNode<E>>(z: SchemaApi<E>, what: str
  *  nothing else does. Dispatch holds the same rule (`writePointer`, 400 POINTER_INPUT). */
 const POINTER_FROM_RULE =
   "from goes with action retarget, and a retarget names it: the far end the node's pointer is at now.";
-
-function pointerProblem(value: unknown): string | undefined {
-  const input = value as { readonly action?: unknown; readonly from?: unknown };
-  const retarget = input.action === "retarget";
-  return retarget === (typeof input.from === "string") ? undefined : POINTER_FROM_RULE;
-}
 
 export const dispatchToolSpecs = [
   {
@@ -2396,7 +2422,7 @@ export const dispatchToolSpecs = [
         .describe("The dispatch://lens/<uuid> address of the lens the finding belongs to."),
       text: z.string({ min: 1 }).describe("The finding's text."),
       visibility: z
-        .enum(["project", "author"])
+        .enum(NODE_VISIBILITIES)
         .describe(
           "author keeps the finding to you alone, and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author. Left out, or project, the finding is for whoever its lens is for."
         )
@@ -2519,11 +2545,9 @@ export const dispatchToolSpecs = [
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node the pointer goes out of: ${NODE_UNDER_ISSUE}.`),
-      kind: z
-        .enum(["has_kind", "triggered_by", "constrained_by", "prevented_by"])
-        .describe("The pointer's kind."),
+      kind: z.enum(POINTER_KINDS).describe("The pointer's kind."),
       action: z
-        .enum(["append", "retract", "retarget"])
+        .enum(POINTER_ACTIONS)
         .describe("append adds a pointer at to; retract removes it; retarget moves it from from."),
       to: z
         .string({ min: 1 })
@@ -2536,9 +2560,11 @@ export const dispatchToolSpecs = [
         .optional(),
     }),
     validation: {
-      check: (value) => pointerProblem(value) === undefined,
+      check: (value) => {
+        const { action, from } = value as { readonly action?: unknown; readonly from?: unknown };
+        return (action === "retarget") === (typeof from === "string");
+      },
       message: POINTER_FROM_RULE,
-      refusal: (value) => pointerProblem(value) ?? POINTER_FROM_RULE,
     },
     strict: true,
   },
@@ -2592,7 +2618,7 @@ export const dispatchToolSpecs = [
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node whose state to write: ${NODE_UNDER_ISSUE}.`),
       state: z
-        .enum(["proposed", "overtaken", "live", "gone"])
+        .enum(WRITABLE_NODE_STATES)
         .describe(
           "The node's new state: proposed, overtaken, live, or gone on a lens, a finding, a risk or a constraint alone."
         ),
@@ -2650,17 +2676,19 @@ export const dispatchToolSpecs = [
       'sections, "What a world-class implementation looks like" and "The smallest first slice ' +
       'that proves the model", word for word, and under it one risk for risk 0 and each ' +
       "numbered risk, each with its heading, its early warning and its prevention and a " +
-      "prevented_by pointer to each check its entry names. The document is then retired, and " +
-      "its address answers the lens. prevented_by holds one entry for each risk the document " +
-      "holds: its number as the document numbers it, the dispatch:// addresses of the check " +
-      "blocks that prevent it, of any issue ([] for none), and why. An entry for a number the " +
-      "document does not hold, a number twice, a risk with no entry, an address that names no " +
-      "check block you may see, a blank reason, and an entry of any other shape are refused " +
-      "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
-      "and nothing is written. preview answers what the conversion would write and writes " +
-      "nothing; run it first. A document converted already is answered as such, naming its " +
-      "lens, and nothing is written. The result names the lens's dispatch://lens/<uuid> " +
-      `address and each risk's dispatch://risk/<uuid> address. ${REASONING_WRITE_RULE} ` +
+      "prevented_by pointer to each check its entry names. The document is then retired: it " +
+      "leaves the issue's document list and takes no new text, and its address answers the " +
+      "lens. prevented_by holds one entry for each risk the document holds: its number as the " +
+      "document numbers it, the dispatch:// addresses of the check blocks that prevent it, of " +
+      "any issue ([] for none), and why. An entry for a number the document does not hold, a " +
+      "number twice, a risk with no entry, an address that names no check block you may see, a " +
+      "blank reason, and an entry of any other shape are refused with 400 ARTIFACT_INPUT, " +
+      "naming the entry by its position from 1 and its risk number, and nothing is written. " +
+      "preview answers what the conversion would write and writes nothing; run it first. A " +
+      "document converted already is answered as such, naming its lens, and nothing is " +
+      "written. The result names the lens's dispatch://lens/<uuid> address and each risk's " +
+      "dispatch://risk/<uuid> address. The conversion appends one event, the document's " +
+      "document.retired, whose reason names the lens; a refused call stores nothing. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

@@ -74,8 +74,8 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 		t.Errorf("another person's closure = %#v; want no member, since one link is the private comment's and the other reaches the private document", got)
 	}
 	want := []Member{
-		{RefKey: privateDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: publicComment}},
-		{RefKey: publicDocument, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: privateComment}},
+		documentMember(t, tx, privateDocument, 1, model.ReferenceVia{Kind: "comment", ID: publicComment}),
+		documentMember(t, tx, publicDocument, 1, model.ReferenceVia{Kind: "comment", ID: privateComment}),
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closure(privateAuthor); !reflect.DeepEqual(got, want) {

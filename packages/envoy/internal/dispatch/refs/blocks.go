@@ -1392,6 +1392,11 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // link to a block that stands costs the probe alone. A pointer's link counts only while the block
 // it reaches has a type the pointer allows (block_ref_listed). A link either of whose blocks who
 // may not see drops out the same way, since neither end resolves to a node.
+//
+// It reads no document's address and follows no document's move: it takes the two documents by
+// uuid, and a document the pre-mortem conversion retired, whose address moved to a lens
+// (api.ConvertPremortem), keeps its row, its uuid, its versions and its blocks, so the links to its
+// blocks from a third document read as they did before it was retired.
 func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
 		select r.kind, r.from_node, t.node_id, r.created_at, r.created_version
