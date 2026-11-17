@@ -150,15 +150,17 @@ func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
 
-// SessionReplySubject is the reply subject of one request made of session sessionID, which only
-// that session may answer: inbox, a reply inbox of the requester's own (nats.NewInbox), then the
-// session's id, then 128 random bits (crypto/rand.Text). Every request a session answers carries
-// one - the relay's frames (cmd/listener's sessionRelays), the listener's connection probe and
-// Dispatch's agent stream replay (internal/dispatch/agentstream) - and a session's own grant
-// admits replies under its id alone (SessionReplies). So a session can neither answer a request
-// made of another session nor guess the subject of one: it cannot read another session's relay or
-// control subject, and the random part is not derived from anything it can see. sessionID is one
-// subject token, as every session with a consumer's is (SessionConsumerName).
+// SessionReplySubject is the reply subject of one request made of session sessionID: inbox, a
+// reply inbox of the requester's own (nats.NewInbox), then the session's id, then 128 random bits
+// (crypto/rand.Text). Every request a session answers carries one - the relay's frames
+// (cmd/listener's sessionRelays), the listener's connection probe and Dispatch's agent stream
+// replay (internal/dispatch/agentstream) - and a session's own grant, the one the NATS auth
+// service gives it, admits replies under its id alone (SessionReplies). So a session on that grant
+// can neither answer a request made of another session nor guess the subject of one: its grant
+// reads no other session's relay or control subject, and the random part is not derived from
+// anything it can see. A holder of the shared session user or of a host user reads every
+// session's relay subject and may publish to every _INBOX. subject, so none of this holds against
+// it. sessionID is one subject token, as every session with a consumer's is (SessionConsumerName).
 func SessionReplySubject(inbox, sessionID string) string {
 	return inbox + "." + sessionID + "." + rand.Text()
 }
