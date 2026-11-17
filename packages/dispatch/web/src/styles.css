@@ -304,9 +304,8 @@ html:has([data-issue-page]) {
 }
 
 /* What a scroll brings into view on the new issue page stands below everything that stays at the
-   top of the screen above its rows (decision 113 of
-   dispatch://INFRA-1196/artifact/part-decisions-md). The page scrolls the document, so the
-   padding is on `html`. `--issue-identity-height` is the band the header publishes
+   top of the screen above its rows (decision 113 of the parts). The page scrolls the document,
+   so the padding is on `html`. `--issue-identity-height` is the band the header publishes
    (`identity-block.ts`): its identity block from 761 px up, and at 760 px and below the view row,
    where the header scrolls away. `--issue-view-row-height` is the view row's own height while it
    stays, at 760 px and below, and 0 px above (`slots/view-row.tsx`), so the row is counted on a
@@ -390,7 +389,7 @@ html:has([data-issue-page]) {
   }
   /* The padding keeps what a scroll brings into view clear of the review sheet at the foot of
      the screen. The new issue page has no such sheet: its panel is Details, which opens over the
-     page (dispatch://INFRA-1196 R14), so nothing covers the foot there, and a landing centred on
+     page (R14), so nothing covers the foot there, and a landing centred on
      a passage is centred on the screen rather than 80 px above it. */
   html:has([data-issue-page]) {
     scroll-padding-bottom: 0;
@@ -405,7 +404,7 @@ html:has([data-issue-page]) {
   }
 
   /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
-     (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md), so its controls take WCAG
+     (the architect's ruling 5), so its controls take WCAG
      2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
      keeps the floor. Only the new page draws the row (`identity-block.ts`'s
      `FILTER_ROW_ATTRIBUTE`), so the rule takes no `html:has()` scope: under one, each row the
@@ -486,7 +485,7 @@ html:has([data-issue-page]) {
 }
 
 /* Below 1280 px a row of the new issue page takes none of the 44 px floor above on its fold
-   control and its inline controls (dispatch://INFRA-1196 part G, R1; the floor itself stays as
+   control and its inline controls (part G, R1; the floor itself stays as
    it is on every other page and control). A node's bullet is its fold control, the prototype's
    18 by 24 px `.bul`, and 24 by 24 px at 760 px and below (`NODE_ROW_LAYOUT.foldControl`):
    nothing else in its row is a target beside it, so a 24 px circle on it meets no other target
@@ -804,7 +803,7 @@ html:has([data-issue-page]) {
   }
 }
 
-/* A node's words in the issue page's outline (dispatch://INFRA-1196 part G, R1) stand flush in
+/* A node's words in the issue page's outline (part G, R1) stand flush in
    their row: the first block of them takes no margin above it and the last none below. The
    spacing between their blocks is set further down, beside `.dispatch-markdown`'s own rules. */
 [data-node-words] .dispatch-markdown > :first-child {
@@ -975,7 +974,7 @@ html:has([data-issue-page]) {
   font-weight: 600;
 }
 
-/* A node's words in the issue page's outline (dispatch://INFRA-1196 part G, R1, the prototype's
+/* A node's words in the issue page's outline (part G, R1, the prototype's
    `.body`): they take the row's 15 px on 24 px lines, and its paragraphs, lists, quotes and code
    stand 6 px apart and a heading 6 px under what precedes it, rather than at the spacing
    `prose` gives a whole document. */
