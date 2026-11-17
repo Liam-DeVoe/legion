@@ -174,9 +174,8 @@ func addCall(a, b Call) Call {
 // phraseSchema is the reply of a phrases call: for each candidate, its id, the reason, the
 // rewrite and a verdict, one of verdicts.
 func phraseSchema(verdicts []string) json.RawMessage {
-	enum, _ := json.Marshal(verdicts)
-	return json.RawMessage(`{"type":"object","properties":{"candidates":{"type":"array","items":` +
-		object(property{"1_id", stringSchema}, property{"2_reason", stringSchema}, property{"3_rewrite", stringSchema},
-			property{"4_verdict", `{"type":"string","enum":` + string(enum) + `}`}) +
-		`}},"required":["candidates"],"additionalProperties":false}`)
+	return schemaJSON(object(property{"candidates", arrayOf(object(
+		property{"1_id", stringSchema}, property{"2_reason", stringSchema}, property{"3_rewrite", stringSchema},
+		property{"4_verdict", enum(verdicts...)},
+	))}))
 }

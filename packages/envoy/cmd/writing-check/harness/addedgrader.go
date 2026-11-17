@@ -86,7 +86,7 @@ func checkRequest(data promptData) (llm.Request, error) {
 		property{numbered(2, heldFields[2]), booleanSchema},
 	)
 	req := llm.Request{Purpose: "grade:added:verify", MaxTokens: graderMaxTokens,
-		Schema: json.RawMessage(object(property{"facts", `{"type":"array","items":` + item + `}`}))}
+		Schema: schemaJSON(object(property{"facts", arrayOf(item)}))}
 	var err error
 	req.System, err = render("grade-added-verify", data)
 	return req, err

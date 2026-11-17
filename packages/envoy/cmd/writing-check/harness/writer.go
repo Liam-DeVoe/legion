@@ -108,7 +108,7 @@ func (w *Writer) call(ctx context.Context, prompt, purpose string, turn writerTu
 }
 
 // rewriteSchema is the schema of the writer's text written again.
-var rewriteSchema = json.RawMessage(object(property{"text", stringSchema}))
+var rewriteSchema = schemaJSON(object(property{"text", stringSchema}))
 
 // Rewrite is the writer's text written again after message: the written rules' refusal (change
 // 2) or the writing check's refusal (change 7a).
@@ -134,8 +134,8 @@ const (
 )
 
 // findingsSchema is the schema of the writer's action on a review's findings.
-var findingsSchema = json.RawMessage(object(
-	property{numbered(0, "action"), `{"type":"string","enum":["edit","post"]}`},
+var findingsSchema = schemaJSON(object(
+	property{numbered(0, "action"), enum(actionEdit, actionPost)},
 	property{numbered(1, "text"), stringSchema},
 	property{numbered(2, "reason"), stringSchema},
 ))

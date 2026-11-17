@@ -315,24 +315,24 @@ func (s *Store) ReaderWordsPage(ctx context.Context, login string, before time.T
 		from asked group by lower(word)
 		order by max(written_at) desc, 1 limit $3 offset $4`, login, until, limit, offset)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read the words %s asked about: %w", login, err)
+		return nil, 0, fmt.Errorf("read the words a person asked about: %w", err)
 	}
 	defer rows.Close()
 	words = []ReaderWord{}
 	for rows.Next() {
 		var word ReaderWord
 		if err := rows.Scan(&word.Word, &word.Times, &word.Last, &total); err != nil {
-			return nil, 0, fmt.Errorf("read the words %s asked about: %w", login, err)
+			return nil, 0, fmt.Errorf("read the words a person asked about: %w", err)
 		}
 		words = append(words, word)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("read the words %s asked about: %w", login, err)
+		return nil, 0, fmt.Errorf("read the words a person asked about: %w", err)
 	}
 	if len(words) == 0 && offset > 0 {
 		if err := s.Pool.QueryRow(ctx, readerWordsAsked+`
 			select count(distinct lower(word))::int from asked`, login, until).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("count the words %s asked about: %w", login, err)
+			return nil, 0, fmt.Errorf("count the words a person asked about: %w", err)
 		}
 	}
 	return words, total, nil

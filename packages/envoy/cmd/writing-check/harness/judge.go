@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -165,33 +166,93 @@ var judgementSpecs = map[Judgement]judgementSpec{
 		checks: []string{"restates_words", "points_elsewhere", "other_words", "contradicts_record"}},
 }
 
-// property is one property of an object schema.
-type property struct {
-	name   string
-	schema string
+// A reply's schema is a Go value that encoding/json writes: typeSchema, arraySchema and
+// objectSchema. Its bytes feed the digests of the calls (requestDigest), so each schema writes the
+// same bytes on every run.
+
+// typeSchema is the JSON schema of a value of one type, and of one of Enum where it has any.
+type typeSchema struct {
+	Type string   `json:"type"`
+	Enum []string `json:"enum,omitempty"`
 }
 
-const (
-	stringSchema  = `{"type":"string"}`
-	booleanSchema = `{"type":"boolean"}`
+var (
+	stringSchema  = typeSchema{Type: "string"}
+	booleanSchema = typeSchema{Type: "boolean"}
 )
 
-// object is the JSON schema of an object with properties, in their order, all required, and no
-// other property.
-func object(props ...property) string {
-	var b strings.Builder
-	b.WriteString(`{"type":"object","properties":{`)
-	names := make([]string, len(props))
-	for i, p := range props {
+// enum is the JSON schema of a string that is one of values.
+func enum(values ...string) typeSchema { return typeSchema{Type: "string", Enum: values} }
+
+// arraySchema is the JSON schema of an array of Items.
+type arraySchema struct {
+	Type  string `json:"type"`
+	Items any    `json:"items"`
+}
+
+// arrayOf is the JSON schema of an array of items.
+func arrayOf(items any) arraySchema { return arraySchema{Type: "array", Items: items} }
+
+// property is one property of an object schema: its name and its schema.
+type property struct {
+	name   string
+	schema any
+}
+
+// properties are the properties of an object schema, which encoding/json writes as one object
+// with the properties in their order.
+type properties []property
+
+func (ps properties) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, p := range ps {
+		name, err := json.Marshal(p.name)
+		if err != nil {
+			return nil, err
+		}
+		schema, err := json.Marshal(p.schema)
+		if err != nil {
+			return nil, err
+		}
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		names[i] = p.name
-		fmt.Fprintf(&b, "%q:%s", p.name, p.schema)
+		b.Write(name)
+		b.WriteByte(':')
+		b.Write(schema)
 	}
-	required, _ := json.Marshal(names)
-	fmt.Fprintf(&b, `},"required":%s,"additionalProperties":false}`, required)
-	return b.String()
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+// objectSchema is the JSON schema of an object with Properties, of which Required must be
+// present, and no other property.
+type objectSchema struct {
+	Type                 string     `json:"type"`
+	Properties           properties `json:"properties"`
+	Required             []string   `json:"required"`
+	AdditionalProperties bool       `json:"additionalProperties"`
+}
+
+// object is the JSON schema of an object with props, in their order, all required, and no other
+// property.
+func object(props ...property) objectSchema {
+	names := make([]string, len(props))
+	for i, p := range props {
+		names[i] = p.name
+	}
+	return objectSchema{Type: "object", Properties: props, Required: names}
+}
+
+// schemaJSON is schema as JSON. A schema holds only strings, booleans and other schemas, which
+// always encode.
+func schemaJSON(schema any) json.RawMessage {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return data
 }
 
 // The provider writes an object's fields in the order of their names, whatever order a schema
@@ -220,7 +281,7 @@ var startFields = []string{"quote", "found"}
 
 // schema is the JSON schema of the judgement's reply.
 func (s judgementSpec) schema() json.RawMessage {
-	props := func(fields []string, schema func(string) string) []property {
+	props := func(fields []string, schema func(string) typeSchema) []property {
 		out := make([]property, len(fields))
 		for i, f := range fields {
 			out[i] = property{numbered(i, f), schema(f)}
@@ -229,22 +290,22 @@ func (s judgementSpec) schema() json.RawMessage {
 	}
 	switch {
 	case s.list != "":
-		item := props(s.itemFields(), func(f string) string {
+		item := props(s.itemFields(), func(f string) typeSchema {
 			if slices.Contains(s.itemChecks, f) {
 				return booleanSchema
 			}
 			return stringSchema
 		})
-		return json.RawMessage(object(property{s.list, `{"type":"array","items":` + object(item...) + `}`}))
+		return schemaJSON(object(property{s.list, arrayOf(object(item...))}))
 	case s.verdict != "":
-		return json.RawMessage(object(props(s.verdictFields(), func(f string) string {
+		return schemaJSON(object(props(s.verdictFields(), func(f string) typeSchema {
 			if slices.Contains(s.checks, f) || f == s.verdict {
 				return booleanSchema
 			}
 			return stringSchema
 		})...))
 	}
-	return json.RawMessage(object(props(startFields, func(f string) string {
+	return schemaJSON(object(props(startFields, func(f string) typeSchema {
 		if f == "found" {
 			return booleanSchema
 		}

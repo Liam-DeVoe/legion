@@ -166,7 +166,7 @@ func (s *server) writingRulesText(ctx context.Context, route, reader string) (st
 			}
 			words, err := s.readerWords(ctx, reader)
 			if err != nil {
-				return "", fmt.Errorf("read the words %s asked about: %w", reader, err)
+				return "", fmt.Errorf("the written rules of a write on %s: %w", route, err)
 			}
 			if len(words) == 0 {
 				continue
