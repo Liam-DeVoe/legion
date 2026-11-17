@@ -245,10 +245,11 @@ func fencedBlockHolds(text, mark string) bool {
 
 // The reader takes the way back an operator reads under its heading, and nothing else in its
 // place. The block in its section is taken, past a shell comment of another block there, which
-// opens no section. The same block deleted, moved to the next section, or given a copy before
-// its section or beside it is refused, as is a guide without that heading or with it twice. Each
-// case is a guide as docs/kubernetes.md writes one: the section, the one before it and the one
-// after it.
+// opens no section, and past a heading below the section's level, which stands inside it. The
+// same block deleted, moved to the next section, moved past a heading above the section's level,
+// or given a copy before its section or beside it is refused, as is a guide without that heading
+// or with it twice. Each case is a guide as docs/kubernetes.md writes one: the section, the one
+// before it and the one after it.
 func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	const (
 		heading = "Rolling back the release that rates each plan"
@@ -257,6 +258,8 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 		fenced  = "```sql\n" + block + "\n```\n"
 		before  = "#### Rolling back the release that records each step\n\nRun its block first.\n\n"
 		opening = "#### " + heading + "\n\nRun this with the daemon stopped:\n\n"
+		deeper  = "##### The rows of the two kinds\n\nThey are the plans and the ratings.\n\n"
+		above   = "### Rolling back a release\n\nA rollback of any release takes these steps.\n\n"
 		after   = "\nThe header carries this same block.\n\n" +
 			"#### Rolling back the release whose update round ends at its bound\n\nRun its block too.\n"
 		shell = "```sh\n# Stop the daemon first.\nkubectl -n legion scale deployment/legion --replicas=0\n```\n\n"
@@ -264,6 +267,9 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	for _, guide := range []struct{ shape, text, refusal string }{
 		{"the block in its section", before + opening + fenced + after, ""},
 		{"the block past a shell comment of another block", before + opening + shell + fenced + after, ""},
+		{"the block past a heading below the section's level", before + opening + deeper + fenced + after, ""},
+		{"the block past a heading above the section's level", before + opening + above + fenced + after,
+			"outside the section"},
 		{"the block deleted", before + opening + after, "no fenced block"},
 		{"the block moved to the next section", before + opening + after + "\n" + fenced, "outside the section"},
 		{"a copy of the block before its section", fenced + "\n" + before + opening + fenced + after,
