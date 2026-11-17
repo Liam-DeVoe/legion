@@ -82,6 +82,27 @@ const mergedByGitHub: StepRecord = {
   report: null,
 };
 
+/** The docs task's first run, which started before any run of task default. */
+const docsDraft: StepRecord = {
+  id: "4b6d8f0a-1c3e-5a7b-9d2f-6e8a0c2e4a63",
+  issue: "LEG-1",
+  task: "docs",
+  step: 1,
+  kind: "step",
+  role: "implementer",
+  type: "implementation",
+  agent: "legion-leg-leg-1-implementer",
+  session: "ses-docs-implementer",
+  model: "anthropic/claude-opus-5",
+  generation: 1,
+  attempt: 1,
+  started_at: "2026-11-16T08:00:00Z",
+  ended_at: "2026-11-16T08:30:00Z",
+  result: "passed",
+  returned_to: null,
+  report: null,
+};
+
 /** A second run of a review of another task, sent back to step 1 of that task. */
 const docsReview: StepRecord = {
   id: "1e5a3c7d-2b6f-5e9a-8c1d-3f5a7b9c1d25",
@@ -191,12 +212,14 @@ describe("dispatch steps", () => {
     );
   });
 
+  // Dispatch lists the tasks in the order each first ran, which is neither the order of their
+  // names nor the order of all runs' starts: docs first ran before default, and ran again after.
   test("each task's runs print together, in the order the read lists the tasks", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "default", steps: [implementer, tester] },
-        { task: "docs", steps: [docsReview] },
+        { task: "docs", steps: [docsDraft, docsReview] },
+        { task: "default", steps: [implementer] },
       ],
     };
 
@@ -205,11 +228,12 @@ describe("dispatch steps", () => {
     expect(result.text).toBe(
       [
         "LEG-1: 3 steps in 2 tasks",
-        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
-        "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+        "docs 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T08:00:00Z 2026-11-16T08:30:00Z passed",
         "docs 2 step reviewer review attempt 2 legion-leg-leg-1-reviewer openai/gpt-6.1-sol 2026-11-16T11:00:00Z 2026-11-16T11:20:00Z failed",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
       ].join("\n")
     );
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
   // The text leaves out where a run sent its task back and the report it named; the details hold
