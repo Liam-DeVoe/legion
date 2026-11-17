@@ -108,7 +108,8 @@ func (r Record) input(x extra) string {
 }
 
 // textPart is the record's text in its tag: an ask's question and its options, as JSON so their
-// labels read exactly, with no id (optionWords); an issue's title and spec; any other kind's body.
+// labels read exactly, with no id (optionWords) and with <, > and & as themselves; an issue's
+// title and spec; any other kind's body.
 func textPart(text Text) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<text kind=%s", strconv.Quote(string(text.Kind)))
@@ -118,8 +119,11 @@ func textPart(text Text) string {
 		if text.Multiple {
 			choice = "multiple"
 		}
-		options, _ := json.Marshal(optionWords(text.Options))
-		fmt.Fprintf(&b, " choice=%s>\n<question>\n%s\n</question>\n<options>\n%s\n</options>\n", strconv.Quote(choice), text.Body, options)
+		fmt.Fprintf(&b, " choice=%s>\n<question>\n%s\n</question>\n<options>\n", strconv.Quote(choice), text.Body)
+		options := json.NewEncoder(&b)
+		options.SetEscapeHTML(false)
+		_ = options.Encode(optionWords(text.Options)) // Encode ends the JSON with a newline.
+		b.WriteString("</options>\n")
 	case text.Kind == KindIssue:
 		fmt.Fprintf(&b, ">\n<title>\n%s\n</title>\n<spec>\n%s\n</spec>\n", text.Title, text.Body)
 	default:

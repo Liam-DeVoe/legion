@@ -2,6 +2,7 @@ package reviewer
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -71,9 +72,13 @@ func Review(ctx context.Context, m Model, rules []RuleSet, record Record) (Revie
 	if err != nil {
 		return reviewed, err
 	}
-	text := quoteForm(readerFields(record.Text))
+	form := quoteForm
+	if record.Text.Kind.asks() {
+		form = askQuoteForm
+	}
+	text := form(readerFields(record.Text))
 	for _, finding := range reply.Findings {
-		if quote := quoteForm(finding.Quote); quote == "" || !strings.Contains(text, quote) {
+		if quote := form(finding.Quote); quote == "" || !strings.Contains(text, quote) {
 			reviewed.Dropped = append(reviewed.Dropped, DroppedFinding{RuleSet: finding.RuleSet, Quote: finding.Quote})
 			continue
 		}
@@ -96,6 +101,22 @@ var quoteMarks = strings.NewReplacer("*", "", "`", "", "\u2019", "'", "\u2018", 
 // white space one space.
 func quoteForm(text string) string {
 	return strings.Join(strings.Fields(quoteMarks.Replace(strings.ToLower(text))), " ")
+}
+
+// optionSyntax is the syntax that the model's input (textPart's JSON) or an ask block's line puts
+// around and between an option's label and description: the keys "label" and "description" with
+// their colon, quote marks with the backslash that escapes one, colons, commas, braces and
+// brackets.
+var optionSyntax = regexp.MustCompile(`"(?:label|description)"\s*:|\\?"|[:,{}\[\]]`)
+
+// askQuoteForm is an ask's text, or a quote of it, as a finding's quote is looked up in it:
+// quoteForm, with each match of optionSyntax one space. The model reads an option as JSON and may
+// quote it so, `"Send it","description":"I post the draft"`, or as an ask block writes it,
+// `Send it: I post the draft`. Both become `send it i post the draft`. readerFields puts each
+// option's label and its description side by side, so both quotes are in the ask. A quote that
+// holds a word the ask does not hold is not.
+func askQuoteForm(text string) string {
+	return strings.Join(strings.Fields(optionSyntax.ReplaceAllString(quoteForm(text), " ")), " ")
 }
 
 // ofKind is a reply's text as a text of kind: its kind set, and only the fields the kind has.

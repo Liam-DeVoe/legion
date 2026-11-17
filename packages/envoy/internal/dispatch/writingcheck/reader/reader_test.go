@@ -37,7 +37,9 @@ type stub struct {
 type recorded struct {
 	path, query, auth string
 	body              map[string]any
-	user              sentInput
+	// userText is the user message as the model reads it, and user the same text decoded.
+	userText string
+	user     sentInput
 }
 
 // sentInput is the user message a call carried, decoded.
@@ -60,7 +62,8 @@ func (s *stub) serve(w http.ResponseWriter, r *http.Request) {
 	if messages, ok := rec.body["messages"].([]any); ok {
 		for _, m := range messages {
 			if msg, _ := m.(map[string]any); msg["role"] == "user" {
-				_ = json.Unmarshal([]byte(contentText(msg["content"])), &rec.user)
+				rec.userText = contentText(msg["content"])
+				_ = json.Unmarshal([]byte(rec.userText), &rec.user)
 			}
 		}
 	}
@@ -203,6 +206,29 @@ func TestAGoodAnswerIsOneVerdictPerCandidate(t *testing.T) {
 	system := contentText(req.body["messages"].([]any)[0].(map[string]any)["content"])
 	if system != Prompt || !strings.Contains(Prompt, "data") {
 		t.Error("the system message is not the embedded prompt")
+	}
+}
+
+// A candidate and the sentences around it reach the model as written: the user message's JSON
+// holds <, > and & as themselves, not as escapes.
+func TestTheUserMessageHoldsTheTextAsWritten(t *testing.T) {
+	t.Parallel()
+	const marks = "a < b && c > d"
+	const first, second = "The check holds when " + marks + ".", "This names the problem of " + marks + "."
+	s := newStub(t, func(sent sentInput) (int, string, string, time.Duration) {
+		return http.StatusOK, bundleModel, verdictsFor(sent, false), 0
+	})
+	if _, outcome := newReader(s, Config{}).Read(context.Background(), cands(t, first+" "+second)); outcome != OutcomeRead {
+		t.Fatalf("outcome %q, want a read", outcome)
+	}
+	got := s.requests()
+	if len(got) != 1 {
+		t.Fatalf("%d requests, want one", len(got))
+	}
+	want := `{"candidates":[{"id":"c1","field":"description","text":"` + first + `","before":[],"after":["` + second + `"]},` +
+		`{"id":"c2","field":"description","text":"` + second + `","before":["` + first + `"],"after":[]}]}`
+	if got[0].userText != want {
+		t.Errorf("user message %s, want %s", got[0].userText, want)
 	}
 }
 

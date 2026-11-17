@@ -213,6 +213,87 @@ func TestAFindingWhoseQuoteIsNotInTheTextIsDropped(t *testing.T) {
 	}
 }
 
+// An ask's option may be quoted as the model reads it, in JSON, or as an ask block writes it,
+// "Label: Description", and both quotes are the ask's. A quote that puts an option's label with
+// words that no option holds is dropped, and a quote of the question is kept as before. A
+// comment's quote is looked up as before: the JSON form of words the comment holds is not in it.
+func TestAQuoteOfAnAsksOptionIsLookedUpInTheFormsTheModelReadsAndWrites(t *testing.T) {
+	quoting := func(quotes ...string) []Finding {
+		findings := make([]Finding, len(quotes))
+		for i, quote := range quotes {
+			findings[i] = Finding{RuleSet: RuleNoslop, Quote: quote, Why: "It names no fact.", Fix: "Say the fact."}
+		}
+		return findings
+	}
+	review := func(record Record, findings []Finding) Reviewed {
+		t.Helper()
+		stand := modeltest.New(t, modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"findings": findings, "rewrite": nil})}})
+		reviewed, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), []RuleSet{RuleNoslop}, record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reviewed
+	}
+	dropped := func(findings []Finding) []DroppedFinding {
+		out := make([]DroppedFinding, len(findings))
+		for i, finding := range findings {
+			out[i] = DroppedFinding{RuleSet: finding.RuleSet, Quote: finding.Quote}
+		}
+		return out
+	}
+
+	kept := quoting(
+		`"Ship","description":"Release it today"`,
+		`{"label":"Hold","description":"Wait for the store"}`,
+		`"Ship","description":"Release it today"},{"label":"Hold"`,
+		"Ship: Release it today",
+		"we  **spin up**\nthe node.",
+	)
+	mixed := quoting(
+		`"Ship","description":"Release it next week"`,
+		"Ship: Release it next week",
+		"Ship: Wait for the store",
+	)
+	reviewed := review(askRecord(), append(slices.Clone(kept), mixed...))
+	if !reflect.DeepEqual(reviewed.Findings, kept) || !slices.Equal(reviewed.Dropped, dropped(mixed)) {
+		t.Errorf("an ask's findings %+v, dropped %+v; want the option's and the question's quotes kept and the mixed ones dropped", reviewed.Findings, reviewed.Dropped)
+	}
+
+	comment := Record{Text: Text{Kind: KindComment, Body: "We keep two options.\nShip: Release it today"}}
+	ownWords, jsonForm := quoting("Ship: Release it today"), quoting(`"Ship","description":"Release it today"`)
+	reviewed = review(comment, append(slices.Clone(ownWords), jsonForm...))
+	if !reflect.DeepEqual(reviewed.Findings, ownWords) || !slices.Equal(reviewed.Dropped, dropped(jsonForm)) {
+		t.Errorf("a comment's findings %+v, dropped %+v; want its own words kept and the JSON form dropped", reviewed.Findings, reviewed.Dropped)
+	}
+}
+
+// An ask reaches the model with <, > and & as written, in its question and in its options' JSON,
+// so a finding that quotes them as the model read them is kept.
+func TestAnAsksMarksReachTheModelAsWritten(t *testing.T) {
+	const marks = "a < b && c > d"
+	record := askRecord()
+	record.Text.Body = "Finding from tester\nWe ship once " + marks + "."
+	record.Text.Options[0].Description = "Release it once " + marks
+	findings := []Finding{
+		{RuleSet: RuleNoslop, Quote: "We ship once " + marks + ".", Why: "It names no fact.", Fix: "Say the fact."},
+		{RuleSet: RuleNoslop, Quote: `"Ship","description":"Release it once ` + marks + `"`, Why: "It names no fact.", Fix: "Say the fact."},
+	}
+	stand := modeltest.New(t, modeltest.Rule{Contains: reviewMarker, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"findings": findings, "rewrite": nil})}})
+	reviewed, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), []RuleSet{RuleNoslop}, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestsHolding(stand, reviewMarker)[0].Text
+	for _, want := range []string{"We ship once " + marks + ".", `{"label":"Ship","description":"Release it once ` + marks + `"}`} {
+		if !strings.Contains(request, want) {
+			t.Errorf("the review's request does not hold %q:\n%s", want, request)
+		}
+	}
+	if !reflect.DeepEqual(reviewed.Findings, findings) || len(reviewed.Dropped) != 0 {
+		t.Errorf("findings %+v, dropped %+v; want both findings kept", reviewed.Findings, reviewed.Dropped)
+	}
+}
+
 // A model that fails gives a *ModelError the server posts the text as written on, with the call
 // it made.
 func TestAModelFailureIsAModelError(t *testing.T) {

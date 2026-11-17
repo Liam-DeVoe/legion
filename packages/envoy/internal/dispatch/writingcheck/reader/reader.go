@@ -7,6 +7,7 @@
 package reader
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -224,12 +225,17 @@ func (r *Reader) Read(ctx context.Context, cands []candidates.Candidate) ([]Verd
 		sent[i] = input{ID: c.ID, Field: c.Sentence.Field, Text: c.Sentence.Text,
 			Before: nonNil(c.Before), After: nonNil(c.After)}
 	}
-	user, err := json.Marshal(struct {
+	// The candidates go as JSON with <, > and & as themselves, so the model reads the text as
+	// written. Encode ends the JSON with a newline, which the message leaves out.
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(struct {
 		Candidates []input `json:"candidates"`
-	}{sent})
-	if err != nil {
+	}{sent}); err != nil {
 		return nil, OutcomeError
 	}
+	user := bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))
 	if !r.budget.AllowN(time.Now(), r.estimate(len(user))) {
 		return nil, OutcomeBudget
 	}
