@@ -18,6 +18,7 @@ const (
 	KindName           Kind = "name"            // a component's or interface's name; reference rules only
 	KindPurpose        Kind = "purpose"
 	KindDefinition     Kind = "definition"
+	KindTerm           Kind = "term" // the name of a term; reference rules only
 	KindLine           Kind = "line" // a line under a heading Terms that is no term line; the rule term-line only
 )
 
@@ -42,11 +43,12 @@ type Text struct {
 type Term struct{ Name, Definition, Where string }
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
-// who signed in, the names of the system's components and interfaces, and the server's address.
+// who signed in, the names of the system's components and interfaces that a person approved, and
+// the server's address.
 type Context struct {
 	IsProjectKey func(key string) bool
 	PersonNames  []string // emails of signed-in people (people.email)
-	SystemNames  []string // component and interface names that are nouns of the system
+	SystemNames  []string // approved component and interface names, which are nouns of the system
 	ServerURL    string
 }
 
@@ -71,15 +73,18 @@ type Finding struct {
 // excerptRunes is how many characters of a text a finding carries.
 const excerptRunes = 160
 
-// Check judges each text of in, and each proposed definition as a text of Kind definition
-// named by its term, by the rules of R49, in the order of the texts.
+// Check judges each text of in, and each proposed term as two texts named by the term: its name,
+// of Kind term, and its definition, of Kind definition. It judges them by the rules of R49, in the
+// order of the texts.
 func Check(c Context, in Input) []Finding {
-	texts := make([]Text, 0, len(in.Texts)+len(in.Proposed))
+	texts := make([]Text, 0, len(in.Texts)+2*len(in.Proposed))
 	texts = append(texts, in.Texts...)
 	for _, term := range in.Proposed {
-		texts = append(texts, Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where})
+		texts = append(texts,
+			Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where},
+			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where})
 	}
-	people := personPieces(c, in)
+	people := peopleNames(c, in)
 	var findings []Finding
 	for _, text := range texts {
 		for _, broken := range breaks(c, people, text) {
