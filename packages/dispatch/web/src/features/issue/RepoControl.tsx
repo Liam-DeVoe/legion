@@ -98,6 +98,7 @@ export function RepoControl({
         }
       >
         <MultiSelect
+          chevron={false}
           disabled={disabled}
           emptyMessage={
             mappings.isPending ? "Loading repositories…" : "No repository matches that."

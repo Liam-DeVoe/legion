@@ -278,6 +278,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
+          chevron={false}
           emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
           error={people.isError ? "Could not load the people list." : null}
           label="Hand this question to"

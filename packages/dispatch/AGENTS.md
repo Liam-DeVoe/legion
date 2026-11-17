@@ -904,6 +904,8 @@ From 1280 px wide the Inbox page is a reading pane: the rows in a left column an
 
 Text that truncates inside a control that is a flex container goes in `components/TruncatedText.tsx`, and the control keeps `truncate` on itself. Below 1280 px every link that is not `.prose a` or `.dispatch-inline-link` (an inline link keeps its own line box instead) and every button is an inline-flex box with centred items (`styles.css`, unlayered, so it beats a `block` or `items-*` class on the control); `text-overflow` never applies to a flex container's own text, so the control alone clips mid-word with no ellipsis. The span is the flex item the ellipsis applies to, and where the control is a block the control's own `truncate` draws it. The span takes a `className` for its flex sizing (`min-w-0 flex-1`, a `max-w-[18ch]` cap) and an explicit `title` — it derives none of its own, so a host passes one only when it wants the pointer tooltip: a host that already carries its own `title` on the wrapping element, a host whose link already opens a `RefPreview` hover card through `referenceTriggerProps` (both kinds of Inbox row owner, and attachment lists and component work rows), or a host whose truncated text is a quoted excerpt rather than a name — restating it in a tooltip would only repeat text already visible in the turn above it (`ReplyQuote`, whose quote is a `MarkdownPreview` given no `title` for that reason) — passes none, since a native tooltip would either duplicate the wrapper's, draw over the preview card, or restate text already on screen. A link that is not a flex item also needs a width cap (`max-w-full`), since an inline-flex box is as wide as its whole text. A link or button whose content is several lines stacks them itself, `flex flex-col` with `self-stretch` on each line (an item's `align-self` wins over the container's centred `align-items`), since below 1280 px a `block` control lays its lines side by side. Every truncating link and control does this: the project Documents list, the Artifacts tab, both kinds of Inbox row owner, the architecture rows, attachment lists and component work rows, `GitHubLink` (a pull request's title and a non-GitHub address), a document's open-decision link, the issue header's `Message route` button, a Broadcasts row, an @ picker option, `MultiSelect`'s label-picker option row, `AskCard`'s author chip, `Chip`, and `ReplyQuote`. An Agents-page row's name button is deliberately none of them: its name wraps whole at every width (`features/agents/`, above), so it holds a plain `break-words` span rather than a `TruncatedText`, and its `title` repeats the name for a reader who wants it in one line. From `sm` a Documents row is a four-column grid; on a phone the name takes its own line and the kind, issue and time share the line under it.
 
+`components/MultiSelect.tsx`'s trigger is one of those controls whatever its host's classes: its text is a `TruncatedText` in a flex box of the list's own, beside a chevron (`DisclosureToggle`'s `ChevronIcon`, `aria-hidden`) that shows a sighted reader the trigger opens a list, as a `<select>`'s arrow did, so a long value ends in an ellipsis with the chevron whole at the trigger's end, a single pick's whole value is that text's `title`, and a host's own `truncate` on the trigger would have nothing left to do. A trigger whose children are a look of their own passes `chevron={false}` and draws them as they are: the badges of `features/issue/badge-select.ts` (`AskHandOn`, `AssigneeControl`, `RepoControl`) and a table header's funnel (`ColumnFilter`), whose text-filter twin is a `PanelTrigger` that draws no chevron either. The issue header's Priority to advance trigger is a fixed 224 px, the cap of the native select it replaced, so the Add and Cancel beside it keep their place across picks. `e2e/table-controls.e2e.ts`'s row that a long picked value ends in an ellipsis reads both at 1024x768.
+
 ## Margin threads
 
 Every margin — issue and standalone project document — owns anchored comment threads beside the
@@ -2824,12 +2826,12 @@ A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-
 and a restart close sets the attempt counter back to 0.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
-`e2e/playwright.config.ts`), 52 rows: three of `e2e/collab-cursor.e2e.ts`, seven of
+`e2e/playwright.config.ts`), 51 rows: three of `e2e/collab-cursor.e2e.ts`, seven of
 `e2e/deep-links.e2e.ts`, six of `e2e/download-names.e2e.ts`, one of
 `e2e/heavy-streamed-turn.e2e.ts`, six of `e2e/keyboard-agents-picker.e2e.ts`, five of
 `e2e/keyboard-session-pickers.e2e.ts`, two of `e2e/keyed-send.e2e.ts`, nine of
 `e2e/keyed-writes.e2e.ts`, one of `e2e/doc-reload-line.e2e.ts`, one of `e2e/live-socket.e2e.ts`,
-one of `e2e/mermaid.e2e.ts`, three of `e2e/offline-edits.e2e.ts` and seven of
+one of `e2e/mermaid.e2e.ts`, three of `e2e/offline-edits.e2e.ts` and six of
 `e2e/table-controls.e2e.ts`; the comment
 above the project names each engine behaviour and the rows that exercise it, and a comment above
 each tagged row names which. Every row of the live-socket spec runs in `chromium`, and its one-socket
@@ -2915,13 +2917,13 @@ The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, four row
 No Playwright hook asserts what a project's title `grep` selected, so that guard is a one-time manual check: rename one selected test in a scratch copy and confirm `bunx playwright test --config e2e/playwright.config.ts --project=webkit-iphone --list` drops it (the count falls by one, with no error), then restore it. Repeat it whenever the `grep` or the titles change.
 
 The `firefox` Playwright project runs the rows tagged `@firefox` (`firefoxTagged` in
-`e2e/playwright.config.ts`), 51 rows: two of `e2e/code-line-replace.e2e.ts`, seven of
+`e2e/playwright.config.ts`), 50 rows: two of `e2e/code-line-replace.e2e.ts`, seven of
 `e2e/deep-links.e2e.ts`, six of `e2e/download-names.e2e.ts`, one of
 `e2e/heavy-streamed-turn.e2e.ts`, five of `e2e/keyboard-agents-picker.e2e.ts`, five of
 `e2e/keyboard-session-pickers.e2e.ts`, two of `e2e/keyed-send.e2e.ts`, eight of
 `e2e/keyed-writes.e2e.ts`, one of `e2e/doc-reload-line.e2e.ts`, two of `e2e/live-socket.e2e.ts`
 (its one-socket row and its rotation row), one of `e2e/mermaid.e2e.ts`, three of
-`e2e/offline-edits.e2e.ts`, one of `e2e/picture-link-click.e2e.ts` and seven of
+`e2e/offline-edits.e2e.ts`, one of `e2e/picture-link-click.e2e.ts` and six of
 `e2e/table-controls.e2e.ts`. These are the rows `webkit` runs but `e2e/collab-cursor.e2e.ts`'s and
 the two `webkit` alone carries, with the live-socket rotation row, the row of
 `e2e/picture-link-click.e2e.ts` and the two of `e2e/code-line-replace.e2e.ts` added. Firefox's native editing puts text

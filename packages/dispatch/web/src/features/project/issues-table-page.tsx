@@ -366,7 +366,7 @@ export function IssueTableSelection({
         optionLabel={(key) => epicTitles.get(key)}
         options={epics.map((option) => option.key)}
         searchLabel="Search epics"
-        triggerClassName={`max-w-60 truncate rounded-lg border px-2 py-1 text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
+        triggerClassName={`max-w-60 rounded-lg border px-2 py-1 text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
         value={epic === "" ? undefined : epic}
       >
         {epic === "" ? "Move to epic…" : undefined}

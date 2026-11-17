@@ -16,6 +16,7 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
+import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
 
@@ -39,6 +40,14 @@ interface SharedProps {
   /** Trigger content. A multi-select's defaults to the label with the selection count
    *  (`Labels · 2`), a single pick's to the picked value's row text, else to the label. */
   readonly children?: ReactNode;
+  /** Whether the trigger ends in a chevron, as it does by default: the sign a sighted reader
+   *  reads that the trigger opens a list (`aria-haspopup` tells a screen reader alone), with
+   *  the trigger's text in front of it ending in an ellipsis where the trigger is too narrow for
+   *  it. A trigger whose children are a look of their own passes `false` and draws them as they
+   *  are: the tinted badge an ask card's hand-on and the issue header's Assignee and Repository
+   *  show (`badge-select.ts`), and a table header's funnel, whose text-filter twin is a
+   *  `PanelTrigger` that draws none either. */
+  readonly chevron?: boolean;
   readonly disabled?: boolean;
   /** Which control of the vocabulary this is, written into the trigger's `data-control`: a
    *  column filter is a multi-select under its own name, while a multi-select a page draws for
@@ -126,12 +135,15 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * returns the focus to the trigger. Its trigger is named for the list (`label`) whatever it
  * shows, and while a value is picked the trigger's text is its description, so a reader hears
  * the list and the value staged in it, as a `<select>` reads. While the list is open the trigger
- * names the panel holding it (`aria-controls`), the text box and the listbox both.
+ * names the panel holding it (`aria-controls`), the text box and the listbox both. The trigger
+ * ends in a chevron, as a `<select>` ends in its arrow, unless its host draws a look of its own
+ * (`chevron`).
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
     ariaDisabled = false,
     children,
+    chevron = true,
     control,
     disabled = false,
     emptyMessage,
@@ -276,6 +288,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
       active ? `${selectedCardBg} ${selectedCardBorder}` : ""
     }`;
+  // The picked value's row text, which a single pick's trigger shows unless its host passes
+  // words of its own.
+  const pickedLabel = single && selected[0] !== undefined ? labelOf(selected[0]) : undefined;
+  const triggerText = single
+    ? (children ?? pickedLabel ?? label)
+    : (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`));
 
   return (
     <>
@@ -297,12 +315,23 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         ref={triggerRef}
         type="button"
       >
-        {single ? (
-          <span id={pickedId}>
-            {children ?? (selected[0] === undefined ? label : labelOf(selected[0]))}
+        {chevron ? (
+          // The text and the chevron in a flex box of their own, whatever display the trigger
+          // gets: a block from its host's classes, or the flex box `styles.css` makes every
+          // button below 1280 px, whose own text ends in no ellipsis (`TruncatedText`). The text
+          // takes the room the chevron leaves and ends in an ellipsis where that is too little
+          // (a single pick's whole value is its `title`), and the chevron stays whole at the
+          // trigger's end, at the right edge of a trigger as wide as its box.
+          <span className="flex min-w-0 grow items-center gap-1" id={single ? pickedId : undefined}>
+            <TruncatedText className="min-w-0 grow" title={pickedLabel}>
+              {triggerText}
+            </TruncatedText>
+            <ChevronIcon expanded={open} />
           </span>
+        ) : single ? (
+          <span id={pickedId}>{triggerText}</span>
         ) : (
-          (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`))
+          triggerText
         )}
       </button>
       {open ? (

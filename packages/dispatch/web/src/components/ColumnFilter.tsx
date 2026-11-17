@@ -90,6 +90,9 @@ export function ColumnFilter<TData>({
   const show = meta?.show ?? ((value: string) => value);
   return (
     <MultiSelect
+      // The funnel is the sign that it opens a panel, as it is on the text filter's `PanelTrigger`
+      // above: the header's one filter keeps one look, with no chevron after it.
+      chevron={false}
       control={CONTROL.columnFilter}
       emptyMessage="No matching value."
       label={name}

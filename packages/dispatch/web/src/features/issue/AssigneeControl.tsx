@@ -60,6 +60,7 @@ export function AssigneeControl({
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
+          chevron={false}
           disabled={disabled}
           emptyMessage={users.isPending ? "Loading people…" : "Nobody matches that."}
           error={users.isError ? "Could not load the people list." : null}
