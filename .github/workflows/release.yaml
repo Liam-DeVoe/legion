@@ -250,9 +250,10 @@ jobs:
       # published release and publishes a draft one), and otherwise bumps from the newest legion-v*
       # tag over the paths $LEGION_VERSION_ARGS and then $LEGION_GO_INPUTS name (the workflow's
       # `env:` says why each is there). .github/scripts/check-legion-version-inputs.sh fails a pull
-      # request whose run: here is not, character for character, the text
-      # .github/scripts/release_version_inputs.py names for it, or that sets either variable in an
-      # env: of the job or the step, since the block is where go's answer comes in.
+      # request whose job here is not pinned, up to and including this step, to what
+      # .github/scripts/release_version_inputs.py names: this run: and env: exactly, every step
+      # before it one the module lists, the workflow's env: variables on its list, and no job env:,
+      # container: or defaults beyond bash, since the block is where go's answer comes in.
       - name: Determine next version
         id: version
         run: |

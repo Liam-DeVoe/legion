@@ -511,9 +511,11 @@ jobs:
       # this commit (`tagged`, which refuses a tag that is not legion-envoy-vX.Y.Z) and otherwise
       # bumps from the newest legion-envoy-v* tag. $LEGION_ENVOY_VERSION_ARGS is expanded unquoted
       # on purpose: it is the argument list, split on its spaces. .github/scripts/check-legion-
-      # version-inputs.sh fails a pull request whose run: here, or release_publish's "Confirm the
-      # version", is not, character for character, the text .github/scripts/release_version_inputs.py
-      # names for it, or that sets the variable in an env: of its own.
+      # version-inputs.sh fails a pull request whose job here, or release_publish up to its
+      # "Confirm the version", is not pinned to what .github/scripts/release_version_inputs.py
+      # names: the step's run: and env: exactly, every step before it one the module lists (an edit
+      # of "Determine latest" or "Advance latest image" is an edit there too), the workflow's env:
+      # variables on its list, and no job env:, container: or defaults beyond bash.
       - name: Determine next version
         id: version
         run: |
@@ -671,6 +673,10 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     steps:
+      # Every step from here to "Confirm the version" is pinned, uses:, with:, run: and env:, in
+      # .github/scripts/release_version_inputs.py's STEPS_BEFORE_VERSION_STEPS: an edit of one is
+      # an edit there too, and a new step before the confirm step a new entry there.
+      #
       # For release-push.sh and the tag, with every tag. No credential is left in the checkout: the
       # deploy key reaches the "Tag release" step alone.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -841,7 +847,7 @@ jobs:
       # of that reasoning. The run started here is a workflow_dispatch, a concurrency group of
       # its own, which no newer push replaces while it waits.
       # $LEGION_ENVOY_VERSION_ARGS is expanded unquoted on purpose, as in release_build, and this
-      # run: is held to its text as release_build's step is.
+      # job is pinned up to this step as release_build is.
       - name: Confirm the version
         id: confirm
         if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'

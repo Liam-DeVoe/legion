@@ -2060,10 +2060,10 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_legion_version_inputs_test", "Test the legion version input check",
             f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
-        (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:65-67)"),
+        (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:90-92)"),
         (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
-        (RELEASE_PLAN, "the release listings and version steps the script reads, linked in beside it, and which "
-                       "check-legion-version-inputs.test.sh's canonical() builds each fixture's version steps from"),
+        (RELEASE_PLAN, "the release listings and pinned steps the script reads, linked in beside it, and which "
+                       "check-legion-version-inputs.test.sh's step() builds each fixture's jobs from"),
         (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:26 sources the stand-in go and the proxy recorder "
                               "procedure its last two cases read the script's go commands with"),
     ]),
