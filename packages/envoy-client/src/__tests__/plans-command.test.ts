@@ -281,7 +281,10 @@ describe("dispatch plans on the command line", () => {
     forgetKeyedLayerMemory();
   });
 
-  async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {
+  async function run(
+    argv: readonly string[],
+    session: Readonly<Record<string, string>> = {}
+  ): Promise<{ code: number; stdout: string }> {
     let stdout = "";
     const code = await runDispatchCli(
       argv,
@@ -292,6 +295,7 @@ describe("dispatch plans on the command line", () => {
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
         DISPATCH_TOKEN: "test-token",
         DISPATCH_STATE_DIR: stateDir,
+        ...session,
       },
       {
         stdout: (text) => {
@@ -305,28 +309,44 @@ describe("dispatch plans on the command line", () => {
     return { code, stdout };
   }
 
-  test("--project reads the project's finished issues and prints them, exit 0", async () => {
-    const { code, stdout } = await run(["plans", "--project", "INFRA"]);
+  // The command names a project and never an issue, so a session whose LEGION_ISSUE names an issue
+  // of another project reads the project the call names, and reads no issue: the fake answers
+  // only that project's read, and records every request it gets.
+  const sessions: readonly Readonly<Record<string, string>>[] = [{}, { LEGION_ISSUE: "CORE-8" }];
 
-    expect(code).toBe(0);
-    expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans"]);
-    expect(stdout).toContain(
-      [
-        "INFRA: 2 finished issues",
-        'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
-        "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (2 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
-      ].join("\n")
-    );
+  test("--project reads the project's finished issues and prints them, exit 0, whatever LEGION_ISSUE names", async () => {
+    for (const session of sessions) {
+      requests.length = 0;
+      const { code, stdout } = await run(["plans", "--project", "INFRA"], session);
+
+      expect(requests, JSON.stringify(session)).toEqual(["GET /api/v1/projects/INFRA/plans"]);
+      expect(code, JSON.stringify(session)).toBe(0);
+      expect(stdout, JSON.stringify(session)).toContain(
+        [
+          "INFRA: 2 finished issues",
+          'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
+          "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (2 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+        ].join("\n")
+      );
+    }
   });
 
-  // The command names a project and never an issue, so no owner is read from the checkout, and a
-  // key that is not one is refused once, naming its one problem, with nothing sent.
+  // A key that is not one is refused once, naming its one problem, with nothing sent, whatever
+  // issue LEGION_ISSUE names.
   test("a project that is not a key is refused once, sending nothing, exit 2", async () => {
-    const { code, stdout } = await run(["plans", "--project", "infra"]);
+    for (const session of sessions) {
+      requests.length = 0;
+      const { code, stdout } = await run(["plans", "--project", "infra"], session);
 
-    expect(code).toBe(2);
-    expect(requests).toEqual([]);
-    expect(stdout).toContain("dispatch plans was not called: 1 problem\n");
-    expect(stdout.split(`project is not a project key: ${PROJECT_KEY_RULE}`)).toHaveLength(2);
+      expect(requests, JSON.stringify(session)).toEqual([]);
+      expect(code, JSON.stringify(session)).toBe(2);
+      expect(stdout, JSON.stringify(session)).toContain(
+        "dispatch plans was not called: 1 problem\n"
+      );
+      expect(
+        stdout.split(`project is not a project key: ${PROJECT_KEY_RULE}`),
+        JSON.stringify(session)
+      ).toHaveLength(2);
+    }
   });
 });
