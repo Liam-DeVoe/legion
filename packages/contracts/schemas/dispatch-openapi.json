@@ -12024,6 +12024,55 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/writes/_test/fail-between/{writer}": {
+      "put": {
+        "description": "Test hook: arm one failure for the next write of that writer, injected between its store write and its projection write, so both roll back.",
+        "operationId": "putApiV1WritesTestFailBetweenByWriter",
+        "parameters": [
+          {
+            "name": "writer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestHookOK"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/writes/_test/slow": {
       "post": {
         "description": "Test hook: {method, path, delay_ms} delays every keyed run of that method and path by delay_ms after its key is claimed, on the handler's own context; 0 disarms.",

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -602,7 +603,7 @@ func (s *server) markInboxReadThreads(
 			events = append(events, inboxEvent{event: userAgentStateEvent(actor, session), marks: replies.marks[session]})
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, marked, events)
+	return s.commitInboxMarks(ctx, tx, failpoint.InboxRead, marked, events)
 }
 
 // inboxEvent is one event a write route over these rows appends, with the marks it causes: the
@@ -624,8 +625,10 @@ type inboxEvent struct {
 // statement under that event (graphstore.FromPerson), which takes no row lock but the person's
 // node, `do nothing` where the store holds it, and commits. It answers the count its caller
 // answers, 0 when nothing changed, and the events to publish once the transaction has committed.
+// writer names the route to the seam a test injects a failure through between the rows the route
+// wrote and the marks (failpoint.InboxRead, failpoint.InboxDismiss).
 func (s *server) commitInboxMarks(
-	ctx context.Context, tx pgx.Tx, changed int, events []inboxEvent,
+	ctx context.Context, tx pgx.Tx, writer string, changed int, events []inboxEvent,
 ) (int, []model.Event, error) {
 	if len(events) == 0 {
 		return 0, nil, tx.Rollback(ctx)
@@ -649,6 +652,9 @@ func (s *server) commitInboxMarks(
 			mark.SourceEvent = written.ID
 			marks = append(marks, mark)
 		}
+	}
+	if err := failpoint.Between(ctx, writer); err != nil {
+		return 0, nil, err
 	}
 	if err := graphstore.FromPerson(ctx, tx, appended[0].CreatedAt, marks); err != nil {
 		return 0, nil, fmt.Errorf("state the inbox's marks: %w", err)

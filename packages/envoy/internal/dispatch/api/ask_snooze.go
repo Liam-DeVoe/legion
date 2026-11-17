@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -184,6 +185,9 @@ func (s *server) announceAskSnooze(
 	event, err := s.askSnoozeEvent(r.Context(), tx, actor, askID)
 	if err == nil {
 		event, err = s.appendEvent(r.Context(), tx, event)
+	}
+	if err == nil {
+		err = failpoint.Between(r.Context(), failpoint.AskSnooze)
 	}
 	if err == nil {
 		mark.SourceEvent = event.ID

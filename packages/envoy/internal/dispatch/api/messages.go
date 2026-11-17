@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -480,6 +481,9 @@ func (s *server) createStoredMessage(
 		RepliesToBlock: deref(block.nodeID()), Target: deref(input.Target),
 	}, actor, nil)
 	if err != nil {
+		return model.Message{}, nil, err
+	}
+	if err := failpoint.Between(ctx, failpoint.Message); err != nil {
 		return model.Message{}, nil, err
 	}
 	nodeKind, nodeAddress := stored.rowNode()

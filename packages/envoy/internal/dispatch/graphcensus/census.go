@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -102,9 +103,34 @@ type projection struct {
 	// emptyAgrees says a kind that holds no row, no live node and no unmarked row is no refusal:
 	// one of the kinds of dispatch://INFRA-1150, a decision's, a reading's and an answered or
 	// followed ask's, which a deployment holds none of until an agent writes a decision or a
-	// person answers an ask. A kind of INFRA-1149's is one every store holds rows of, and checking
-	// none of it refuses.
+	// person answers an ask, and one of the kinds of dispatch://INFRA-1152 (census_inbox.go). A
+	// kind of INFRA-1149's is one every store holds rows of, and checking none of it refuses.
 	emptyAgrees bool
+	// populations, where it is set, is a select of two counts over the kind's marked rows, read
+	// with the kind's args: the rows a build of the release before this one wrote, which the
+	// backfill marked, and the rows this release's writers wrote (dispatch://INFRA-1152 R9, "it
+	// reports the two populations separately"). Each kind of census_inbox.go says how it tells
+	// the two apart. The census prints both, and refuses an empty one only where its caller says
+	// the corpus holds both (StoreReport.RequireBothReleases).
+	populations string
+	// narrowings are the classes of the kind's store side that no row projects by design, each
+	// counted and printed as a figure of its own and left out of both comparisons, so a narrowing
+	// is neither a silence nor a difference (R9: "it counts separately the tuples a projection
+	// deliberately does not hold").
+	narrowings []narrowing
+}
+
+// narrowing is one class of a kind's store side that its projection deliberately does not hold:
+// its name as the report prints it, what it is, and a `select count(*)` of it, read with the
+// kind's args.
+type narrowing struct {
+	name, note, count string
+}
+
+// NarrowingReport is one narrowing as the census read it.
+type NarrowingReport struct {
+	Name, Note string
+	Count      int64
 }
 
 // KindReport is one kind's census: how many rows and how many live nodes it read, and what the
@@ -131,6 +157,17 @@ type KindReport struct {
 	// EmptyAgrees says a kind that read no row, no live node and no unmarked row is no refusal
 	// (projection.emptyAgrees).
 	EmptyAgrees bool
+	// RowsDigest and StoreDigest digest each side as the census read it, every entry in order
+	// (sideDigest), so the report carries a figure of each side and not only a count of where the
+	// two part.
+	RowsDigest, StoreDigest string
+	// CountsPopulations says the kind reports its marked rows as two populations
+	// (projection.populations): EarlierRelease, the rows a build of the release before this one
+	// wrote, and ThisRelease, the rows this release's writers wrote.
+	CountsPopulations           bool
+	EarlierRelease, ThisRelease int64
+	// Narrowings are the kind's narrowings as read (projection.narrowings).
+	Narrowings []NarrowingReport
 }
 
 // Empty reports whether the kind read no row, no live node and no unmarked row, and so holds
@@ -171,6 +208,31 @@ type StoreReport struct {
 	Collisions []Collision
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
+	// RequireBothReleases says the corpus the census read holds rows a build of the release
+	// before this one wrote and rows this release wrote, so a kind that reports two populations
+	// refuses where either is empty (EmptyReleases). The caller sets it after the census
+	// (`census --store --both-releases`, which c-census passes): a database this release was
+	// first deployed on holds no row of the release before and never will, and a gate that
+	// refused it for that would refuse it for good.
+	RequireBothReleases bool
+}
+
+// EmptyReleases is every population of a kind that reports two (KindReport.CountsPopulations)
+// and holds no row, each written `<kind> (<release>)`, in the order the census read them.
+func (r *StoreReport) EmptyReleases() []string {
+	var empty []string
+	for _, kind := range r.Kinds {
+		if !kind.CountsPopulations {
+			continue
+		}
+		if kind.EarlierRelease == 0 {
+			empty = append(empty, kind.Kind+" (the release before)")
+		}
+		if kind.ThisRelease == 0 {
+			empty = append(empty, kind.Kind+" (this release)")
+		}
+	}
+	return empty
 }
 
 // StoreOnlyReport is one tuple kind no table projects: how many relations of it the store states
@@ -235,10 +297,12 @@ func (r *StoreReport) Unpopulated() []string {
 // far end of a kind no table projects resolves. A total over the kinds is no such proof: two
 // empty sides of one kind agree, and one kind's rows say nothing about another's, so a census
 // whose comments carried every row would pass while it proved nothing of the blocks, the roles or
-// the sessions. A kind of dispatch://INFRA-1150 is the one exception: no row, no node and no
-// unmarked row of it is a store nothing of that kind was written to yet, and is no refusal
-// (projection.emptyAgrees). A table of the earlier release whose rows no backfill has marked yet
-// is not that store: its kind checked no row while rows stand, and it refuses.
+// the sessions. A kind of dispatch://INFRA-1150 or dispatch://INFRA-1152 is the one exception:
+// no row, no node and no unmarked row of it is a store nothing of that kind was written to yet,
+// and is no refusal (projection.emptyAgrees). A table of the earlier release whose rows no
+// backfill has marked yet is not that store: its kind checked no row while rows stand, and it
+// refuses. Where the caller says the corpus holds both releases (RequireBothReleases), an empty
+// population of a kind that reports two refuses as well (EmptyReleases).
 //
 // A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
 // on just such a database (R4 reads before the first migration), so there the sizing alone
@@ -250,13 +314,17 @@ func (r *StoreReport) Refused() bool {
 	if len(r.Unpopulated()) > 0 || r.Differences() > 0 || r.ProjectFindings() > 0 || r.Unresolved() > 0 {
 		return true
 	}
+	if r.RequireBothReleases && len(r.EmptyReleases()) > 0 {
+		return true
+	}
 	return r.Sizing != nil && r.Sizing.Refused()
 }
 
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
 // with that table; the four after them are the people and the agents, which no table projects;
-// and the eight after those are dispatch://INFRA-1150's, the ties of decisions, readings and asks
-// that block_refs, document_blocks, asks and ask_followers project.
+// the eight after those are dispatch://INFRA-1150's, the ties of decisions, readings and asks
+// that block_refs, document_blocks, asks and ask_followers project; and the last are
+// dispatch://INFRA-1152's (inboxProjections, census_inbox.go).
 //
 // Each of the first three holds a row to the tuples that answer it as well as to its node row.
 // A row that names its node is answered from the tuples by graph_edges, refs.Edges and
@@ -273,7 +341,7 @@ func (r *StoreReport) Refused() bool {
 // a session named past it is no node either. Each row side leaves those addresses out and counts
 // them as a class of its own (pastBound), so the census reports no difference the writers made on
 // purpose, in both directions.
-var projections = []projection{{
+var projections = append([]projection{{
 	name:     graphstore.KindComment,
 	nodeKind: graphstore.KindComment,
 	table:    "comments",
@@ -384,8 +452,9 @@ var projections = []projection{{
 		" the owner of each session the server proved that wrote one, the same of every comment the erase took," +
 		" as the actor of the event that stored it names them, the person each ask's answer names and each" +
 		" answer the store took ever named, and who wrote each decision and reading and their proved owners," +
-		" beside the person of each inbox and read-state row this release marked and the person each open ask" +
-		" it stated waits on",
+		" beside the person of each inbox and read-state row this release marked, the person each open ask" +
+		" it stated waits on, and every person a delivered_to, a mentions, a participates_in or a mark of the" +
+		" store's log ever named, which the writer of that tuple made a node of",
 	names:    `select p.login from (` + commentPeople(censusAuthors) + `) p`,
 	authored: true,
 	rows: `
@@ -555,7 +624,7 @@ var projections = []projection{{
 		unmarked:    askUnmarked(`k.answer is not null`),
 		pastBound:   askPastBound,
 		emptyAgrees: true,
-	}}
+	}}, inboxProjections...)
 
 // addressBound is the store's address bound (graphstore.MaxAddressBytes) as a statement spells
 // it. It is written into the text rather than bound as a parameter because each side is spliced
@@ -930,6 +999,14 @@ var commentWriterPeople = `
 // and a delivered_to (inboxwrite.Record and inboxwrite.MoveWaiting, through graphstore.ToPerson),
 // within the store's bound, past which ToPerson states nothing. A row an older build wrote is
 // unmarked and names nobody here until the backfill marks it.
+//
+// Those rows name a person only while they stand as they were marked: an ask that closes, is
+// answered by someone else or moves to another person no longer waits on the first, whose node
+// its create made all the same, and a mark a later write ends leaves its person's node behind. A
+// node is history and never goes, so every person a delivered_to or a mentions ever reached, and
+// every person a participates_in or a mark ever came from, asserted or retracted since, is read
+// too, off the store's log (reachedHistory, through storedAuthors): the people ToPerson and
+// FromPerson make a node of, in the statement that states the tuple.
 func commentPeople(authors string) string {
 	return `
 	select distinct user_threads_login(author.login) as login
@@ -1034,6 +1111,8 @@ var storedAuthors = `
 	union all
 	` + answeredHistory + `
 	union all
+	` + reachedHistory + `
+	union all
 	select erased.kind, erased.id, erased.at from (` + erasedWriters + `) erased`
 
 // censusAuthors is storedAuthors as the census binds it into the names of the person and session
@@ -1054,6 +1133,26 @@ var answeredHistory = `select answered.kind, answered.id, answered.made_at from 
 			where t.to_kind = answered.kind and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = answered.id
 			  and t.kind in ('` + graphstore.TupleAnsweredBy + `', '` + graphstore.TupleDecidedBy + `')
 			  and t.from_kind = '` + graphstore.KindAsk + `')`
+
+// reachedHistory is every person the store's log names on the end graphstore.ToPerson or
+// graphstore.FromPerson keeps a person on, asserted or retracted since, as (kind, id, at)
+// (storedAuthors): the far end of a delivered_to or a mentions, read as answeredHistory reads its
+// people, through graph_tuples_inbound, and the near end of a participates_in or of a mark
+// (read_through, cleared, reply_read, dismissed, snoozed), through graph_tuples_current. Each of
+// those writers makes the person's node in the statement that states the tuple, so each such
+// person is a node the store must hold, whatever row named them when the tuple was written: the
+// person an ask waited on before it closed or moved, a person whose row a removal deleted.
+var reachedHistory = `select reached.kind, reached.id, reached.made_at from graph_nodes reached
+		where reached.kind = '` + graphstore.KindPerson + `' and (exists (
+			select 1 from graph_tuples t
+			where t.to_kind = reached.kind and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = reached.id
+			  and t.kind in ('` + graphstore.TupleDeliveredTo + `', '` + graphstore.TupleMentions + `')
+		) or exists (
+			select 1 from graph_tuples t
+			where t.from_kind = reached.kind and t.from_id = reached.id and t.to_kind <> '` + graphstore.KindValue + `'
+			  and t.kind in ('` + graphstore.TupleParticipatesIn + `', '` + graphstore.TupleReadThrough + `', '` +
+	graphstore.TupleCleared + `', '` + graphstore.TupleReplyRead + `', '` + graphstore.TupleDismissed + `', '` +
+	graphstore.TupleSnoozed + `')))`
 
 // writtenHistory is every person and session a block's decided_by or authored_by ever named,
 // asserted or retracted since, as (kind, id, at) (storedAuthors), read as answeredHistory reads
@@ -1313,9 +1412,20 @@ func readStoredAuthors(ctx context.Context, tx pgx.Tx) (*storedWriters, error) {
 	return authors, rows.Err()
 }
 
+// DefaultStoreCensusDeadline is how long a store census runs when its caller sets no deadline of
+// its own: its context's deadline and the statement_timeout of its snapshot (openCensusSnapshot).
+// `census --store` takes its own with --deadline, whose default this is. A census of a
+// deployment's store reads every projected table and the tuple log whole, several times, so the
+// bound is long; what it bounds is a census held up behind a lock or a plan gone wrong, which
+// would otherwise hold its snapshot, and the horizon of every vacuum behind it, for as long as it
+// ran.
+const DefaultStoreCensusDeadline = 30 * time.Minute
+
 // StoreCensus reads the node and tuple store against the tables that project it, in one
-// read-only repeatable-read transaction on a connection of its own. It writes nothing: the
-// transaction is read only, and every statement it runs is a select.
+// read-only repeatable-read transaction on a connection of its own, bounded by ctx's deadline or,
+// where ctx carries none, by DefaultStoreCensusDeadline, both on the context and as the
+// transaction's own statement_timeout (openCensusSnapshot). It writes nothing: the transaction is
+// read only, and every statement it runs is a select.
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
@@ -1340,16 +1450,21 @@ func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreRe
 // test passes one: it is how a test commits a write between two of the census's reads and asks
 // whether the reads after it still answer the snapshot the first one took. Nil runs nothing.
 func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind func(ctx context.Context, kind string) error) (*StoreReport, error) {
+	if _, bounded := ctx.Deadline(); !bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultStoreCensusDeadline)
+		defer cancel()
+	}
 	conn, err := connect(ctx, databaseURL, applicationName)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close(ctx)
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	defer conn.Close(context.WithoutCancel(ctx))
+	tx, err := openCensusSnapshot(ctx, conn)
 	if err != nil {
-		return nil, fmt.Errorf("open the census snapshot: %w", err)
+		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(context.WithoutCancel(ctx))
 	report := &StoreReport{}
 	// The store is looked up before any kind is read, so a database the store does not exist in
 	// answers that rather than failing at the first statement that names graph_nodes.
@@ -1390,6 +1505,33 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		report.Sizing = sized
 	}
 	return report, nil
+}
+
+// openCensusSnapshot opens the census's one snapshot on conn: a read-only repeatable-read
+// transaction whose statement_timeout is what is left of ctx's deadline, so no statement of the
+// census outlives the census's own bound, whether or not the client's cancellation reaches the
+// server (pgx cancels out of band, on a connection of its own). `set_config(..., true)` is `set
+// local`: the setting ends with the transaction. ctx must carry a deadline (storeCensus gives it
+// one), and one already past opens nothing.
+func openCensusSnapshot(ctx context.Context, conn *pgx.Conn) (pgx.Tx, error) {
+	deadline, bounded := ctx.Deadline()
+	if !bounded {
+		return nil, errors.New("open the census snapshot: the census runs under a deadline, and its context carries none")
+	}
+	left := time.Until(deadline)
+	if left <= 0 {
+		return nil, fmt.Errorf("open the census snapshot: its deadline passed %s ago", -left)
+	}
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("open the census snapshot: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `select set_config('statement_timeout', $1, true)`,
+		strconv.FormatInt(max(left.Milliseconds(), 1), 10)+"ms"); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, fmt.Errorf("bound the census snapshot's statements: %w", err)
+	}
+	return tx, nil
 }
 
 // storeOnlyRead counts, in one read of graph_tuples, every relation of the two kinds no table
@@ -1535,17 +1677,19 @@ func blockLinkKinds() []string {
 	})
 }
 
-// censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
-// each direction with the first reportedDifferences of them. args are what the kind's rows bind,
-// none but for a kind that binds its names (projection.names) or its link kinds
+// censusOfKind reads one kind: how many rows and live nodes there are, the differences in each
+// direction with the first reportedDifferences of them, the digest of each side (sideDigests),
+// and, for a kind that has them, its two populations and its narrowings. args are what the
+// kind's rows bind, none but for a kind that binds its names (projection.names) or its link kinds
 // (projection.linked).
 //
-// The four counts are four scalar subqueries of one statement rather than four round trips, so
-// a census of seven kinds costs seven reads here and not twenty-eight. Each subquery is the
+// The counts and the digests are scalar subqueries of one statement rather than a round trip
+// each, so a census of seven kinds costs seven reads here and not forty. Each subquery is the
 // statement it was on its own, so each is planned and streamed exactly as before.
 func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note,
-		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", EmptyAgrees: held.emptyAgrees}
+		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", EmptyAgrees: held.emptyAgrees,
+		CountsPopulations: held.populations != ""}
 	read := sidesOf(held)
 	// pastBound and unmarked are each a scalar `select count(*)`, so each is read directly rather
 	// than wrapped in a count of its own row; a kind without the class reads zero.
@@ -1556,15 +1700,31 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	if unmarked == "" {
 		unmarked = "select 0"
 	}
+	rowsDigest, storeDigest := sideDigests(held, read)
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows_read),
 		(select count(*) from (`+read.nodes+`) nodes_read),
 		(select count(*) from (`+read.rowsFound+`) rows_found),
 		(select count(*) from (`+read.nodesFound+`) nodes_found),
 		(`+pastBound+`),
-		(`+unmarked+`)`, args...,
-	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences, &kind.PastBound, &kind.Unmarked); err != nil {
+		(`+unmarked+`),
+		(`+rowsDigest+`),
+		(`+storeDigest+`)`, args...,
+	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences, &kind.PastBound, &kind.Unmarked,
+		&kind.RowsDigest, &kind.StoreDigest); err != nil {
 		return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
+	}
+	if held.populations != "" {
+		if err := tx.QueryRow(ctx, held.populations, args...).Scan(&kind.EarlierRelease, &kind.ThisRelease); err != nil {
+			return KindReport{}, fmt.Errorf("census of %s: read its two populations: %w", held.name, err)
+		}
+	}
+	for _, narrowed := range held.narrowings {
+		figure := NarrowingReport{Name: narrowed.name, Note: narrowed.note}
+		if err := tx.QueryRow(ctx, narrowed.count, args...).Scan(&figure.Count); err != nil {
+			return KindReport{}, fmt.Errorf("census of %s: count its narrowing %s: %w", held.name, narrowed.name, err)
+		}
+		kind.Narrowings = append(kind.Narrowings, figure)
 	}
 	var err error
 	if kind.RowDifferences > 0 {
@@ -1580,6 +1740,26 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 		}
 	}
 	return kind, nil
+}
+
+// sideDigests is the digest of each side of held as the census reads it (its rows, and read.nodes:
+// its live nodes or its tuples), each the md5 of every entry of that side in order, one line each:
+// a node's or a row's kind, address and digest, or a relation written from_kind:from_id kind ->
+// to_kind:to_id. Two sides that agree entry for entry digest alike, and the empty side digests as
+// md5 of the empty string.
+func sideDigests(held projection, read kindSides) (rows, store string) {
+	digest := func(entry, from string) string {
+		return `select md5(coalesce(string_agg(` + entry + `, E'\n' order by ` + entry + `), '')) from (` + from + `)`
+	}
+	if held.tuples != "" {
+		return digest(`coalesce(side.node_kind, '') || ':' || coalesce(side.node_address, '') || ' ' || side.kind || ' -> ' || side.to_kind || ':' || side.to_id`,
+				held.rows+`) side (row_label, node_kind, node_address, kind, to_kind, to_id`),
+			digest(`side.from_kind || ':' || side.from_id || ' ' || side.kind || ' -> ' || side.to_kind || ':' || side.to_id`,
+				read.nodes+`) side (from_kind, from_id, kind, to_kind, to_id`)
+	}
+	return digest(`coalesce(side.node_kind, '') || ':' || coalesce(side.node_address, '') || ' ' || coalesce(side.digest, '')`,
+			held.rows+`) side (row_label, node_kind, node_address, digest`),
+		digest(`side.kind || ':' || side.id || ' ' || side.digest`, read.nodes+`) side (kind, id, digest`)
 }
 
 // kindSides are the reads censusOfKind counts of one kind besides its rows: its node side, and the
@@ -1715,9 +1895,11 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 // the store-only kinds, the dangling-citation counter and the collision census, and the sizing
 // after them, ending with the verdict. A kind held triple by triple prints the store's tuple count
 // and its rows' triple count, and the differences as the rows no tuple states and the tuples no row
-// projects; a store-only kind prints the far ends it leaves out as left_out. It prints counts,
-// digests, kinds and the addresses of rows and nodes; no body, no actor and no value of an
-// attribute leaves the database.
+// projects; a store-only kind prints the far ends it leaves out as left_out. Each kind's line ends
+// with the digest of each side (sideDigests); a kind with two populations prints them on a line of
+// their own, and each narrowing of a kind on a line of its own. It prints counts, digests, kinds
+// and the addresses of rows and nodes; no body, no actor and no value of an attribute leaves the
+// database.
 func (r *StoreReport) Write(w io.Writer) { r.write(w, false) }
 
 // WriteVerbose is Write with one line for each citation the dangling-citation counter counted,
@@ -1732,20 +1914,28 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		side := "node"
 		if kind.Triples {
 			side = "tuple"
-			fmt.Fprintf(w, "census: store kind=%s tuples=%s rows=%s table=%s rows_without_a_tuple=%s tuples_without_a_row=%s addresses_past_bound=%s\n",
+			fmt.Fprintf(w, "census: store kind=%s tuples=%s rows=%s table=%s rows_without_a_tuple=%s tuples_without_a_row=%s addresses_past_bound=%s rows_digest=%s store_digest=%s\n",
 				kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
 				pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences),
-				pgmigrate.Thousands(kind.PastBound))
+				pgmigrate.Thousands(kind.PastBound), kind.RowsDigest, kind.StoreDigest)
 		} else {
-			fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s addresses_past_bound=%s\n",
+			fmt.Fprintf(w, "census: store kind=%s nodes=%s rows=%s table=%s rows_without_a_node=%s nodes_without_a_row=%s addresses_past_bound=%s rows_digest=%s store_digest=%s\n",
 				kind.Kind, pgmigrate.Thousands(kind.Nodes), pgmigrate.Thousands(kind.Rows), kind.Table,
 				pgmigrate.Thousands(kind.RowDifferences), pgmigrate.Thousands(kind.NodeDifferences),
-				pgmigrate.Thousands(kind.PastBound))
+				pgmigrate.Thousands(kind.PastBound), kind.RowsDigest, kind.StoreDigest)
 		}
 		fmt.Fprintf(w, "census: store kind=%s checks %s\n", kind.Kind, kind.Note)
 		if kind.CountsUnmarked {
-			fmt.Fprintf(w, "census: store kind=%s unmarked_rows=%s (rows a writer of the release before wrote, which name no node yet and graph_edges' old arms answer)\n",
+			fmt.Fprintf(w, "census: store kind=%s unmarked_rows=%s (rows a writer of the release before wrote, which carry no marker of this release yet and their old arm answers until the backfill marks them)\n",
 				kind.Kind, pgmigrate.Thousands(kind.Unmarked))
+		}
+		if kind.CountsPopulations {
+			fmt.Fprintf(w, "census: store kind=%s release_before_rows=%s this_release_rows=%s (the marked rows a build of the release before wrote, which the backfill marked, and those this release's writers wrote)\n",
+				kind.Kind, pgmigrate.Thousands(kind.EarlierRelease), pgmigrate.Thousands(kind.ThisRelease))
+		}
+		for _, figure := range kind.Narrowings {
+			fmt.Fprintf(w, "census: store kind=%s narrowing=%s count=%s (%s)\n",
+				kind.Kind, figure.Name, pgmigrate.Thousands(figure.Count), figure.Note)
 		}
 		switch {
 		case kind.EmptyAgrees && kind.Empty():
@@ -1793,6 +1983,9 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",
 			strings.Join(empty, ", "))
+	case r.RequireBothReleases && len(r.EmptyReleases()) > 0:
+		fmt.Fprintf(w, "census: store REFUSED (the corpus holds both releases, and %s hold(s) no row, so the census proves nothing of them)\n",
+			strings.Join(r.EmptyReleases(), ", "))
 	case r.Sizing != nil && r.Sizing.Refused():
 		fmt.Fprintf(w, "census: store ok, sizing REFUSED (%d reason(s))\n", len(r.Sizing.Refusals))
 	default:

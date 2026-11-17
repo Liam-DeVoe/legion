@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -834,6 +835,10 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := failpoint.Between(r.Context(), failpoint.ThreadRead); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

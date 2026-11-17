@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -790,7 +791,7 @@ func (s *server) dismissInboxThreads(
 			events = append(events, inboxEvent{event: userAgentStateEvent(actor, session), marks: agents.marks[session]})
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, changed, events)
+	return s.commitInboxMarks(ctx, tx, failpoint.InboxDismiss, changed, events)
 }
 
 // readInboxDismissThreads reads both kinds of row this request changes, each list sorted so the

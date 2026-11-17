@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -132,6 +133,13 @@ func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.
 			change.Held.Tuples = append(change.Held.Tuples, written.Tuples...)
 		} else if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return model.Ask{}, fmt.Errorf("state the answer of ask %s: %w", askID, err)
+		}
+	}
+	// The point a test injects a failure through between the answer's tuples and the asks row
+	// that projects them (failpoint.AskAnswer), for an answer this release's writer writes.
+	if change.TuplesStored && change.Answer != nil && !change.KeepAnswer {
+		if err := failpoint.Between(ctx, failpoint.AskAnswer); err != nil {
+			return model.Ask{}, err
 		}
 	}
 	answer, err := encodeAnswer(change.Answer)

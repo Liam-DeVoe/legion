@@ -3009,6 +3009,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/writes/_test/fail-between/{writer}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Test hook: arm one failure for the next write of that writer, injected between its store write and its projection write, so both roll back. */
+    put: operations["putApiV1WritesTestFailBetweenByWriter"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/writes/_test/slow": {
     parameters: {
       query?: never;
@@ -14089,6 +14106,40 @@ export interface operations {
           "application/json":
             | components["schemas"]["WhoamiUser"]
             | components["schemas"]["WhoamiAgent"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1WritesTestFailBetweenByWriter: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        writer: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TestHookOK"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

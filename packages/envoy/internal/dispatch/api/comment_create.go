@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -818,6 +819,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		Answers: deref(threadTarget.Answers), RepliesToBlock: deref(threadTarget.ReplyBlock.nodeID()),
 	})
 	if err := stored.writeNode(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := failpoint.Between(r.Context(), failpoint.Comment); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

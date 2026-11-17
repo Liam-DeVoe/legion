@@ -30,10 +30,29 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// projectedTables are the tables migration 20261109022248 made projections of the node and
-// tuple store: each row of them names the node it is the projection of, and that node is
-// written by the same transaction, before the row.
-var projectedTables = []string{"block_refs", "comments", "document_blocks"}
+// projectedTables are the tables whose every row names the node it is the projection of, written
+// by the same transaction, before the row: the three of migration 20261109022248, and the nine of
+// dispatch://INFRA-1152, whose node column pair its migrations add (20261116102800, 20261116114515
+// and 20261116140000). A row of one of them names a node the store holds, and the foreign key on
+// that pair is what refuses a row whose node was never written.
+//
+// The six read-state tables of R6 are projections of tuples and of no node, so they name no node
+// and carry no such key; what holds them to the store is their marker (markedProjections) and the
+// census, and the one exemption's marker test below.
+var projectedTables = []string{
+	"block_refs", "comments", "document_blocks",
+	"comment_deliveries", "message_deliveries", "messages",
+	"comment_blocks", "message_blocks", "ask_blocks",
+	"comment_block_refs", "message_block_refs", "ask_block_refs",
+}
+
+// tablesThisRunWrites are the projected tables the fixture's own requests write, which the rule
+// below is read over here. The other projected tables - a message's rows, the body blocks and
+// links of a message and an ask, and a comment's block links - are written by paths this fixture
+// does not drive (a direct message, a broadcast, an item whose body holds blocks); the source scan
+// above holds every writer of them to the store writer's path, and `census --store` holds their
+// rows to the store over a corpus that has them (graphcensus's inboxProjections).
+var tablesThisRunWrites = []string{"block_refs", "comments", "document_blocks", "comment_deliveries"}
 
 // TestNoProjectionRowIsWrittenWithoutTheStore holds every writer of a projected table to the
 // one rule the projections rest on: a row of one of them is written only by a transaction that
@@ -92,15 +111,17 @@ func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 
 // --- the source scan --------------------------------------------------------------------
 
-// rowWrite matches a statement that makes or unmakes a row of a projected table. A row's
-// existence is what its node states, so an insert and a delete are the writes this rule
-// covers; a statement that only changes columns of a row that is already there restates
-// nothing about which node the row projects.
-var rowWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|delete\s+from)\s+(block_refs|comments|document_blocks)\b`)
+// rowWrite matches a statement that makes or unmakes a row of a projected table, and
+// nodeColumnWrite an update that assigns a row's node address, the one column update that does
+// say which node a row projects. A row's existence is what its node states, so an insert and a
+// delete are the writes this rule covers; a statement that only changes other columns of a row
+// that is already there restates nothing about which node the row projects. Both read
+// projectedTables, so a table this branch adds to that list is scanned for with the first three.
+var projectedTablePattern = strings.Join(projectedTables, "|")
 
-// nodeColumnWrite matches an update that assigns a row's node address, the one column update
-// that does say which node a row projects.
-var nodeColumnWrite = regexp.MustCompile(`(?is)\bupdate\s+(block_refs|comments|document_blocks)\b[^;]*?\bset\b[^;]*?\bnode_(?:kind|address)\b`)
+var rowWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|delete\s+from)\s+(` + projectedTablePattern + `)\b`)
+
+var nodeColumnWrite = regexp.MustCompile(`(?is)\bupdate\s+(` + projectedTablePattern + `)\b[^;]*?\bset\b[^;]*?\bnode_(?:kind|address)\b`)
 
 // The store's own writers, as a call names them. Everything that writes graph_nodes and
 // graph_tuples goes through one of the six (internal/dispatch/graphstore). WriteUncaused is
@@ -113,6 +134,11 @@ var storeWriters = []string{
 	"func:graphstore.Write", "func:graphstore.WriteUncaused",
 	"func:graphstore.WriteArms", "func:graphstore.Authored", "func:graphstore.ToPerson",
 	"func:graphstore.FromPerson",
+	// The writers of dispatch://INFRA-1152's nodes: an attempt's node, which its row's foreign
+	// key names (graphstore.AttemptOpened, AttemptNode), and the facts a message's and a
+	// comment's write states beside the node it writes.
+	"func:graphstore.AttemptOpened", "func:graphstore.AttemptNode",
+	"func:graphstore.MessageFacts", "func:graphstore.CommentFacts",
 }
 
 // projectionWrite is one statement of the sources that writes a projected table.
@@ -724,6 +750,12 @@ func requireTheExemptionWritesUnderTheMarkerTest(t *testing.T, ctx context.Conte
 var deferredCountersOfAProjection = []string{
 	"comments constraint comments_watermark",
 	"comments trigger comments_watermark",
+	// The delivery list's own ETag counter, raised for every write of an attempt row
+	// (migration 20261106020619's shape), deferred for the reason the comments one is.
+	"comment_deliveries constraint comment_deliveries_watermark",
+	"comment_deliveries trigger comment_deliveries_watermark",
+	"message_deliveries constraint message_deliveries_watermark",
+	"message_deliveries trigger message_deliveries_watermark",
 }
 
 // requireNoDeferredCheckOnAProjection proves the foreign key is checked where the row is
@@ -990,9 +1022,11 @@ type projectionWriter struct {
 	left func(ctx context.Context) ([]string, error)
 }
 
-// projectionWriters are the two writers a transaction of this tree runs: the comment write,
-// which writes a comment's node and then its row, and the block index, which writes a version's
-// block nodes and then the document_blocks rows that project them.
+// projectionWriters are the writers a transaction of this tree runs: the comment write, which
+// writes a comment's node and then its row; the block index, which writes a version's block nodes
+// and then the document_blocks rows that project them; and the message write of
+// dispatch://INFRA-1152, which writes a message's node and the pointers it states and then the
+// messages row that names it (writeMessageNode, api's createStoredMessage).
 func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 	t.Helper()
 	commentID := mustUUID(t, run)
@@ -1050,7 +1084,41 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'block' and n.id = $1
 			`, blockAddress, run.specID)
 		},
-	}}
+	}, messageProjectionWriter(t, run)}
+}
+
+// messageProjectionWriter is the message write as this test drives it: writeMessageNode and the
+// insert that names the node, the two statements api's createStoredMessage runs in that order
+// inside one transaction.
+func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter {
+	t.Helper()
+	messageID := mustUUID(t, run)
+	return projectionWriter{
+		name:  "the message write",
+		table: "messages",
+		write: func(ctx context.Context, tx pgx.Tx) error {
+			stored, err := writeMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, IssueKey: run.issue},
+				model.Actor{Kind: "user", ID: "alice"}, nil)
+			if err != nil {
+				return err
+			}
+			nodeKind, nodeAddress := stored.rowNode()
+			if _, err := tx.Exec(ctx, `
+				insert into messages (id, issue_key, author, body, created_at, node_kind, node_address)
+				values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A watched message.', $3, $4, $5)
+			`, messageID, run.issue, stored.at, nodeKind, nodeAddress); err != nil {
+				return err
+			}
+			return graphstore.Caused(ctx, tx, stored.written, graphstore.NoEvent)
+		},
+		left: func(ctx context.Context) ([]string, error) {
+			return readStrings(ctx, run.database.Pool, `
+				select 'messages ' || row_to_json(m)::text from messages m where m.id::text = $1
+				union all
+				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'message' and n.id = $1
+			`, messageID)
+		},
+	}
 }
 
 func mustUUID(t *testing.T, run *projectionRun) string {
@@ -1240,6 +1308,10 @@ func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *
 			t.Fatalf("count the rows of %s: %v", table, err)
 		}
 		if written == 0 {
+			if !slices.Contains(tablesThisRunWrites, table) {
+				t.Logf("%s: the run writes none, so its rule is read over the tables below and by the census", table)
+				continue
+			}
 			t.Errorf("the run wrote no row of %s, so nothing of it was read", table)
 		}
 		t.Logf("%s: %d rows, each with its node and the facts its own transaction stated", table, written)

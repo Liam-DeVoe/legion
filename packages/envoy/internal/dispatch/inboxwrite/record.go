@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -257,6 +258,9 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 			if err != nil {
 				return err
 			}
+			if err := failpoint.Between(ctx, failpoint.AgentDismissalClear); err != nil {
+				return err
+			}
 			if len(cleared) > 0 {
 				if err := graphstore.FromPerson(ctx, tx, w.At, dismissalsEnded(cleared, thread, w, event)); err != nil {
 					return fmt.Errorf("retract the dismissals of message %s: %w", thread.id, err)
@@ -302,6 +306,9 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		}
 		if err := graphstore.ToPerson(ctx, tx, deliveries); err != nil {
 			return fmt.Errorf("deliver %s/%s to the participants of %s/%s: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
+		}
+		if err := failpoint.Between(ctx, failpoint.UserThreads); err != nil {
+			return err
 		}
 
 		// 4. Each row of T those people hold moves, and each of their dismissals of T ends.

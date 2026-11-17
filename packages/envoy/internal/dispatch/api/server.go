@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -505,6 +506,11 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// failBetween is the set of writers whose next write the fail-between test hook armed
+	// (PUT /api/v1/writes/_test/fail-between/{writer}), which every request this server serves
+	// carries (routeHandler), so each writer's failpoint.Between finds it; nil on a server without
+	// TestHooksEnabled, whose requests carry none.
+	failBetween *failpoint.Armed
 	// newIssueOverride is what the new-issue test hook last set
 	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
@@ -715,6 +721,9 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
 	}
+	if deps.TestHooksEnabled {
+		s.failBetween = failpoint.NewArmed()
+	}
 	routes := s.routes()
 	if undecidable := s.undecidableWrites(routes); len(undecidable) > 0 {
 		// A mutating row the project check cannot decide would serve a project-scoped caller a
@@ -856,6 +865,14 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// compressed for a caller that takes gzip and the line counts the bytes that went on the
 	// wire. The two websockets register mounts beside the table carry no compressed answer: the
 	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
+	if s.failBetween != nil {
+		// Every request carries the fail-between set, so the writer it reaches finds whether a
+		// test armed it (failpoint.Between); a server without test hooks carries none.
+		armed, inner := s.failBetween, handler
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))
+		}
+	}
 	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
 }
 

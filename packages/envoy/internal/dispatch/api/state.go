@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -555,6 +556,10 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		}
 		for index := range marks {
 			marks[index].SourceEvent = event.ID
+		}
+		if err := failpoint.Between(r.Context(), failpoint.AgentState); err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 		if err := graphstore.FromPerson(r.Context(), tx, event.CreatedAt, marks); err != nil {
 			s.writeHandlerError(w, err)

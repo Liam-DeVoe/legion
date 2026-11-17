@@ -215,6 +215,7 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/artifacts/_test/quiesce":                 scopeDeployment,
 	"POST /api/v1/settings/new-issue/_test":                scopeDeployment,
 	"POST /api/v1/writes/_test/slow":                       scopeDeployment,
+	"PUT /api/v1/writes/_test/fail-between/{writer}":       scopeDeployment,
 
 	// The row that writes nothing and reads no row: the markdown round trip, which answers what
 	// a document write would store for the text it is given.
@@ -874,6 +875,7 @@ func (s *server) routes() []apiRoute {
 			routeRow{http.MethodGet, "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}", authAny, "Test hook: wait until a live write parks at the armed pause.", s.awaitLiveWriteParked},
 			routeRow{http.MethodDelete, "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}", authAny, "Test hook: release the live write parked at the pause and disarm it.", s.releaseLiveWritePause},
 			routeRow{http.MethodPost, "/api/v1/writes/_test/slow", authAny, "Test hook: {method, path, delay_ms} delays every keyed run of that method and path by delay_ms after its key is claimed, on the handler's own context; 0 disarms.", s.armSlowWrite},
+			routeRow{http.MethodPut, "/api/v1/writes/_test/fail-between/{writer}", authAny, "Test hook: arm one failure for the next write of that writer, injected between its store write and its projection write, so both roll back.", s.armFailBetween},
 			routeRow{http.MethodPost, "/api/v1/settings/new-issue/_test", authAny, "Test hook: {label, session} replaces, on the process the call lands on, the new-issue label and session GET /api/v1/settings/new-issue answers from its environment; an empty value is none.", s.setNewIssueSettings},
 		)
 	}

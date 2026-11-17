@@ -65,7 +65,8 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/artifacts/_test/quiesce` closes every live document and waits for settlements;
   `POST /api/v1/artifacts/{id}/_test/outside-schema` writes the crafted malformed document e2e uses;
   `POST /api/v1/artifacts/{id}/_test/newer-content` appends an element no build knows, so the document holds newer content;
-  and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
+  `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed;
+  and `PUT /api/v1/writes/_test/fail-between/{writer}` arms one failure for the next write of that writer, between its store write and its projection write.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
   Leave unset in every real deployment.
 
@@ -2997,8 +2998,29 @@ The kinds are:
   `census: collisions issue=<KEY> block=<id>` names, once for each issue, each block id of an ask the restore owes that a block of the spec already holds, which the restore must change.
   Neither line refuses the census: the returning set counts before the restore by design, and a citation of the moved set is a finding the driver that watches it holds to zero, since a decisions document may hold a citation of a section an edit deleted before this release.
 
+- The kinds of dispatch://INFRA-1152, the projections the one inbox read uses, each held triple by triple but the two attempt tables, which are held digest against digest over the values and relations their `delivery_attempt` node states:
+  `message` against `messages` (its pointers, its placement, who it was addressed to, who wrote it and its broadcast);
+  `comment_pointers` against `comments.reply_to`, `ask_id`, `answers` and `replies_to_block`;
+  `comment_block`, `message_block` and `ask_block` against the item block tables, and `comment_block_ref`, `message_block_ref` and `ask_block_ref` against their link tables;
+  `comment_deliveries` and `message_deliveries`;
+  `published_destinations`, the session and role topics of each event's `events.published_destinations` against the `delivered_to` tuples the outbox appended under that event;
+  `user_threads`, each marked row as the person's `participates_in` the thread's root, their `read_through` at its read mark and their `dismissed` at `dismissed_at`;
+  `user_threads_version`, R6's equation on every marked row; and the five other read-state tables, each row as the mark it stands for at its own moment.
+  Each kind counts the rows a build of the release before this one wrote that the backfill has not marked yet as its unmarked class, which reads zero once the backfill ends, and reports its marked rows as two populations on a `census: store kind=<kind> release_before_rows=<n> this_release_rows=<n>` line: the rows that release wrote, which the backfill marked, and the rows this release's writers wrote.
+  A table whose rows record their creation splits the two at the moment this release's first migration was applied; the five read-state tables split them by whether the row's mark stands at the event sentinel, which is the backfill's; and `user_threads` by whether the person's `read_through` into the thread stands at or below `marked_seq`, which only the backfill states before it marks a row.
+  An empty population refuses only under `--both-releases`, which `c-census` passes and a deployment does not: a database this release was first deployed on holds no row of the release before and never will, and a gate that refused it for that would refuse it for good.
+  `user_threads_version` holds each marked row's `version` to `marked_version` plus the `delivered_to` tuples into that person from that thread above `marked_seq` that a reply caused, and its `replied_at` and `last_reply_id` to the newest of those same tuples or the reply the mark carried.
+  A reply is a write whose event is a `comment.created`, `comment.answered`, `message.created`, `message.answered` or `ask.answered`; an ask's create, a move of who it waits on and an edit's own delivery - the delivery to a person a new mention reaches - raise no version, as today's trigger raises none for any of them.
+  A delivery with no event (`graphstore.NoEvent`, the backfill's and the seed's) is read by its near end and its moment: one from a comment or a message is a reply's, since only a reply delivers from either, and one from an ask is an answer's where that ask states an `answered_at` at the tuple's own moment.
+  What a projection does not hold by design is a figure of its own on a `census: store kind=<kind> narrowing=<name> count=<n>` line and never a difference or a silence:
+  for `user_threads`, participation in a thread whose root names no project, participation in an ask that reached the person as who it waits on, participation stated under a mention's own event, the relations into a thread whose row the removal of its document deleted, and a session's participation, which no row of people holds;
+  for `published_destinations`, an owner's topic, which names no node, the topics of an event about no comment or message the store holds, the topics of events appended before the store existed, the delivery of a mention attempt the listener took and a fallback copy, each projected by a row of its own.
+  A mark whose row a build of the release before deleted - an unsnooze, a prune of a reply read, a restore of an Agent dismissal - is one such figure too (`left_by_an_older_delete`), told apart by the evidence that release leaves: the person's log holds the event that release's deleting route appends, after the event that stated the mark, with no tuple of this release under it, as dispatch://INFRA-1149's backfill tells a document an older build re-indexed by two versions and no row.
+  A mark with no row and no such event stays a difference, since no writer of this release can clear one: a writer that read the store's mark to retract it would be a reconcile, which R9 rules out.
+  `comment_mentions` is no kind of this census yet: the `mentions` tuples it projects are written from dispatch://INFRA-1152's mention writer on, which needs the person address of dispatch://INFRA-1702, and an entry before them would read every `comment_mentions` row as a row no tuple states.
+
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
-A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row, no node and no unmarked row.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 or dispatch://INFRA-1152 that holds no row, no node and no unmarked row.
 A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
@@ -3997,6 +4019,14 @@ Each item below names a path with its method and identity, then its purpose.
   `{method, path, delay_ms}` arms or replaces a delay for that method and exact request path, and `delay_ms: 0` removes it:
   every keyed run of it waits `delay_ms` on its handler's context once its key is claimed, and a context that ends during the wait answers `503 SLOW_WRITE_CUT_OFF` with the handler never run; a bad body is `400`.
   It arms the process the call reached, not every process.
+  Not mounted otherwise.
+
+- `/api/v1/writes/_test/fail-between/{writer}` (PUT; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  Arms one failure for the next write of `{writer}`, injected between that writer's store write and its projection write (`internal/dispatch/failpoint`): the write fails as any failed statement fails it, so its transaction rolls back, both sides with it, and the event it appended in that transaction reaches nobody.
+  The writers are `comment`, `message`, `direct-reply`, `ask-answer`, `inbox-dismiss`, `inbox-read`, `thread-read`, `agent-state`, `ask-snooze`, `user-threads` and `agent-dismissal-clear`, the writers of the projections `census --store` holds to the store; any other name is `400 WRITER_INPUT`.
+  It arms the process the call reached, not every process, and one call arms one failure.
+  `c-census` drives it, and a deployment never mounts it.
   Not mounted otherwise.
 
 - `/api/v1/settings/new-issue/_test` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
