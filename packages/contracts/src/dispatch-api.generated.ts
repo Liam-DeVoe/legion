@@ -1764,7 +1764,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, and a key no issue carries reads as an issue with no task. */
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
     get: operations["getApiV1IssuesByKeySteps"];
     put?: never;
     post?: never;

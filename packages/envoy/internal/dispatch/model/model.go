@@ -3151,8 +3151,8 @@ type StepTask struct {
 }
 
 // IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
-// task in the order of each task's first run. An issue Legion never ran, and a key no issue
-// carries, answers no task.
+// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
+// issue carries answers 404 NOT_FOUND, and no IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
