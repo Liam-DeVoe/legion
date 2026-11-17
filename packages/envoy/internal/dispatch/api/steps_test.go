@@ -107,25 +107,6 @@ func stepsOf(t *testing.T, handler http.Handler, issue string) []model.StepRecor
 	return steps
 }
 
-// stepIssues makes project and count issues in it, as a person does, and answers their keys.
-func stepIssues(t *testing.T, handler http.Handler, project string, count int) []string {
-	t.Helper()
-	createTestProject(t, handler, project)
-	keys := make([]string, count)
-	for index := range keys {
-		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-			"project": project, "title": "A run of steps " + strconv.Itoa(index+1),
-		}, "alice")
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create an issue in %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-		keys[index] = decodeBody[struct {
-			Key string `json:"key"`
-		}](t, created).Key
-	}
-	return keys
-}
-
 // requireStepRefusal fails unless response is status with code, its message naming each of words.
 func requireStepRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, status int, code string, words ...string) {
 	t.Helper()
@@ -156,7 +137,7 @@ func stepJSON(t *testing.T, step model.StepRecord) string {
 // record as the read lists it.
 func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
 
 	started := putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
@@ -193,7 +174,7 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 // they ran.
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	run := func(task string, place int, at time.Time) string {
 		id := uuid.NewString()
@@ -224,7 +205,7 @@ func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 // another project and an agent's session are each refused, and that daemon's write lands.
 func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	path := "/api/v1/issues/" + issue + "/steps/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), implementerStart(nil), "alice")
@@ -248,7 +229,7 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 // role writes, is refused there.
 func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
 
 	assertRefusedOnClosedIssue(t, "a handoff", postHandoff(t, handler, issue, "implement", `{}`))
@@ -270,7 +251,7 @@ func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 // such code.
 func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 	handler := newTestHandler(t)
-	stepIssues(t, handler, "LEG", 1)
+	createTestIssue(t, handler, "LEG", "A run of steps")
 
 	missing := putStep(t, handler, "LEG-999", uuid.NewString(), implementerStart(daemonSession("LEG")))
 	requireStepRefusal(t, "a write to LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
@@ -299,7 +280,7 @@ func TestAnUnknownIssueReadsAsItsHandoffsRead(t *testing.T) {
 // A step write appends no event to its issue, whose activity a handoff moves.
 func TestAStepWriteAppendsNoEvent(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	before := issueEventTypes(t, handler, issue)
 
 	id := uuid.NewString()
@@ -321,7 +302,7 @@ func TestAStepWriteAppendsNoEvent(t *testing.T) {
 // decode is the package's own 400; none is a 500, and none writes a record.
 func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	start := implementerStart(daemon)
 	noRole := maps.Clone(start)
@@ -402,7 +383,7 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 // of each: the second write waits for the first and reads what it wrote.
 func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	start := with(stepIdentity(daemon), map[string]any{"agent": "legion-leg-leg-1-implementer", "started_at": stepStart})
 	end := with(stepIdentity(daemon), map[string]any{"result": "passed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5"})
@@ -460,7 +441,7 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 // A second end of one run lands and changes nothing: the run keeps its first end.
 func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
 	putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
 	putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "stopped", stepEnd))
@@ -521,7 +502,10 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 // An id the record of one issue holds is refused to a write that names another issue.
 func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 2)
+	issues := []string{
+		createTestIssue(t, handler, "LEG", "A run of steps"),
+		createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Another run of steps"}, "alice").Key,
+	}
 	id := uuid.NewString()
 	putStepOK(t, handler, issues[0], id, implementerStart(daemonSession("LEG")))
 
