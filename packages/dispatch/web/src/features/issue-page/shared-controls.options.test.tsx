@@ -3446,6 +3446,58 @@ test("inside NoTooltips Approve pressed by Enter hands its focus to what replace
   }
 });
 
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md, widened by INFRA-1196's
+// architect at 06:34Z: a dialog that drops its focus to the body is a keyboard trap broken open.
+// While the Request changes dialog's write is out, `disabled` on its text box and its button
+// drops the focus in a browser, and Tab then leaves the dialog. Inside `NoTooltips` the text box is
+// read-only and the button `aria-disabled` in their place, so the focus stays where it is and a
+// second press sends no second request. R1 of dispatch://INFRA-3935: outside `NoTooltips` both are
+// `disabled` while the write is out, as on `main`.
+test("inside NoTooltips the Request changes dialog keeps the focus inside it while its write is out", async () => {
+  const user = userEvent.setup();
+  stubs.getArtifact.mockResolvedValue(
+    doc(SPEC_ID, "spec.md", { latest_version: 2, state: "awaiting", waiting_on: "human" })
+  );
+  for (const surface of ["inside", "outside"] as const) {
+    const answered = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => answered.promise
+    );
+    const view = draw(<ReadApprovalChip id={SPEC_ID} />, surface);
+    try {
+      const scope = within(view.container);
+      await user.click(await scope.findByRole("button", { name: "Request changes" }));
+      const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
+      const reason = dialog.getByRole("textbox", { name: "Reason" });
+      await user.type(reason, "The plan names no owner");
+      const submit = dialog.getByRole("button", { name: "Request changes" });
+      submit.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(submit.textContent).toBe("Submitting…"));
+      if (surface === "inside") {
+        expect(reason.hasAttribute("disabled")).toBe(false);
+        expect(reason.hasAttribute("readonly")).toBe(true);
+        expect(submit.hasAttribute("disabled")).toBe(false);
+        expect(submit.getAttribute("aria-disabled")).toBe("true");
+        expect(document.activeElement).toBe(submit);
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(document.activeElement).toBe(submit);
+        expect(createArtifactReview).toHaveBeenCalledTimes(1);
+      } else {
+        expect(reason.hasAttribute("disabled")).toBe(true);
+        expect(submit.hasAttribute("disabled")).toBe(true);
+        expect(submit.hasAttribute("aria-disabled")).toBe(false);
+      }
+    } finally {
+      answered.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
 // Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: where the clipboard is missing
 // (an origin that is not secure) or refuses, `copyText` copies through a temporary text box that
 // takes the focus and leaves the page, which drops the focus to the body. Inside `NoTooltips` the
