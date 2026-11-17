@@ -35,13 +35,14 @@
 #
 #   DATABASE_URL=<a loopback PostgreSQL this run may create databases on> \
 #     bash e2e/acceptance/with-harness.sh bash e2e/acceptance/project-access-blob.sh \
-#     [--base-commit <rev>] [--control private-pub]
+#     [--base-commit <rev> | --base-branch <ref>] [--control private-pub]
 #
 # The harness is not needed: the run starts its own servers and its own fake Envoy, and reads
 # DATABASE_URL only for the server it names, whose database must hold the vector extension (the
 # harness's does: its server migrated it). --base-commit names the merge base; left out, it is
-# HEAD's merge base with the branch this stack is built on (`target` below), or with
-# origin/main once that branch is gone, chosen as base_branch_merge_base says. --control
+# HEAD's merge base with --base-branch's ref, the branch the change is built on, origin/main when
+# the run names none, chosen as base_branch_merge_base says. A change stacked on another branch
+# names that branch, so the base holds every route the branch it is built on holds. --control
 # private-pub is the negative control: it
 # makes PUB private in the head's database after the seed, and the run must fail naming a route.
 #
@@ -77,14 +78,20 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=access-lib.sh
 . "$(dirname "$0")/access-lib.sh"
 
-# This driver's own argument, read before two_builds_setup, which takes --base-commit alone.
+# This driver's own arguments, read before two_builds_setup, which takes --base-commit alone.
 control=''
+base_branch=origin/main
 forwarded=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --control)
       [ $# -ge 2 ] || fail "--control takes the control to apply: private-pub"
       control=$2
+      shift 2
+      ;;
+    --base-branch)
+      [ $# -ge 2 ] || fail "--base-branch takes the ref of the branch the change is built on"
+      base_branch=$2
       shift 2
       ;;
     *)
@@ -149,8 +156,7 @@ base_branch_merge_base() {
 }
 
 if [ -z "$base_commit" ]; then
-  target=origin/legion/INFRA-1149
-  git -C "$root" rev-parse --verify --quiet "$target^{commit}" >/dev/null || target=origin/main
+  target=$base_branch
   chose=0
   base_commit=$(base_branch_merge_base "$target") || chose=$?
   case "$chose" in

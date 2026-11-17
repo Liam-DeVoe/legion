@@ -1,9 +1,9 @@
 /** Which base `e2e/acceptance/project-access-blob.sh` (c-blob-unchanged) compares against when it
- *  is not given one: HEAD's merge base with the base branch (the driver's `target`). A history
- *  that merged both ways has two merge bases, and `git merge-base` alone can answer main's, which
- *  holds none of the base branch's routes. The driver takes the newest merge base on the base
- *  branch's first-parent line, and when none is on it, it stops with UNKNOWN naming every
- *  candidate.
+ *  is not given one: HEAD's merge base with the base branch, `--base-branch`'s ref, `origin/main`
+ *  when the run names none. A history that merged both ways has two merge bases, and
+ *  `git merge-base` alone can answer main's, which holds none of the base branch's routes. The
+ *  driver takes the newest merge base on the base branch's first-parent line, and when none is on
+ *  it, it stops with UNKNOWN naming every candidate.
  *
  *  Each row copies the driver and the shell it sources into a fresh repository of its own, in the
  *  same relative places, so the driver's `git -C <root>` reads that repository. Every commit is
@@ -11,7 +11,7 @@
  *  configuration installs runs, and each commit carries its own date, which is what decides the
  *  merge base `git merge-base` answers first. A row the default admits goes on to the driver's
  *  prerequisites and stops at the first, DATABASE_URL, which no row sets: nothing is built and no
- *  server starts. */
+ *  server starts. The base branch is `origin/base` here, a name of the test's own. */
 
 import { expect, test } from "bun:test";
 import { copyFileSync, mkdirSync } from "node:fs";
@@ -86,9 +86,9 @@ class Repository {
     this.git("update-ref", "--no-deref", name, commit);
   }
 
-  /** One run of the driver here, with no base named and no DATABASE_URL. */
-  run(): { exitCode: number; stdout: string; stderr: string } {
-    const run = Bun.spawnSync(["bash", driver], {
+  /** One run of the driver here, with these arguments, no base commit named and no DATABASE_URL. */
+  run(...args: string[]): { exitCode: number; stdout: string; stderr: string } {
+    const run = Bun.spawnSync(["bash", driver, ...args], {
       cwd: this.directory,
       env: { PATH: process.env.PATH ?? "", HOME: this.directory, TMPDIR: this.directory },
     });
@@ -111,19 +111,17 @@ test("of two merge bases, the one on the base branch's first-parent line is the 
   const branchMerge = repository.commit("the base branch merges main", branch, main);
   const head = repository.commit("this stack merges main", stack, main);
   repository.ref("refs/remotes/origin/main", main);
-  repository.ref("refs/remotes/origin/legion/INFRA-1149", branchMerge);
+  repository.ref("refs/remotes/origin/base", branchMerge);
   repository.ref("HEAD", head);
 
-  const bases = repository
-    .git("merge-base", "--all", "HEAD", "origin/legion/INFRA-1149")
-    .split("\n");
+  const bases = repository.git("merge-base", "--all", "HEAD", "origin/base").split("\n");
   expect([...bases].sort()).toEqual([branch, main].sort());
   // The fixture is the case the default has to get right: `git merge-base` alone answers main's
   // commit, which holds none of the base branch's changes.
-  expect(repository.git("merge-base", "HEAD", "origin/legion/INFRA-1149")).toBe(main);
+  expect(repository.git("merge-base", "HEAD", "origin/base")).toBe(main);
 
-  const run = repository.run();
-  expect(run.stdout).toContain(`the merge base is HEAD's with origin/legion/INFRA-1149: ${branch}`);
+  const run = repository.run("--base-branch", "origin/base");
+  expect(run.stdout).toContain(`the merge base is HEAD's with origin/base: ${branch}`);
   expect(run.stderr).toContain("DATABASE_URL is required");
 });
 
@@ -141,12 +139,12 @@ test("merge bases none of which is on the base branch's first-parent line are UN
   );
   const head = repository.commit("this stack merges both side branches", left, right);
   repository.ref("refs/remotes/origin/main", root);
-  repository.ref("refs/remotes/origin/legion/INFRA-1149", branchHead);
+  repository.ref("refs/remotes/origin/base", branchHead);
   repository.ref("HEAD", head);
 
-  const run = repository.run();
+  const run = repository.run("--base-branch", "origin/base");
   expect(run.exitCode).toBe(1);
-  expect(run.stderr).toContain("UNKNOWN: HEAD and origin/legion/INFRA-1149 have 2 merge bases");
+  expect(run.stderr).toContain("UNKNOWN: HEAD and origin/base have 2 merge bases");
   expect(run.stderr).toContain(left);
   expect(run.stderr).toContain(right);
   expect(run.stderr).toContain("name the base with --base-commit");
@@ -159,10 +157,37 @@ test("one merge base is the base", () => {
   const branch = repository.commit("the base branch's first change", root);
   const head = repository.commit("this stack's first change", branch);
   repository.ref("refs/remotes/origin/main", root);
-  repository.ref("refs/remotes/origin/legion/INFRA-1149", branch);
+  repository.ref("refs/remotes/origin/base", branch);
+  repository.ref("HEAD", head);
+
+  const run = repository.run("--base-branch", "origin/base");
+  expect(run.stdout).toContain(`the merge base is HEAD's with origin/base: ${branch}`);
+  expect(run.stderr).toContain("DATABASE_URL is required");
+});
+
+test("with no base branch named, the base is HEAD's merge base with origin/main", () => {
+  const repository = new Repository();
+  const root = repository.commit("main's root");
+  const main = repository.commit("main moves on", root);
+  const head = repository.commit("this stack's first change", main);
+  // A branch under another name is no base unless the run names it.
+  repository.ref("refs/remotes/origin/base", head);
+  repository.ref("refs/remotes/origin/main", main);
   repository.ref("HEAD", head);
 
   const run = repository.run();
-  expect(run.stdout).toContain(`the merge base is HEAD's with origin/legion/INFRA-1149: ${branch}`);
+  expect(run.stdout).toContain(`the merge base is HEAD's with origin/main: ${main}`);
   expect(run.stderr).toContain("DATABASE_URL is required");
+});
+
+test("a base branch that does not resolve stops the run, naming it", () => {
+  const repository = new Repository();
+  const root = repository.commit("main's root");
+  repository.ref("refs/remotes/origin/main", root);
+  repository.ref("HEAD", repository.commit("this stack's first change", root));
+
+  const run = repository.run("--base-branch", "origin/gone");
+  expect(run.exitCode).toBe(1);
+  expect(run.stderr).toContain("no merge base of HEAD with origin/gone");
+  expect(run.stderr).not.toContain("DATABASE_URL is required");
 });
