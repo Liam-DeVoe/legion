@@ -2,6 +2,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,6 +35,7 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import { bringOnScreen } from "../identity-block";
 import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
@@ -306,8 +308,56 @@ export function VerificationFilterBody({
       key === "Enter" ? target === row && pressChecks(row) : key === "o" && keepChecks(row);
     if (acted) event.preventDefault();
   };
+  // The body and its tree, which the focus is kept in when the line a Retry stands on leaves the
+  // page (review 5933840110's first finding on pull request #4221, and the architect's decisions
+  // 162 and 182 on dispatch://INFRA-1196): a press by the keyboard never leaves the focus on the
+  // page's body. A read asked again that holds no answer is out again rather than failed
+  // (TanStack Query's `pending`), so its Retry takes its own line, and the focus on it, off the
+  // page. A Retry that went disabled while its read is out would drop the focus too.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
+  // The read whose Retry was pressed with the focus on its line, until that line is gone.
+  const retried = useRef<VerificationRead | undefined>(undefined);
+  // Whether the render before this one drew rows in the tree.
+  const drewRows = useRef(false);
+  /** Where the focus goes once this render is drawn, or null where it stays where it is.
+   *  `rowsCame` is whether this render draws rows where the one before it drew none. */
+  const keptFocus = (rowsCame: boolean): HTMLElement | null => {
+    const body = bodyRef.current;
+    const tree = treeRef.current;
+    if (body === null || tree === null) return null;
+    const firstRetry = body.querySelector<HTMLElement>(UNREADABLE_RETRY);
+    const focused = document.activeElement;
+    const read = retried.current;
+    if (read !== undefined) {
+      // While the read's line is drawn, the focus is on its Retry or where the reader put it.
+      if (unreadable?.failed.includes(read) === true) return null;
+      retried.current = undefined;
+      // Its line is gone, and the focus it held with it: to the next refused read's Retry, to
+      // the tree's tab stop where the read answered, or to the tree itself while the read is
+      // out again. A focus the reader moved elsewhere in the meantime stays where they put it.
+      const lost = focused === null || focused === document.body || !focused.isConnected;
+      if (!lost) return null;
+      return firstRetry ?? tree.querySelector<HTMLElement>(TAB_STOP_ROW) ?? tree;
+    }
+    // The tree itself holds the focus where it had no row to give it to: while a read is out,
+    // after the step above, or after `t k`. A read refused again gives it to its Retry, as `t k`
+    // with a read refused does (decision 182), and rows that came give it to the tree's tab
+    // stop (decision 162). Where rows were drawn already it stays on the tree: a click on the
+    // table's headings, which stand in no row, focuses the tree, and moves no row's focus.
+    if (focused !== tree) return null;
+    if (firstRetry !== null) return firstRetry;
+    return rowsCame ? tree.querySelector<HTMLElement>(TAB_STOP_ROW) : null;
+  };
+  // After every render, since any render can take a Retry's line away or bring the rows.
+  useLayoutEffect(() => {
+    const drawsRows = rows.length > 0;
+    const to = keptFocus(drawsRows && !drewRows.current);
+    drewRows.current = drawsRows;
+    if (to !== null) focusOn(to);
+  });
   return (
-    <div className={BODY} data-verification-body="">
+    <div className={BODY} data-verification-body="" ref={bodyRef}>
       {/* Each read that failed before it first answered, one line in the page's words with a
           Retry that asks that read alone again, in the order coverage, results, blocks
           (the architect's decisions 117 and 126). The lines stand over the tree and never in
@@ -320,7 +370,17 @@ export function VerificationFilterBody({
                   <div data-verification-unreadable={read} key={read}>
                     <QueryError
                       message={UNREADABLE_LINES[read]}
-                      onRetry={() => unreadable.onRetry(read)}
+                      onRetry={() => {
+                        // A press with the focus on this line, as Enter or Space on its Retry
+                        // makes, marks the read, so the focus stays in the view once the line
+                        // is gone (`keptFocus`). A pointer's press that left the focus where it
+                        // was marks nothing.
+                        const line = document.activeElement?.closest(UNREADABLE_LINE);
+                        if (line?.getAttribute("data-verification-unreadable") === read) {
+                          retried.current = read;
+                        }
+                        unreadable.onRetry(read);
+                      }}
                     />
                   </div>,
                 ]
@@ -329,11 +389,21 @@ export function VerificationFilterBody({
       {/* The page holds one tree on every address (R2), and it holds everything the view
           draws: the issue's row and the table, or in their place the one line that says the
           issue holds nothing to draw. While a read is out or has failed it holds nothing, and
-          is still the tree `t k` and the stage focus (part V's R8). */}
+          is still the tree `t k` and the stage focus (part V's R8). With a read refused it
+          gives its focus to that read's Retry (the architect's decision 182). */}
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
+        onFocus={(event) => {
+          // `t k` with a read refused: the page's chord focuses the tree, which holds no row to
+          // take its tab stop and from which Tab never reaches the Retry over it, and no render
+          // follows that focus. The first refused read's Retry takes it instead (decision 182).
+          if (event.target !== event.currentTarget) return;
+          const retry = bodyRef.current?.querySelector<HTMLElement>(UNREADABLE_RETRY);
+          if (retry != null) focusOn(retry);
+        }}
         onKeyDown={keyDown}
+        ref={treeRef}
         role="tree"
         tabIndex={-1}
       >
@@ -394,7 +464,7 @@ export function VerificationFilterBody({
               {loose.map((check) => (
                 <Check
                   check={check}
-                  earlierOpen={false}
+                  kept={NO_KEPT_RESULTS}
                   key={check.node.id}
                   loose={true}
                   onPress={press}
@@ -419,10 +489,11 @@ export function VerificationFilterBody({
  *  reading gives it, the count of R9's line, and after its own checks each check a result the
  *  query kept alone is drawn with (`keptChecks`). */
 interface DrawnStatement extends StatementReading {
-  /** The checks among `checks` whose earlier results are drawn open from their first drawing:
-   *  each added for a result the query kept that is not the check's latest, so that the result
-   *  the query kept is on screen. */
-  readonly earlierOpen: ReadonlySet<string>;
+  /** Each check among `checks` the query kept an earlier result of, by its node's id, with the
+   *  ids of those results: the check draws them under its latest result, and no other earlier
+   *  one, with its line of earlier results shut (review 5933840110 on pull request #4221, ruling
+   *  6 of build-rulings-md, part V's departure 10). */
+  readonly kept: ReadonlyMap<string, ReadonlySet<string>>;
   /** How many checks the coverage read counts for the statement beyond those the view with no
    *  query draws under it, which serve it from an issue under this one (part V's R9). At 0 or
    *  less the statement draws no line for them. */
@@ -451,9 +522,11 @@ function drawnStatements(read: VerificationReading, issue: VerificationReading):
   });
 }
 
-/** The `earlierOpen` of a statement the body adds no check to: none of its checks draws its
- *  earlier results open from its first drawing. */
-const NO_EARLIER_OPEN: ReadonlySet<string> = new Set();
+/** The `kept` of a statement the body adds no check to, and the kept results of a check the
+ *  query kept no earlier result of: such a check draws its latest result alone until the reader
+ *  opens its line of earlier results. */
+const NO_KEPT_CHECKS: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+const NO_KEPT_RESULTS: ReadonlySet<string> = new Set();
 
 /**
  * The checks a statement draws (`statement`, the query's reading of it): its own, then each check
@@ -463,27 +536,32 @@ const NO_EARLIER_OPEN: ReadonlySet<string> = new Set();
  * reads only a statement's checks (`statement-state.ts`), so that result would be drawn nowhere.
  * It is drawn with its check instead, read from the issue's reading, once and after the
  * statement's own checks, as a row like any other (part V's departure 10: the results the body
- * draws are the query's). Where the result the query kept is not the check's latest, the check
- * draws its earlier results open (`earlierOpen`), so the result is on screen.
+ * draws are the query's). Where a result the query kept is not the check's latest, the check
+ * draws it under its latest and leaves its other earlier results folded behind their line
+ * (`kept`): a query that keeps one of a check's 26 results draws that one, not the 25 others
+ * (review 5933840110 on pull request #4221, ruling 6 of build-rulings-md).
  */
 function keptChecks(
   statement: StatementReading,
   held: StatementReading
-): Pick<DrawnStatement, "checks" | "earlierOpen"> {
+): Pick<DrawnStatement, "checks" | "kept"> {
   const own = new Set(statement.checks.map((check) => check.node.id));
   const added = new Map<string, CheckReading>();
-  const earlierOpen = new Set<string>();
+  const kept = new Map<string, Set<string>>();
   for (const child of statement.node.children) {
     const parent = child.type === "result" ? child.parentLine?.id : undefined;
     if (parent === undefined || own.has(parent)) continue;
     const check = held.checks.find((one) => one.node.id === parent);
     if (check === undefined) continue;
     added.set(parent, check);
-    if (check.latest?.id !== child.id) earlierOpen.add(parent);
+    if (check.latest?.id === child.id) continue;
+    const results = kept.get(parent);
+    if (results === undefined) kept.set(parent, new Set([child.id]));
+    else results.add(child.id);
   }
   return added.size === 0
-    ? { checks: statement.checks, earlierOpen: NO_EARLIER_OPEN }
-    : { checks: [...statement.checks, ...added.values()], earlierOpen };
+    ? { checks: statement.checks, kept: NO_KEPT_CHECKS }
+    : { checks: [...statement.checks, ...added.values()], kept };
 }
 
 /** The ids of the rows the tree draws, in the order they stand on the page: the issue's row,
@@ -525,6 +603,24 @@ const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
   coverage: ANSWER_LINES.statements_unreadable,
   results: ANSWER_LINES.results_unreadable,
 };
+
+/** The line the body draws for a read that failed before it first answered, and its Retry, which
+ *  are drawn in the order of `VERIFICATION_READS`; and the row that holds the tree's one tab
+ *  stop. */
+const UNREADABLE_LINE = "[data-verification-unreadable]";
+const UNREADABLE_RETRY = `${UNREADABLE_LINE} button`;
+const TAB_STOP_ROW = '[role="treeitem"][tabindex="0"]';
+
+/** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame
+ *  where it still holds the focus (`bringOnScreen`). The frame is for `t k` with a read refused:
+ *  `reachPart` (`useIssueKeymap.ts`) scrolls the tree to the screen's top after it focuses it,
+ *  which would leave the Retry that stands over the tree above the screen. */
+function focusOn(to: HTMLElement): void {
+  to.focus({ preventScroll: true });
+  requestAnimationFrame(() => {
+    if (document.activeElement === to) bringOnScreen(to);
+  });
+}
 
 /** The seven states a check can be in, in the order the page declares them. */
 const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
@@ -961,7 +1057,7 @@ function Statement({
               return (
                 <Check
                   check={check}
-                  earlierOpen={statement.earlierOpen.has(check.node.id)}
+                  kept={statement.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
                   key={check.node.id}
                   loose={false}
                   onPress={onPress}
@@ -998,7 +1094,10 @@ function Statement({
  * word and a shape, its own words, and the four attributes its body draws (R15, R17). Its
  * earlier results are one line with their count, which opens them in place (ruling 6 of
  * build-rulings-md: the approved picture draws one result for each check), and the result the
- * check's state stands on is marked wherever it is drawn.
+ * check's state stands on is marked wherever it is drawn. An earlier result a words query kept
+ * is drawn under the latest with the line still shut, and no other earlier result is, so the
+ * view draws no result the reader neither kept by the query nor opened (review 5933840110 on
+ * pull request #4221, part V's departure 10); the line opens them all, each drawn once.
  *
  * The facts of the check and of its results are drawn while the reader's focus is anywhere in
  * the row - its words, a link in them, its facts, its results, the line of earlier results or
@@ -1022,7 +1121,7 @@ function Statement({
  */
 function Check({
   check,
-  earlierOpen,
+  kept,
   loose,
   onPress,
   pressed,
@@ -1031,10 +1130,10 @@ function Check({
   tabIndex,
 }: {
   check: CheckReading;
-  /** Whether its earlier results are drawn open from its first drawing, and again whenever this
-   *  turns true: a check the body draws for a result a query kept that is not its latest
-   *  (`keptChecks`), so that result is on screen. */
-  earlierOpen: boolean;
+  /** The ids of its earlier results a words query kept, which it draws under its latest result
+   *  while its line of earlier results is shut (`keptChecks`); empty for a check the query kept
+   *  no earlier result of. */
+  kept: ReadonlySet<string>;
   /** Whether the check serves no statement, and so stands as a row of the table itself. */
   loose: boolean;
   /** Sets this row's press (the body's `press`). */
@@ -1049,15 +1148,7 @@ function Check({
   tabIndex: 0 | -1;
 }): ReactNode {
   const [focusInside, setFocusInside] = useState(false);
-  const [earlierShown, setEarlierShown] = useState(earlierOpen);
-  // The row stays drawn while the reader types a query, so a query that comes to keep one of
-  // its earlier results alone opens them in this render, rather than on the row's first drawing
-  // alone, which would leave that result shut behind its count.
-  const [keptEarlier, setKeptEarlier] = useState(earlierOpen);
-  if (keptEarlier !== earlierOpen) {
-    setKeptEarlier(earlierOpen);
-    if (earlierOpen) setEarlierShown(true);
-  }
+  const [earlierShown, setEarlierShown] = useState(false);
   // Whether the facts were drawn when the pointer went down: the focus its press puts in the row
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
@@ -1073,6 +1164,16 @@ function Check({
   const markPress = () => {
     drawnAtPress.current = opened;
   };
+  // The earlier results it draws, in their order: all of them where the reader opened their
+  // line, else only those a words query kept (`kept`), with the line still shut, so a query that
+  // keeps one of 26 results draws that one and not the 25 others (review 5933840110 on pull
+  // request #4221, ruling 6 of build-rulings-md, part V's departure 10). Opened, the line draws
+  // each once, the kept ones among them, and shut again it leaves the kept ones drawn.
+  const earlierDrawn = earlierShown
+    ? check.earlier
+    : kept.size === 0
+      ? undefined
+      : check.earlier.filter((result) => kept.has(result.id));
   // Its words' cell and its result's cell, side by side from 761 px up and one over the other at
   // 760 px and below.
   const cells = (
@@ -1167,16 +1268,14 @@ function Check({
               : VERIFICATION_WORDS.earlier_many}
           </button>
         )}
-        {earlierShown
-          ? check.earlier.map((result) => (
-              <LatestResult
-                key={result.id}
-                opened={opened}
-                result={result}
-                stands={check.standsOn === result.id}
-              />
-            ))
-          : null}
+        {earlierDrawn?.map((result) => (
+          <LatestResult
+            key={result.id}
+            opened={opened}
+            result={result}
+            stands={check.standsOn === result.id}
+          />
+        ))}
       </div>
     </>
   );

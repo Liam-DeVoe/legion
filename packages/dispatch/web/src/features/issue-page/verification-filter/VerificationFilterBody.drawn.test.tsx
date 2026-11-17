@@ -1,12 +1,21 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  type RenderResult,
+  render,
+  renderHook,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
-import type { CheckBlock } from "../../../api/types";
+import { api } from "../../../api/client";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
@@ -30,6 +39,7 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
+import { useVerificationReads } from "../slots/view-verification";
 import { shortCommit } from "./statement-state";
 import {
   VerificationFilterBody,
@@ -1121,9 +1131,12 @@ test("a query that matches nothing keeps the summary of the whole issue and says
 // alone, which the filter lifts under the statement with the check as its parent line
 // (`presets.ts`). The body draws that result with its check, read from the issue's reading, under
 // the statement and as a row like any other, so what the query kept is on screen. Where it is an
-// earlier result of its check, the check's earlier results are drawn open: from the row's first
-// drawing, and when the query comes to keep it while the row is already drawn.
-test("a query that keeps only a result draws it with its check under its statement", () => {
+// earlier result of its check, the check draws it under its latest with its line of earlier
+// results shut, and no other earlier result (review 5933840110, ruling 6): from the row's first
+// drawing, and when the query comes to keep it while the row is already drawn. Pressing the line
+// draws every earlier result, each once, and pressing it again leaves the kept one drawn.
+test("a query that keeps only a result draws it with its check under its statement", async () => {
+  const user = userEvent.setup();
   const failure = "Timed out waiting for the zebra column.";
   /** Each card the body draws: its statement, and each check under it with its row's id and
    *  the words of each result it draws, in order. */
@@ -1164,10 +1177,17 @@ test("a query that keeps only a result draws it with its check under its stateme
     kept.unmount();
   }
 
-  // The query keeps an earlier result: the check draws its latest, and its earlier results open.
-  const twice = check({
+  // The query keeps one of two earlier results: the check draws its latest and that one, and
+  // leaves the other folded behind the line, which stays shut until it is pressed.
+  const thrice = check({
     block_id: "c-two",
     results: [
+      result({
+        check_block_id: "c-two",
+        created_at: "2026-11-12T09:00:00Z",
+        id: "result-oldest",
+        observed: "40 passed",
+      }),
       result({
         check_block_id: "c-two",
         created_at: "2026-11-13T09:00:00Z",
@@ -1177,39 +1197,48 @@ test("a query that keeps only a result draws it with its check under its stateme
       result({ check_block_id: "c-two", created_at: "2026-11-14T09:00:00Z", id: "result-newest" }),
     ],
   });
-  const served = statementNode("r2", "The page draws it again.", [checkNode(twice)]);
-  const twiceRow = `${served.id} ${checkNode(twice).id}`;
-  const drawnEarlier = [[served.id, [[checkNode(twice).id, twiceRow, ["41 passed", failure]]]]];
-  const earlier = drawBody([served], [twice], {
+  const served = statementNode("r2", "The page draws it again.", [checkNode(thrice)]);
+  const thriceRow = `${served.id} ${checkNode(thrice).id}`;
+  /** The one card of `served`, its check drawing the results whose words are `results`. */
+  const servedCard = (results: readonly string[]) => [
+    [served.id, [[checkNode(thrice).id, thriceRow, results]]],
+  ];
+  const drawnEarlier = servedCard(["41 passed", failure]);
+  const earlier = drawBody([served], [thrice], {
     query: "zebra",
     whole: verificationView([served]),
   });
   try {
+    const line = earlier.container.querySelector("[data-verification-earlier]");
     expect(cardsOf(earlier)).toEqual(drawnEarlier);
-    expect(
-      earlier.container.querySelector("[data-verification-earlier]")?.getAttribute("aria-expanded")
-    ).toBe("true");
+    expect(line?.getAttribute("aria-expanded")).toBe("false");
+    // Pressed, the line draws every earlier result, the kept one among them, each once.
+    await user.click(line as Element);
+    expect(line?.getAttribute("aria-expanded")).toBe("true");
+    expect(cardsOf(earlier)).toEqual(servedCard(["41 passed", failure, "40 passed"]));
+    // Pressed again, it folds them and leaves the kept one drawn.
+    await user.click(line as Element);
+    expect(line?.getAttribute("aria-expanded")).toBe("false");
+    expect(cardsOf(earlier)).toEqual(drawnEarlier);
   } finally {
     earlier.unmount();
   }
 
   // The reader types the query while the check's row is drawn: the row stays the same element,
-  // and the query that comes to keep its earlier result alone opens its earlier results.
+  // and the query that comes to keep one earlier result draws it, the line still shut.
   const client = testClient();
-  const typing = render(bodyOf([served], [twice], {}, client));
+  const typing = render(bodyOf([served], [thrice], {}, client));
   try {
     const row = typing.container.querySelector("[data-verification-check]");
     const earlierOf = () =>
       row?.querySelector("[data-verification-earlier]")?.getAttribute("aria-expanded");
     expect(earlierOf()).toBe("false");
-    expect(cardsOf(typing)).toEqual([
-      [served.id, [[checkNode(twice).id, twiceRow, ["41 passed"]]]],
-    ]);
+    expect(cardsOf(typing)).toEqual(servedCard(["41 passed"]));
     typing.rerender(
-      bodyOf([served], [twice], { query: "zebra", whole: verificationView([served]) }, client)
+      bodyOf([served], [thrice], { query: "zebra", whole: verificationView([served]) }, client)
     );
     expect(typing.container.querySelector("[data-verification-check]")).toBe(row);
-    expect(earlierOf()).toBe("true");
+    expect(earlierOf()).toBe("false");
     expect(cardsOf(typing)).toEqual(drawnEarlier);
   } finally {
     typing.unmount();
@@ -1438,6 +1467,152 @@ test("a read that fails before it first answers says so with a Retry, for each o
     expect(retried).toEqual(["blocks", "coverage", "results"]);
   } finally {
     all.unmount();
+  }
+});
+
+// Review 5933840110's first finding on pull request #4221, and the architect's decisions 162 and
+// 182 on dispatch://INFRA-1196: a press by the keyboard never leaves the focus on the page's
+// body. A read asked again with no answer held is out rather than refused, so Retry takes its
+// own line, and the focus on it, off the page. The focus goes to the next refused read's Retry,
+// to the view's tree while the read is out, back to the read's Retry when it is refused again,
+// and to the tree's tab stop, the issue's row, once it answers.
+test("Enter on a Retry keeps the focus in the view: on the next refused read's Retry, on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", async () => {
+  const user = userEvent.setup();
+  const met = passing("c-one");
+  const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
+  const retried: VerificationRead[] = [];
+  const failed = (...reads: VerificationRead[]): VerificationReads => ({
+    failed: reads,
+    onRetry: (read) => retried.push(read),
+    state: "failed",
+  });
+  // One client for every drawing, as the page keeps one while its reads answer again.
+  const client = testClient();
+  const view = render(bodyOf(statements, [met], { reads: failed("coverage", "blocks") }, client));
+  const redraw = (reads: VerificationReads) =>
+    view.rerender(bodyOf(statements, [met], { reads }, client));
+  /** The Retry on the line of `read`. */
+  const retryOf = (read: VerificationRead) =>
+    within(
+      view.container.querySelector<HTMLElement>(
+        `[data-verification-unreadable="${read}"]`
+      ) as HTMLElement
+    ).getByRole("button", { name: "Retry" });
+  const tree = () => view.container.querySelector('[role="tree"]');
+  try {
+    act(() => retryOf("coverage").focus());
+    await user.keyboard("{Enter}");
+    expect(retried).toEqual(["coverage"]);
+    // The coverage read is out again, and the blocks read is still refused.
+    redraw(failed("blocks"));
+    expect(document.activeElement, "the focus left the view with coverage's line").toBe(
+      retryOf("blocks")
+    );
+    await user.keyboard("{Enter}");
+    expect(retried).toEqual(["coverage", "blocks"]);
+    // The blocks read is out again, and no read is refused.
+    redraw({ state: "waiting" });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement, "the focus left the view while the read is out").toBe(tree());
+    // Refused again: its line comes back, and its Retry takes the focus from the tree.
+    redraw(failed("blocks"));
+    expect(document.activeElement, "the read refused again left the focus on the tree").toBe(
+      retryOf("blocks")
+    );
+    await user.keyboard("{Enter}");
+    expect(retried).toEqual(["coverage", "blocks", "blocks"]);
+    redraw({ state: "waiting" });
+    expect(document.activeElement).toBe(tree());
+    // It answers: the tree's tab stop, the issue's row, takes the focus.
+    redraw({ state: "answered" });
+    expect(document.activeElement, "the rows that came left the focus on the tree").toBe(
+      view.container.querySelector("[data-verification-issue]")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The architect's decision 182: `t k` with a refused read puts the focus on that read's Retry,
+// not on the empty tree, which has nothing to act on and from which Tab never reaches the Retry.
+// The page's chord focuses the tree, which holds no row to take its tab stop, so the tree hands
+// its focus to the Retry. A tree with rows keeps a focus that a click on its headings gives it:
+// only rows that come where the tree drew none take it (decision 162).
+test("with a read refused, the view's tree gives its focus to that read's Retry", () => {
+  const met = passing("c-one");
+  const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
+  const refused = drawBody(statements, [met], {
+    reads: { failed: ["results"], onRetry: () => undefined, state: "failed" },
+  });
+  try {
+    const tree = refused.container.querySelector<HTMLElement>('[role="tree"]');
+    act(() => tree?.focus());
+    expect(document.activeElement, "the focused tree kept the focus with a read refused").toBe(
+      within(
+        refused.container.querySelector<HTMLElement>(
+          '[data-verification-unreadable="results"]'
+        ) as HTMLElement
+      ).getByRole("button", { name: "Retry" })
+    );
+  } finally {
+    refused.unmount();
+  }
+
+  // A tree with rows, focused as a click on the table's headings focuses it, and drawn again as
+  // any read's answer draws it: no row came, so the focus stays on the tree.
+  const client = testClient();
+  const drawn = render(bodyOf(statements, [met], {}, client));
+  try {
+    const tree = drawn.container.querySelector<HTMLElement>('[role="tree"]');
+    act(() => tree?.focus());
+    expect(document.activeElement).toBe(tree);
+    drawn.rerender(bodyOf(statements, [met], {}, client));
+    expect(document.activeElement, "a tree whose rows were drawn gave its focus to a row").toBe(
+      tree
+    );
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// The architect's decision 180: staleness is per observer. The view's own observers of the
+// coverage and the results (`useVerificationReads`) hold what they read until an event refreshes
+// it, so the view pressed 31 s after the page read both, past the app's 30 s (`main.tsx`), sends
+// no request. `useIssueTree`'s observers of the same keys are part F's, and are not drawn here.
+test("the view's own reads of the coverage and the results send no request when the view is pressed 31 s after they answered", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [],
+    spec_artifact_id: "",
+  };
+  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
+  const answeredAt = Date.now() - 31_000;
+  client.setQueryData(issueCoverageQuery(ISSUE_KEY).queryKey, coverage, { updatedAt: answeredAt });
+  client.setQueryData(issueResultsQuery(ISSUE_KEY).queryKey, results, { updatedAt: answeredAt });
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const pressed = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+    try {
+      await act(() => Bun.sleep(20));
+      expect(pressed.result.current.reads).toEqual({ state: "answered" });
+      expect(coverageRead, "the view read the coverage again").toHaveBeenCalledTimes(0);
+      expect(resultsRead, "the view read the results again").toHaveBeenCalledTimes(0);
+    } finally {
+      pressed.unmount();
+    }
+  } finally {
+    coverageRead.mockRestore();
+    resultsRead.mockRestore();
+    client.clear();
   }
 });
 

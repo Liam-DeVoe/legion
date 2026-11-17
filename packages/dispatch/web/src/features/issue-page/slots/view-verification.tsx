@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { type QueryStatus, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import type { CheckBlock } from "../../../api/types";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -24,12 +25,69 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { root } = useIssueTree(issue);
+  const { checks, reads } = useVerificationReads(issue.key);
+  // The address's own node is resolved against the whole tree and then kept by the view, so an
+  // address that names a node the view holds no row for still draws it (R1), as the outline
+  // resolves it (part I's `useAddressTarget`, decision 94).
+  const { named } = useAddressTarget(root, address);
+  const view = useMemo(
+    () => presetView(root, "verification", address.filter, named),
+    [address.filter, named, root]
+  );
+  // The view with no words query, which is what the issue holds whatever a query left of it.
+  // With no query typed it is the view itself, so it is built a second time only under one.
+  const whole = useMemo(
+    () => (address.filter === "" ? view.root : presetView(root, "verification", "", named).root),
+    [address.filter, named, root, view.root]
+  );
+  return (
+    <NoTooltips>
+      {/* The stage's column, which the body draws its own measure in (part V's R6). */}
+      <div className="flex w-full min-w-0 flex-col">
+        <VerificationFilterBody
+          checks={checks}
+          context={view.context}
+          emptyLine={
+            address.filter === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match
+          }
+          reads={reads}
+          view={view.root}
+          whole={whole}
+        />
+      </div>
+    </NoTooltips>
+  );
+}
+
+/**
+ * The reads the Verification view is drawn from, as its body takes them (the `checks` and
+ * `reads` of `VerificationFilterBody`): the coverage read, the results read with the issue's
+ * checks, and the blocks read of the Verification document, and how the three stand. They are
+ * the slot's own observers, apart from `useIssueTree`'s of the same keys, so what they fetch is
+ * read alone (the architect's decision 180 on dispatch://INFRA-1196).
+ */
+export function useVerificationReads(issueKey: string): {
+  checks: readonly CheckBlock[];
+  reads: VerificationReads;
+} {
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own
   // (R1). The results read holds a result's commit, its verdict and its withdrawal, which the
-  // tree does not carry (`verification-filter/statement-state.ts`).
-  const coverage = useQuery(issueCoverageQuery(issue.key));
-  const results = useQuery(issueResultsQuery(issue.key));
+  // tree does not carry (`verification-filter/statement-state.ts`). Staleness is per observer
+  // (the architect's decision 180): with the app's 30 s (`main.tsx`), pressing the view more
+  // than 30 s after the page read them read both again. Each holds what it read until an event
+  // refreshes its key (`staleTime: Infinity`), and the window's focus asks again only a read in
+  // error (`refetchFailedOnFocus`), as the page's reference reads do.
+  const coverage = useQuery({
+    ...issueCoverageQuery(issueKey),
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: refetchFailedOnFocus,
+  });
+  const results = useQuery({
+    ...issueResultsQuery(issueKey),
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: refetchFailedOnFocus,
+  });
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The blocks read of the Verification document too: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
@@ -82,38 +140,17 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
-  // The address's own node is resolved against the whole tree and then kept by the view, so an
-  // address that names a node the view holds no row for still draws it (R1), as the outline
-  // resolves it (part I's `useAddressTarget`, decision 94).
-  const { named } = useAddressTarget(root, address);
-  const view = useMemo(
-    () => presetView(root, "verification", address.filter, named),
-    [address.filter, named, root]
-  );
-  // The view with no words query, which is what the issue holds whatever a query left of it.
-  // With no query typed it is the view itself, so it is built a second time only under one.
-  const whole = useMemo(
-    () => (address.filter === "" ? view.root : presetView(root, "verification", "", named).root),
-    [address.filter, named, root, view.root]
-  );
-  return (
-    <NoTooltips>
-      {/* The stage's column, which the body draws its own measure in (part V's R6). */}
-      <div className="flex w-full min-w-0 flex-col">
-        <VerificationFilterBody
-          checks={checks}
-          context={view.context}
-          emptyLine={
-            address.filter === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match
-          }
-          reads={reads}
-          view={view.root}
-          whole={whole}
-        />
-      </div>
-    </NoTooltips>
-  );
+  return { checks, reads };
 }
+
+/** Window focus asks a read again only while it is in error, so a read refused past its
+ *  retries recovers on the open page while one that answered stays quiet, and it is asked even
+ *  over the answer it holds, which no age makes stale (`staleTime: Infinity`). A copy of
+ *  `refetchFailedOnFocus` in `features/refs/reference-target.ts`, which part F exports (its
+ *  R12): the slot imports F's once F's export is under this branch (the architect's decision 94
+ *  rule for copies). */
+const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
+  query.state.status === "error" ? "always" : false;
 
 /** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
  *  had, which the view still draws from, so only a read that left nothing to draw says it
