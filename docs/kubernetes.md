@@ -1977,23 +1977,17 @@ That migration writes the whole list, the two merge-queue kinds among its kinds,
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
-Run this with the daemon stopped, before the earlier image is pinned:
-
-```sql
--- The writes of the issues' step records onto Dispatch.
-delete from outbox where kind = 'step_record';
-```
-
-Each deleted row costs one write of one record: Dispatch shows that step without the start or the end the row carried, and nothing else of the issue changes.
+The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
-It waits through the rollback and writes its record at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks.
+Nor does such a row hold an issue's pod: the earlier release's idle check counts only the kinds it names (`idleWaitingKinds` in `store/idle.go`).
+Each row waits through the rollback and writes its start or its end at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks, so none of them is lost.
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 The table `step_starts` (`20261117004117_step_starts`) stays in place: an earlier release names it in no statement, so that release boots with the table and its rows there.
 It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
 An earlier release starts and ends steps and counts none of them, so the rollback keeps what the roll forward needs to tell the runs this release counted from the ones it did not.
-Run this too, with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
 insert into step_starts_rollback (issue, tree, witness, taken_at)
