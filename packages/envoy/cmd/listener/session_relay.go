@@ -892,13 +892,17 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	}
 	unlock()
 	// A landed restart whose settle lost its connection settles again once that connection is
-	// back, inside the restart's budget, with the session's lock released while it waits. One whose
-	// connection is not back in time, or whose client stopped, leaves the filter the restart wrote
-	// to the session's next heartbeat, as a settle that could not read the bucket does, and pulls.
+	// back, inside the restart's budget, with the session's lock released while it waits and taken
+	// again within that budget. One whose connection or lock is not back in time, or whose client
+	// stopped, leaves the filter the restart wrote to the session's next heartbeat, as a settle that
+	// could not read the bucket does, and pulls.
 	for err == nil && bus.Reconnected(callCtx, settleLost) {
-		unlock = m.delivery.locks.lock(sessionID)
+		relocked, ok := m.delivery.locks.lockWithin(callCtx, sessionID)
+		if !ok {
+			break
+		}
 		settleLost = m.settleFilter(callCtx, sessionID, revision)
-		unlock()
+		relocked()
 	}
 	if err == nil {
 		run.restartedAt.Store(at)

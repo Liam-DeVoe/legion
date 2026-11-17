@@ -356,10 +356,13 @@ func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps
 
 // relockAfterReconnect is the one retry of a call this listener makes under a session's lock
 // whose connection was lost (bus.ErrConnectionLost): it releases the lock *unlock holds, waits for
-// that connection within ctx (bus.Reconnected), takes the lock again into *unlock once it is back,
-// and reports whether the caller makes its call again. For any other err, or nil, it does nothing
-// and reports false. A lock it released and could not take again leaves noUnlock in *unlock, so
-// the caller's own release on its way out releases nothing twice.
+// that connection within ctx (bus.Reconnected), takes the lock again into *unlock within ctx once
+// it is back (sessionLocks.lockWithin), and reports whether the caller makes its call again. For
+// any other err, or nil, it does nothing and reports false. The whole of it stays inside ctx: a
+// registration or a repair of the session can take the lock while this waits for the connection,
+// and one that holds it past ctx's end leaves this reporting false at that end rather than waiting
+// for it. A lock it released and did not take again leaves noUnlock in *unlock, so the caller's
+// own release on its way out releases nothing twice.
 func (m *sessionDelivery) relockAfterReconnect(ctx context.Context, sessionID string, unlock *func(), err error) bool {
 	if !errors.Is(err, bus.ErrConnectionLost) {
 		return false
@@ -369,7 +372,11 @@ func (m *sessionDelivery) relockAfterReconnect(ctx context.Context, sessionID st
 	if !bus.Reconnected(ctx, err) {
 		return false
 	}
-	*unlock = m.locks.lock(sessionID)
+	relocked, ok := m.locks.lockWithin(ctx, sessionID)
+	if !ok {
+		return false
+	}
+	*unlock = relocked
 	return true
 }
 
@@ -1018,27 +1025,36 @@ type sessionLocks struct {
 }
 
 type sessionLock struct {
-	sync.Mutex
+	// token holds one value while somebody holds the lock: taking it is a send and releasing it a
+	// receive, so a wait for it can end with a context as well (lockWithin), which a sync.Mutex
+	// cannot.
+	token chan struct{}
 	// users counts the callers holding or waiting for the lock, under sessionLocks.mu.
 	users int
 }
 
-// lock takes sessionID's lock and returns the func that releases it.
+// lock takes sessionID's lock, waiting as long as it takes, and returns the func that releases it.
 func (l *sessionLocks) lock(sessionID string) (unlock func()) {
+	unlock, _ = l.lockWithin(context.Background(), sessionID)
+	return unlock
+}
+
+// lockWithin takes sessionID's lock, waiting no longer than ctx, and returns the func that
+// releases it and true; or noUnlock and false when ctx ended first. A ctx that has ended takes no
+// lock, a free one included, so a caller told true holds the lock with ctx still running.
+func (l *sessionLocks) lockWithin(ctx context.Context, sessionID string) (func(), bool) {
 	l.mu.Lock()
 	if l.locks == nil {
 		l.locks = map[string]*sessionLock{}
 	}
 	held := l.locks[sessionID]
 	if held == nil {
-		held = &sessionLock{}
+		held = &sessionLock{token: make(chan struct{}, 1)}
 		l.locks[sessionID] = held
 	}
 	held.users++
 	l.mu.Unlock()
-	held.Lock()
-	return func() {
-		held.Unlock()
+	leave := func() {
 		l.mu.Lock()
 		held.users--
 		if held.users == 0 {
@@ -1046,6 +1062,25 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 		}
 		l.mu.Unlock()
 	}
+	if ctx.Err() != nil {
+		leave()
+		return noUnlock, false
+	}
+	select {
+	case held.token <- struct{}{}:
+	case <-ctx.Done():
+		leave()
+		return noUnlock, false
+	}
+	if ctx.Err() != nil {
+		<-held.token
+		leave()
+		return noUnlock, false
+	}
+	return func() {
+		<-held.token
+		leave()
+	}, true
 }
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
