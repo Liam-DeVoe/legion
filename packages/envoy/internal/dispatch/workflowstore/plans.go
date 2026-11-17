@@ -17,9 +17,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// stepWordForm is one step of a plan's task: a role, or a role and a key (`acceptance:owner`),
-// each a lowercase letter, then lowercase letters, digits and hyphens.
-var stepWordForm = regexp.MustCompile(`^[a-z][a-z0-9-]*(:[a-z][a-z0-9-]*)?$`)
+// stepKeyForm is the key of a plan's step after its role (`acceptance:owner`): a lowercase letter,
+// then lowercase letters, digits and hyphens. The role before it is a step record's role
+// (roleForm), since every run of the step is a record of that role.
+var stepKeyForm = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 var planSources = []string{PlanSourceDefault, PlanSourceOwner}
 
@@ -145,8 +146,12 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 			return "", nil, planInputError("steps of task %s are empty: a task has at least one step", task.ID)
 		}
 		for _, step := range task.Steps {
-			if !stepWordForm.MatchString(step) {
-				return "", nil, planInputError("steps of task %s hold %q, which is no step: a role or role:key, each a lowercase letter, then lowercase letters, digits and hyphens", task.ID, step)
+			role, key, keyed := strings.Cut(step, ":")
+			if !roleForm.MatchString(role) {
+				return "", nil, planInputError("steps of task %s hold %q, whose role %q is not a role: %s, as a step record's role", task.ID, step, role, roleRule)
+			}
+			if keyed && !stepKeyForm.MatchString(key) {
+				return "", nil, planInputError("steps of task %s hold %q, whose key %q is not a key: a lowercase letter, then lowercase letters, digits and hyphens", task.ID, step, key)
 			}
 		}
 	}

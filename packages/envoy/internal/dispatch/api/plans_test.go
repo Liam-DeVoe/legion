@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -828,11 +829,12 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	putPlanRecordOK(t, handler, closed, uuid.NewString(), defaultPlanBody(daemonSession("LEG"), 1))
 }
 
-// Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a tasks that is no
-// list at all the package's own 400 INVALID_JSON; none writes a plan. A lone half of a document
-// reaches the store, which names it or the half left out: a default plan naming either half, and
-// an owner's plan naming its document and no version. An id another issue's plan holds is 409
-// PLAN_OTHER_ISSUE.
+// Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a step whose role is
+// longer than a step record's role, alone or before its key, naming the step and its role; a tasks
+// that is no list at all the package's own 400 INVALID_JSON; none writes a plan. A lone half of a
+// document reaches the store, which names it or the half left out: a default plan naming either
+// half, and an owner's plan naming its document and no version. An id another issue's plan holds is
+// 409 PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
@@ -862,6 +864,12 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 			response := putPlanRecord(t, handler, issues[0], uuid.NewString(), row.body)
 			requireStepRefusal(t, row.name, response, http.StatusBadRequest, codePlanInput, row.field)
 		})
+	}
+	over := strings.Repeat("r", 33)
+	for _, step := range []string{over, over + ":owner"} {
+		response := putPlanRecord(t, handler, issues[0], uuid.NewString(),
+			withFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"planner", step}}}}))
+		requireStepRefusal(t, "a step of "+step, response, http.StatusBadRequest, codePlanInput, strconv.Quote(step), strconv.Quote(over))
 	}
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/issues/"+issues[0]+"/plans/"+uuid.NewString(),
 		bytes.NewReader([]byte(`{"actor":{"kind":"session","id":"legion-daemon:LEG"},"generation":1,"source":"default","tasks":"planner"}`)))

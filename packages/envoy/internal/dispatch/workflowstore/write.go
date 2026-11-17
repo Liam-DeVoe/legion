@@ -19,11 +19,15 @@ import (
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
-// no plan; a role and a type are a word of lowercase letters, digits and hyphens.
+// no plan; a role and a type are a word of lowercase letters, digits and hyphens (roleRule), and so
+// is the role a plan's step names before its key.
 var (
 	taskForm = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	roleForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
+
+// roleRule is roleForm as a refusal states it.
+const roleRule = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
 
 var (
 	stepKinds   = []string{StepKindStep, StepKindRetro, StepKindMerge}
@@ -317,11 +321,11 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		number(AttributeStep, int64(place))
 	}
 	if role := text(AttributeRole, write.Role); role != "" && !roleForm.MatchString(role) {
-		return "", nil, inputError("role %q is not a role: a lowercase letter, then lowercase letters, digits and hyphens, at most 32", role)
+		return "", nil, inputError("role %q is not a role: %s", role, roleRule)
 	}
 	typ := text(AttributeType, write.Type)
 	if typ != "" && !roleForm.MatchString(typ) {
-		return "", nil, inputError("type %q is not a type of work: a lowercase letter, then lowercase letters, digits and hyphens, at most 32, or empty", typ)
+		return "", nil, inputError("type %q is not a type of work: %s, or empty", typ, roleRule)
 	}
 	if err := typeOfKind(kind, typ); err != nil {
 		return "", nil, err

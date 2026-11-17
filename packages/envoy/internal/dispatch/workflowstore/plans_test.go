@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +213,46 @@ func TestAPlanWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 	if log := wholeLog(t, pool); len(log) != 0 {
 		t.Fatalf("the refused writes left %d tuples, want none", len(log))
+	}
+}
+
+// A step of a plan names the role of the step records its runs make, the part before its `:key`,
+// so a plan takes a step where a record takes its role and refuses it where a record refuses that
+// role: a role of 32 characters is taken by both, one of 33 or one outside the record's grammar
+// is refused by both, the plan's refusal ErrPlanInput naming the step and its role.
+func TestAPlanStepTakesTheRolesAStepRecordTakes(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	longest, over := strings.Repeat("r", 32), strings.Repeat("r", 33)
+	for _, row := range []struct{ step, role string }{
+		{longest, longest},
+		{longest + ":owner", longest},
+		{over, over},
+		{over + ":owner", over},
+		{"9planner", "9planner"},
+		{"Planner:owner", "Planner"},
+	} {
+		t.Run(row.step, func(t *testing.T) {
+			plan := defaultPlan(uuid.NewString(), "LEG-1", 1)
+			plan.Tasks[0].Steps = []string{row.step}
+			_, planRefusal := tryPutPlan(pool, plan, minute(0))
+			record := implementer(uuid.NewString())
+			record.Role = new(row.role)
+			_, recordRefusal := tryPut(pool, record, minute(0))
+			if recordRefusal != nil && !errors.Is(recordRefusal, ErrStepInput) {
+				t.Fatalf("a record of role %q answered %v, want nil or %v", row.role, recordRefusal, ErrStepInput)
+			}
+			if (planRefusal == nil) != (recordRefusal == nil) {
+				t.Fatalf("a plan of step %q answered %v and a record of its role %q %v: want both taken or both refused",
+					row.step, planRefusal, row.role, recordRefusal)
+			}
+			if planRefusal == nil {
+				return
+			}
+			if message := planRefusal.Error(); !errors.Is(planRefusal, ErrPlanInput) ||
+				!strings.Contains(message, strconv.Quote(row.step)) || !strings.Contains(message, strconv.Quote(row.role)) {
+				t.Fatalf("a plan of step %q answered %v, want %v naming the step and its role %q", row.step, planRefusal, ErrPlanInput, row.role)
+			}
+		})
 	}
 }
 

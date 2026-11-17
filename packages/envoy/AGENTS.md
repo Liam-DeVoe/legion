@@ -391,8 +391,8 @@ Each item below names a task and where its code is, then notes on it.
     The rating is a route and not a member of the step write because `decodeJSON` ignores a member its route does not declare: a Dispatch older than the rating would drop the member in silence, where it answers the route its router's `NOT_FOUND`, which the daemon sends again.
 
   - `PUT /api/v1/issues/{key}/plans/{id}` writes the plan a run of an issue runs from, under the step write's writer check (`403 STEP_WRITER`), the same `for key share` read with no open check, and no event:
-    every write names the run's generation, its source, `default` or `owner` (the owner's document `artifact_id` and its `version` with `owner` alone), and its tasks, each an id and its steps (a role or `role:key`).
-    Each field is set once, a value outside its form is `400 PLAN_INPUT`, the message naming the field, and an id whose plan is another issue's is `409 PLAN_OTHER_ISSUE`.
+    every write names the run's generation, its source, `default` or `owner` (the owner's document `artifact_id` and its `version` with `owner` alone), and its tasks, each an id and its steps (a role or `role:key`, the role one a step record's role takes: the store checks both with `roleForm`, since each run of the step is a record of that role).
+    Each field is set once, a value outside its form is `400 PLAN_INPUT`, the message naming the field (a step whose role a record refuses, the step and its role), and an id whose plan is another issue's is `409 PLAN_OTHER_ISSUE`.
 
   - `GET /api/v1/projects/{key}/plans` lists each finished issue of the project, status `done` with `closed_at` set, newest close first, with `?since=` and `?until=` bounding the close to `[since, until)`
     (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, judged as the caller wrote them, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold);
