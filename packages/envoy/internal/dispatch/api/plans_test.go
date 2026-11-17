@@ -603,15 +603,19 @@ func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 }
 
 // The plans read refuses a project Dispatch does not hold 404 PROJECT_NOT_FOUND, and a since or
-// until that is no RFC 3339 time, or a since not before its until, 400 INVALID_QUERY; a project
-// with no finished issue answers an empty list.
+// until that is no RFC 3339 time, or a since not before its until, an equal one too, since
+// [since, until) then holds no moment, 400 INVALID_QUERY; a project with no finished issue answers
+// an empty list.
 func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
 	handler := newTestHandler(t)
 	stepIssues(t, handler, "LEG", 1)
 
 	missing := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/NOPE/plans", nil, "alice")
 	requireStepRefusal(t, "the plans of NOPE", missing, http.StatusNotFound, "PROJECT_NOT_FOUND")
-	for _, query := range []string{"?since=yesterday", "?until=2026-13-01", "?since=2026-11-17T00:00:00Z&until=2026-11-16T00:00:00Z"} {
+	for _, query := range []string{
+		"?since=yesterday", "?until=2026-13-01", "?since=2026-11-17T00:00:00Z&until=2026-11-16T00:00:00Z",
+		"?since=2026-11-17T00:00:00Z&until=2026-11-17T00:00:00Z",
+	} {
 		refused := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LEG/plans"+query, nil, "alice")
 		requireStepRefusal(t, "the plans of LEG"+query, refused, http.StatusBadRequest, "INVALID_QUERY")
 	}
