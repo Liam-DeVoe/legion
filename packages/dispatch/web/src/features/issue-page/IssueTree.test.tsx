@@ -382,10 +382,16 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
   }
 });
 
+/** The decisions document's text read, which a Change reads at its send (`changeAnchor`): with
+ *  no reading of its own, the anchor names the quote and the server finds its one place. */
+const DECISIONS_TEXT = { markdown: "", token: "sha256:decisions", version: null };
+
 test("Enter sends the change the reader typed, instead of putting a caret in the row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const sent = spyOn(api, "createComment").mockResolvedValue({ id: "comment-1" } as never);
+  // The Change reads the decisions document's text at its send, to count its quote's place.
+  const text = spyOn(api, "getArtifactText").mockResolvedValue(DECISIONS_TEXT);
   const root = node({
     children: [
       node({
@@ -419,6 +425,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     expect(view.edited.filter((artifactId) => artifactId !== undefined)).toEqual([]);
   } finally {
     sent.mockRestore();
+    text.mockRestore();
   }
 });
 
@@ -474,6 +481,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
+  const text = spyOn(api, "getArtifactText").mockResolvedValue(DECISIONS_TEXT);
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
     decisions: { decisions: [decision], document: null, open_questions: [] },
@@ -500,6 +508,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
   } finally {
     sent.mockRestore();
+    text.mockRestore();
   }
 });
 
