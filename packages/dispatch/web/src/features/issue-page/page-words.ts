@@ -650,9 +650,11 @@ export const ANSWER_LINES = freeze({
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
-  /** What the answer line of the box at the foot of the outline says on its Send while the
-   *  answer is out (dispatch://INFRA-3949 R5), beside the busy words above. */
+  /** What Send says while the send is out, on the answer line and on the write line of the box
+   *  at the foot of the outline (dispatch://INFRA-3949 R5), beside the busy words above. */
   sending: "Sending…",
+  /** What the write line's Send says while a file pasted or dropped into its draft uploads. */
+  uploading: "Uploading file…",
   /** What the box says when Dispatch refused a comment on a statement whose words its document
    *  holds twice (`TARGET_AMBIGUOUS`): the box places a statement's comment by the statement's
    *  whole words alone, so the same words are refused again whatever is sent, and the draft

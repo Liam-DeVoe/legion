@@ -375,6 +375,7 @@ function WriteLine({
             ? CONTROL_LABELS.issue_placeholder_phone
             : CONTROL_LABELS.issue_placeholder,
         send: CONTROL_LABELS.send,
+        sending: ANSWER_LINES.sending,
         statementTwice: ANSWER_LINES.statement_twice,
         target:
           reply !== null ? (
@@ -393,6 +394,7 @@ function WriteLine({
               />
             </>
           ),
+        uploading: ANSWER_LINES.uploading,
       }}
       owner={owner}
       replyTo={reply}
@@ -489,6 +491,7 @@ function EditLine({
           ? CONTROL_LABELS.edit_placeholder_phone
           : CONTROL_LABELS.edit_placeholder,
         send: CONTROL_LABELS.save,
+        sending: ANSWER_LINES.saving_field,
         target: (
           <>
             <span {...pageChrome}>{CONTROL_LABELS.editing}</span>{" "}
@@ -499,6 +502,7 @@ function EditLine({
             />
           </>
         ),
+        uploading: ANSWER_LINES.uploading,
       }}
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {

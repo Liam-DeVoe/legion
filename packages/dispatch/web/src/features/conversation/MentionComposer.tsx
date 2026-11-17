@@ -288,6 +288,11 @@ export interface OutlineLook {
   readonly placeholder: string;
   /** Send's word. */
   readonly send: string;
+  /** What Send says while the send is out: the host's own busy word, as its other controls say
+   *  theirs. */
+  readonly sending: string;
+  /** What Send says while a file pasted or dropped into the draft is still uploading. */
+  readonly uploading: string;
   /** What the line says, in place of the server's words, when Dispatch refused a comment on a
    *  statement because the statement's words stand twice in its document (`409
    *  TARGET_AMBIGUOUS`). The server's words ask for an occurrence, which no control of the line
@@ -1141,7 +1146,13 @@ export function MentionComposer({
     uploadOwner === undefined
       ? undefined
       : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner);
-  const sendBusy = sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined;
+  // Send's busy word: the page's own in the issue page's look (`OutlineLook`), the composer's
+  // everywhere else.
+  const sendBusy = sending
+    ? (outline?.sending ?? "Sending…")
+    : upload.pending > 0
+      ? (outline?.uploading ?? "Uploading file…")
+      : undefined;
   const heldFieldset = {
     disabled: sending,
     onChangeCapture: stopHeldComposerInput,
