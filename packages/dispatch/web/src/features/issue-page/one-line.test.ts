@@ -224,3 +224,34 @@ test("a line cut right after a name that ends with an ellipsis draws one ellipsi
   expect(line.startsWith(`${before}R2. Every address`), `the line is ${line}`).toBe(true);
   expect(line, "the line draws two ellipses").not.toContain("……");
 });
+
+// R1: a line cut inside its sentence draws its ellipsis whatever its last character, so a cut
+// right after a name that ends with a full stop - the last word of a sentence the name quotes -
+// still says the author's sentence carries on. Only a name that ends with an ellipsis of its own
+// draws no second one.
+test("a line cut right after a name that ends with a full stop still draws its ellipsis", () => {
+  const block = "dispatch://KEY-1/spec#b-r2";
+  const references = referenceStandIns((reference) =>
+    reference === block ? "R2. Every address." : undefined
+  );
+  // 78 characters, then the name's 18: the space after it is the last one inside the limit.
+  const before = `${"word ".repeat(15)}as `;
+  const text = `${before}${block} says the rest of it, and more words follow on.`;
+  expect(references.named(drawnLine(firstLineOf(references.standIn(text))))).toBe(
+    `${before}R2. Every address.…`
+  );
+});
+
+// R1 and R3: a run cut at a word inside the line is measured as it is drawn. Where the author's
+// own ellipsis ends it, it is drawn with no second, so it fits the pixels it takes with one:
+// "Hold on, wait…" is 14 characters, 98 px, inside the 99 px a 100 px row leaves it, where
+// "Hold on, wait……" would be 105 px and the line would end a word sooner.
+test("a run that ends with the author's own ellipsis is measured with that one alone", () => {
+  expect(alone("Hold on, wait… then the rest of the line runs on and on.", 100)).toEqual({
+    cut: true,
+    line: "Hold on, wait…",
+    sentence: false,
+    under: false,
+    wraps: false,
+  });
+});

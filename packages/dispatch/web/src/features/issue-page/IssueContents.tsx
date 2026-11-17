@@ -280,11 +280,19 @@ export function ContentsList({
       }),
     [box, current, nameOf, rows]
   );
-  // The list's one tab stop: the row the reader last moved to, else the entry they are in,
-  // else the first.
+  // The list's one tab stop, always on a drawn row, so Tab never skips the list: the row the
+  // reader last moved to, else the nearest drawn entry at or above the entry they are in - a
+  // fold above that entry hides it - else the first.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const ids = rows.map((row) => row.entry.node.id);
-  const tabStop = stop !== undefined && ids.includes(stop) ? stop : (current ?? ids[0]);
+  const drawnAtOrAbove =
+    current === undefined
+      ? undefined
+      : (pathTo(root, current) ?? [])
+          .map((node) => node.id)
+          .filter((id) => ids.includes(id))
+          .at(-1);
+  const tabStop = stop !== undefined && ids.includes(stop) ? stop : (drawnAtOrAbove ?? ids[0]);
   const moveTo = (id: string | undefined) => {
     if (id === undefined) return;
     setStop(id);

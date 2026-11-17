@@ -1,14 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
-import { createElement } from "react";
+import { act, render, within } from "@testing-library/react";
+import { createElement, useEffect } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { contentsEntries } from "./contents-entries";
+import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
-import type { NodeType } from "./page-words";
+import { CONTROL_LABELS, type NodeType } from "./page-words";
 
 /**
  * The Contents list's entries (dispatch://INFRA-1196 R14): each question and each thread the
@@ -145,6 +146,71 @@ test("each entry counts what its own branch holds, and a nested entry's branch i
     "ask-1": { children: 0, failing: 1, for_review: 1, statements: 1 },
     "ask-2": { children: 0, failing: 0, for_review: 0, statements: 1 },
   });
+});
+
+// R2 and R14: a requirement of a document other than the spec - a plan's, under a question - is
+// a block and nothing more, so the list counts no statement for it, as the filter row counts
+// none (`isStatement`).
+test("a requirement of another document is no statement an entry counts", () => {
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [
+      node("spec#b-r1", "requirement"),
+      // The model marks no requirement of the plan a statement.
+      node("plan-md#b-r9", "requirement", [], { statement: undefined }),
+    ]),
+  ]);
+  expect(contentsOf(root, "alice")[0]?.marks.statements).toBe(1);
+});
+
+/** Puts the page's focus on node `id`, as the outline does when the reader moves to it. */
+function FocusOn({ id }: { id: string }): null {
+  const setFocused = useSetFocusedNode();
+  useEffect(() => setFocused({ id, title: id, type: "ask" }), [id, setFocused]);
+  return null;
+}
+
+// R9 and R14: the list is one tab stop, and that stop is always a drawn row. The reader is in an
+// entry under another, and folds the one above it: the entry they are in is drawn no more, so
+// the tab stop goes to the nearest drawn entry above it rather than to no row at all, which Tab
+// would skip the list for.
+test("folding the entry above the one the reader is in leaves the tab stop on the folded entry", () => {
+  const root = node("CORE-1", "issue", [node("ask-1", "ask", [node("ask-2", "ask")])]);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const view = render(
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(
+        FocusedNodeProvider,
+        null,
+        createElement(FocusOn, { id: "ask-2" }),
+        createElement(ContentsList, {
+          focusBranch: false,
+          nameOf: () => undefined,
+          onFocusBranch: () => {},
+          onGo: () => {},
+          root,
+        })
+      )
+    )
+  );
+  const stops = () =>
+    [...view.container.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"]')].map(
+      (row) => row.dataset.contentsEntry
+    );
+  try {
+    expect(stops()).toEqual(["ask-2"]);
+    const parent = view.container.querySelector<HTMLElement>('[data-contents-entry="ask-1"]');
+    if (parent === null) throw new Error("the list draws no entry for ask-1");
+    act(() => within(parent).getByRole("button", { name: CONTROL_LABELS.fold }).click());
+    expect(view.container.querySelector('[data-contents-entry="ask-2"]')).toBeNull();
+    expect(stops()).toEqual(["ask-1"]);
+  } finally {
+    view.unmount();
+  }
 });
 
 // The view row's Conversation count is `contentsEntries` (`slots/view-row.tsx`), so the count

@@ -1754,3 +1754,86 @@ test("the body drawn again after its reads' answers have aged past 30 s sends no
     read.mockRestore();
   }
 });
+
+// R5 and R22: a person who answered by options alone is quoted by the options they chose, and an
+// option's label is a plain line like any other the view draws: a statement it cites is drawn by
+// its name - in the cell's quote, in its line of what was chosen and in the statement's own line
+// naming the decision - and never as an address.
+test("an option label that cites a statement is drawn by the statement's name, never its address", () => {
+  const label = `Keep ${statementRef("r2")} as written`;
+  const named = "Keep R2. Every address as written";
+  // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
+  const made = decisionNode("d1", {
+    chips: [{ answered: true, gone: false, name: "R2. Every address", ref: statementRef("r2") }],
+  });
+  const { read, view } = drawBody(
+    issueTree([
+      answeredAsk("ask-1", { selected: [label], text: "" }),
+      statement("r1"),
+      statement("r2"),
+      made,
+    ]),
+    [
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      }),
+    ]
+  );
+  try {
+    expect(textsOf(view, "[data-spec-quote]")).toEqual([`“${named}”`]);
+    expect(view.container.querySelector("[data-spec-source]")?.textContent).toContain(
+      `${SPEC_WORDS.chose} ${named}`
+    );
+    expect(textsOf(view, "[data-spec-because]")[0]).toContain(named);
+    expect(view.container.textContent).not.toContain("dispatch://");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R2 and R5: a requirement of a document other than the spec - a plan's - is a block and nothing
+// more. Named by the address, the view draws it as a row of its own kind, and never as a
+// statement in a run, with a mark and a decision beside it (`isStatement`).
+test("a requirement of another document the address names is drawn as no statement", () => {
+  const plan = node({
+    id: "plan-md#b-r9",
+    text: "A requirement of the plan.",
+    type: "requirement",
+  });
+  const { read, view } = drawBody(issueTree([statement("r1"), plan]), [], { named: [plan.id] });
+  try {
+    expect(
+      [...view.container.querySelectorAll<HTMLElement>("[data-spec-statement]")].map(
+        (row) => row.dataset.nodeId
+      )
+    ).toEqual(["spec#b-r1"]);
+    expect(rowOf(view, plan.id).hasAttribute("data-spec-other")).toBe(true);
+    expect(view.container.querySelectorAll("[data-spec-cell]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5: every other decision that shaped a statement is named on its line by its own words, cut as
+// a chip cuts a name, so a long first line never runs the statement's line on.
+test("a second decision is named on a statement's line by its words cut to a chip's length", () => {
+  const long = "Name each tie by the words of the decision that made it, never by its address.";
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), decisionNode("d1"), decisionNode("d2", { text: long })]),
+    [
+      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
+      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))] }),
+    ]
+  );
+  try {
+    expect(textsOf(view, "[data-spec-informed]")).toEqual(["Name each tie by the words of…"]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});

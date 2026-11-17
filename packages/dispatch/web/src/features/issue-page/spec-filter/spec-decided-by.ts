@@ -81,7 +81,8 @@ export interface SpecDecision {
   readonly at?: string;
   /** Who decided it, where the model holds an author. */
   readonly by?: Actor;
-  /** The options a person chose, in the ask's own words; empty where they chose none. */
+  /** The options a person chose, in the ask's own words with each reference they cite named
+   *  (`referenceStandIns`); empty where they chose none. */
   readonly chose: readonly string[];
   /** The node that holds the whole of it, which the link to it names: the answered ask whose
    *  answer this is, or the decision. */
@@ -441,12 +442,16 @@ function answerDecision(
   // after the sentence is cut, so a name that opens with a label ("R2.") ends none of it.
   const references = referenceStandIns(nameOf);
   const written = firstSentenceOf(references.standIn(plainWordsRaw(answer.text)));
-  const quote = written === "" ? answer.selected.join(", ") : references.named(written);
+  // An option's label is a plain line too, so each reference it cites is named as the quote
+  // names one, wherever the options are drawn: the quote, the cell's line of what was chosen,
+  // each line naming the decision.
+  const chose = answer.selected.map((label) => references.named(references.standIn(label)));
+  const quote = written === "" ? chose.join(", ") : references.named(written);
   const stored = answer.text.trim();
   return {
     at: answer.at,
     by: answer.by,
-    chose: answer.selected,
+    chose,
     id: ask.id,
     question: namedFirstLine(lineWordsRaw(ask), nameOf),
     quote,
