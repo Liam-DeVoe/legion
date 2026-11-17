@@ -239,7 +239,7 @@ test("a read hands the credential the deadline its request runs on", async () =>
   // A broker credential waiting on a pod's missing registration stops at the deadline it is
   // given, naming the session; one given none waits until the registration lands.
   const given: (AbortSignal | undefined)[] = [];
-  const bearer = bearerCredential("dispatch-token");
+  const bearer = bearerCredential(DISPATCH_TOKEN);
   const credential = {
     ...bearer,
     headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {

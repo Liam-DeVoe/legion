@@ -49,7 +49,10 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked whether the token's person sees the projects it names; try again.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.", []any{corpusSession, 30}, "exchange.go"},
-	{oauth2.ErrInvalidGrant, "No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", []any{corpusSession}, "exchange.go"},
+	// The broker writes this one's description as oauthwire.PodSessionNotRegistered and a colon in
+	// place of the library's invalid_grant sentence (registeredPodSession).
+	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.PodSessionNotRegistered + ":"), "No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", []any{corpusSession}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", []any{corpusSession}, "exchange.go"},
 }
 
 // The exchange policy's refusals of a subject token, which the broker hands on as "The subject
@@ -77,7 +80,7 @@ var corpusSessionRule = fmt.Sprintf("a session name is printable, carries no whi
 var policyRefusals = []policyRefusal{
 	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, policySource},
 	{"%w: no entry lists the service account %s", []any{exchange.ErrNoEntry, corpusAccount}, policySource},
-	{"%w: %s writes as %s, which every pod of it may do, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
+	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
 	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
 	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
 	{"%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", []any{exchange.ErrClaimMissing, corpusRepository}, policySource},
@@ -86,6 +89,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
 	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
 	{"%w: %s is the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusMachine, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
+	{"%w: %s reads as the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusAccount, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s", []any{exchange.ErrNoComputeEngine, corpusMachine, "legion-prod", "worker-*"}, policySource},
 	{"%w: %s presented a token minted in the project %s, and its entry takes machines of %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "other-project", "legion-prod"}, policySource},
 	{"%w: %s presented a token minted on the instance %s, and its entry takes the names %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "box-1", "worker-*"}, policySource},
@@ -98,7 +102,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s signed in, and this broker takes the Google Workspace domain BROKER_SIGNIN_DOMAIN names; sign in again with `agent-secrets login` as an account of that domain", []any{exchange.ErrNotInDomain, corpusPerson}, policySource},
 	{"%w: the subject token names no machine credential id, so it is not a machine login's token", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: the machine credential records no approver to act for", []any{exchange.ErrClaimMissing}, policySource},
-	{"%w: %s writes as %s", []any{exchange.ErrSessionMismatch, corpusAccount, "legion-broker"}, policySource},
+	{"%w: %s's tokens name the session %s", []any{exchange.ErrSessionMismatch, corpusAccount, "legion-broker"}, policySource},
 	{"%w: %s is listed with no session of its own, so the request names one", []any{exchange.ErrSessionRequired, corpusAccount}, policySource},
 	{"%w: %s named a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusMachine, 230, corpusSessionRule}, policySource},
 	{"%w: the subject token carries no %s claim", []any{exchange.ErrClaimMissing, "repository"}, policySource},

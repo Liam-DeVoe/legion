@@ -47,15 +47,17 @@ async function refusedWith(code: (signature: string) => string) {
 
 describe("a broker refusal's error code", () => {
   test("names no part of the subject token a broker lowercased into the code", async () => {
-    const { subject, sent, received, failure } = await refusedWith((signature) =>
-      signature.toLowerCase().replace(/-/g, "").slice(0, 60)
+    // An `x` first, so the code always reads as an OAuth code: a base64url signature can start with
+    // a digit or `_`, which no code does. The 59 characters after it are the token's.
+    const { subject, sent, received, failure } = await refusedWith(
+      (signature) => `x${signature.toLowerCase().replace(/-/g, "").slice(0, 59)}`
     );
     // The row can fail for the leak: the broker was sent the token, the code it answered reads as
     // an OAuth code, and the trade failed.
     expect(received).toContain(subject);
     expect(sent).toMatch(/^[a-z][a-z0-9_]{0,63}$/);
     expect(failure).not.toBe("traded");
-    expect(failure.toLowerCase()).not.toContain(sent.slice(0, 16));
+    expect(failure.toLowerCase()).not.toContain(sent.slice(1, 17));
   }, 20_000);
 
   test("still shows a code the clients handle", async () => {

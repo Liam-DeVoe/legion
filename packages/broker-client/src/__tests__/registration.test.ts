@@ -10,6 +10,7 @@
 // `packages/envoy/internal/brokerclient`.
 
 import { expect, test } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
 import {
@@ -33,10 +34,14 @@ function unregistered(): StubAnswer {
   return { status: 400, body: { error: "invalid_grant", error_description: UNREGISTERED } };
 }
 
-/** A pod's projected token, read afresh at each trade. */
+/** A pod's projected token, read afresh at each trade. Random, as a real one is: the client holds
+ *  what it trades, and a token spelled from words would take those words out of its lines. */
+const PROJECTED_TOKEN = fixtureSecret("pod");
+
+/** A pod's projected token source. */
 const POD: TokenSource = {
   read: async (): Promise<SubjectToken> => ({
-    token: "projected.service.account.token",
+    token: PROJECTED_TOKEN,
     tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES,
   }),
   describe: () => "a pod's projected service-account token",

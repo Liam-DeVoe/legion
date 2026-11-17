@@ -166,7 +166,7 @@ const POLICY_SENTINELS = {
   noActorToken: "exchange: the person's token came with no machine acting for them",
   noComputeEngine: "exchange: the subject token carries no Compute Engine claims",
   machineNotAllowed: "exchange: the machine is not one the entry allows",
-  sessionFixed: "exchange: the entry fixes the session name it writes under",
+  sessionFixed: "exchange: the entry fixes the session name its tokens carry",
   projectsFixed: "exchange: the request names projects other than the one its entry gives",
   projectsNoPerson: "exchange: a token that names no person names no project",
 } as const;
@@ -190,7 +190,7 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
   policy("noEntry", "no entry lists the service account %s", K8S_ACCOUNT),
   policy(
     "sessionFixed",
-    "%s writes as %s, which every pod of it may do, so its pods are registered for no name",
+    "%s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name",
     K8S_ACCOUNT,
     FIXED_SESSION
   ),
@@ -230,6 +230,13 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     "projectsNoPerson",
     "%s is the service %s and names no person, and the request named %s",
     EMAIL,
+    SERVICE,
+    PROJECT_LIST
+  ),
+  policy(
+    "projectsNoPerson",
+    "%s reads as the service %s and names no person, and the request named %s",
+    K8S_ACCOUNT,
     SERVICE,
     PROJECT_LIST
   ),
@@ -288,7 +295,7 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     "the subject token names no machine credential id, so it is not a machine login's token"
   ),
   policy("claimMissing", "the machine credential records no approver to act for"),
-  policy("sessionMismatch", "%s writes as %s", IDENTITY, FIXED_SESSION),
+  policy("sessionMismatch", "%s's tokens name the session %s", IDENTITY, FIXED_SESSION),
   policy(
     "sessionRequired",
     "%s is listed with no session of its own, so the request names one",
