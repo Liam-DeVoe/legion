@@ -1,0 +1,286 @@
+import { expect, mock, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { http } from "msw";
+import { createElement, type ReactNode } from "react";
+
+import { answerRequests } from "../../../__tests__/network";
+import { whoAmIQuery } from "../../../api/queries";
+import {
+  criterionMarkdown,
+  criterionOffered,
+  criterionRequest,
+  useCriterionLine,
+} from "./criterion-write";
+import type { RoomFacts } from "./room-target";
+
+/**
+ * A criterion written under a node of the outline (dispatch://INFRA-4066 R2, R6): its markdown,
+ * its one request on the tree artifact, and the line's text and answer as the write goes. Each
+ * request is answered at `fetch` (`answerRequests`), so the write goes the whole way the page's
+ * does: the keyed write, the client, and the refusal the client makes of Dispatch's answer.
+ */
+
+const KEY = "CORE-1";
+const TREE = "artifact-tree";
+const PARENT = `dispatch://${KEY}/comment/comment-1`;
+const TEXT = "A reader can open the criterion under the comment it was written in.";
+
+/** What Dispatch answers an edit that landed. */
+const LANDED = {
+  applied: 1,
+  changed: true,
+  lost_ops: null,
+  token: "sha256:landed",
+  unchanged_ops: null,
+  version: null,
+  written: "",
+};
+
+/** One request the tree artifact's edits route was sent. */
+interface Sent {
+  readonly body: unknown;
+  readonly method: string;
+  readonly path: string;
+}
+
+/** Answers `POST /api/v1/artifacts/{id}/edits` with `answer` from now on, and keeps each request
+ *  it answers. A later call answers in its place. */
+function answerEdits(answer: () => Response | Promise<Response>): Sent[] {
+  const sent: Sent[] = [];
+  answerRequests(
+    http.post("/api/v1/artifacts/:id/edits", async ({ request }) => {
+      sent.push({
+        body: await request.json(),
+        method: request.method,
+        path: new URL(request.url).pathname,
+      });
+      return answer();
+    })
+  );
+  return sent;
+}
+
+/** Dispatch's refusal, as the client reads its status and code. */
+function refusal(status: number, code: string): Response {
+  return Response.json({ code, error: `refused with ${code}` }, { status });
+}
+
+/** The criterion line under `PARENT`, on a client of its own signed in as alice, whose
+ *  writes carry her login. */
+function renderLine(onLanded: () => void) {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+  return renderHook(
+    () => useCriterionLine({ issueKey: KEY, onLanded, parent: PARENT, tree: TREE }),
+    { wrapper }
+  );
+}
+
+/** The parent a criterion's opening line names, its character references decoded as both
+ *  parsers decode them; `undefined` for a line that opens no criterion or carries anything but
+ *  its parent, a block id among them. */
+function parentOf(opener: string | undefined): string | undefined {
+  const value = /^:::criterion\{parent="([^"]*)"\}$/u.exec(opener ?? "")?.[1];
+  return value
+    ?.replaceAll("&#x22;", '"')
+    .replaceAll("&#xA;", "\n")
+    .replaceAll("&#xD;", "\r")
+    .replaceAll("&amp;", "&");
+}
+
+/** The typed text's lines as the block draws them: a paragraph draws no line's leading spaces,
+ *  and the text's trailing whitespace is no part of it. */
+function typedLines(typed: string): string[] {
+  return typed
+    .trimEnd()
+    .split("\n")
+    .map((line) => line.replace(/^[ \t]+/u, ""));
+}
+
+/** Each case: the text as typed, and the exact markdown its criterion is. */
+const CASES: readonly { readonly typed: string; readonly markdown: string }[] = [
+  {
+    typed: `A reader opens dispatch://${KEY}/spec#b-r1\nand reads it whole.`,
+    markdown: `:::criterion{parent="${PARENT}"}\nA reader opens dispatch://${KEY}/spec#b-r1\nand reads it whole.\n:::`,
+  },
+  { typed: "- a bullet", markdown: `:::criterion{parent="${PARENT}"}\n\\- a bullet\n:::` },
+  { typed: "# a heading", markdown: `:::criterion{parent="${PARENT}"}\n\\# a heading\n:::` },
+  { typed: "> a quote", markdown: `:::criterion{parent="${PARENT}"}\n\\> a quote\n:::` },
+  { typed: "1. an item", markdown: `:::criterion{parent="${PARENT}"}\n1\\. an item\n:::` },
+  { typed: "1) an item", markdown: `:::criterion{parent="${PARENT}"}\n1\\) an item\n:::` },
+  {
+    typed: "A line above\n===",
+    markdown: `:::criterion{parent="${PARENT}"}\nA line above\n\\===\n:::`,
+  },
+  { typed: "    four spaces", markdown: `:::criterion{parent="${PARENT}"}\nfour spaces\n:::` },
+  { typed: "::name", markdown: `:::criterion{parent="${PARENT}"}\n\\::name\n:::` },
+  { typed: ":::", markdown: `:::criterion{parent="${PARENT}"}\n\\:::\n:::` },
+  {
+    typed: "One paragraph.\n\nAnother one.",
+    markdown: `:::criterion{parent="${PARENT}"}\nOne paragraph.\n\nAnother one.\n:::`,
+  },
+  {
+    typed: "* a star\n+ a plus\n  # an indented heading",
+    markdown: `:::criterion{parent="${PARENT}"}\n\\* a star\n\\+ a plus\n\\# an indented heading\n:::`,
+  },
+  {
+    typed: "```\ncode\n~~~",
+    markdown: `:::criterion{parent="${PARENT}"}\n\\\`\`\`\ncode\n\\~~~\n:::`,
+  },
+  {
+    typed: "| a | b |\na | b\n--|--",
+    markdown: `:::criterion{parent="${PARENT}"}\n\\| a | b |\na | b\n\\--|--\n:::`,
+  },
+  {
+    typed: "---\n***\n___",
+    markdown: `:::criterion{parent="${PARENT}"}\n\\---\n\\***\n\\___\n:::`,
+  },
+  {
+    typed: "[a]: https://example.com",
+    markdown: `:::criterion{parent="${PARENT}"}\n\\[a]: https://example.com\n:::`,
+  },
+  {
+    typed: "*Bold* words\n2024 was a year\n-1 is a number",
+    markdown: `:::criterion{parent="${PARENT}"}\n*Bold* words\n2024 was a year\n-1 is a number\n:::`,
+  },
+  {
+    typed: "Words, then spaces.  \n \n",
+    markdown: `:::criterion{parent="${PARENT}"}\nWords, then spaces.\n:::`,
+  },
+];
+
+test("the write names the node's address as parent and the text as typed", () => {
+  for (const { markdown, typed } of CASES) {
+    const written = criterionMarkdown(PARENT, typed);
+    expect(written).toBe(markdown);
+    const lines = written.split("\n");
+    expect(parentOf(lines[0])).toBe(PARENT);
+    expect(lines.at(-1)).toBe(":::");
+    // Each start the rule escapes carries one backslash: before its first character, or after
+    // an ordered item's digits. Taken off, the block's lines are the typed text.
+    expect(lines.slice(1, -1).map((line) => line.replace(/^(\d*)\\/u, "$1"))).toEqual(
+      typedLines(typed)
+    );
+  }
+  // An address is the parent whole, whatever it holds: a quote and an `&` as character
+  // references, which both parsers decode, and a backslash as itself, which neither reads.
+  const odd = `dispatch://${KEY}/comment/a"b\\c&d`;
+  const written = criterionMarkdown(odd, "Words.");
+  expect(written).toBe(
+    `:::criterion{parent="dispatch://${KEY}/comment/a&#x22;b\\c&amp;d"}\nWords.\n:::`
+  );
+  expect(parentOf(written.split("\n")[0])).toBe(odd);
+});
+
+test("a refusal keeps the text", async () => {
+  const textAtLanding: string[] = [];
+  const line = renderLine(() => textAtLanding.push(line.result.current.text));
+  try {
+    answerEdits(() => refusal(400, "INVALID_JSON"));
+    act(() => line.result.current.setText(TEXT));
+    act(() => line.result.current.send());
+    await waitFor(() => expect(line.result.current.answer).toBe("criterion_not_written"));
+    expect(line.result.current.text).toBe(TEXT);
+    expect(line.result.current.pending).toBe(false);
+
+    answerEdits(() => refusal(404, "NOT_FOUND"));
+    act(() => line.result.current.send());
+    await waitFor(() => expect(line.result.current.answer).toBe("criterion_gone"));
+    expect(line.result.current.text).toBe(TEXT);
+
+    // The next change of the text lets the answer go.
+    act(() => line.result.current.setText(`${TEXT} Still.`));
+    expect(line.result.current.answer).toBeUndefined();
+
+    // While the write is out the text stays; its landing tells the line and then lets it go.
+    const answered = Promise.withResolvers<Response>();
+    answerEdits(() => answered.promise);
+    act(() => line.result.current.send());
+    expect(line.result.current.pending).toBe(true);
+    expect(line.result.current.answer).toBeUndefined();
+    expect(line.result.current.text).toBe(`${TEXT} Still.`);
+    expect(textAtLanding).toEqual([]);
+    answered.resolve(Response.json(LANDED));
+    await waitFor(() => expect(line.result.current.text).toBe(""));
+    expect(textAtLanding).toEqual([`${TEXT} Still.`]);
+    expect(line.result.current.answer).toBeUndefined();
+  } finally {
+    line.unmount();
+  }
+  // A write Dispatch made and kept no answer for (`409 KEY_COMMITTED`) lands all the same.
+  const onLanded = mock(() => {});
+  const unanswered = renderLine(onLanded);
+  try {
+    answerEdits(() => refusal(409, "KEY_COMMITTED"));
+    act(() => unanswered.result.current.setText(TEXT));
+    act(() => unanswered.result.current.send());
+    await waitFor(() => expect(unanswered.result.current.text).toBe(""));
+    expect(onLanded).toHaveBeenCalledTimes(1);
+    expect(unanswered.result.current.answer).toBeUndefined();
+  } finally {
+    unanswered.unmount();
+  }
+});
+
+test("the act needs view_of null and a tree", () => {
+  const facts = (tree: string | null, viewOf: string | null, converted = true): RoomFacts => ({
+    converted,
+    issueKey: KEY,
+    tree,
+    viewOf,
+  });
+  expect(criterionOffered(facts(TREE, null))).toBe(true);
+  expect(criterionOffered(facts(TREE, null, false))).toBe(true);
+  expect(criterionOffered(facts(TREE, "CORE-2"))).toBe(false);
+  expect(criterionOffered(facts(null, null))).toBe(false);
+  expect(criterionOffered(undefined)).toBe(false);
+});
+
+test("a send carries the tree's edits route and one insert at the end", async () => {
+  const markdown = criterionMarkdown(PARENT, TEXT);
+  const route = `/api/v1/artifacts/${TREE}/edits`;
+  const body = { ops: [{ after: "end", markdown, op: "insert" }] };
+  expect(criterionRequest(TREE, markdown)).toEqual({ body, method: "POST", path: route });
+
+  const answered = Promise.withResolvers<Response>();
+  const sent = answerEdits(() => answered.promise);
+  const onLanded = mock(() => {});
+  const line = renderLine(onLanded);
+  try {
+    act(() => line.result.current.setText(TEXT));
+    act(() => line.result.current.send());
+    // A second send while the first is out makes no second write.
+    act(() => line.result.current.send());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    answered.resolve(Response.json(LANDED));
+    await waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
+    expect(sent).toEqual([{ body, method: "POST", path: route }]);
+  } finally {
+    line.unmount();
+  }
+});
+
+test("a blank text sends nothing", () => {
+  const sent = answerEdits(() => Response.json(LANDED));
+  const onLanded = mock(() => {});
+  const line = renderLine(onLanded);
+  try {
+    // A send that makes its write is pending at once - the mutation's first step, before any
+    // request goes - so a line still not pending after its send made none.
+    for (const blank of ["", " \n\t \n"]) {
+      act(() => line.result.current.setText(blank));
+      act(() => line.result.current.send());
+      expect(line.result.current.pending).toBe(false);
+      expect(line.result.current.text).toBe(blank);
+    }
+    expect(sent).toEqual([]);
+    expect(onLanded).not.toHaveBeenCalled();
+  } finally {
+    line.unmount();
+  }
+});
