@@ -303,7 +303,7 @@ func (s *server) settleNode(w http.ResponseWriter, r *http.Request) {
 			}
 			if !maySettle(proving, stored.MadeBy) {
 				return errorf(http.StatusForbidden, codeSettleNotPermitted,
-					"this credential may not settle the %s %s: a person settles any proposal, and any other caller only a proposal its own credential wrote",
+					"this credential may not settle the %s %s: a person settles any proposal, and any other caller only a proposal whose author is the author this credential proves",
 					target.kind, target.address)
 			}
 			return nil
