@@ -455,7 +455,7 @@ func (r *personHandoverRig) uploadDocument(key, name, content string) string {
 	return uploaded.Artifact.ID
 }
 
-// personHandoverBlock is the decision block the carried case writes into a spec, the option the
+// personHandoverBlock is the ask block the carried case writes into a spec, the option the
 // person answers it with, and the reading of that answer a session then writes inside the block.
 const (
 	personHandoverBlock   = ":::ask{#wave urgency=\"med\" multiple=\"false\"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n"
@@ -463,12 +463,12 @@ const (
 	personHandoverReading = "The session reads the answer as the two quietest regions first."
 )
 
-// blockAsk waits for Dispatch's settlement to index the decision block blockID of key's document
+// blockAsk waits for Dispatch's settlement to index the ask block blockID of key's document
 // as an open ask and answers the ask's id.
 func (r *personHandoverRig) blockAsk(key, blockID string) string {
 	r.t.Helper()
 	var found string
-	testwait.Eventually(r.t, "Dispatch to index the decision block "+blockID+" of "+key, func() bool {
+	testwait.Eventually(r.t, "Dispatch to index the ask block "+blockID+" of "+key, func() bool {
 		var asks []struct {
 			ID      string  `json:"id"`
 			BlockID *string `json:"block_id"`
@@ -486,14 +486,14 @@ func (r *personHandoverRig) blockAsk(key, blockID string) string {
 	return found
 }
 
-// answerBlock answers the decision block's ask as the person with selected.
+// answerBlock answers the ask block's ask as the person with selected.
 func (r *personHandoverRig) answerBlock(askID, selected string) {
 	r.t.Helper()
 	dispatchCall(r.t, r.baseURL, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		map[string]any{"selected": []string{selected}, "expected_edited_at": nil}, nil)
 }
 
-// addReading writes reading inside the answered decision block blockID of key's document
+// addReading writes reading inside the answered ask block blockID of key's document
 // artifactID, after the block's own content, as a session's upload of the whole document - the
 // write that places a reading after a block's options - and answers the version it wrote.
 func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string) int {
@@ -509,7 +509,7 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 		end = strings.Index(text.Markdown[start:], "\n:::\n")
 	}
 	if start < 0 || end < 0 {
-		r.t.Fatalf("%s's document holds no decision block %s to write a reading in:\n%s", key, blockID, text.Markdown)
+		r.t.Fatalf("%s's document holds no ask block %s to write a reading in:\n%s", key, blockID, text.Markdown)
 	}
 	end += start
 	markdown := text.Markdown[:start] + ":" + text.Markdown[start:end] +
@@ -917,7 +917,7 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a parked labelled child, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root a session writes a decision block into the spec;
+//  7. the carried case: on a parked labelled root a session writes an ask block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
 //     person then answers the block, which writes no version, so the version they approved is
 //     still the latest and approved; a session then writes its reading of the answer inside the
@@ -998,7 +998,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	askID := r.blockAsk(carried.Key, "wave")
 	approved := r.approve(carried.PrimaryArtifactID)
 	if approved.Version != blockVersion {
-		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the decision block", carried.Key, approved.Version, blockVersion)
+		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the ask block", carried.Key, approved.Version, blockVersion)
 	}
 	r.queuedByThePerson(carried.Key, "approval", 1)
 	reparked := r.setStatus(carried.Key, "backlog")
@@ -1020,7 +1020,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	}
 	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == carry.Version }))
 	r.notQueued(carried.Key, "backlog", 1)
-	t.Logf("the person's answer to the decision block of %s wrote no version, and the session's reading inside it carried their approval of version %d to version %d (%q); the daemon queued nothing for it",
+	t.Logf("the person's answer to the ask block of %s wrote no version, and the session's reading inside it carried their approval of version %d to version %d (%q); the daemon queued nothing for it",
 		carried.Key, approved.Version, carry.Version, *carry.Reason)
 
 	// 8. The recorded parked root with a gate from its earlier run, approved at a new version.
