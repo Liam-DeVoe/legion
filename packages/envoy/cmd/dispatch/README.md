@@ -3668,6 +3668,7 @@ The run then rides on the request's context (`graphstore.WithRun`), and `graphst
 An edit of an ask's words (`PATCH /api/v1/asks/{id}`) or of a comment's words (`PATCH /api/v1/comments/{id}`) writes no store node of its own, so for a run alone, and only when its words changed, it writes the ask's or the comment's node as the issue's `PATCH` writes the issue's, restating it under its own `ask.edited` or `comment.edited` event, and that node is marked; a comment whose row names no node is no node of the store, and its edit writes none.
 `DELETE /api/v1/artifacts/{id}` states the removed document's node gone and retracts each `changed_by_run` out of it (`docs.WriteRemovedNode`), so a run counts no document that has gone, and a document made again under the same title, which takes the same node, names no run but its own.
 A write on a context with no run appends none, so the block-index reconciliation tick, which indexes a version of more than 2,000 blocks or one with no rendering out of its request, names no run.
+A document's settlement carries no run either (`docs.Service.settleRoomWithin`), even the one an issue's close runs on the closer's context before it closes (`settleIssueBeforeClose`): it saves what the room's writers left in it, so the asks it retracts or restores and the blocks it indexes name no run.
 
 ## Keyed writes
 
