@@ -194,17 +194,22 @@ projects:
 #       ref: main                      # repository an entry names is refused when a file it
 #                                      # adds holds one of that entry's terms; the refusal names
 #                                      # the file, the line and the term's number, never the
-#                                      # term. Every file is read at every push to a repository
-#                                      # GitHub reports public, with the role's own gh, so every
-#                                      # role's GitHub credential must read it, and a file that
-#                                      # cannot be read refuses that push. A row may name a
-#                                      # private repository (the overlay above stands in for
-#                                      # one), which is why the rows never reach legion state's
-#                                      # settings. A change to a file reaches the next such push;
-#                                      # a change to the rows reaches each role at its next
-#                                      # launch. With no row a push is not scanned for a knives
-#                                      # forbidden list, and the capability report's
-#                                      # knives-push-gate row is open (capabilities, below).
+#                                      # term. Every file is read with the role's own gh at a
+#                                      # push to a repository GitHub reports public, so every
+#                                      # role's GitHub credential must read it. A role keeps the
+#                                      # list of its last good read for 10 minutes and reads no
+#                                      # file in that time, so a change to a file reaches every
+#                                      # role's pushes within 10 minutes. A file that cannot be
+#                                      # read refuses a push whose destination the kept list
+#                                      # names and lets any other go on with a notice; with no
+#                                      # good read kept, every push to a public repository is
+#                                      # refused. A row may name a private repository (the
+#                                      # overlay above stands in for one), which is why the rows
+#                                      # never reach legion state's settings. A change to the
+#                                      # rows reaches each role at its next launch. With no row a
+#                                      # push is not scanned for a knives forbidden list, and the
+#                                      # capability report's knives-push-gate row is open
+#                                      # (capabilities, below).
 #                                      # Refused: a repo that is no <owner>/<name>, a path with
 #                                      # a leading / or a .. component, and two rows naming one
 #                                      # file of a repository, under either name a

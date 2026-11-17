@@ -476,7 +476,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: leakGuardKey, Members: []member{
 		{Name: "knives_registries", Default: "no knives registry: a push from a role is not scanned for a knives forbidden list", RequiredBy: "no",
-			Description: "The knives registry files, each a `repo`, a `path` and a `ref`: the first row is the registry and each later row an overlay that adds forbidden terms to entries the registry already has, as knives' repos.local.toml does; each file is read at every push to a repository GitHub reports public with the role's own gh, so the role's GitHub credential must read it; a row may name a private repository, which is why the rows are not shown in the state's settings; with no rows a push is not scanned for a knives forbidden list, and the `knives-push-gate` capability is open, as it is under `runtime: tmux` whatever the rows, since no pane is told them and a pane's push runs no leak guard."},
+			Description: "The knives registry files, each a `repo`, a `path` and a `ref`: the first row is the registry and each later row an overlay that adds forbidden terms to entries the registry already has, as knives' repos.local.toml does; each file is read with the role's own gh at a push to a repository GitHub reports public, so the role's GitHub credential must read it, and the role keeps the list of its last good read for 10 minutes, reading no file in that time; a file that cannot be read refuses a push whose destination the kept list names and lets any other go on with a notice, and with no good read kept every push to a public repository is refused; a row may name a private repository, which is why the rows are not shown in the state's settings; with no rows a push is not scanned for a knives forbidden list, and the `knives-push-gate` capability is open, as it is under `runtime: tmux` whatever the rows, since no pane is told them and a pane's push runs no leak guard."},
 	}},
 	{Path: knivesRegistriesKey + "[]", Members: []member{
 		{Name: "repo", Default: "none: a row that names no `repo` is refused", RequiredBy: "yes",
@@ -484,7 +484,7 @@ var nestedKeys = []memberGroup{
 		{Name: "path", Default: "none: a row that names no `path` is refused", RequiredBy: "yes",
 			Description: "The registry file's path in that repository, from its root: no leading `/` and no `..` component; two rows naming the same file of one repository, under either name of a `repository_renames` pair, are refused."},
 		{Name: "ref", Default: "none: a row that names no `ref` is refused", RequiredBy: "yes",
-			Description: "The branch or tag the file is read at, at every push to a repository GitHub reports public, so a change pushed to it reaches the next such push of every role."},
+			Description: "The branch or tag the file is read at, at a push to a repository GitHub reports public, so a change pushed to it reaches every role's pushes within the 10 minutes a role keeps the list of its last good read."},
 	}},
 	{Path: hooksKey + "[]", Members: []member{
 		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",

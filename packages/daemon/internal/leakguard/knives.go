@@ -2,16 +2,19 @@ package leakguard
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -77,12 +80,18 @@ type knivesOverlayFile struct {
 // matches them (knivesLines). It is the knives audit an agent was asked to run before each push to
 // a fork, made into a pass of the push itself (Guard.Push says why).
 //
-// Every row is read at every push the pass runs for (Guard.Push: one to a destination GitHub
-// reports public, or to one it cannot name), with nothing kept from one push to the next, and
-// before the destination is matched against the entries: a registry that cannot be read refuses
-// such a push, whether or not an entry names its destination. A push whose destination no entry
-// names passes. A union of every entry's terms would refuse the local bare pushes of this
-// repository's own tests and of knives' ledger rehearsals, which hold those terms by design.
+// The pass runs for a push Guard.Push scans (one to a destination GitHub reports public, or to
+// one it cannot name), and it matches the destination against the entries of the kept list
+// (knivesKept) where that list was read no more than knivesKeptFor ago, reading no row. Otherwise
+// it reads every row, before the destination is matched, and a read in which every row was read
+// and every list checked becomes the kept list, under the time it was made. A read that fails is
+// never kept. It refuses the push where no list is kept, whether or not an entry names the
+// destination. Where one is kept, of any age, it refuses the push when an entry of the kept list
+// names the destination, and lets the push go on when none does, saying so once through
+// Options.Notice: the kept list is what spares every public push of every role a refusal while a
+// registry cannot be read. A push whose destination no entry names passes. A union of every
+// entry's terms would refuse the local bare pushes of this repository's own tests and of knives'
+// ledger rehearsals, which hold those terms by design.
 func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record) error {
 	listed := value(g.base(), KnivesRegistriesVar)
 	if listed == "" {
@@ -93,19 +102,138 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	if err != nil {
 		return &SetupFailure{What: what, Why: unread, Err: err}
 	}
-	entries, err := g.knivesEntries(ctx, rows)
-	if err != nil {
-		return &SetupFailure{What: what, Why: unread, Err: err}
+	now := g.clock().Now()
+	kept, held := g.keptKnives(listed)
+	var entries []knivesEntry
+	// failed is a read that failed while a list is kept: the kept list's entries then decide the
+	// push, once its destination is named.
+	var failed error
+	if held && kept.freshAt(now) {
+		entries = kept.entries()
+	} else {
+		read, err := g.knivesEntries(ctx, rows)
+		switch {
+		case err == nil:
+			entries = read
+			g.keepKnives(listed, now, read)
+		case !held:
+			return &SetupFailure{What: what, Why: unread, Err: err}
+		default:
+			entries, failed = kept.entries(), err
+		}
 	}
 	repos, err := g.destinationRepos(ctx, req)
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's remote URLs could not be read", Err: err}
 	}
-	lines := knivesLines(knivesApplying(entries, repos), records)
+	applying := knivesApplying(entries, repos)
+	if failed != nil {
+		if len(applying) > 0 {
+			return &SetupFailure{What: what, Why: unread, Err: failed}
+		}
+		g.notice("LEAK CHECK: " + unread + " (" + strings.ReplaceAll(failed.Error(), "\n", "; ") + "); the list read at " +
+			kept.ReadAt.UTC().Format(time.RFC3339) + " names no entry for this push's destination, so the push goes on")
+		return nil
+	}
+	lines := knivesLines(applying, records)
 	if len(lines) == 0 {
 		return nil
 	}
 	return &Refusal{What: what, By: byKnives, Lines: lines}
+}
+
+// knivesKeptFor is how long the pass matches pushes against its kept list without reading a
+// registry (Guard.knives), and so how long a change to a registry file can take to reach a role's
+// pushes. The architect decided on 2026-11-17 to keep the pod's last good list, because a list
+// that cannot be read must not refuse every push to every public repository from every role; and
+// a read costs about 1.0-1.2 s each through the pod's legion gh (measured 2026-11-17), which a
+// fresh kept list spares.
+const knivesKeptFor = 10 * time.Minute
+
+// knivesKept is the kept list of the knives pass (Guard.knives): the merged entries of the last
+// read in which every row was read and every list checked, and when that read was made, in UTC by
+// the guard's clock. It is kept in a file of its own for each value of KnivesRegistriesVar, under
+// the base environment's XDG_STATE_HOME (knivesKeptPath), which a pod names for each role. Only
+// this user may read and write the file (readPrivateState, writePrivateState): it holds every
+// entry's terms, and a term is private, which is why it is listed.
+type knivesKept struct {
+	ReadAt  time.Time         `json:"read_at"`
+	Entries []knivesKeptEntry `json:"entries"`
+}
+
+// knivesKeptEntry is a knivesEntry as the kept list's file writes one.
+type knivesKeptEntry struct {
+	Name      string   `json:"name"`
+	Origin    string   `json:"origin"`
+	Release   string   `json:"release"`
+	Forbidden []string `json:"forbidden"`
+}
+
+// entries are the kept list's entries, in the order the read that made it merged them.
+func (k knivesKept) entries() []knivesEntry {
+	entries := make([]knivesEntry, 0, len(k.Entries))
+	for _, entry := range k.Entries {
+		entries = append(entries, knivesEntry{name: entry.Name, origin: entry.Origin, release: entry.Release, forbidden: entry.Forbidden})
+	}
+	return entries
+}
+
+// freshAt is whether the kept list stands in for a read at now: it was read no more than
+// knivesKeptFor before now, and not after now, which only a clock set back since can show.
+func (k knivesKept) freshAt(now time.Time) bool {
+	age := now.Sub(k.ReadAt)
+	return age >= 0 && age <= knivesKeptFor
+}
+
+// keptKnives is the kept list for the registries listed names, and false where none is kept: no
+// XDG_STATE_HOME, no file, a file or directory this user alone could not have written
+// (readPrivateState), or a file that is not a kept list.
+func (g *Guard) keptKnives(listed string) (knivesKept, bool) {
+	path := g.knivesKeptPath(listed)
+	if path == "" {
+		return knivesKept{}, false
+	}
+	content, ok := readPrivateState(path)
+	if !ok {
+		return knivesKept{}, false
+	}
+	var kept knivesKept
+	if json.Unmarshal(content, &kept) != nil || kept.ReadAt.IsZero() {
+		return knivesKept{}, false
+	}
+	return kept, true
+}
+
+// keepKnives makes entries, read in full at readAt, the kept list for the registries listed names.
+// It writes nothing where the guard's base environment sets no XDG_STATE_HOME, or where the
+// directory cannot be made private (writePrivateState).
+func (g *Guard) keepKnives(listed string, readAt time.Time, entries []knivesEntry) {
+	path := g.knivesKeptPath(listed)
+	if path == "" {
+		return
+	}
+	kept := knivesKept{ReadAt: readAt.UTC(), Entries: make([]knivesKeptEntry, 0, len(entries))}
+	for _, entry := range entries {
+		kept.Entries = append(kept.Entries, knivesKeptEntry{Name: entry.name, Origin: entry.origin, Release: entry.release, Forbidden: entry.forbidden})
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		return
+	}
+	writePrivateState(path, ".knives-", append(encoded, '\n'))
+}
+
+// knivesKeptPath is the kept list's file for the registries listed names: under
+// $XDG_STATE_HOME/legion-gh/knives, named for the sha256 of the value itself, so that other rows
+// are another file and a list read from them never answers for these; "" where the guard's base
+// environment sets no XDG_STATE_HOME.
+func (g *Guard) knivesKeptPath(listed string) string {
+	state := value(g.base(), "XDG_STATE_HOME")
+	if state == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(listed))
+	return filepath.Join(state, "legion-gh", "knives", fmt.Sprintf("%x.json", sum))
 }
 
 // knivesRows are the rows listed holds. A value of any other shape is an error, never a list read

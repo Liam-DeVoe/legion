@@ -1,12 +1,15 @@
 package leakguard
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -81,8 +84,9 @@ func TestAnOverlaysTermFollowsTheRegistrysInTheEntrysList(t *testing.T) {
 }
 
 // A registry that cannot be read, or that is not what knives writes, refuses the push as a setup
-// failure: before the pass reads the destination, so even a push no entry would name is refused.
-// The failure names the row by its number, and the entry only where the first registry has it, and
+// failure where no list is kept, as none is for any guard here (each has a state home of its own):
+// before the pass reads the destination, so even a push no entry would name is refused. The
+// failure names the row by its number, and the entry only where the first registry has it, and
 // never a row's repository or path, what gh printed, or a term.
 func TestAKnivesRegistryThatCannotBeReadRefusesThePush(t *testing.T) {
 	const unread = "LEAK CHECK SETUP ERROR: the push to origin: the knives forbidden lists could not be read: "
@@ -390,5 +394,207 @@ func TestAKnivesTermInARefNameOrAMessageIsNotRead(t *testing.T) {
 				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
 			}
 		})
+	}
+}
+
+// knivesReadAt is when the first push of each kept-list test below reads the registries: an
+// invented moment, in UTC, which a notice names.
+var knivesReadAt = time.Date(2026, 11, 17, 9, 52, 0, 0, time.UTC)
+
+// knivesGuardAt is a guard whose knives pass reads the registries listed with the gh on path,
+// keeps its list under the state home state, tells the time by clock, and adds each notice it
+// gives to notices. Guards of one state and one listed share a kept list, as the pushes of a pod
+// do, each of which builds a guard of its own.
+func knivesGuardAt(t *testing.T, state string, clock Clock, notices *[]string, path, listed string) *Guard {
+	t.Helper()
+	return New(Options{
+		Check:      leakguardtest.Write(t, t.TempDir(), passes),
+		Visibility: answers(Public, nil),
+		Clock:      clock,
+		Notice:     func(line string) { *notices = append(*notices, line) },
+		Env:        append(fixtureenv.Isolated(t.TempDir()), path, listed, "XDG_STATE_HOME="+state),
+	})
+}
+
+// knivesFailing is the gh of servingKnives where the overlay can no longer be read, with the
+// LEGION_KNIVES_REGISTRIES entry of the registry and the overlay, whose value a kept list is found
+// by: the one a guard that read both keeps its list under.
+func knivesFailing(t *testing.T) (path, listed, ran string) {
+	t.Helper()
+	unserved := knivesOverlayRow
+	unserved.unserved = true
+	return servingKnives(t, theKnivesRow, unserved)
+}
+
+// knivesKeptFile is guard's kept list's file for listed, a LEGION_KNIVES_REGISTRIES entry of
+// servingKnives, whose value names the file.
+func knivesKeptFile(guard *Guard, listed string) string {
+	return guard.knivesKeptPath(strings.TrimPrefix(listed, KnivesRegistriesVar+"="))
+}
+
+// A push whose read passed keeps the merged list, in a directory and a file only this user can
+// read, and a push up to ten minutes after it matches against that list and reads no registry:
+// gh runs once for the two pushes, and the second is refused for the term all the same.
+func TestAFreshKeptKnivesListIsUsedWithNoRead(t *testing.T) {
+	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
+	path, listed, ran := servingKnives(t, theKnivesRow)
+	clock := &visibilityTestClock{now: knivesReadAt}
+	state := t.TempDir()
+	var notices []string
+	want := []string{"notes.md:1: forbidden term 2"}
+	for _, at := range []time.Duration{0, knivesKeptFor} {
+		clock.now = knivesReadAt.Add(at)
+		err := knivesGuardAt(t, state, clock, &notices, path, listed).Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin))
+		if refused := knivesRefusal(t, err); !slices.Equal(refused.Lines, want) {
+			t.Errorf("%s after the read, the report is %q, want %q", at, refused.Lines, want)
+		}
+		if runs := countLines(t, ran); runs != 1 {
+			t.Fatalf("%s after the read, gh ran %d times, want the first push's one read alone", at, runs)
+		}
+	}
+	kept := knivesKeptFile(knivesGuardAt(t, state, clock, &notices, path, listed), listed)
+	for file, mode := range map[string]os.FileMode{filepath.Dir(kept): 0o700, kept: 0o600} {
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != mode {
+			t.Errorf("%s is %o, want %o", file, info.Mode().Perm(), mode)
+		}
+	}
+	if len(notices) != 0 {
+		t.Errorf("the guard gave the notices %q, want none", notices)
+	}
+}
+
+// A kept list read more than ten minutes before a push, or after it, which only a clock set back
+// can show, is not used: the push reads every registry again.
+func TestAStaleKeptKnivesListIsReadAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   time.Duration
+	}{
+		{name: "ten minutes and one second after the read", at: knivesKeptFor + time.Second},
+		{name: "one second before the read", at: -time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
+			path, listed, ran := servingKnives(t, theKnivesRow)
+			clock := &visibilityTestClock{now: knivesReadAt}
+			state := t.TempDir()
+			var notices []string
+			for i, at := range []time.Duration{0, tc.at} {
+				clock.now = knivesReadAt.Add(at)
+				knivesRefusal(t, knivesGuardAt(t, state, clock, &notices, path, listed).Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin)))
+				if runs := countLines(t, ran); runs != i+1 {
+					t.Errorf("after push %d, gh ran %d times, want %d", i+1, runs, i+1)
+				}
+			}
+		})
+	}
+}
+
+// A read that fails, where a list of any age is kept, refuses a push whose destination an entry
+// of the kept list names, as the failed read refuses every push where none is kept: the failure
+// names the row that could not be read. The commit adds no term, so it is the read that refuses
+// it. The kept list stays the one the read that passed made.
+func TestAFailedKnivesReadRefusesAPushTheKeptListNames(t *testing.T) {
+	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\n"})
+	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
+	failing, failingListed, _ := knivesFailing(t)
+	if failingListed != listed {
+		t.Fatalf("the failing gh's rows are %s, want the kept list's %s", failingListed, listed)
+	}
+	clock := &visibilityTestClock{now: knivesReadAt}
+	state := t.TempDir()
+	var notices []string
+	push := knivesPush(repo, base, head, "origin", knivesOrigin)
+	if err := knivesGuardAt(t, state, clock, &notices, path, listed).Push(bound(t), push); err != nil {
+		t.Fatalf("a push that adds no term, its registries read in full: %v", err)
+	}
+	guard := knivesGuardAt(t, state, clock, &notices, failing, listed)
+	kept := knivesKeptFile(guard, listed)
+	before, err := os.ReadFile(kept)
+	if err != nil {
+		t.Fatalf("the read that passed kept no list: %v", err)
+	}
+	clock.now = knivesReadAt.Add(time.Hour)
+	err = guard.Push(bound(t), push)
+	setupFailure(t, err)
+	const want = "LEAK CHECK SETUP ERROR: the push to origin: the knives forbidden lists could not be read: knives registry 2 of LEGION_KNIVES_REGISTRIES: gh exited 1"
+	if err.Error() != want {
+		t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
+	}
+	if after, err := os.ReadFile(kept); err != nil || string(after) != string(before) {
+		t.Errorf("after the failed read the kept list is %q (%v), want the one the read that passed made, %q", after, err, before)
+	}
+	if len(notices) != 0 {
+		t.Errorf("the guard gave the notices %q, want none", notices)
+	}
+}
+
+// A read that fails, where a list is kept, lets a push go on whose destination no entry of the
+// kept list names, however old the list, and the guard says so in one notice. The notice
+// names the row by its number and the kept list by its time, and no repository, path, ref or
+// term. The commit holds a term of the entry the kept list has for another repository.
+func TestAFailedKnivesReadLetsAPushTheKeptListDoesNotNameGoOn(t *testing.T) {
+	_, repo, base, head := knivesCommit(t, map[string]string{"notes/plans.md": "the QUILLWORTHY build\n"})
+	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
+	failing, _, failed := knivesFailing(t)
+	clock := &visibilityTestClock{now: knivesReadAt}
+	state := t.TempDir()
+	var notices []string
+	push := knivesPush(repo, base, head, "origin", "https://github.com/invented-org/another-repo.git")
+	if err := knivesGuardAt(t, state, clock, &notices, path, listed).Push(bound(t), push); err != nil {
+		t.Fatalf("a push no entry names, its registries read in full: %v", err)
+	}
+	clock.now = knivesReadAt.Add(24 * time.Hour)
+	if err := knivesGuardAt(t, state, clock, &notices, failing, listed).Push(bound(t), push); err != nil {
+		t.Fatalf("a push the kept list names no entry for, after a read that failed: %v", err)
+	}
+	if runs := countLines(t, failed); runs != 2 {
+		t.Errorf("the failing gh ran %d times, want one read of each of the two registries", runs)
+	}
+	want := []string{"LEAK CHECK: the knives forbidden lists could not be read (knives registry 2 of LEGION_KNIVES_REGISTRIES: gh exited 1); " +
+		"the list read at 2026-11-17T09:52:00Z names no entry for this push's destination, so the push goes on"}
+	if !slices.Equal(notices, want) {
+		t.Errorf("the notices are %q, want %q", notices, want)
+	}
+	said := strings.ToLower(strings.Join(notices, "\n"))
+	for _, private := range []string{"invented-org", "another-repo", "knives-registry", "private-registry", "repos.toml", "repos.local.toml",
+		"refs/heads", "notes/", "plans.md", "quillwort", "marrowfen", "bramblecote"} {
+		if strings.Contains(said, private) {
+			t.Errorf("the notice holds %q: %q", private, notices)
+		}
+	}
+}
+
+// A kept list in a directory others can read is not this user's alone, so the pass does not use
+// it, neither in place of a read nor after one that fails: a push a minute after the read reads
+// every registry again, and where that read fails the push is refused, although no entry of the
+// kept list names its destination.
+func TestAKeptKnivesListInADirectoryOthersCanReadIsNotUsed(t *testing.T) {
+	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\n"})
+	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
+	failing, _, failed := knivesFailing(t)
+	clock := &visibilityTestClock{now: knivesReadAt}
+	state := t.TempDir()
+	var notices []string
+	push := knivesPush(repo, base, head, "origin", "https://github.com/invented-org/another-repo.git")
+	guard := knivesGuardAt(t, state, clock, &notices, path, listed)
+	if err := guard.Push(bound(t), push); err != nil {
+		t.Fatalf("a push no entry names, its registries read in full: %v", err)
+	}
+	if err := os.Chmod(filepath.Dir(knivesKeptFile(guard, listed)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = knivesReadAt.Add(time.Minute)
+	err := knivesGuardAt(t, state, clock, &notices, failing, listed).Push(bound(t), push)
+	if runs := countLines(t, failed); runs != 2 {
+		t.Errorf("the failing gh ran %d times, want one read of each of the two registries", runs)
+	}
+	setupFailure(t, err)
+	if len(notices) != 0 {
+		t.Errorf("the guard gave the notices %q, want none", notices)
 	}
 }

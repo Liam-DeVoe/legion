@@ -23,8 +23,9 @@ import (
 
 const rateLimitWaitBound = 2 * time.Minute
 
-// Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
-// rate-limit reset does not sleep for wall-clock time.
+// Clock supplies the time and waits visibility reads use, and the time the knives pass keeps its
+// list by (Guard.knives). Tests replace it so retrying a near rate-limit reset does not sleep for
+// wall-clock time, and so a kept list ages without waiting.
 type Clock interface {
 	Now() time.Time
 	Sleep(context.Context, time.Duration) error
@@ -209,27 +210,8 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 	if path == "" {
 		return "", false
 	}
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return "", false
-	}
-	defer dir.Close()
-	info, err := dir.Stat()
-	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
-		return "", false
-	}
-	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return "", false
-	}
-	cache := os.NewFile(uintptr(fd), path)
-	defer cache.Close()
-	info, err = cache.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return "", false
-	}
-	content, err := io.ReadAll(cache)
-	if err != nil {
+	content, ok := readPrivateState(path)
+	if !ok {
 		return "", false
 	}
 	var entry visibilityCacheEntry
@@ -237,6 +219,39 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 		return "", false
 	}
 	return Public, true
+}
+
+// readPrivateState is the content of the file at path, a file of the guard's state that only
+// this user may have written: its directory opened without following a link, owned by the
+// current user and readable by no one else, and the file opened in it without following a link,
+// regular and readable by no one else. Anything else is no content. A kept answer may only spare
+// the guard a read, so one another user could have planted is never read (keptVisibility,
+// keptKnives).
+func readPrivateState(path string) ([]byte, bool) {
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		return nil, false
+	}
+	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return nil, false
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, false
+	}
+	return content, true
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
@@ -252,6 +267,18 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	if path == "" {
 		return
 	}
+	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
+	if err != nil {
+		return
+	}
+	writePrivateState(path, ".visibility-", append(encoded, '\n'))
+}
+
+// writePrivateState writes content to the file at path, a file of the guard's state that only
+// this user may read (readPrivateState): its directory made, and set to 0700, and content written
+// to a temporary file in it named from prefix, set to 0600 before a byte is written, then renamed
+// over path. Where the directory cannot be made private, or any step fails, nothing is written.
+func writePrivateState(path, prefix string, content []byte) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
@@ -263,11 +290,7 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return
 	}
-	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
-	if err != nil {
-		return
-	}
-	tmp, err := os.CreateTemp(dir, ".visibility-")
+	tmp, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		return
 	}
@@ -276,7 +299,7 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 		tmp.Close()
 		return
 	}
-	if _, err := tmp.Write(append(encoded, '\n')); err != nil {
+	if _, err := tmp.Write(content); err != nil {
 		tmp.Close()
 		return
 	}

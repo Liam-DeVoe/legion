@@ -3,8 +3,12 @@ body: |-
   A push from a pod's role to a public repository now has a third pass, the knives push gate: it
   reads the knives registry files `leak_guard.knives_registries` in `legion.yaml` names (the first
   row the registry, each later row an overlay, each a `repo`, `path` and `ref` read with the role's
-  own gh at every push) and refuses the push when a file it adds holds a forbidden term of the
-  entry for its destination, naming the file, the line and the term's number but never the term.
+  own gh) and refuses the push when a file it adds holds a forbidden term of the entry for its
+  destination, naming the file, the line and the term's number but never the term. A role keeps
+  the list of its last good read for 10 minutes, in a file only its user can read, and reads no
+  file in that time; a read that fails refuses a push whose destination the kept list names and
+  lets any other through with a notice on standard error, and with no good read kept every push
+  to a public repository is refused.
   The daemon tells every role of an issue pod and the controller it launches the rows as
   `LEGION_KNIVES_REGISTRIES`; a tmux pane is told nothing, since its push runs no leak guard. The
   new `knives-push-gate` capability row is open while no registry is named, and under tmux, which

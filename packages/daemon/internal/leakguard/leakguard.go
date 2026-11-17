@@ -64,11 +64,18 @@ type Options struct {
 	// read alone: a read it refuses for a spent rate limit still goes on to the GraphQL read and
 	// ls-remote (Guard.Visibility), which a test stands gh and git in for on Env's PATH.
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
-	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
+	// Clock supplies the time and bounded wait of a rate-limited visibility read, and the time a
+	// push's knives pass keeps its read under and ages its kept list by (Guard.knives). Nil is
+	// wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
+	// Notice is told, one whole line at a time, what a person should know of a write the guard
+	// lets go on: today, a push the knives pass lets through on its kept list while a registry
+	// cannot be read (Guard.knives). A line carries no repository, path, ref or term. Nil says
+	// nothing; `legion leak-check pre-push` writes each line to standard error, which git shows.
+	Notice func(string)
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, the git commands a push's records and remote URLs are read with, and the gh reads of
 	// the knives registries. It is also where the guard reads KnivesRegistriesVar. Nil means this
@@ -106,6 +113,13 @@ func (g *Guard) base() []string {
 		return g.opts.Env
 	}
 	return os.Environ()
+}
+
+// notice gives line to the caller's Notice, where it named one.
+func (g *Guard) notice(line string) {
+	if g.opts.Notice != nil {
+		g.opts.Notice(line)
+	}
 }
 
 // env is the environment a child of this guard starts from: base, the names that make a

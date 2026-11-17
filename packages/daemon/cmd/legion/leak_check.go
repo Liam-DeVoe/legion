@@ -36,7 +36,9 @@ func runLeakCheck(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 // runLeakCheckPrePush is the hook's half: git hands it the remote's name and URL and the update
 // lines it computed, and the repository it runs the hook in is the working directory, which is
-// the repository the guard reads the push's commits from.
+// the repository the guard reads the push's commits from. A notice of the guard's, a push its
+// knives pass let through on its kept list while a registry could not be read, goes to standard
+// error, which git shows the person or the agent pushing.
 func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer) int {
 	flags := newFlags("leak-check pre-push", leakCheckPrePushUsage, stderr)
 	if code, ok := parseFlags(flags, args); !ok {
@@ -56,7 +58,7 @@ func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer
 	if err != nil {
 		return leakCheckReport(stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{})
+	guard := leakguard.New(leakguard.Options{Notice: func(line string) { fmt.Fprintln(stderr, line) }})
 	return leakCheckReport(stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,

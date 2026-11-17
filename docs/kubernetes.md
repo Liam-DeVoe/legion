@@ -80,8 +80,9 @@ It carries:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   Where `leak_guard.knives_registries` in `legion.yaml` names a knives registry ([Operator configuration](#operator-configuration)), a push to a repository GitHub reports public has a third pass, after the shared check and the rule file (`Guard.knives`, `internal/leakguard/knives.go`).
-  At every push it reads each row's file with the role's own gh, the first row as the registry and each later row as an overlay that adds forbidden terms to the registry's entries, and it refuses the push when a line or a path a pushed commit adds holds a forbidden term of an entry whose origin or release names the push's destination, matched as `knives audit` matches one (case aside, as a substring); a ref name, an identity and a message are not read, as knives reads none.
-  A registry it cannot read, or one that is not knives' TOML, refuses the push as a setup error, whatever the destination.
+  It reads each row's file with the role's own gh, the first row as the registry and each later row as an overlay that adds forbidden terms to the registry's entries, and it refuses the push when a line or a path a pushed commit adds holds a forbidden term of an entry whose origin or release names the push's destination, matched as `knives audit` matches one (case aside, as a substring); a ref name, an identity and a message are not read, as knives reads none.
+  The role keeps the list of its last good read for 10 minutes and reads no file meanwhile, in a file under `$XDG_STATE_HOME/legion-gh/knives/` only its user can read, since it holds the terms.
+  A file it cannot read, or one that is not knives' TOML, refuses as a setup error a push whose destination the kept list names, whatever the list's age, and lets any other go on with a notice on standard error; with no good read kept, it refuses every push the pass runs on.
   The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
   The second and third passes read a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
   a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`).
@@ -6394,7 +6395,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon tells every role it launches the rows, in their order, as `LEGION_KNIVES_REGISTRIES`, a JSON list:
   every role of an issue pod and the controller it launches under `controller: daemon`, each through its generation's start command, so no pod is replaced.
   The name is the runtime's own, so neither `pod.env` nor a launch may set it.
-  Each file is read at every push to a repository GitHub reports public, with the role's own gh, so every role's GitHub credential must read each repository the rows name, and a change to a file reaches the next such push.
+  Each file is read with the role's own gh at a push to a repository GitHub reports public, so every role's GitHub credential must read each repository the rows name.
+  A role keeps the list of its last good read for 10 minutes and reads no file in that time, so a change to a file reaches every role's pushes within 10 minutes.
+  A file that cannot be read refuses a push whose destination the kept list names and lets any other go on with a notice, and a role with no good read kept refuses every push to a public repository.
   A change to the rows themselves reaches each role at its next launch: the rows are no part of a role's address record, so a daemon restarted with other rows relaunches nothing for them.
   A row may name a private repository, so the rows never reach the `settings` of `legion state`.
   Load refuses a repo that is no `<owner>/<name>`, a path with a leading `/` or a `..` component, an unknown or missing field, and two rows naming one file of one repository, under either name of a `repository_renames` pair.

@@ -159,7 +159,7 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 
 // The example's commented leak_guard block, uncommented, passes the same check and settles the
 // knives registry and its overlay in the file's order. It needs no volume and no mount: the rows
-// name files in GitHub repositories, which every role's gh reads at each push and the check reads
+// name files in GitHub repositories, which a role's gh reads at a push it scans and the check reads
 // not at all. With a registry named the knives-push-gate row is present, so the check prints the
 // shipped example's stdout less that row's gap line, which the example as shipped prints.
 func TestShippedLegionYAMLExamplesLeakGuardPassesCheckConfig(t *testing.T) {
