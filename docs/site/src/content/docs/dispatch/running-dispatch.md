@@ -363,8 +363,8 @@ A project the database holds private that the list does not name, because its ke
 the list or the list was emptied, stays private. Nothing of it reaches anyone who could not see
 it before, and every change of its visibility but its owner's switch to public is refused.
 Dispatch still starts and serves every other project: it logs an ERROR line naming the project and
-both repairs at start and at every maintenance pass, once a minute, and `/healthz` names it in
-`private_projects_unprovisioned`. The owner decides the repair: put the key back on the list, or
+both repairs at start and at every maintenance pass, once a minute, and `/healthz` answers
+`degraded: ["private_project_unprovisioned"]`, naming no project. The owner decides the repair: put the key back on the list, or
 make the project public, from the Access tab or, with the database credential alone and no server
 running if need be, with:
 
@@ -413,10 +413,11 @@ balancer's or Kubernetes' readiness probe at it.
 - `outbox_publisher` is whether this server is the one publishing notifications to NATS now. One
   server publishes at a time, so a healthy server can say `false`, and it always does when NATS is
   turned off. It never decides `ok` or the status.
-- `private_projects_unprovisioned` names, sorted, each project the database holds private that
-  `DISPATCH_PRIVATE_PROJECTS` does not name ([Private projects](#private-projects)), as the
-  server's last read found them: it reads every 30 seconds, so a probe adds no read. It is absent
-  when there is none, and it never decides `ok` or the status.
+- `degraded` is `["private_project_unprovisioned"]` while the database holds a private project
+  that `DISPATCH_PRIVATE_PROJECTS` does not name ([Private projects](#private-projects)), as the
+  server's last read found it: it reads every 30 seconds, so a probe adds no read. It names no
+  project and counts none, because the check answers anyone; the project's key is in the ERROR
+  line. It is absent when there is none, and it never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.

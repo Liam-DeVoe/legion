@@ -166,7 +166,7 @@ Only these projects can be made private, and an entry that is not a project key,
 An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming the command, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
 A switch to public is never refused by any of them.
 Nothing here stops the boot, because a boot that exits would stop every project:
-a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass and by `/healthz`'s `private_projects_unprovisioned`, which leaves `ok` and the status as they are (Making a project public without the server, below);
+a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
 with a list, a store a private project's reads would answer wrongly is one ERROR line at boot and one an hour, naming its first rows and the command that repairs it.
 
 Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
@@ -3903,8 +3903,9 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
-  `private_projects_unprovisioned` names, sorted, each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found them, and is absent when there is none;
-  it never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
+  `degraded` is `["private_project_unprovisioned"]` while the database holds a private project that `DISPATCH_PRIVATE_PROJECTS` does not name, as the last of the reads `privateProjectsState` makes every 30 seconds found it, and is absent when there is none;
+  it is a fixed reason, with no key and no count, because `/healthz` answers a caller with no credential: the project's key is in the ERROR line the boot and every maintenance pass log.
+  It never decides `ok` or the status, since such a project stays private and the server serves every other one (Required configuration, above).
 
 - `/livez` (GET; none)
 

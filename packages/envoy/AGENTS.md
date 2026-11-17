@@ -2717,7 +2717,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   and, as the transaction's last statement, `Deps.BusProjects.EnsurePrivate` through the route's own transaction, which writes the project's key in the hub's `envoy_private_projects` bucket, so a hub that refuses it, or no bus at all, is `409 PRIVATE_PROJECTS_UNAVAILABLE` with nothing changed (`ensurePrivate`).
   A switch to public meets only the owner check, and the route makes no bus call for it.
   A project the database holds private that the list does not name stays private, and every change of its visibility but its owner's switch to public is refused;
-  nothing about it refuses the boot: `reportPrivateProjects` logs an ERROR line naming it and both repairs at boot, `api.RunMaintenanceSweep` logs it every pass, and `/healthz` names it in `private_projects_unprovisioned` and leaves `ok` as it is.
+  nothing about it refuses the boot: `reportPrivateProjects` logs an ERROR line naming it and both repairs at boot, `api.RunMaintenanceSweep` logs it every pass, and `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no key and counting none, and leaves `ok` as it is.
   So a key leaves the list only after its project is public, made so by its owner or by `envoy-dispatch project-visibility <KEY> public` (`cmd/dispatch/README.md`, "Making a project public without the server").
 
 - `session_projects` holds which projects each session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).

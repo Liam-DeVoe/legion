@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,9 +87,9 @@ func lineHolding(logged, substring string) string {
 }
 
 // A process given DISPATCH_PRIVATE_PROJECTS serves over a private project its list does not name
-// and over an incomplete store: it logs both and answers /healthz 200, ok, naming the project in
-// private_projects_unprovisioned. The whole wiring of main: the setting's read, the boot's report
-// and the probe's cached read.
+// and over an incomplete store: it logs both, the project's key in the log, and answers /healthz
+// 200, ok, degraded for it, naming no key. The whole wiring of main: the setting's read, the
+// boot's report and the probe's cached read.
 func TestAProcessServesOverAnUnprovisionedPrivateProject(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -113,13 +115,17 @@ func TestAProcessServesOverAnUnprovisionedPrivateProject(t *testing.T) {
 	}
 	defer response.Body.Close()
 	var health struct {
-		OK            bool     `json:"ok"`
-		Unprovisioned []string `json:"private_projects_unprovisioned"`
+		OK       bool     `json:"ok"`
+		Degraded []string `json:"degraded"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		t.Fatalf("decode /healthz: %v", err)
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read /healthz: %v", err)
 	}
-	if response.StatusCode != http.StatusOK || !health.OK || len(health.Unprovisioned) != 1 || health.Unprovisioned[0] != "PRIV" {
-		t.Fatalf("/healthz = %d %+v, want 200, ok, and PRIV unprovisioned", response.StatusCode, health)
+	if err := json.Unmarshal(raw, &health); err != nil {
+		t.Fatalf("decode /healthz %s: %v", raw, err)
+	}
+	if response.StatusCode != http.StatusOK || !health.OK || !slices.Equal(health.Degraded, []string{unprovisionedPrivateProjectReason}) || strings.Contains(string(raw), "PRIV") {
+		t.Fatalf("/healthz = %d %s, want 200, ok, degraded [%q], and no project's key", response.StatusCode, raw, unprovisionedPrivateProjectReason)
 	}
 }

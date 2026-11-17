@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -708,11 +708,14 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	}
 }
 
-// /healthz names, under private_projects_unprovisioned, each project the database holds private
-// that DISPATCH_PRIVATE_PROJECTS does not name, and still answers 200 with ok true, so no probe
-// takes the process out of service for it. With none, the body is byte for byte the one a process
-// with no such read answers (R9).
-func TestHealthzNamesUnprovisionedPrivateProjects(t *testing.T) {
+// /healthz says that the service is degraded while the database holds a private project that
+// DISPATCH_PRIVATE_PROJECTS does not name, with one fixed reason code and nothing else: no key and
+// no count, since a probe answers a caller with no credential, and a key or a count tells it of a
+// project it cannot see (R2). The keys are the operator's, in the ERROR line the boot and each
+// maintenance pass log. It still answers 200 with ok true, so no probe takes the process out of
+// service for it. With none, the body is byte for byte the one a process with no such read
+// answers (R9).
+func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T) {
 	database := storetest.Open(t)
 	probe := func(state *privateProjectsState) (int, string) {
 		t.Helper()
@@ -734,20 +737,35 @@ func TestHealthzNamesUnprovisionedPrivateProjects(t *testing.T) {
 	if code, body := probe(read()); code != http.StatusOK || body != without {
 		t.Fatalf("/healthz with no private project = %d %s, want 200 and the body without the read, %s", code, body, without)
 	}
-	if _, err := database.Pool.Exec(context.Background(),
-		`insert into projects (key, name, default_assignee, visibility) values ('PRIV', 'Private', 'alice@example.com', 'private')`); err != nil {
-		t.Fatalf("seed the private project PRIV: %v", err)
+	for _, key := range []string{"PRIV", "PRIVTWO"} {
+		if _, err := database.Pool.Exec(context.Background(),
+			`insert into projects (key, name, default_assignee, visibility) values ($1, 'Private', 'alice@example.com', 'private')`, key); err != nil {
+			t.Fatalf("seed the private project %s: %v", key, err)
+		}
 	}
 	code, body := probe(read())
-	var health struct {
-		OK            bool     `json:"ok"`
-		Unprovisioned []string `json:"private_projects_unprovisioned"`
-	}
+	var health map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(body), &health); err != nil {
 		t.Fatalf("decode /healthz %s: %v", body, err)
 	}
-	if code != http.StatusOK || !health.OK || !slices.Equal(health.Unprovisioned, []string{"PRIV"}) {
-		t.Fatalf("/healthz with PRIV private off an empty list = %d %s, want 200, ok, and private_projects_unprovisioned [PRIV]", code, body)
+	if code != http.StatusOK || string(health["ok"]) != "true" {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list = %d %s, want 200 and ok true", code, body)
+	}
+	if got := string(health["degraded"]); got != `["`+unprovisionedPrivateProjectReason+`"]` {
+		t.Fatalf("/healthz with PRIV and PRIVTWO private off an empty list: degraded = %s, want [%q]: %s", got, unprovisionedPrivateProjectReason, body)
+	}
+	if strings.Contains(body, "PRIV") {
+		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
+	}
+	// No count either: the body is the one without the read, field for field, plus degraded alone,
+	// so nothing in it changes with how many projects are unprovisioned.
+	delete(health, "degraded")
+	var withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(without), &withoutFields); err != nil {
+		t.Fatalf("decode /healthz %s: %v", without, err)
+	}
+	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz with an unprovisioned private project = %s, want the body without one plus degraded alone, %s", body, without)
 	}
 }
 

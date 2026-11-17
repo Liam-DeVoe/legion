@@ -73,7 +73,8 @@ const privateProjectsReadInterval = 30 * time.Second
 
 // privateProjectsState is the one cached read of the projects the database holds private, behind
 // the Dispatch-Private-Projects header every response carries (privateProjectsHeader), /healthz's
-// private_projects_unprovisioned and the boot's report. Its first read runs at boot, after the
+// degraded reason (never a key: unprovisionedPrivateProjectReason) and the boot's report, whose
+// ERROR line is the one place the keys appear. Its first read runs at boot, after the
 // database's open and migrate and before the first loop and the repository seed, and a failure of
 // it stops the boot (startPrivateProjectsState); it then reads every privateProjectsReadInterval
 // in a goroutine of its own (run), where a failure counts as a private project. A nil state reads
@@ -180,6 +181,12 @@ func (s *privateProjectsState) header() string {
 	}
 	return "0"
 }
+
+// unprovisionedPrivateProjectReason is the one reason /healthz's degraded field gives while the
+// database holds a private project the list does not name. It is fixed: /healthz answers a caller
+// with no credential, so it carries no key and no count, which would tell that caller of projects
+// it cannot see (R2). The keys are the operator's, in reportPrivateProjects' ERROR line.
+const unprovisionedPrivateProjectReason = "private_project_unprovisioned"
 
 // Unprovisioned answers, sorted, the private projects the list does not name, as the last read
 // found them; nil for none, for a nil state, and after a failed read.
