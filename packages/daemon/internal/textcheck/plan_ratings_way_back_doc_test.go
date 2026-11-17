@@ -1,10 +1,6 @@
 package textcheck
 
-import (
-	"testing"
-
-	"github.com/sjawhar/legion/daemon/internal/store/migrations"
-)
+import "testing"
 
 // The way back of the release that rates each plan stands in two files: the header of store
 // migration 20261117023932_outbox_kinds_with_the_plan_record, which ships the block with the
@@ -35,28 +31,10 @@ const (
 // carries, line for line. An edit to either side alone fails here: a line changed in the guide
 // and not in the header would otherwise never reach the test that runs the header's block.
 func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
-	migration := migrationNames(t, planRatingsVersion)[0]
-	header := planRatingsWayBackOfTheHeader(t)
-	guide := wayBackBlockOfTheGuide(t, planRatingsWayBackSection, planRatingsWayBackMark,
-		"the header of "+migration)
-	if header == guide {
-		return
-	}
-	t.Errorf("the header of %s and %s's way back disagree:\n%s"+
-		"internal/store's test runs the header's block and an operator the guide's; change them in one commit",
-		migration, wayBackGuide, wayBackBlockDifference("the header", header, guide))
-}
-
-// planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsVersion carries,
-// read by the one reader of it (migrations.WayBack) that internal/store's test runs. A migration
-// that is not embedded, and a header with no way back, stop the test by name.
-func planRatingsWayBackOfTheHeader(t *testing.T) string {
-	t.Helper()
-	block, err := migrations.WayBack(planRatingsVersion)
-	if err != nil {
-		t.Fatalf("read the way back %s gives from the header of migration %d: %v", wayBackGuide, planRatingsVersion, err)
-	}
-	return block
+	held := "the header of " + migrationNames(t, planRatingsVersion)[0]
+	assertIsTheGuidesBlock(t, headersWayBack(t, planRatingsVersion, held), "the header", held,
+		"internal/store's test runs the header's block and an operator the guide's",
+		planRatingsWayBackSection, planRatingsWayBackMark)
 }
 
 // The guide's list of the migrations recorded above the phase entry sends an operator from the

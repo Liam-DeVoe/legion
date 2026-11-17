@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // The way back of store migration 20261111225552 stands in the migration's header, which ships
@@ -129,14 +131,36 @@ func assertTheExtractIsTheGuidesBlock(t *testing.T, extract, heading, mark strin
 		t.Fatalf("%s carries nothing under its `#` header: internal/daemon's check of the migration "+
 			"headers has no copy of the guide's block to hold them to", extract)
 	}
-	guide := wayBackBlockOfTheGuide(t, heading, mark, extract)
-	if copied == guide {
+	assertIsTheGuidesBlock(t, copied, "the extract", extract,
+		"the extract is the copy internal/daemon checks the migration headers against, so the guide "+
+			"answers for the migrations only while the two are equal", heading, mark)
+}
+
+// headersWayBack is the way back the header of the migration version carries, read by the one
+// reader of it (migrations.WayBack), which internal/store's tests run over a store, so the text a
+// check here holds to the guide is the text those tests run. held names the header in a failure.
+// A migration that is not embedded, and a header with no way back, stop the test by name: a block
+// this cannot find is a block a check would pass while comparing nothing.
+func headersWayBack(t *testing.T, version int, held string) string {
+	t.Helper()
+	block, err := migrations.WayBack(version)
+	if err != nil {
+		t.Fatalf("read the way back %s gives from %s: %v", wayBackGuide, held, err)
+	}
+	return block
+}
+
+// assertIsTheGuidesBlock holds block, the text held names and label names in the lines a failure
+// prints, to the fenced block of the guide holding mark under heading, and names each line the two
+// disagree on. why says who runs each of the two, which is why they stay one text.
+func assertIsTheGuidesBlock(t *testing.T, block, label, held, why, heading, mark string) {
+	t.Helper()
+	guide := wayBackBlockOfTheGuide(t, heading, mark, held)
+	if block == guide {
 		return
 	}
-	t.Errorf("%s and %s's way back disagree:\n%s"+
-		"the extract is the copy internal/daemon checks the migration headers against, so the guide "+
-		"answers for the migrations only while the two are equal; change them in one commit",
-		extract, wayBackGuide, wayBackBlockDifference("the extract", copied, guide))
+	t.Errorf("%s and %s's way back disagree:\n%s%s; change them in one commit",
+		held, wayBackGuide, wayBackBlockDifference(label, block, guide), why)
 }
 
 // wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn): the
