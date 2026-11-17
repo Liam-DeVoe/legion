@@ -214,7 +214,7 @@ export async function askBlockOf(
  *  (`400 INVALID_ASK_BLOCK` otherwise), so a seed calls this after the answer. An edit cannot put
  *  one there - an insert anchored in the ask lands beside it, and a replace reads its `with` as a
  *  fragment of its own, where a reading stands at no decision's or ask's end - so the spec is
- *  uploaded again under its own name, as INFRA-1150's own tests add one
+ *  uploaded again under its own name, as the server's own tests add one
  *  (`api/decision_census_test.go`). */
 export async function writeReading(options: {
   ask: string;
@@ -369,7 +369,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     }),
     name: "plan.md",
   });
-  // The decisions are blocks of the spec's `## Decisions` part (dispatch://INFRA-1150), which the
+  // The decisions are blocks of the spec's `## Decisions` part, which the
   // planner writes, so each is an agent's and the ask block's ask is the planner's. A person
   // answers that ask, and the reading of the answer goes inside it after.
   const decisions = (reading: boolean) =>

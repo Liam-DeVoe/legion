@@ -87,7 +87,7 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   `from` is absent; dispatch://INFRA-1098 item 21 adds it. For the disagreement `c-spine`
  *   names, `seedSpineCases` seeds an answered ask whose block's `shaped` ties one requirement
  *   while that ask, which a reader would read as the requirement's origin, is another node.
- * - **Decisions.** They are nodes of the spec (dispatch://INFRA-1150): each agent's decision is a
+ * - **Decisions.** They are nodes of the spec: each agent's decision is a
  *   `decision` block of the spec's `## Decisions` part, written by the planner, whose `shaped`
  *   names the blocks it shaped, with `uncertainty` and `uncertainty_reason` on an unsure one and
  *   `replaced` on a replaced one. A person's decision is an answered `ask` block of that part,

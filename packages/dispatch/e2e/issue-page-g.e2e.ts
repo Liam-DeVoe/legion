@@ -536,7 +536,7 @@ test("a row's Reply and Answer set the page's writer", async ({ browser }) => {
       await expect(typed.locator("[data-row-act]")).toHaveCount(0);
     }
 
-    // Nothing was sent: no box exists until part L draws it. A thread's read mark is the page's
+    // Nothing was sent: the page draws no box to write in yet. A thread's read mark is the page's
     // own record of what the reader read (`outline-thread-read.tsx`), and no write of theirs.
     expect(
       writes.requests.filter(
@@ -549,14 +549,14 @@ test("a row's Reply and Answer set the page's writer", async ({ browser }) => {
   });
 });
 
-// c-writer's decision clauses, owed (part U's seed commit, decisions 128, 135 and 141): the
+// c-writer's decision clauses, owed since the seeds write decisions as nodes of the spec: the
 // decision that shaped a statement waits for review and draws Keep and Change, and the decision
-// a person asked to change says so, holds the change under it and draws neither (R10, F6). The
+// a person asked to change says so, holds the change under it and draws neither. The
 // page draws a decision's Keep, Change and change request from the decisions read, which answers
-// a decision node only once INFRA-1150's T7 and T8 are built; until then that read answers no
-// decision, and this row is skipped on that dependency, so it runs once T7 and T8 are under the
-// head. Its `@owed` tag is what a check's run leaves out (`--grep-invert @owed`), since a pass
-// counts no skipped case.
+// a decision node only once the server builds Keep on a decision node and the decisions read
+// over nodes; until then that read answers no decision, and this row is skipped on that
+// dependency, so it runs once both are under the head. Its `@owed` tag is what a check's run
+// leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // two reads of the API and two rows focused.
 test("a decision asked to change draws it, and a decision that waits draws Keep and Change @owed", async ({
@@ -568,7 +568,7 @@ test("a decision asked to change draws it, and a decision that waits draws Keep 
     await expectSeedDrawn(page, seeded);
     test.skip(
       ((await getIssueDecisions(seeded.key)).decisions ?? []).length === 0,
-      "owed: a decision node's Keep, Change and change request need INFRA-1150's T7 and T8 (part U's seed commit, decision 128)"
+      "owed: a decision node's Keep, Change and change request need the server's Keep on a decision node and its decisions read over nodes, which this server does not serve"
     );
 
     // The decision that shaped a statement waits for review: Keep and Change.

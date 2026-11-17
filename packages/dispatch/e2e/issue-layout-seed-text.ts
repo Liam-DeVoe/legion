@@ -120,7 +120,7 @@ export function planTaskText(index: number): string {
 }
 
 /** The block id of the ask block a seeded spec's `## Decisions` part holds: the person's
- *  decision, a question the planner asked there and a person answered (dispatch://INFRA-1150). */
+ *  decision, a question the planner asked there and a person answered. */
 export const ANSWERED_ASK_BLOCK_ID = "a-addresses";
 
 /** The question that ask block asks. */
@@ -157,7 +157,7 @@ export function decisionsPart(blocks: readonly string[]): string {
 }
 
 /** One decision a seeded spec's `## Decisions` part holds, in document order, the last one
- *  replaced. Each is written as INFRA-1150's conversion writes a section of a decisions document:
+ *  replaced. Each is written as the conversion of a decisions document writes each section:
  *  its heading is its first paragraph and its body follows, the requirements its body links are
  *  its `shaped`, an `Unsure:` paragraph is its `uncertainty_reason` and leaves its words, and a
  *  section under `## Replaced` is `replaced="true"`. The person's decision, which cited the

@@ -507,7 +507,7 @@ function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
     check: checks,
     child_issue: seeded.children.keys.length,
     comment: seeded.comments.threads.length + seeded.comments.replies.length + 1,
-    decision: seeded.decisions.length - 1, // the reading draws no row until part Y
+    decision: seeded.decisions.length - 1, // the reading draws no row yet
     message: Object.keys(seeded.messages).length,
     plan_task: seeded.planTasks.length,
     requirement: seeded.requirements.length + 1,
@@ -921,7 +921,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
     // The answered ask's block ties the requirement it shaped, and the reading of its answer
-    // stands inside it; a reading draws no row until part Y.
+    // stands inside it; a reading draws no row yet.
     const stored = await askBlockOf(seeded.specArtifactId, SPINE_ASK_BLOCK_ID);
     expect(stored.shaped, "the answered ask's block ties no requirement it shaped").toEqual([
       specBlockRef(seeded.key, SPINE_REQUIREMENTS.shapedElsewhere),
@@ -1015,7 +1015,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
 
     // The answered ask's block ties the requirements it shaped, and the reading of its answer
-    // stands inside it; a reading draws no row until part Y.
+    // stands inside it; a reading draws no row yet.
     const asked = await askBlockOf(seeded.specArtifactId, ANSWERED_ASK_BLOCK_ID);
     expect(asked.shaped, "the answered ask's block ties no requirement it shaped").toEqual(
       answeredAskShaped(seeded.key)
@@ -1146,9 +1146,9 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
   });
 });
 
-// c-spine's chip, owed (part U's seed commit, decisions 128, 135 and 141): the answered ask's
+// c-spine's chip, owed since the seeds write decisions as nodes of the spec: the answered ask's
 // `shaped` tie to a requirement is its chip, once, naming the requirement. That chip is drawn
-// once part T's outline, drawn from the tree read, is under the page; until the server serves
+// once the outline drawn from the tree read is under the page; until the server serves
 // that read this row is skipped on that dependency, so it runs once the tree read is served. Its
 // `@owed` tag is what a check's run leaves out (`--grep-invert @owed`), since a pass counts no
 // skipped case.
@@ -1159,9 +1159,9 @@ test("the answered ask's shaped tie is drawn once as a chip @owed", async ({ bro
   await phase(browser, seedSpineCases, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    // A folded branch draws one line and no chip (ruling 1 on R1), so the tree is read open. A
-    // chip names its target by the target's stored words, cut as a title is (G's `Chip`), so it
-    // is found by the words the seed stored.
+    // A folded branch draws one line and no chip, so the tree is read open. A
+    // chip names its target by the target's stored words, cut as a title is (`NodeRow.tsx`'s
+    // `Chip`), so it is found by the words the seed stored.
     await unfoldEveryBranch(page);
     test.skip(
       !(
@@ -1169,7 +1169,7 @@ test("the answered ask's shaped tie is drawn once as a chip @owed", async ({ bro
           headers: await userHeaders("alice"),
         })
       ).ok,
-      "owed: the answered ask's shaped tie is a chip once part T's outline reads the tree (part T, decision 128)"
+      "owed: the answered ask's shaped tie is a chip once the outline is drawn from the tree read, which this server does not serve"
     );
     const chips = (await drawnRows(page)).flatMap((row) => row.chips);
     expect(
@@ -2555,12 +2555,12 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
   });
 });
 
-// c-chain's `w`, owed (part U's seed commit, decisions 128, 135 and 141): from the check, `w`
+// c-chain's `w`, owed since the seeds write decisions as nodes of the spec: from the check, `w`
 // reaches back to the decision that informed its requirement. The page reads that decision from
-// the decisions read, which answers a decision node only once INFRA-1150's T8 reads the
-// decisions over nodes; until then this row is skipped on that dependency, so it runs once T8 is
-// under the head. Its `@owed` tag is what a check's run leaves out (`--grep-invert @owed`),
-// since a pass counts no skipped case.
+// the decisions read, which answers a decision node only once the server reads the
+// decisions over nodes; until then this row is skipped on that dependency, so it runs once that
+// read is under the head. Its `@owed` tag is what a check's run leaves out
+// (`--grep-invert @owed`), since a pass counts no skipped case.
 // SLOW(>=2s): the whole issue seeded, loaded until its reads settle and unfolded press by press,
 // then a read of the API and one key pressed.
 test("w on a check reaches the decision behind its requirement @owed", async ({ browser }) => {
@@ -2577,7 +2577,7 @@ test("w on a check reaches the decision behind its requirement @owed", async ({ 
     await unfoldEveryBranch(page);
     test.skip(
       ((await getIssueDecisions(seeded.key)).decisions ?? []).length === 0,
-      "owed: w reaches a decision node once INFRA-1150's T8 reads the decisions over nodes (part U's seed commit, decision 128)"
+      "owed: w reaches a decision node once the server reads the decisions over nodes, which this server does not do"
     );
 
     // From the check, `w` reaches back to the decision that informed its requirement.

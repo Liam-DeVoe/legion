@@ -1094,7 +1094,7 @@ export async function seedRows(): Promise<RowSeed> {
     asPlanner
   );
 
-  // The four decisions are blocks of the spec's `## Decisions` part (dispatch://INFRA-1150), which
+  // The four decisions are blocks of the spec's `## Decisions` part, which
   // the planner writes, so each is an agent's. The unsure one keeps its citation of `t1` in its
   // words, where a row draws it as a chip, and gives the rest of its `Unsure:` paragraph as its
   // reason. A decision's content is any block (`blocks.json`), so `raw` holds a requirement.
@@ -1152,7 +1152,7 @@ export async function seedRows(): Promise<RowSeed> {
     asPlanner
   );
   // A person asks to change one decision, by a comment anchored to its words after they last
-  // changed (decision 45: the anchor names the document by its id), which only `changed` holds.
+  // changed (the anchor names the document by its id), which only `changed` holds.
   const change = await createComment(key, {
     anchor: { artifact: issue.primary_artifact_id, quote: CHANGED_DECISION_WORDS },
     body: "Name them from the tree instead.",
