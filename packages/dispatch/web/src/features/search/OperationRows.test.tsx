@@ -27,8 +27,8 @@ import {
   renderBar,
   spyOnGoingBar,
 } from "./going-bar-fixture";
-import { forgetTurns } from "./going-turns";
-import { OPERATION_OPTION_ID, offerOptionId, useGoingOperations } from "./OperationRows";
+import { forgetTurns, turnOf } from "./going-turns";
+import { OPERATION_OPTION_ID, offerOptionId, sendPress, useGoingOperations } from "./OperationRows";
 import { useSendToAgentOffer } from "./SendToAgentOffer";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
@@ -845,6 +845,28 @@ const injected: GoingProposalEvent = {
   event: "proposal",
 };
 
+/** The update of LEGION-4 alone, which only an item's stored text asked for: a submit runs none
+ *  of it, and the person picks it to run it. */
+const storedOnly: GoingProposalEvent = {
+  data: {
+    offers: [
+      {
+        action: "dispatch_issue_update",
+        invocations: [
+          {
+            arguments: { issue: "LEGION-4", status: "done" },
+            automatic: false,
+            missing: null,
+            target_argument: "issue",
+          },
+        ],
+        offered: true,
+      },
+    ],
+  },
+  event: "proposal",
+};
+
 test("a submit runs only the invocations the proposal marked automatic, and the rest is a row the person picks", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -1070,14 +1092,15 @@ test("after one invocation landed and another was refused for the setting, the n
 });
 
 /** Picks DEMO on the bar's project chip, which asks the same words of that project: another
- *  run, whose stream is handed `frames` once it opens. */
+ *  run, whose stream - the next one the bar opens - is handed `frames` once it opens. */
 async function askOfAnotherProject(user: UserEvent, ...frames: GoingEvent[]): Promise<void> {
+  const opened = streams.length;
   await user.click(screen.getByRole("button", { name: "Project" }));
   await user.click(await screen.findByRole("button", { name: "DEMO" }));
   await tick(MEANING_PAUSE_MS);
-  await waitFor(() => expect(streams).toHaveLength(2));
+  await waitFor(() => expect(streams).toHaveLength(opened + 1));
   act(() => {
-    for (const frame of frames) streams[1]?.send(frame);
+    for (const frame of frames) streams[opened]?.send(frame);
   });
 }
 
@@ -1093,59 +1116,6 @@ function spyOnProjects(): Mock<typeof api.listProjects> {
     },
   ]);
 }
-
-// A fill step and a confirm step ask about the writes of the run they opened for. A chip change
-// with the same words makes another run current, so the step closes, and the next run's proposal
-// opens none: a Confirm or a Run would send that run's writes, with the fills typed for this one.
-test("a confirm step closes and sends nothing once a chip change makes another run of the same words current", async () => {
-  settings.mockResolvedValue({ confirm_writes: true });
-  const projects = spyOnProjects();
-  const user = userOnFakeClock();
-  const bar = renderBar();
-  try {
-    await ask(user, "astrolabe");
-    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
-    await screen.findByRole("option", { name: /^Run issue update/ });
-    await submit(user);
-    await screen.findByTestId("going-confirm-step");
-
-    await askOfAnotherProject(user, decision(true, ["dispatch_issue_update"]), proposal, ended);
-
-    await screen.findByRole("option", { name: /^Run issue update/ });
-    expect(screen.queryByTestId("going-confirm-step")).not.toBeInTheDocument();
-    await tick(1000);
-    expect(written).not.toHaveBeenCalled();
-  } finally {
-    bar.unmount();
-    projects.mockRestore();
-  }
-});
-
-test("a fill step closes and sends nothing once a chip change makes another run of the same words current", async () => {
-  const projects = spyOnProjects();
-  const user = userOnFakeClock();
-  const bar = renderBar();
-  try {
-    await ask(user, "astrolabe");
-    stream(decision(true, ["dispatch_follow"]), follows, ended);
-    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
-    await submit(user);
-    await user.type(
-      await screen.findByRole("textbox", { name: "Fill the session for ask-1" }),
-      "Planner"
-    );
-
-    await askOfAnotherProject(user, decision(true, ["dispatch_follow"]), follows, ended);
-
-    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
-    expect(screen.queryByTestId("going-operation-fill")).not.toBeInTheDocument();
-    await tick(1000);
-    expect(written).not.toHaveBeenCalled();
-  } finally {
-    bar.unmount();
-    projects.mockRestore();
-  }
-});
 
 // A fill submitted while the person's setting is still being read waits for it, holding the
 // values typed for this run's invocations. A chip change with the same words makes another run
@@ -1196,11 +1166,13 @@ interface PressOfAnEarlierRun {
   readonly step: string;
 }
 
-// Every step of a press is of the run the person pressed on. A chip change with the same words
+// Every stage of a press is of the run the person pressed on. A chip change with the same words
 // makes another run current, whose decision acts and whose proposal runs at once on a submit or
-// asks first: the step closes, and nothing of the press goes to that run. A submit waiting for the
-// decision, one made inside the pause before its run's id was known, a fill step holding values
-// typed for this run's invocations, and a confirm step.
+// asks first: the stage closes, and nothing of the press goes to that run. A submit waiting for
+// the decision; one made inside the pause whose request Dispatch has still not answered when the
+// chip changes, so it is of no run; a fill step holding values typed for this run's invocations;
+// a confirm step; and the notes that the answer offered nothing to run, or that its items are the
+// person's to pick.
 const pressesOfAnEarlierRun: Readonly<Record<string, PressOfAnEarlierRun>> = {
   "a submit waiting for the decision": {
     confirmWrites: false,
@@ -1220,11 +1192,12 @@ const pressesOfAnEarlierRun: Readonly<Record<string, PressOfAnEarlierRun>> = {
       await user.keyboard("astrolabe");
       await tick(KEYSTROKE_DEBOUNCE_MS);
       await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
-      // Inside the pause nothing is asked yet: the submit asks at once, and the id of the run it
-      // asked arrives after it.
+      // Inside the pause nothing is asked yet: the submit asks at once, and Dispatch has not
+      // answered that request, so not said the id of its run, when the chip changes.
       expect(spies.createGoingRequest).not.toHaveBeenCalled();
+      spies.createGoingRequest.mockReturnValueOnce(new Promise<never>(() => undefined));
       await submit(user);
-      await waitFor(() => expect(streams).toHaveLength(1));
+      await waitFor(() => expect(spies.createGoingRequest).toHaveBeenCalledTimes(1));
     },
     row: /^Run issue update/,
     step: "going-operation-preparing",
@@ -1260,6 +1233,37 @@ const pressesOfAnEarlierRun: Readonly<Record<string, PressOfAnEarlierRun>> = {
     },
     row: /^Run issue update/,
     step: "going-confirm-step",
+  },
+  "a note that the answer offered nothing to run": {
+    confirmWrites: false,
+    next: [decision(true, ["dispatch_issue_update"]), proposal, ended],
+    press: async (user) => {
+      await ask(user, "astrolabe");
+      stream(decision(true, ["dispatch_issue_update"]));
+      await screen.findByRole("option", { name: /^Run issue update/ });
+      await submit(user);
+      stream(
+        {
+          data: { offers: [{ action: "dispatch_issue_update", invocations: [], offered: false }] },
+          event: "proposal",
+        },
+        ended
+      );
+    },
+    row: /^Run issue update on LEGION-3 and LEGION-4/,
+    step: "going-operation-unoffered",
+  },
+  "a note that the items to run are the person's to pick": {
+    confirmWrites: false,
+    next: [decision(true, ["dispatch_issue_update"]), proposal, ended],
+    press: async (user) => {
+      await ask(user, "astrolabe");
+      stream(decision(true, ["dispatch_issue_update"]), storedOnly, ended);
+      await screen.findByRole("option", { name: /^Run issue update on LEGION-4/ });
+      await submit(user);
+    },
+    row: /^Run issue update on LEGION-3 and LEGION-4/,
+    step: "going-operation-picks",
   },
 };
 
@@ -1313,6 +1317,44 @@ test("a submit inside the pause runs each invocation on the run it asked, once t
     expect(written.mock.calls.map(([run]) => run)).toEqual(["run-1", "run-1"]);
   } finally {
     bar.unmount();
+  }
+});
+
+// The one send's own guard: a press sends only to the run it was made on. Every stage closes a
+// step of a run no longer current before a press reaches the send, so no rendered path reaches
+// the guard, and the send is called here directly: a press of another run posts nothing and its
+// step closes, and a press of the run the writes go to posts them.
+test("the one send posts nothing of a press made on another run, and posts a press's writes to the run it was made on", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const writes = writesOf(client);
+  const close = jest.fn();
+  const press = {
+    action: "dispatch_issue_update",
+    approved: "auto",
+    fills: {},
+    pressedOn: "run-1",
+  } as const;
+  // The writes go to the run `runId`, the one now current.
+  const send = (runId: string) =>
+    sendPress({ close, press, proposal: proposal.data, runId, words: "astrolabe", writes });
+  try {
+    send("run-2");
+    await tick(1000);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(written).not.toHaveBeenCalled();
+    expect(writes.rows()).toEqual([]);
+    expect(turnOf("run-2")).toBeUndefined();
+
+    send("run-1");
+    await waitFor(() =>
+      expect(sent()).toEqual([
+        { approved: "auto", invocation: 0, offer: "dispatch_issue_update" },
+        { approved: "auto", invocation: 1, offer: "dispatch_issue_update" },
+      ])
+    );
+    expect(written.mock.calls.map(([run]) => run)).toEqual(["run-1", "run-1"]);
+  } finally {
+    client.clear();
   }
 });
 

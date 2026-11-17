@@ -17,7 +17,7 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { useWrites } from "../writes/write-store";
+import { useWrites, type Writes } from "../writes/write-store";
 import {
   actionName,
   actionOn,
@@ -83,9 +83,10 @@ interface Wanted {
  * proposal offered nothing to run for, or one whose every invocation names an item neither the
  * page nor the words named, which runs only when the person picks it (`picks`). Nothing submitted
  * is no state at all, and so is a submit that had nothing to run (`idle`); once a write has gone,
- * its lines say the rest. Every step of a press - preparing, the fill step and the confirm step -
- * is of the run the person pressed on (`pressedOn`): it is idle once another run is current, and
- * the one send (`run`) sends nothing of it to another run.
+ * its lines say the rest. Every stage of a press - preparing, the fill step, the confirm step, and
+ * the note that the answer offered nothing to run or that its items are the person's to pick - is
+ * of the run the person pressed on (`pressedOn`): it is idle once another run is current, and the
+ * one send (`sendPress`) sends nothing of it to another run.
  */
 type Stage =
   | ({ readonly kind: "preparing"; readonly words: string } & Wanted)
@@ -101,8 +102,18 @@ type Stage =
       readonly fills: Fills;
       readonly pressedOn: string | undefined;
     }
-  | { readonly kind: "unoffered"; readonly words: string; readonly action: string }
-  | { readonly kind: "picks"; readonly words: string; readonly action: string }
+  | {
+      readonly kind: "unoffered";
+      readonly words: string;
+      readonly action: string;
+      readonly pressedOn: string | undefined;
+    }
+  | {
+      readonly kind: "picks";
+      readonly words: string;
+      readonly action: string;
+      readonly pressedOn: string | undefined;
+    }
   | { readonly kind: "idle"; readonly words: string };
 
 /** What a submit or a pick comes to now: a stage to show, or the writes to make. */
@@ -224,13 +235,15 @@ function nextStep(
   if (action === undefined) return { kind: "idle", words };
   if (answer.proposal === undefined) {
     return answerSettled(answer)
-      ? { action, kind: "unoffered", words }
+      ? { action, kind: "unoffered", pressedOn: wanted.pressedOn, words }
       : { ...wanted, action, kind: "preparing", words };
   }
   const offer = offerOf(answer.proposal, action);
-  if (offer === undefined) return { action, kind: "unoffered", words };
+  if (offer === undefined) {
+    return { action, kind: "unoffered", pressedOn: wanted.pressedOn, words };
+  }
   if (runIndexes(offer, wanted.approved, wanted.picked).length === 0) {
-    return { action, kind: "picks", words };
+    return { action, kind: "picks", pressedOn: wanted.pressedOn, words };
   }
   const runs = unsettledIndexes(offer, turn, wanted.approved, wanted.picked);
   if (runs.length === 0) return { kind: "idle", words };
@@ -268,6 +281,72 @@ function nextStep(
     picked: wanted.picked,
     pressedOn: wanted.pressedOn,
   };
+}
+
+/** A press as the one send takes it (`sendPress`): the action it runs and how it came to run,
+ *  the values typed for its invocations' missing arguments, the invocations a picked row names,
+ *  and the run current when the person pressed. */
+type Press = Omit<Wanted, "action"> & { readonly action: string };
+
+/**
+ * The one send of every step's writes: each invocation of the proposal's offer of `press.action`
+ * that the press runs (`runIndexes`) is one write on the run `runId`, under the words that run
+ * asked (`runGoingWrites`), and `close` closes the step before any of them goes. A press made on
+ * another run than `runId` sends nothing, and its step closes: this is the one send's own guard
+ * (`isPressOf`). Every stage's derivation in `useGoingOperations` closes a step of a run no longer
+ * current before a press can reach this send, so no rendered path reaches the guard; it stays so
+ * that no stage, now or added later, can send a press of one run to another run.
+ */
+export function sendPress({
+  close,
+  press,
+  proposal,
+  runId,
+  words,
+  writes,
+}: {
+  readonly close: () => void;
+  readonly press: Press;
+  /** The run the writes go to - the one current now - with its proposal and the words it asked;
+   *  each undefined while there is none. */
+  readonly runId: string | undefined;
+  readonly proposal: Proposal | undefined;
+  readonly words: string | undefined;
+  readonly writes: Writes;
+}): void {
+  if (!isPressOf(press.pressedOn, runId)) {
+    close();
+    return;
+  }
+  const offer = offerOf(proposal, press.action);
+  if (runId === undefined || words === undefined || offer === undefined) return;
+  close();
+  void runGoingWrites(
+    writes,
+    runIndexes(offer, press.approved, press.picked).flatMap((index) => {
+      const invocation = offer.invocations[index];
+      if (invocation === undefined) return [];
+      return [
+        {
+          action: press.action,
+          approved: press.approved,
+          arguments: invocation.arguments,
+          ...(invocation.missing === null
+            ? {}
+            : {
+                fill: {
+                  field: invocation.missing.field,
+                  value: fillValue(invocation.missing, (press.fills[index] ?? "").trim()),
+                },
+              }),
+          invocation: index,
+          runId,
+          target: invocation.target_argument,
+          words,
+        },
+      ];
+    })
+  );
 }
 
 /** One row of the bar's operation group, as the list draws it: its label, its trailing control,
@@ -352,13 +431,16 @@ export function useGoingOperations({
   const confirmWrites =
     settings.isError && settings.data === undefined ? false : settings.data?.confirm_writes;
   const [held, setStage] = useWordsState<Stage>(words);
-  // Every step of a press - preparing, the fill step, the confirm step - made on a run that is no
-  // longer current (a chip change asked the same words again) is idle: it closes, so neither the
-  // preparing effect nor a Run or Confirm sends it to the run now current (`isPressOf`, which the
-  // one send reads too). A press made before its run's id was known is of no run yet: the
-  // preparing effect below binds it or closes it.
+  // Every stage of a press - preparing, the fill step, the confirm step, and the note that the
+  // answer offered nothing to run or that its items are the person's to pick - made on a run that
+  // is no longer current (a chip change asked the same words again) is idle: it closes, so neither
+  // the preparing effect nor a Run or Confirm sends it to the run now current, and no note of the
+  // old run stays beside the new run's rows (`isPressOf`, which the one send reads too). A press
+  // made before its run's id was known is of no run yet: the preparing effect below binds it or
+  // closes it.
   const stage: Stage | undefined =
-    (held?.kind === "preparing" || held?.kind === "filling" || held?.kind === "confirming") &&
+    held !== undefined &&
+    held.kind !== "idle" &&
     held.pressedOn !== undefined &&
     !isPressOf(held.pressedOn, runId)
       ? { kind: "idle", words }
@@ -386,52 +468,19 @@ export function useGoingOperations({
     field?.focus();
   }, []);
 
-  // The one send of every step's writes: those of a press made on another run than the one now
-  // current are never sent, and the step closes.
-  const run = (
-    pressedOn: string | undefined,
-    action: string,
-    approved: GoingApproval,
-    fills: Fills,
-    picked?: readonly number[]
-  ) => {
-    if (!isPressOf(pressedOn, runId)) {
-      setStage({ kind: "idle", words });
-      return;
-    }
-    const offer = offerOf(proposal, action);
-    if (runId === undefined || current === undefined || offer === undefined) return;
-    setStage({ kind: "idle", words });
-    void runGoingWrites(
+  // The one send (`sendPress`), to the run now current: its guard refuses a press made on another
+  // run, and the step closes.
+  const run = (press: Press) =>
+    sendPress({
+      close: () => setStage({ kind: "idle", words }),
+      press,
+      proposal,
+      runId,
+      words: current?.words,
       writes,
-      runIndexes(offer, approved, picked).flatMap((index) => {
-        const invocation = offer.invocations[index];
-        if (invocation === undefined) return [];
-        return [
-          {
-            action,
-            approved,
-            arguments: invocation.arguments,
-            ...(invocation.missing === null
-              ? {}
-              : {
-                  fill: {
-                    field: invocation.missing.field,
-                    value: fillValue(invocation.missing, (fills[index] ?? "").trim()),
-                  },
-                }),
-            invocation: index,
-            runId,
-            target: invocation.target_argument,
-            words: current.words,
-          },
-        ];
-      })
-    );
-  };
+    });
   const apply = (step: Step) => {
-    if (step.kind === "run")
-      run(step.pressedOn, step.action, step.approved, step.fills, step.picked);
+    if (step.kind === "run") run(step);
     else setStage(step);
   };
   const begin = (wanted: Wanted) => apply(nextStep(words, wanted, current, turn, confirmWrites));
@@ -666,7 +715,13 @@ export function useGoingOperations({
             offer={offerOf(proposal, stage.action)}
             onCancel={() => setStage({ kind: "idle", words })}
             onConfirm={() =>
-              run(stage.pressedOn, stage.action, "confirmed", stage.fills, confirming)
+              run({
+                action: stage.action,
+                approved: "confirmed",
+                fills: stage.fills,
+                picked: confirming,
+                pressedOn: stage.pressedOn,
+              })
             }
             runs={confirming}
           />
