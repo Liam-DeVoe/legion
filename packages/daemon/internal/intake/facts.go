@@ -1009,7 +1009,8 @@ func (GateRegistered) isFact() {}
 // The workflow stores it (workflow's planGiven) where its task has not started, and applies the
 // rules of a later version (R16). It answers PLAN_REFUSED (RunningTaskChanged, or
 // StartedBeforePlans for an issue that ran before Legion took plans), PLAN_VERSION_OLD,
-// PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask), PLAN_STALE_GENERATION and
+// PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask), PLAN_STALE_GENERATION,
+// PLAN_NOT_TAKEN (an issue whose experiment's group takes no plan from its owner) and
 // TREE_LINGERING, and it leaves each of those refusals unspent (Result.Unspent). The route names
 // one registration by the issue, the generation, the document and the version, so a version
 // refused while its task ran is the same fact when the owner gives it again after stop_task, and
@@ -1466,6 +1467,17 @@ func InGroup(issue, experiment, variant, group string) string {
 		done = "owner does the whole issue itself in one step"
 	}
 	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose %s.", issue, variant, experiment, done)
+}
+
+// PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, which was drawn into
+// variant of experiment, whose arm's `plan` (group) is `default` or `owner-alone`: the experiment
+// decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
+// did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
+// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
+// each refusal of a plan, so the same registration sent again gets this same answer.
+func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: InGroup(issue, experiment, variant, group) +
+		" Legion takes no plan from its owner for this issue."}
 }
 
 // PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is

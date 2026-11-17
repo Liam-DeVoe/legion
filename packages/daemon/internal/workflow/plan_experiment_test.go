@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -137,5 +138,120 @@ func TestAnEarlierOwnersPlanInTheDefaultGroupIsToldOnce(t *testing.T) {
 		if strings.Contains(notice.Reason, "register_plan") {
 			t.Fatalf("the notice %q tells the owner to call register_plan, which this issue's group refuses", notice.Reason)
 		}
+	}
+}
+
+// planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
+func planNotTakenOfB(key string) *intake.Refusal {
+	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) + " Legion takes no plan from its owner for this issue."}
+}
+
+// drawnForMemory records key's tree as drawn into the arm memory of the `memory` experiment,
+// which names no plan: a group of no experiment that sets how an issue is done.
+func drawnForMemory(t *testing.T, pool *pgxpool.Pool, key string) {
+	t.Helper()
+	at := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
+	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := record.NewStore().PutAssignments(ctx, tx, key, []record.Assignment{
+			{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &at}})
+		return err
+	})
+}
+
+// An issue whose group runs the project's default steps takes no plan from its owner:
+// register_plan is answered 409 PLAN_NOT_TAKEN with the sentence that names the group, nothing is
+// recorded, and the first step runs the project's default steps from planning, under a plan whose
+// source is the default. The control is the same issue drawn into the arm whose owner gives the
+// plan: the plan is taken and its first step is the implementer's.
+func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
+	given := func(t *testing.T, key string, generation uint64) (string, intake.PlanGiven) {
+		return planID(key, generation, 1), ownersPlan(t, key, generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	}
+
+	t.Run("the group default refuses the plan and runs the default steps", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", "b", "default")
+		before := planStandingOf(t, pool, engine, root.Key, root.Generation)
+		id, plan := given(t, root.Key, root.Generation)
+
+		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, applyFacts(t, pool, engine)(id, plan), planNotTakenOfB(root.Key), before)
+		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
+			t.Fatalf("the plan rows of %s = %v, want none: Legion records nothing when it takes no plan", root.Key, got)
+		}
+
+		firstStep(t, pool, engine, root.Key)
+
+		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysDefaultSteps)
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
+		}
+	})
+
+	t.Run("the control: the group owner takes the plan and starts implementing", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", "a", "owner")
+		id, plan := given(t, root.Key, root.Generation)
+
+		mustTake(t, "version 1", applyFacts(t, pool, engine)(id, plan))
+		firstStep(t, pool, engine, root.Key)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		if got := planStandingOf(t, pool, engine, root.Key, root.Generation).versions; !reflect.DeepEqual(got, []string{"1 owner"}) {
+			t.Fatalf("the versions of %s = %v, want the owner's alone", root.Key, got)
+		}
+	})
+}
+
+// The answer PLAN_NOT_TAKEN leaves the registration unspent, as every refusal of a plan does: the
+// same registration sent again is answered PLAN_NOT_TAKEN again, never as a registration already
+// applied, which the route would answer as the plan taken. Nothing is stored either time.
+func TestAPlanNotTakenIsAnsweredTheSameWhenGivenAgain(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	drawnInto(t, pool, root.Key, "planning", "b", "default")
+	id := planID(root.Key, root.Generation, 1)
+	plan := ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	apply := applyFacts(t, pool, engine)
+
+	for _, attempt := range []string{"the first registration", "the same registration sent again"} {
+		result := apply(id, plan)
+		if result.Duplicate || !reflect.DeepEqual(result.Refusal, planNotTakenOfB(root.Key)) {
+			t.Fatalf("%s = %+v, want the refusal %+v", attempt, result, planNotTakenOfB(root.Key))
+		}
+		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
+			t.Fatalf("after %s the plan rows of %s = %v, want none", attempt, root.Key, got)
+		}
+	}
+}
+
+// An issue of no group runs as built (R20): an issue the daemon recorded before any experiment
+// set how an issue is done holds no row, and one whose rows name no plan — the `memory`
+// experiment's alone here — is of no group either. Each takes the plan its owner gives.
+func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drawn func(t *testing.T, pool *pgxpool.Pool, key string)
+	}{
+		{"no row", func(*testing.T, *pgxpool.Pool, string) {}},
+		{"a row of memory alone", drawnForMemory},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			tc.drawn(t, pool, root.Key)
+
+			mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
+				ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+			firstStep(t, pool, engine, root.Key)
+
+			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		})
 	}
 }

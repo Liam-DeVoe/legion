@@ -140,6 +140,16 @@ func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.A
 	return experiment.GroupOf(rows[issue]), nil
 }
 
+// takesNoPlan says whether group, an issue's row of groupOf, takes no plan from the issue's owner:
+// the arm runs the project's default steps, or the owner does the whole issue itself.
+func takesNoPlan(group record.Assignment) bool {
+	switch config.PlanGroup(group.Plan) {
+	case config.PlanGroupDefault, config.PlanGroupOwnerAlone:
+		return true
+	}
+	return false
+}
+
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
 // starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
 // work in this release has plan rows (R5). A plan an earlier owner gave is passed over first
@@ -656,6 +666,14 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // refusal writes nothing and leaves the fact unspent, so the same registration, whose id names the
 // issue, the generation, the document and the version (api's registerPlan), applies when it is
 // given again: a version refused while its task ran is taken after stop_task.
+//
+// A recorded issue whose group takes no plan from its owner (groupOf, takesNoPlan) is answered
+// PLAN_NOT_TAKEN, right after the generation is judged, so no plan of it is stored, also one given
+// at generation 0 for an issue the daemon recorded meanwhile. The fact is left unspent as well:
+// the group never changes, so the same registration sent again gets the same answer, never the
+// answer of a registration applied, which the route gives as the plan taken. An issue the daemon
+// has not recorded has no draw yet; its plan waits at generation 0, and its first step passes it
+// over where the issue's group takes none (planFirstStep).
 func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (intake.Result, error) {
 	refuse := func(refusal *intake.Refusal) (intake.Result, error) {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
@@ -669,6 +687,15 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	recorded := issue != nil && fact.Generation != 0
 	if recorded && fact.Generation != issue.Generation {
 		return refuse(intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation))
+	}
+	if issue != nil {
+		group, err := e.groupOf(ctx, tx, issue.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if takesNoPlan(group) {
+			return refuse(intake.PlanNotTaken(issue.Key, group.Experiment, group.Variant, group.Plan))
+		}
 	}
 	stored, err := e.store.Plan(ctx, tx, fact.Issue, fact.Generation)
 	if err != nil {
