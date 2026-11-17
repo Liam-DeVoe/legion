@@ -452,6 +452,7 @@ describe("a setup that fails after install_model_route", () => {
         "cmd_profile",
       ].map(fn),
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
+      "rig_mise() { :; }",
       "install_superpowers() { fail 'the superpowers probe failed'; }",
       'work=$1; cmd_profile probe "$2"',
     ].join("\n");
@@ -543,6 +544,372 @@ describe("a setup that fails after install_model_route", () => {
       `judge-omp: ${dir} holds a judge-profile build an earlier call left unready (no ${dir}/ready)`
     );
     expect(treeDigest(dir)).toBe(before);
+  });
+});
+
+// rig.sh's rig_mise: the mise every `mise` of the rig runs, the profile installer's and each agent's
+// `mise x <pin>` among them. A worker pod's image carries no mise (its `tools` stage alone installs
+// one), so the rig fetches its own at that stage's pin, the Dockerfile's ARG MISE_VERSION and ARG
+// MISE_SHA256, checks it, installs it under the work directory and puts it first on PATH. GitHub's
+// release downloads are a `curl` stand-in first on PATH (curlStandIn), as the judge rows stand a
+// `hawk-token` in for the gateway, and a release is an archive laid out as jdx/mise's are
+// (miseRelease).
+/** The worker image's Dockerfile, below a checkout. */
+const DOCKERFILE = "packages/daemon/docker/worker.Dockerfile";
+/** This checkout's Dockerfile, the one rig_mise reads under the rig's root. */
+const dockerfileText = readFileSync(path.join(root, DOCKERFILE), "utf8");
+/** The value of the Dockerfile text's `ARG <name>=<value>` line. */
+function dockerfileArg(text: string, name: string): string {
+  const found = new RegExp(`^ARG ${name}=(.*)$`, "m").exec(text);
+  if (found?.[1] === undefined) throw new Error(`the Dockerfile has no ARG ${name}=`);
+  return found[1];
+}
+/** The linux-x64 archive of mise `version` that the worker image's tools stage fetches. */
+const miseUrl = (version: string) =>
+  `https://github.com/jdx/mise/releases/download/${version}/mise-${version}-linux-x64.tar.gz`;
+const fileSha256 = (file: string) =>
+  new Bun.CryptoHasher("sha256").update(readFileSync(file)).digest("hex");
+/** A release archive of mise `version`, laid out as jdx/mise's (mise/bin/mise), whose mise stands
+ * in for the real one: `--version` prints `<version> linux-x64 (stand-in)`, `where <tool>` prints
+ * /pinned/<tool>, and `x <tool> -- <command>...` runs the command with MISE_RAN naming this mise. */
+function miseRelease(version: string): string {
+  const dir = freshDir("mise-release");
+  mkdirSync(path.join(dir, "mise", "bin"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "mise", "bin", "mise"),
+    [
+      "#!/bin/sh",
+      "case $1 in",
+      `--version) echo "${version.replace(/^v/, "")} linux-x64 (stand-in)" ;;`,
+      'where) echo "/pinned/$2" ;;',
+      'x) shift 3; MISE_RAN=$0; export MISE_RAN; exec "$@" ;;',
+      "esac",
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  const archive = path.join(dir, "release.tar.gz");
+  const packed = spawnChecked(["tar", "-czf", archive, "-C", dir, "mise"]);
+  if (packed.exitCode !== 0) throw new Error(`tar could not pack ${dir}: ${packed.stderr}`);
+  return archive;
+}
+/** A directory holding a `curl` that stands in for GitHub's release downloads: it appends the URL
+ * it is asked for to $CURL_LOG and copies $CURL_SERVES to the file its -o names, or, with
+ * CURL_SERVES unset, fails as `curl -f` fails on a 404. */
+function curlStandIn(): string {
+  const bin = freshDir("mise-curl");
+  writeFileSync(
+    path.join(bin, "curl"),
+    [
+      "#!/usr/bin/env bash",
+      "out='' url=''",
+      "while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac; done",
+      'printf \'%s\\n\' "$url" >>"$CURL_LOG"',
+      'if [ -z "$CURL_SERVES" ]; then echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; fi',
+      'cp "$CURL_SERVES" "$out"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  return bin;
+}
+/** A rig root holding this checkout's Dockerfile with its two mise ARGs rewritten to `version`
+ * and `sha`: all rig_mise reads of the rig's root. */
+function miseRoot(version: string, sha: string): string {
+  const top = freshDir("mise-root");
+  const text = dockerfileText
+    .replace(/^ARG MISE_VERSION=.*$/m, `ARG MISE_VERSION=${version}`)
+    .replace(/^ARG MISE_SHA256=.*$/m, `ARG MISE_SHA256=${sha}`);
+  expect([dockerfileArg(text, "MISE_VERSION"), dockerfileArg(text, "MISE_SHA256")]).toEqual([
+    version,
+    sha,
+  ]);
+  mkdirSync(path.join(top, path.dirname(DOCKERFILE)), { recursive: true });
+  writeFileSync(path.join(top, DOCKERFILE), text);
+  return top;
+}
+/** rig.sh's rig_mise with `top` as the rig's root and `work` as its work directory, then the
+ * `mise` the PATH it leaves resolves to, as stdout's last line. */
+function rigMise(top: string, work: string, env: Record<string, string>) {
+  return bash(
+    [
+      "set -euo pipefail",
+      ...["fail", "note", "rig_mise"].map(fn),
+      "root=$1 work=$2",
+      assignment("mise_dir"),
+      "rig_mise",
+      "command -v mise",
+    ].join("\n"),
+    [top, work],
+    env
+  );
+}
+/** The lines of FILE, none where it is absent. */
+const fileLines = (file: string) =>
+  existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+
+describe("the rig's own mise", () => {
+  /** A label's checkout whose plugin installer records the `mise` its PATH resolves to and runs
+   * it, where install-plugin-profile.sh runs `mise where`, `mise install` and `mise x`, with the
+   * real key-file model route and a home maker that makes an empty home. */
+  function labelCheckout(): string {
+    const co = freshDir("mise-checkout");
+    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
+    mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
+    writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
+    writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
+    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
+      cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
+    }
+    writeFileSync(
+      path.join(co, "scripts/e2e/lib/omp-home.sh"),
+      'make_omp_home() { mkdir -p "$1/.omp"; }\n'
+    );
+    writeFileSync(
+      path.join(co, "scripts/e2e/lib/install-plugin-profile.sh"),
+      [
+        "dest=''",
+        "while [ $# -gt 0 ]; do case $1 in --dest) dest=$2; shift 2 ;; *) shift ;; esac; done",
+        'mkdir -p "$dest"',
+        'command -v mise >"$dest/mise-path"',
+        'mise --version >"$dest/mise-version"',
+        "",
+      ].join("\n")
+    );
+    return co;
+  }
+  /** cmd_profile of `label` from checkout `co`, with `top` as the rig's root and `work` as its
+   * work directory. */
+  const profile = (
+    top: string,
+    work: string,
+    label: string,
+    co: string,
+    env: Record<string, string>
+  ) =>
+    bash(
+      [
+        "set -euo pipefail",
+        ...[
+          "fail",
+          "note",
+          "label_dir",
+          "on_exit",
+          "drop_unready_keys",
+          "install_model_route",
+          "rig_mise",
+          "cmd_profile",
+        ].map(fn),
+        "checkout_commit() { printf 'fixture parents=base\\n'; }",
+        "root=$1 work=$2",
+        assignment("mise_dir"),
+        'cmd_profile "$3" "$4"',
+      ].join("\n"),
+      [top, work, label, co],
+      {
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        ...env,
+      }
+    );
+  /** The caller's variables for a row whose GitHub is `curl`'s stand-in, serving `serves`. */
+  const served = (curl: string, serves?: string): Record<string, string> => ({
+    PATH: `${curl}:${childEnv.PATH}`,
+    CURL_LOG: path.join(curl, "urls"),
+    ...(serves === undefined ? {} : { CURL_SERVES: serves }),
+  });
+
+  // Catches: a profile build on a pod with no mise (install-plugin-profile.sh's `mise: command not
+  // found`), one that runs a mise of the caller's PATH, and one that fetches a mise other than the
+  // one the copied Dockerfile's two ARGs pin.
+  test("a profile build fetches mise at its Dockerfile's two ARGs, checks it, and runs the plugin installer on it", () => {
+    const version = "v2099.1.2";
+    const archive = miseRelease(version);
+    const sha = fileSha256(archive);
+    const top = miseRoot(version, sha);
+    const work = freshDir("mise-work");
+    const curl = curlStandIn();
+    const built = profile(top, work, "head", labelCheckout(), served(curl, archive));
+    expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
+    const mise = path.join(work, "tools", "bin", "mise");
+    expect(fileLines(path.join(curl, "urls"))).toEqual([miseUrl(version)]);
+    expect(built.stdout.split("\n")).toContain(
+      `skill-scenarios: mise: fetched ${miseUrl(version)}, SHA-256 ${sha} as ARG MISE_SHA256 of ${top}/${DOCKERFILE} expects; installed ${mise}, which prints 2099.1.2 linux-x64 (stand-in)`
+    );
+    // The archive's own mise, alone in the directory every pane's PATH names.
+    expect(readdirSync(path.dirname(mise))).toEqual(["mise"]);
+    expect(readFileSync(mise)).toEqual(
+      readFileSync(path.join(path.dirname(archive), "mise", "bin", "mise"))
+    );
+    // Both plugin installs ran it, the first mise on their PATH.
+    const id = readFileSync(path.join(work, "profiles", "head", "install"), "utf8").trim();
+    for (const plugin of ["pi-envoy", "pi-legion"]) {
+      const dest = path.join(work, "installs", id, plugin);
+      expect(readFileSync(path.join(dest, "mise-path"), "utf8")).toBe(`${mise}\n`);
+      expect(readFileSync(path.join(dest, "mise-version"), "utf8")).toBe(
+        "2099.1.2 linux-x64 (stand-in)\n"
+      );
+    }
+    expect(existsSync(path.join(work, "profiles", "head", "ready"))).toBe(true);
+    // Nothing of the fetch is left in the work directory.
+    expect(readdirSync(work).filter((name) => name.startsWith(".mise"))).toEqual([]);
+  });
+
+  // Catches: a profile build that installs, or runs, a mise whose bytes are not the ones the
+  // worker image pins, and a refusal that leaves a half-built label behind.
+  test("a profile build whose fetched mise is not the Dockerfile's SHA-256 is refused, naming the check, and installs nothing", () => {
+    const version = dockerfileArg(dockerfileText, "MISE_VERSION");
+    const sha = dockerfileArg(dockerfileText, "MISE_SHA256");
+    const archive = miseRelease("v0.0.1");
+    const work = freshDir("mise-work");
+    const curl = curlStandIn();
+    const refused = profile(root, work, "head", labelCheckout(), served(curl, archive));
+    expect({ code: refused.code, stderr: refused.stderr }).toEqual({
+      code: 1,
+      stderr: `skill-scenarios: mise check: expected SHA-256 ${sha} (ARG MISE_SHA256 of ${root}/${DOCKERFILE}) of ${miseUrl(version)}, got ${fileSha256(archive)}; nothing was installed\n`,
+    });
+    expect(fileLines(path.join(curl, "urls"))).toEqual([miseUrl(version)]);
+    expect(readdirSync(work)).toEqual([]);
+  });
+
+  // Catches: a fetch that fails taken for an archive, and a refusal that leaves the fetch behind.
+  test("a mise fetch that fails is refused, naming the fetch and curl's answer, and installs nothing", () => {
+    const top = miseRoot("v2099.1.2", "0".repeat(64));
+    const work = freshDir("mise-work");
+    const curl = curlStandIn();
+    const refused = rigMise(top, work, served(curl));
+    expect({ code: refused.code, stderr: refused.stderr }).toEqual({
+      code: 1,
+      stderr: `skill-scenarios: mise fetch: expected the archive of mise v2099.1.2 (ARG MISE_VERSION of ${top}/${DOCKERFILE}) from ${miseUrl("v2099.1.2")}, got curl exit 22: curl: (22) The requested URL returned error: 404; nothing was installed\n`,
+    });
+    expect(readdirSync(work)).toEqual([]);
+  });
+
+  // Catches: a version or SHA-256 typed into rig.sh, which the two drift from as the Dockerfile
+  // moves on, and a Dockerfile whose pin cannot be read taken for one.
+  test("the mise rig_mise fetches and checks is the one its Dockerfile's two ARGs name", () => {
+    const archive = miseRelease("v2099.1.2");
+    const sha = fileSha256(archive);
+    const curl = curlStandIn();
+    const pinned = miseRoot("v2099.1.2", sha);
+    const accepted = rigMise(pinned, freshDir("mise-work"), served(curl, archive));
+    expect({ code: accepted.code, stderr: accepted.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(fileLines(path.join(curl, "urls"))).toEqual([miseUrl("v2099.1.2")]);
+    // The same archive, under a Dockerfile that pins another release and another SHA-256.
+    const other = miseRoot("v2099.3.4", "e".repeat(64));
+    const work = freshDir("mise-work");
+    const refused = rigMise(other, work, served(curl, archive));
+    expect({ code: refused.code, stderr: refused.stderr }).toEqual({
+      code: 1,
+      stderr: `skill-scenarios: mise check: expected SHA-256 ${"e".repeat(64)} (ARG MISE_SHA256 of ${other}/${DOCKERFILE}) of ${miseUrl("v2099.3.4")}, got ${sha}; nothing was installed\n`,
+    });
+    expect(fileLines(path.join(curl, "urls"))).toEqual([
+      miseUrl("v2099.1.2"),
+      miseUrl("v2099.3.4"),
+    ]);
+    expect(readdirSync(work)).toEqual([]);
+    // A root with no Dockerfile pins nothing, and nothing is fetched.
+    const bare = freshDir("mise-root");
+    const unpinned = rigMise(bare, freshDir("mise-work"), served(curl, archive));
+    expect({ code: unpinned.code, stderr: unpinned.stderr }).toEqual({
+      code: 1,
+      stderr: `skill-scenarios: mise pin: expected one ARG MISE_VERSION=<release> and one ARG MISE_SHA256=<sha256> in ${bare}/${DOCKERFILE}, got '' and ''; nothing was installed\n`,
+    });
+    expect(fileLines(path.join(curl, "urls"))).toHaveLength(2);
+  });
+
+  // Catches: a rig that fetches mise for every command, and one that keeps a mise whose bytes or
+  // pin are no longer the ones its record and its Dockerfile name.
+  test("a mise the work directory holds from the Dockerfile's archive is reused, and any other is fetched again", () => {
+    const archive = miseRelease("v2099.1.2");
+    const top = miseRoot("v2099.1.2", fileSha256(archive));
+    const work = freshDir("mise-work");
+    const curl = curlStandIn();
+    const urls = path.join(curl, "urls");
+    const mise = path.join(work, "tools", "bin", "mise");
+    const first = rigMise(top, work, served(curl, archive));
+    expect(first.code).toBe(0);
+    expect(first.stdout.trim().split("\n").at(-1)).toBe(mise);
+    const again = rigMise(top, work, served(curl, archive));
+    expect({ code: again.code, stdout: again.stdout, stderr: again.stderr }).toEqual({
+      code: 0,
+      stdout: `${mise}\n`,
+      stderr: "",
+    });
+    expect(fileLines(urls)).toHaveLength(1);
+    // A binary whose bytes are not the ones recorded is fetched again and replaced.
+    writeFileSync(mise, "#!/bin/sh\necho changed\n", { mode: 0o755 });
+    expect(rigMise(top, work, served(curl, archive)).code).toBe(0);
+    expect(fileLines(urls)).toHaveLength(2);
+    expect(readFileSync(mise)).toEqual(
+      readFileSync(path.join(path.dirname(archive), "mise", "bin", "mise"))
+    );
+    // So is one the Dockerfile no longer pins, once it pins another release.
+    const next = miseRelease("v2099.5.6");
+    const moved = rigMise(miseRoot("v2099.5.6", fileSha256(next)), work, served(curl, next));
+    expect(moved.code).toBe(0);
+    expect(fileLines(urls).at(-1)).toBe(miseUrl("v2099.5.6"));
+    expect(readFileSync(mise)).toEqual(
+      readFileSync(path.join(path.dirname(next), "mise", "bin", "mise"))
+    );
+  });
+
+  // Catches: an agent's pane that names a mise other than the rig's first, and a world that does
+  // not show the rig's mise, so the agent's `mise x` fails in its namespace.
+  test("a run's pane names the rig's own mise first after its stand-ins, and its world shows it read-only", () => {
+    const archive = miseRelease("v2099.1.2");
+    const top = miseRoot("v2099.1.2", fileSha256(archive));
+    const work = freshDir("mise-work");
+    const R = path.join(work, "runs", "0a1b2c3d4e5f");
+    const curl = curlStandIn();
+    const result = bash(
+      [
+        "set -euo pipefail",
+        ...["fail", "note", "rig_mise", "push_guard", "base_env", "pane_var", "world_paths"].map(
+          fn
+        ),
+        "root=$1 work=$2 R=$3 I=$4 profile=legion",
+        assignment("mise_dir"),
+        "rig_mise >/dev/null",
+        "base_env",
+        'world_paths "$R" "$work" "$I" "$R/pane.env"',
+      ].join("\n"),
+      [top, work, R, profileDir()],
+      { ...served(curl, archive), USER: "rig" }
+    );
+    expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+    const tools = path.join(work, "tools", "bin");
+    expect(fileLines(path.join(R, "pane.env"))).toContain(
+      `PATH=${R}/bin:${tools}:${curl}:${childEnv.PATH}`
+    );
+    expect(result.stdout.split("\n")).toContain(`ro ${tools}`);
+  });
+
+  // Catches: `rig.sh world` reading a run's pin through the caller's mise, which a worker pod has
+  // none of, where the run's own agent ran the mise its pane names.
+  test("rig.sh world reads a run's pin through the mise its pane's PATH names", () => {
+    const archive = miseRelease("v2099.1.2");
+    const work = freshDir("mise-world");
+    const tools = path.join(work, "tools", "bin");
+    mkdirSync(tools, { recursive: true });
+    cpSync(path.join(path.dirname(archive), "mise", "bin", "mise"), path.join(tools, "mise"));
+    const R = path.join(work, "runs", "0a1b2c3d4e5f");
+    mkdirSync(R, { recursive: true });
+    writeFileSync(`${R}.json`, JSON.stringify({ run: path.basename(R), ran: R }));
+    writeFileSync(
+      path.join(R, "pane.env"),
+      `HOME=${R}/home\nPATH=${R}/bin:${tools}:/usr/bin:/bin\n`
+    );
+    mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
+    writeFileSync(path.join(work, "profiles", "head", "pin"), "omp@pin\n");
+    const shown = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "world", "head", R], {
+      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+    });
+    expect({ code: shown.exitCode, stderr: shown.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect(shown.stdout.toString().split("\n")).toContain("ro /pinned/omp@pin");
   });
 });
 
@@ -851,6 +1218,7 @@ describe("cmd_batch numbering", () => {
         fn("scenario_case").replace(/^scenario_case\(\)/, "real_scenario_case()"),
         'scenario_case() { here=$RIG real_scenario_case "$@"; }',
         "load_label() { co=$root; }",
+        "rig_mise() { :; }",
         "push_guard() { :; }",
         "require_namespace() { :; }",
         "stop_batch() { services_down; }",
@@ -1070,6 +1438,7 @@ describe("a run or live read of a name already taken", () => {
     "load_label() { P=$work/profiles/$1; I=$P; co=$work/checkout; }",
     "push_guard() { :; }",
     "require_namespace() { :; }",
+    "rig_mise() { :; }",
     "scratch_before() { :; }",
     'stop_run() { echo stop_run >>"$work/stopped"; }',
   ];
@@ -7091,6 +7460,36 @@ sleep() { command sleep 0.05; }`;
       expect(out).toBe(
         `${work}/bin/pin/bin/omp -p The person answered your asks on WID-2. --continue --session-dir ${runDirOf(work, "spec-writing-s1-1")}/sessions\nexit=0\n`
       );
+    }
+  );
+
+  // Catches: an agent whose `mise x <pin>` runs a mise other than the one rig_mise installed, or
+  // finds none in its namespace, where the work directory that holds the rig's mise is covered.
+  test.skipIf(withoutNamespace)(
+    "the agent's namespace runs the rig's own mise, which its pane's PATH names and its world shows read-only",
+    () => {
+      const work = freshDir("mise-launch");
+      const archive = miseRelease("v2099.1.2");
+      const curl = curlStandIn();
+      const installed = rigMise(miseRoot("v2099.1.2", fileSha256(archive)), work, {
+        PATH: `${curl}:${childEnv.PATH}`,
+        CURL_LOG: path.join(curl, "urls"),
+        CURL_SERVES: archive,
+      });
+      expect({ code: installed.code, stderr: installed.stderr }).toEqual({ code: 0, stderr: "" });
+      const tools = path.join(work, "tools", "bin");
+      const { run, result, out } = launched(
+        work,
+        "spec-writing-s1-1",
+        'echo "ran by $MISE_RAN"',
+        [],
+        {
+          panePath: `${tools}:${process.env.PATH ?? ""}`,
+        }
+      );
+      expect(result.code).toBe(0);
+      expect(out).toBe(`ran by ${tools}/mise\nexit=0\n`);
+      expect(world(run)).toContain(`ro ${tools}`);
     }
   );
 

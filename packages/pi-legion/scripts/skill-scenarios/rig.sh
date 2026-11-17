@@ -254,6 +254,14 @@
 #                                 provider, optional: the model id of that block a label's agents run
 #                                 (default the judge's, claude-opus-4-8); the judge keeps its own
 # `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
+# The rig runs a mise of its own, never the caller's: a worker pod's image carries none (its
+# `tools` stage alone installs mise), and the caller's is any version at all. `profile`,
+# `live-read`, `batch` and `judge-omp` fetch it with curl (rig_mise) at the worker image's own
+# pin, the ARG MISE_VERSION and ARG MISE_SHA256 of packages/daemon/docker/worker.Dockerfile, read
+# there on every call, from the release URL that image's tools stage fetches. A fetch that fails,
+# or an archive whose SHA-256 is any other, is refused, naming the step, and installs nothing; a
+# mise an earlier call installed from that archive is reused. It is <work>/tools/bin/mise, first
+# on the PATH the rig, the profile installer and every agent run on.
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/work); its path
@@ -576,6 +584,11 @@ tag=legion-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
+# Where rig_mise installs the rig's own mise, under the work directory and in no word of the
+# measurement's or the rig's: every agent's world shows it (world_paths), and launch's guard
+# refuses a world that names one.
+mise_dir=$work/tools/bin
+
 # What a command started, for its exit trap: the run directory and its agent's tmux session, the
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), each label's Envoy
 # listener (listener_pids, one per label of the batch), and the services' ports and directory.
@@ -751,6 +764,69 @@ checkout_commit() {
   printf '%s parents=%s%s\n' "$head" "${parents// /,}" "${status:+ dirty}"
 }
 
+# rig_mise installs the rig's own mise at $mise_dir/mise, unless it is there already, and puts
+# $mise_dir first on PATH. Every `mise` the rig runs is that one: install-plugin-profile.sh's
+# (`mise where`, `mise install` and `mise x`), pinned_omp's, the superpowers probe's, the judge's
+# `mise where`, and the `mise x <pin>` each agent starts under in its namespace (launch), which
+# finds it on the pane's PATH (base_env), in a world that shows it read-only (world_paths). The
+# worker image installs mise in its `tools` stage alone, to resolve the pinned Oh My Pi, jj and gh,
+# and its final image carries none, so a worker pod has no mise but this one; on another host the
+# caller's mise is any version at all. `profile`, `live-read`, `batch` and `judge-omp` call this
+# before their first `mise`. `rig.sh run`, which a batch alone starts, inherits the batch's PATH,
+# and cmd_world reads the mise its run's pane names.
+#
+# The pin is the worker image's own: the ARG MISE_VERSION and ARG MISE_SHA256 of this checkout's
+# packages/daemon/docker/worker.Dockerfile, read there on every call and written nowhere here, so
+# the rig's mise and the image's cannot drift apart, and the archive is the one that image's tools
+# stage fetches. A mise whose record (<work>/tools/installed, beside $mise_dir) says it came from
+# the archive of that URL and that SHA-256, and whose bytes are the ones recorded, is reused, and
+# nothing is fetched. Any other is fetched again. A fetch that fails, an archive whose SHA-256 is
+# any other, an archive with no mise/bin/mise, and a binary that does not run are each refused,
+# naming the step, what it expected and what it got. Each leaves nothing installed: the archive is
+# fetched and unpacked in a directory of its own under the work directory, removed before this
+# returns or refuses, and only a checked binary is moved into place.
+rig_mise() {
+  local dockerfile=$root/packages/daemon/docker/worker.Dockerfile record=${mise_dir%/*}/installed
+  local version sha url pin tmp out status=0 got
+  version=$(sed -n 's/^ARG MISE_VERSION=//p' "$dockerfile" 2>/dev/null) || version=''
+  sha=$(sed -n 's/^ARG MISE_SHA256=//p' "$dockerfile" 2>/dev/null) || sha=''
+  [[ $version =~ ^[A-Za-z0-9._-]+$ && $sha =~ ^[0-9a-f]{64}$ ]] ||
+    fail "mise pin: expected one ARG MISE_VERSION=<release> and one ARG MISE_SHA256=<sha256> in $dockerfile, got '$version' and '$sha'; nothing was installed"
+  url=https://github.com/jdx/mise/releases/download/$version/mise-$version-linux-x64.tar.gz
+  pin="archive $url $sha"
+  if ! { [ -x "$mise_dir/mise" ] && [ -f "$record" ] &&
+    [ "$(<"$record")" = "$pin"$'\n'"mise $(sha256sum <"$mise_dir/mise" | cut -d' ' -f1)" ]; }; then
+    tmp=$(mktemp -d "$work/.mise.XXXXXXXX")
+    out=$(curl -fsSL -o "$tmp/mise.tar.gz" "$url" 2>&1) || status=$?
+    [ "$status" = 0 ] || {
+      rm -rf -- "$tmp"
+      fail "mise fetch: expected the archive of mise $version (ARG MISE_VERSION of $dockerfile) from $url, got curl exit $status: ${out:-no message}; nothing was installed"
+    }
+    got=$(sha256sum <"$tmp/mise.tar.gz" | cut -d' ' -f1)
+    [ "$got" = "$sha" ] || {
+      rm -rf -- "$tmp"
+      fail "mise check: expected SHA-256 $sha (ARG MISE_SHA256 of $dockerfile) of $url, got $got; nothing was installed"
+    }
+    out=$(tar -xzf "$tmp/mise.tar.gz" -C "$tmp" --no-same-owner mise/bin/mise 2>&1) || {
+      rm -rf -- "$tmp"
+      fail "mise unpack: expected mise/bin/mise in the archive of $url, got: $out; nothing was installed"
+    }
+    chmod 0755 "$tmp/mise/bin/mise"
+    out=$("$tmp/mise/bin/mise" --version 2>&1) || status=$?
+    [ "$status" = 0 ] || {
+      rm -rf -- "$tmp"
+      fail "mise run: expected the mise of $url to print its version, got exit $status: $out; nothing was installed"
+    }
+    printf '%s\nmise %s\n' "$pin" "$(sha256sum <"$tmp/mise/bin/mise" | cut -d' ' -f1)" >"$tmp/installed"
+    mkdir -p "$mise_dir"
+    mv -f -- "$tmp/mise/bin/mise" "$mise_dir/mise"
+    mv -f -- "$tmp/installed" "$record"
+    rm -rf -- "$tmp"
+    note "mise: fetched $url, SHA-256 $got as ARG MISE_SHA256 of $dockerfile expects; installed $mise_dir/mise, which prints ${out%%$'\n'*}"
+  fi
+  [ "${PATH%%:*}" = "$mise_dir" ] || PATH=$mise_dir:$PATH
+}
+
 # The profile, its HOME and its packed plugins, are installed under <work>/installs/<id>, an id of
 # no meaning that $P/install records (load_label's I), and the label's own directory, $P, keeps
 # what the rig reads of the label. The profile's name is production's own, `legion`, the same for
@@ -769,6 +845,9 @@ cmd_profile() {
   [ ! -e "$P" ] || fail "$P exists; remove it, and the install its install file names, to rebuild label $label"
   co=$(cd "$2" && pwd -P)
   [ -f "$co/scripts/e2e/lib/install-plugin-profile.sh" ] || fail "$co is not a Legion checkout"
+  # The plugin installer and the superpowers probe run the rig's own mise, fetched before anything
+  # of the label is made, so a refused fetch leaves no label to remove.
+  rig_mise
   id=$(openssl rand -hex 6)
   I=$work/installs/$id
   mkdir -p "$P" "$work/installs"
@@ -907,13 +986,13 @@ push_guard() {
 }
 
 # Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's install, the
-# label's profile, the run's stand-ins first on PATH, its own TMPDIR, the push guard's check
-# (push_guard), and nothing else from the caller's environment. No variable names the rig: the
-# run's directory reaches the gh stand-in through its bundle (standins), and every process of the
-# run carries the run in its HOME (run_env_pids). A run that boots a second agent calls this
-# again, and that agent gets a HOME copied afresh from the label's, as the first one did; the HOME
-# the agent before it wrote in is kept beside its logs and its output, under $R/home-<its role>
-# (worker_boot).
+# label's profile, the run's stand-ins first on PATH and the rig's own mise next (rig_mise), its own
+# TMPDIR, the push guard's check (push_guard), and nothing else from the caller's environment. No
+# variable names the rig: the run's directory reaches the gh stand-in through its bundle
+# (standins), and every process of the run carries the run in its HOME (run_env_pids). A run that
+# boots a second agent calls this again, and that agent gets a HOME copied afresh from the label's,
+# as the first one did; the HOME the agent before it wrote in is kept beside its logs and its
+# output, under $R/home-<its role> (worker_boot).
 base_env() {
   mkdir -p "$R/tmp"
   # Nothing is removed here: the HOME of the agent before this one is moved to home-<its role>
@@ -1057,8 +1136,8 @@ world_paths() {
       while [ "$dir" != / ] && [ ! -e "$dir/node_modules/zod" ]; do dir=$(dirname -- "$dir"); done
       [ ! -e "$dir/node_modules/zod" ] || printf 'ro %s\n' "${dir%/}/node_modules/zod"
     fi
-    # Every tool directory on the pane's PATH but the run's own: mise and tmux, git and jj with
-    # the push guard's wrappers, bun, the operator's tools.
+    # Every tool directory on the pane's PATH but the run's own: the rig's own mise (rig_mise),
+    # tmux, git and jj with the push guard's wrappers, bun, the operator's tools.
     while IFS= read -r -d : entry; do
       case $entry in /*) ;; *) continue ;; esac
       case $entry/ in "$R"/*) continue ;; esac
@@ -1405,6 +1484,8 @@ cmd_live_read() {
   [ $# -ge 2 ] || fail "usage: rig.sh live-read <label> <skill>..."
   load_label "$1"
   require_namespace
+  # launch's pinned_omp and the agent's `mise x` run the rig's own mise (rig_mise).
+  rig_mise
   shift
   local paths=() skill list
   # The label's install id names the read, so no path its agent reads names the label.
@@ -2325,6 +2406,15 @@ cmd_judge_omp() {
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
   command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
   judge_profiles
+  # The pinned omp, by the rig's own mise (rig_mise), found before this judge writes anything, so a
+  # refused fetch leaves nothing that the next judge of DIR would refuse.
+  if [ -n "${SKILL_SCENARIOS_JUDGE_OMP:-}" ]; then
+    omp=$SKILL_SCENARIOS_JUDGE_OMP
+  else
+    rig_mise
+    omp=$(pinned_omp "$(<"$work/judge-profiles/pin")") || exit 1
+  fi
+  [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
   local route=() host ip
@@ -2343,8 +2433,6 @@ cmd_judge_omp() {
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"
   : >>"$dir/$output"
-  omp=${SKILL_SCENARIOS_JUDGE_OMP:-$(mise where "$(<"$work/judge-profiles/pin")")/bin/omp}
-  [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
@@ -3766,6 +3854,9 @@ cmd_batch() {
     require_superpowers "$batch_scenario"
     ;;
   esac
+  # services_from's pinned_omp and every run's agent run the rig's own mise (rig_mise); each
+  # `rig.sh run` the batch starts inherits this PATH.
+  rig_mise
   lock_services
   on_exit stop_batch
   # One listener per label, each built from that label's own checkout (services_up).
@@ -3789,14 +3880,15 @@ cmd_batch() {
 # declares it, from what the run recorded: its own directory as its record names it
 # (run-names.ts's `ran`; a run recorded before the names left the world names it in its pane
 # file's SKILL_SCENARIO_RUN; RUN itself for a run with neither), the work directory that holds it,
-# the label's install there, its pane file, and the pin's install where mise still has it. A run
-# with no record is read against the world such a run had, which showed its label's checkout (the
-# checkout its built-from names) and this script's own directory (world_paths' CO). health.ts
-# judges every run's tool calls by it.
+# the label's install there, its pane file, and the pin's install where the mise its pane's PATH
+# names still has it: the one its agent's `mise x` ran, the rig's own (rig_mise) for every run since
+# the rig brought one. A run with no record is read against the world such a run had, which showed
+# its label's checkout (the checkout its built-from names) and this script's own directory
+# (world_paths' CO). health.ts judges every run's tool calls by it.
 cmd_world() {
   [ $# = 2 ] || fail "usage: rig.sh world <label> <run dir>"
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
-  local label=$1 dir=$2 R='' run_work P I co='' pin_dir=''
+  local label=$1 dir=$2 R='' run_work P I co='' pin_dir='' pane_path mise
   if [ -f "$dir.json" ]; then
     R=$(jq -r .ran "$dir.json")
   else
@@ -3809,7 +3901,10 @@ cmd_world() {
   I=$P
   [ ! -f "$P/install" ] || I=$run_work/installs/$(<"$P/install")
   [ -f "$dir.json" ] || [ -n "$co" ] || [ ! -f "$P/checkout" ] || co=$(<"$P/checkout")
-  if [ -f "$P/pin" ] && command -v mise >/dev/null; then pin_dir=$(mise where "$(<"$P/pin")" 2>/dev/null) || pin_dir=''; fi
+  pane_path=$(pane_var PATH "$dir/pane.env")
+  if [ -f "$P/pin" ] && [ -n "$pane_path" ] && mise=$(PATH=$pane_path && command -v mise); then
+    pin_dir=$("$mise" where "$(<"$P/pin")" 2>/dev/null) || pin_dir=''
+  fi
   world_paths "$R" "$run_work" "$I" "$dir/pane.env" "$pin_dir" "$co"
 }
 

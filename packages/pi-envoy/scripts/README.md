@@ -377,7 +377,15 @@ SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 
 The scenarios and every input are in the script's header (`./rig.sh` with no arguments prints it),
 and each scenario's scoring rule is on the `score.ts` function that scores it. It needs a model
 route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml)
-and Docker; every container a batch or a judge starts has CPU and memory limits.
+and Docker; every container a batch or a judge starts has CPU and memory limits. It runs a mise of
+its own, never the caller's, since a worker pod's image carries none (the image's `tools` stage
+alone installs mise): `rig.sh profile`, `live-read`, `batch` and `judge-omp` fetch it with `curl`
+at the worker image's own pin, `packages/daemon/docker/worker.Dockerfile`'s `ARG MISE_VERSION` and
+`ARG MISE_SHA256`, read there on every call, from the release URL that image's `tools` stage
+fetches, install it as `$SKILL_SCENARIOS_WORK/tools/bin/mise`, and put that directory first on the
+PATH the profile installer and every agent run on. A fetch that fails, or an archive whose SHA-256
+is any other, is refused, naming the step and what it expected and got, and installs nothing; a
+later call reuses the mise an earlier one installed from that archive.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh
 My Pi would load that directory's plugins and not the label's. Its bounded waits, port picks and
 process stops are
@@ -403,15 +411,16 @@ caller's `TMPDIR` names, the issue workspaces (`/legion/workspaces`, or `LEGION_
 levels up), the work directory, every label's checkout, `/var/run/legion` and `/var/run/secrets`;
 it shows again the run's own directory, its label's install (never the other label's), the
 batch's two tokens (`services/tokens/`), and the tools the run's pane names (each directory on its
-PATH, mise's installs, the pin and the push guard's check), read-only but for the run and its
-model route's call record. No checkout is shown, the label's own included, and not the rig's own
-directory either: the run's `gh` is a bundle of `gh-standin.ts` in `<run>/lib/gh.js`, which names
-the run it records under itself. `/tmp` is the run's own `<run>/tmp`, and `/proc` lists the run's
-own processes alone. `/var/run/model-gateway-key` and `/var/run/operator` stay: they are the model
-route's own credentials. So an agent can neither list nor read another run, another role's
-scratch, the other label's skills or the pod's credentials, nor leave a file in `/tmp` for another
-run. A run recorded before this world is read against the world it had (its own `namespace.txt`,
-or, with none, a world that showed its checkout, the rig's directory and the services).
+PATH, the rig's own mise's first, mise's installs, the pin and the push guard's check), read-only
+but for the run and its model route's call record. No checkout is shown, the label's own included,
+and not the rig's own directory either: the run's `gh` is a bundle of `gh-standin.ts` in
+`<run>/lib/gh.js`, which names the run it records under itself. `/tmp` is the run's own
+`<run>/tmp`, and `/proc` lists the run's own processes alone. `/var/run/model-gateway-key` and
+`/var/run/operator` stay: they are the model route's own credentials. So an agent can neither list
+nor read another run, another role's scratch, the other label's skills or the pod's credentials,
+nor leave a file in `/tmp` for another run. A run recorded before this world is read against the
+world it had (its own `namespace.txt`, or, with none, a world that showed its checkout, the rig's
+directory and the services).
 
 Nothing the rig composes for an agent names its run's scenario, case or label, or a name the rig
 once gave its world: before an agent starts, `launch` runs `run-names.ts guard`, which reads every
