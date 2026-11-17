@@ -34,7 +34,12 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
+import {
+  settingsFieldLabel,
+  settingsListTrigger,
+  settingsMonoInput,
+  settingsSubmitButton,
+} from "./classes";
 
 /** Lists native projects, lets a human create one, and carries each project's default assignee -
  * the person an issue created with nobody named lands on, and the person a question on an issue
@@ -211,7 +216,7 @@ export function ProjectsSection(): ReactNode {
                   read; until it is, they are the only option. An empty value is nobody picked
                   yet, which is the page before the viewer resolves. */}
               <PersonSelect
-                className={`w-full min-w-0 rounded-md px-3 py-2 text-left disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                className={`w-full min-w-0 ${settingsListTrigger}`}
                 disabled={createProject.isPending || newProjectAssignee === ""}
                 label="Default assignee"
                 onPick={setProjectAssignee}
@@ -465,7 +470,7 @@ function DefaultAssigneeSelect({
 }): ReactNode {
   return (
     <PersonSelect
-      className={`rounded-md px-3 py-2 text-left disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+      className={settingsListTrigger}
       disabled={unread !== null}
       label={`Default assignee of ${project}`}
       onPick={onPick}
