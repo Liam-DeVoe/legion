@@ -668,33 +668,56 @@ const idleRigRefuseFirstAsk = "idle_rig_refuse_first_ask"
 // (record.UpdateAsk under a round `release:<id>`), and take every later one.
 func (r *idleWakeRig) refuseFirstAsk() {
 	r.t.Helper()
-	r.refuseFirstWrite(idleRigRefuseFirstAsk, "before insert on outbox",
-		`new.kind = '`+string(record.OutboxKindUpdateAsk)+`' and new.payload::jsonb->>'round' like 'release:%'`, "the store refused the ask")
+	r.refuseReleaseAsksWhile(idleRigRefuseFirstAsk, "caught = 1")
 }
 
-// refuseFirstWrite has the store refuse the first write the trigger name catches, with message,
-// and take every later one, for the rest of the test: on and when are refuseWrites'. The trigger
-// counts the writes it caught with a sequence of the same name, which the refused write's
-// rollback does not take back (writesCaught).
-func (r *idleWakeRig) refuseFirstWrite(name, on, when, message string) {
+// idleRigRefuseAsksBeforeTheBound is the trigger, and the name of the count, of
+// refuseAsksBeforeTheBound.
+const idleRigRefuseAsksBeforeTheBound = "idle_rig_refuse_asks_before_the_bound"
+
+// refuseAsksBeforeTheBound has the store refuse each project release's ask written to the outbox
+// before the bound of the newest release, and take each one written at the bound or after it. The
+// database's clock decides, which is the daemon's own: the rig's Postgres runs on its machine.
+func (r *idleWakeRig) refuseAsksBeforeTheBound() {
+	r.t.Helper()
+	r.refuseReleaseAsksWhile(idleRigRefuseAsksBeforeTheBound,
+		"clock_timestamp() < (select bound_at from project_releases order by id desc limit 1)")
+}
+
+// refuseReleaseAsksWhile has the store refuse each project release's ask written to the outbox
+// (record.UpdateAsk under a round `release:<id>`) while refuse holds, and take every other one
+// (refuseWritesWhile).
+func (r *idleWakeRig) refuseReleaseAsksWhile(name, refuse string) {
+	r.t.Helper()
+	r.refuseWritesWhile(name, "before insert on outbox",
+		`new.kind = '`+string(record.OutboxKindUpdateAsk)+`' and new.payload::jsonb->>'round' like 'release:%'`, refuse, "the store refused the ask")
+}
+
+// refuseWritesWhile has the store refuse, with message, each write the trigger name catches while
+// refuse holds, and take every other one, for the rest of the test: on and when are refuseWrites',
+// and refuse is a PL/pgSQL condition, which may read caught, the write's number among the writes
+// the trigger caught. The trigger counts them with a sequence of the same name, which a refused
+// write's rollback does not take back (writesCaught).
+func (r *idleWakeRig) refuseWritesWhile(name, on, when, refuse, message string) {
 	r.t.Helper()
 	for _, statement := range []string{
 		`create sequence ` + name,
 		`create function ` + name + `() returns trigger language plpgsql as $$
+			declare caught bigint := nextval('` + name + `');
 			begin
-				if nextval('` + name + `') = 1 then raise exception '` + message + `'; end if;
+				if ` + refuse + ` then raise exception '` + message + `'; end if;
 				return new;
 			end $$`,
 		`create trigger ` + name + ` ` + on + ` for each row
 			when (` + when + `) execute function ` + name + `()`,
 	} {
 		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
-			r.t.Fatalf("make the store refuse the first write with the trigger %s: %v", name, err)
+			r.t.Fatalf("make the store refuse writes with the trigger %s: %v", name, err)
 		}
 	}
 }
 
-// writesCaught is how many writes the trigger refuseFirstWrite made under name caught.
+// writesCaught is how many writes the trigger refuseWritesWhile made under name caught.
 func (r *idleWakeRig) writesCaught(name string) int64 {
 	r.t.Helper()
 	var caught int64
@@ -737,6 +760,43 @@ func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
 	}
 	if release.FinishedAt.After(release.BoundAt) {
 		t.Errorf("the release finished at %s, after the bound %s: the pod waited out the bound rather than for its answer", release.FinishedAt, release.BoundAt)
+	}
+}
+
+// dispatch://INFRA-3583 R6, R8: an ask the store refuses until the bound is written again until
+// it lands at the bound, the last try, which leaves the asked role no time to push. So the release
+// does not give the pod's work up, as it does not for an ask it could not write: it leaves the pod
+// with its disk. The pod's line gives that reason, names its role asked with the bound passed and
+// keeps the read's count, and the pod's claim is held for an operator, which the next boot does
+// not start.
+func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
+	rig := newIdleWakeRig(t, "late")
+	late := rig.issue("late")
+	rig.agents.setPlan(late.key, string(late.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
+	rig.launchAll()
+	rig.refuseAsksBeforeTheBound()
+
+	rig.startRelease("15s")
+	release, _ := rig.awaitReleaseFinished()
+	if caught := rig.writesCaught(idleRigRefuseAsksBeforeTheBound); caught < 2 {
+		t.Fatalf("the store caught %d writes of the release's ask, want at least two: one refused before the bound and the one at it", caught)
+	}
+	line := releaseLine(t, release, late.pod)
+	if line.Outcome != api.ReleaseLeft || line.Reason != releaseAskAtBound {
+		t.Fatalf("the pod's line is %s, want it left because its ask reached its role only at the bound: %q", lineJSON(line), releaseAskAtBound)
+	}
+	if len(line.Asked) != 1 || line.Asked[0].Role != late.role || !line.Asked[0].Bound || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want its implementer asked with the bound passed, and its 1 commit", lineJSON(line))
+	}
+	if rig.kube.sandbox(late.pod) == nil {
+		t.Error("the pod whose role had no time to push was deleted")
+	}
+	token := rig.token(late)
+	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
+		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
+	}
+	if ended := releaseClaimLine(t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
+		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
 	}
 }
 

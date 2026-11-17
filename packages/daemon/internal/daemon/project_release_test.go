@@ -201,10 +201,11 @@ func (p *releasePods) ReleaseProjectController(_ context.Context, token claim.To
 	return p.releaseErr
 }
 
-// releaseRetry is the first wait before a failed write of a release runRelease runs is tried
-// again, the pause between two tries of its read of the claims or of its arm of a backstop, and
-// the pause between two of its lists of the project: short, so a test that fails a write, a read,
-// an arm or a list waits milliseconds rather than the daemon's seconds.
+// releaseRetry is the first wait before a failed write of a release a test builds is tried again,
+// the pause between two tries of its read of the claims or of its arm of a backstop, and the pause
+// between two of its lists of the project: short, so a test that fails a write, a read, an arm or
+// a list waits milliseconds rather than the daemon's seconds, and never zero, which would make a
+// try follow a failed one at once.
 const releaseRetry = 10 * time.Millisecond
 
 // runRelease runs a project release of the project legion over sup's machines, pods and records,
@@ -292,7 +293,8 @@ func TestProjectReleaseAsksNothingOnceItFinished(t *testing.T) {
 	mark := &projectRelease{}
 	release := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1)}
 	r := &projectReleaser{ctx: ctx, project: "legion", mark: mark, store: release, machines: sup, pods: &releasePods{},
-		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond, now: time.Now, log: quietLogger()}
+		defaultBound: time.Minute, stopTimeout: time.Second, reread: time.Second, poll: 10 * time.Millisecond,
+		retry: releaseRetry, listPause: releaseRetry, now: time.Now, log: quietLogger()}
 	if _, started, err := r.Start(ctx, time.Minute, false); err != nil || !started {
 		t.Fatalf("Start = started %v, %v; want the release started", started, err)
 	}

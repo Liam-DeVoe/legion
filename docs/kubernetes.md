@@ -6137,8 +6137,10 @@ The release does five things, in this order:
    It asks the role to push to `legion/<KEY>`, to answer with the `legion` tool's `ready_for_update` naming the ask's round (`release:<id>`), and to end its turn.
    Each asked pod waits until each asked role answered and no role of it is in a turn, or until the bound.
    An answer that comes after the bound changes nothing, and the pod's line keeps the bound.
-   When the ask cannot be written to the daemon's database, the release writes it again, a second after the first try and then up to 10 seconds apart, until the bound.
+   When the ask cannot be written to the daemon's database, the release writes it again, a second after the first try and then up to 10 seconds apart, until the bound, each time to the roles running then.
+   A try that finds no role of the pod running asks nobody, and the pod goes on to step 4 with no ask.
    An ask that still cannot be written at the bound reached no role, so nobody was asked to push the pod's work: the release leaves the pod, and the pod's line names no asked role and gives the reason `the ask to its running roles could not be written: …`.
+   An ask written only at the bound or after it, at any try, left its roles no time to push, so the release leaves that pod too: the pod's line names each role the ask reached, with the bound passed, and gives the reason `the ask reached its running roles only at the bound, which left them no time to answer`.
    A pod that the first read did not ask is read once more just before its stop, and a commit, a refusal or a turn found then makes the release ask it and wait for it as for any other pod.
    The bound is `--bound`, or the daemon's `pod_update_grace_minutes` (30 minutes by default), one moment for every pod, counted from the release's start, and at it the release cuts each turn that still runs.
 
@@ -6211,7 +6213,7 @@ A claim an idle release suspended before the release stays `released` and waits 
 A restart on the configuration of the release's own cluster also adopts each pod the release did not reach, as after any restart.
 A restart on another cluster's configuration finds none of those pods, so the move changes the configuration only once the release ended with no pod left.
 
-A pod is left when a claim of it was suspended by an operator, before the release or during it, when its ask could not be written by the bound, when its claims were not stored suspended in time (`worker_stop_timeout_seconds` after the later of the stop and the bound), or when its delete failed.
+A pod is left when a claim of it was suspended by an operator, before the release or during it, when its ask could not be written by the bound or reached its roles only at the bound, when its claims were not stored suspended in time (`worker_stop_timeout_seconds` after the later of the stop and the bound), or when its delete failed.
 The release then holds each claim that ran there as an operator's suspension, so no boot starts it, and the pod keeps its disk and the work on it.
 It also takes each claim of the pod out of any pod update round, the claim an operator suspended before the release included, so a round opened before the release does not replace the pod once its claims are resumed.
 The release waits up to twice `worker_stop_timeout_seconds` for each such hold to be stored before it finishes.
