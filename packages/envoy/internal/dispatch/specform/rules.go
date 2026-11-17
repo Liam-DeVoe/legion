@@ -55,26 +55,62 @@ var steRules = map[string]string{
 	"dangling-conjunction": "a list item that ends with and or or",
 }
 
+// The forms of a name that the reference rules read. Each one is a whole word (wordForm): a letter,
+// a digit or "_" right before it or right after it joins it to a longer word, which names nothing,
+// so "#12abcd" is a colour, "@types/node" a package and "xACME-12" no key.
 var (
 	// bareKey is an issue key standing as a word: the server's own reference grammar finds
 	// only dispatch:// and http(s):// references, so this one is this package's.
-	bareKey  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
-	recordID = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	// incident and pullRequestName name a record only by a form that only a name has: "#" and
-	// digits, the word "number" and digits, an incident's key or date, and a pull request's
-	// <owner>/<repo>#<digits>. A bare number after the words is a count, such as "each pull request
-	// 10 minutes after", and names nothing. pullRequestAddress is the address of a pull request,
-	// the one form of a name that an address holds (its group 1): its host is github.com or
+	bareKey  = wordForm{pattern: regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)}
+	recordID = wordForm{pattern: regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)}
+	// incident, pullRequestName and pullRequestRepo name a record only by a form that only a name
+	// has: "#" and digits, the word "number" and digits, an incident's key or date, and a pull
+	// request's <owner>/<repo>#<digits>, whose owner has no "/", "." or "-" before it, since that
+	// is a longer path. A bare number after the words is a count, such as "each pull request 10
+	// minutes after", and names nothing. pullRequestAddress is the address of a pull request, the
+	// one form of a name that an address holds (its group 1): its host is github.com or
 	// www.github.com in any case, as a host has no case, at the start of the text or after a
 	// character that no host holds, so github.com at the end of another host names nothing.
-	incident           = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
-	pullRequestName    = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|#\d+`)
-	pullRequestAddress = regexp.MustCompile(`(?:^|[^\w.-])((?i:(?:www\.)?github\.com)/[\w.-]+/[\w.-]+/pull/\d+)`)
+	incident = wordForm{pattern: regexp.MustCompile(
+		`(?i:\bincident\s*#\d+|\bincident\s+(?:number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)}
+	pullRequestName    = wordForm{pattern: regexp.MustCompile(`(?i:\b(?:pr|pull request)(?:\s*#\d+|\s+number\s+#?\d+))|#\d+`)}
+	pullRequestRepo    = wordForm{pattern: regexp.MustCompile(`\b[\w.-]+/[\w.-]+#\d+`), left: "./-"}
+	pullRequestAddress = wordForm{pattern: regexp.MustCompile(`(?:^|[^\w.-])((?i:(?:www\.)?github\.com)/[\w.-]+/[\w.-]+/pull/\d+)`), group: 1, left: ".-"}
 	// email is an e-mail address: its domain's last label is letters, so a version after an at
-	// sign, as in "checker@v1.2.3", is no address.
-	email  = regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)
-	handle = regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`)
+	// sign, as in "checker@v1.2.3", is no address. Its local part and its domain take the letters
+	// beside them, so a letter there makes a longer address.
+	email = wordForm{pattern: regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)}
+	// handle is an @handle, which no "@" comes before and no "/" or "@" comes after, so the scope
+	// of a package such as "@types/node" is no handle.
+	handle = wordForm{pattern: regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`), group: 1, left: "@", right: "/@"}
 )
+
+// wordForm is a form of a name that a rule finds only as a whole word: the submatch group of its
+// pattern (0 for the whole match), when the character before it is the start of the line, or no
+// letter, digit or "_" and none of left, and the character after it is the end of the line, or no
+// letter, digit or "_" and none of right.
+type wordForm struct {
+	pattern     *regexp.Regexp
+	group       int
+	left, right string
+}
+
+// find is the span of each whole word of the form in line, in the order of the line.
+func (form wordForm) find(line string) []span {
+	joins := func(r rune, also string) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || strings.ContainsRune(also, r)
+	}
+	var found []span
+	for _, match := range form.pattern.FindAllStringSubmatchIndex(line, -1) {
+		start, end := match[2*form.group], match[2*form.group+1]
+		before, _ := utf8.DecodeLastRuneInString(line[:start])
+		after, _ := utf8.DecodeRuneInString(line[end:])
+		if (start == 0 || !joins(before, form.left)) && (end == len(line) || !joins(after, form.right)) {
+			found = append(found, span{start: start, end: end})
+		}
+	}
+	return found
+}
 
 // incidentForms and pullRequestForms say, in a finding, which forms the two rules read as a name.
 const (
@@ -164,7 +200,8 @@ type span struct {
 // address of a link or an image) names a record only by the forms that an address holds: a
 // reference to a record of Dispatch, the address of a pull request and an email address. A form
 // of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
-// nor in a reference that words hold, such as "https://example.com/guide#12".
+// nor in a reference that words hold, such as "https://example.com/guide#12". A "#12" in the name
+// of an incident names no pull request.
 func referenceBreaks(c Context, people [][]string, line string, address bool) []broken {
 	var references, links []span
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
@@ -177,17 +214,17 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	inReference := func(at int) bool {
 		return inSpans(references, at)
 	}
-	for _, match := range bareKey.FindAllStringIndex(line, -1) {
-		key := line[match[0]:match[1]]
+	for _, each := range bareKey.find(line) {
+		key := line[each.start:each.end]
 		project := key[:strings.LastIndexByte(key, '-')]
 		ref, ok := text.ParseRef("dispatch://"+key, "")
-		if !inReference(match[0]) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
-			links = append(links, span{match[0], match[1], broken{ruleDispatchLink, linkDetail(key)}})
+		if !inReference(each.start) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
+			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("key", key)}})
 		}
 	}
-	for _, match := range recordID.FindAllStringIndex(line, -1) {
-		if !inReference(match[0]) {
-			links = append(links, span{match[0], match[1], broken{ruleDispatchLink, linkDetail(line[match[0]:match[1]])}})
+	for _, each := range recordID.find(line) {
+		if !inReference(each.start) {
+			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("id", line[each.start:each.end])}})
 		}
 	}
 	sort.SliceStable(links, func(a, b int) bool { return links[a].start < links[b].start })
@@ -195,19 +232,20 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	for _, link := range links {
 		found = append(found, link.broken)
 	}
+	var incidents []span
 	if !address {
-		for _, match := range incident.FindAllString(line, -1) {
-			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
+		incidents = incident.find(line)
+		for _, each := range incidents {
+			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", line[each.start:each.end], incidentForms)})
 		}
 	}
-	var pullRequests []span
-	for _, match := range pullRequestAddress.FindAllStringSubmatchIndex(line, -1) {
-		pullRequests = append(pullRequests, span{start: match[2], end: match[3]})
-	}
+	pullRequests := pullRequestAddress.find(line)
 	if !address {
-		for _, match := range pullRequestName.FindAllStringIndex(line, -1) {
-			if !inReference(match[0]) && !inSpans(pullRequests, match[0]) {
-				pullRequests = append(pullRequests, span{start: match[0], end: match[1]})
+		for _, form := range []wordForm{pullRequestRepo, pullRequestName} {
+			for _, each := range form.find(line) {
+				if !inReference(each.start) && !inSpans(pullRequests, each.start) && !inSpans(incidents, each.start) {
+					pullRequests = append(pullRequests, each)
+				}
 			}
 		}
 	}
@@ -217,9 +255,9 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	}
 	var names []string
 	if address {
-		for _, match := range email.FindAllStringIndex(line, -1) {
-			if !inReference(match[0]) {
-				names = append(names, line[match[0]:match[1]])
+		for _, each := range email.find(line) {
+			if !inReference(each.start) {
+				names = append(names, line[each.start:each.end])
 			}
 		}
 	} else {
@@ -233,6 +271,12 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 
 func linkDetail(reference string) string {
 	return fmt.Sprintf("it links to a record of Dispatch: %q", reference)
+}
+
+// recordNameDetail is the detail of a bare key or id of a record of Dispatch, which names the
+// record by its key or its id and links to none.
+func recordNameDetail(by, name string) string {
+	return fmt.Sprintf("it names a record of Dispatch by its %s: %q", by, name)
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar
@@ -304,14 +348,14 @@ func peopleNames(c Context, in Input) [][]string {
 // holds none.
 func personNames(people [][]string, line string, inReference func(int) bool) []string {
 	var found []span
-	for _, match := range email.FindAllStringIndex(line, -1) {
-		if !inReference(match[0]) {
-			found = append(found, span{start: match[0], end: match[1]})
+	for _, each := range email.find(line) {
+		if !inReference(each.start) {
+			found = append(found, each)
 		}
 	}
-	for _, match := range handle.FindAllStringSubmatchIndex(line, -1) {
-		if !inReference(match[2]) && !inSpans(found, match[2]) {
-			found = append(found, span{start: match[2], end: match[3]})
+	for _, each := range handle.find(line) {
+		if !inReference(each.start) && !inSpans(found, each.start) {
+			found = append(found, each)
 		}
 	}
 	var words []span
