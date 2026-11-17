@@ -765,23 +765,31 @@ func TestAnAnswerAfterAnotherHumanRequestedChangesDoesNotCarry(t *testing.T) {
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 2, "changes_requested")
 }
 
-// The agent deletes a block the human answered, whose document he then approved, and inserts it
+// The human deletes a block he answered, whose document he then approved, and the agent inserts it
 // again with its id and wording. Its row stays answered - settlement retracts only an open ask -
 // and on a fleet of one build no block holds an answer state (R3), so the inserted block agrees
 // with its row and the insert's version is the approved version's text byte for byte: it carries
 // his approval (docs.restoresApprovedText). An agent reading the text reads his answer on the
 // block again, rendered from the store, and settlement writes nothing back into the block, so no
-// version follows; the delete's version carried nothing.
+// version follows; the delete's version carried nothing. The agent cannot make the delete
+// itself: no agent takes a person's answered decision out of a document (dispatch://INFRA-1150
+// R6), so its delete is refused and writes no version.
 func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Answered block restored", "Context\n\n"+regionAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)
-	deleted := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+	deleteRegion := map[string]any{
 		"actor": sessionActor(),
 		"ops":   []map[string]string{{"op": "delete", "block": "region"}},
-	})
+	}
+	if refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteRegion); refused.Code != http.StatusConflict ||
+		decodeBody[errorBody](t, refused).Code != codeAnsweredAskKept {
+		t.Fatalf("the agent deletes the answered block: status=%d body=%s, want 409 %s", refused.Code, refused.Body.String(), codeAnsweredAskKept)
+	}
+	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 1)
+	deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteRegion, "alice")
 	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete the answered block: status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
