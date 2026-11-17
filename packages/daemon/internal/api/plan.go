@@ -83,12 +83,12 @@ func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
 	writeJSON(w, refusal.Status, PlanRefusal{Code: refusal.Code, Error: refusal.Message, Reasons: reasons})
 }
 
-// registerPlan is register_plan (R5, R14). It authorizes the owner (planOwner), reads the
+// registerPlan is register_plan. It authorizes the owner (planOwner), reads the
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
 // reads the plan's blocks at the version given (planAt), and refuses with one reason for each
 // cause of a plan this release does not carry out (plan.Supported) or no release can
 // (plan.Validate); each of those answers records nothing. A plan both take is recorded as
-// intake.PlanGiven, whose rules of a later version (R16) are the workflow's.
+// intake.PlanGiven, whose rules of a later version are the workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
@@ -149,7 +149,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 // generation the plan is given at. A recorded issue is its tree's architects', the root's or a
 // sub-architect's (record.ArchitectOfTree, the rule every architect operation holds it to,
 // architectForIssue), and its plan is given at its generation. One the daemon has not recorded — a
-// child before release_children records it (C2-2) — is the tree's when Dispatch's parent chain
+// child before release_children records it — is the tree's when Dispatch's parent chain
 // reaches the tree (dispatchTreeMember) and it has not entered the workflow, triage, backlog,
 // icebox or todo, and its plan is given at generation 0, where it waits for the issue's first step.
 func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
@@ -188,7 +188,7 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 }
 
 // TaskStopRequest is stop_task: the owner of a recorded issue stops one task of the plan Legion
-// runs for it (R16), so that a later version of the plan may change that task.
+// runs for it, so that a later version of the plan may change that task.
 type TaskStopRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`

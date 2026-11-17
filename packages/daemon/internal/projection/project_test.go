@@ -844,7 +844,7 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 // An issue with plan rows counts its returns on its task (record.ReturnCounts), so the implementer's
 // view of it shows the task's counts, read for every issue in one statement
 // (record.Store.PlanTasksOf); its implementer's phases row counts nothing. An issue with no plan
-// rows shows the counts its implementer's phases row holds, as before plans (R20).
+// rows shows the counts its implementer's phases row holds, as before plans.
 func TestProjectShowsATasksCountsAndAnIssueWithNoPlanRowsItsImplementersRow(t *testing.T) {
 	planned, unplanned := claim.Token("legion-208-implementer"), claim.Token("legion-209-implementer")
 	taskMoves := map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}

@@ -64,7 +64,7 @@ func planChild(key, tree, parent, status string, stands phase.Phase) Issue {
 // nobody.
 //
 // The controls read unclassified, as each reads it today: a hold of any other reason — a failed
-// claim, which is the only hold an issue with no plan rows has (R20), and an escalation — and a
+// claim, which is the only hold an issue with no plan rows has, and an escalation — and a
 // stopped task that keeps its slot but has no slot row, since such an issue should stand in the
 // active set and its absence from it is the gap unclassified reports. A word above the two new
 // ones that is true of the issue still answers first.
@@ -140,7 +140,7 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 
 // The held list of a pass gives each hold of a plan its word through the one assembly, with the
 // issue at work beneath the held parent in the active set and the done one in no list, beside a
-// failed claim's hold from retro, which reads unclassified as it does today (R20).
+// failed claim's hold from retro, which reads unclassified as it does today.
 func TestTheHeldListGivesEachHoldOfAPlanItsWord(t *testing.T) {
 	admitted := time.Date(2026, 11, 17, 6, 0, 0, 0, time.UTC)
 	issues := []Issue{

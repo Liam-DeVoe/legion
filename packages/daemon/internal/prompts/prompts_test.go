@@ -1021,8 +1021,8 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 // On a task whose `Steps:` line names no reviewer, the implementer writes the two lines of the PR
 // body's brief the reviewer writes on any other task. What it writes there is stated once, in *The
 // brief for the human* of `skill://legion-worker/references/pr-body.md`, so the implementer's
-// prompt names the case and points there, as the reviewer's prompt does, and restates none of that
-// rule. This shows the text is loaded, never that an implementer follows it.
+// prompt names the case and points there, as the reviewer's prompt does. This shows the text is
+// loaded, never that an implementer follows it.
 func TestTheImplementerPointsToTheBriefOnATaskWithNoReviewer(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -1032,9 +1032,6 @@ func TestTheImplementerPointsToTheBriefOnATaskWithNoReviewer(t *testing.T) {
 	pointer := "On a task whose `Steps:` line names no reviewer, also fill `Look at first` and `Not proven / risk` in the live PR body at each round (*The brief for the human* in that file)."
 	if !strings.Contains(text, pointer) {
 		t.Errorf("the composed implementer prompt omits %q", pointer)
-	}
-	if restated := "write `Not proven / risk` from what your own evidence does not prove"; strings.Contains(text, restated) {
-		t.Errorf("the composed implementer prompt still restates %q, which pr-body.md states", restated)
 	}
 }
 

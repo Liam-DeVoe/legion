@@ -13,9 +13,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// heldBeneath is the open issue beneath the parent holdByPlan holds for its children.
+const heldBeneath = "LEGION-10"
+
 // holdByPlan writes key's plan `implementer tester`, task a at place, and the hold its plan holds
 // it in: stopped with why where reason is record.HoldTaskStopped, running where the hold stands in
-// place of its retro (record.HoldForChildren).
+// place of its retro (record.HoldForChildren), with heldBeneath in implementing beneath it.
 func holdByPlan(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase, reason record.HoldReason, place record.TaskPlace) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -48,6 +51,16 @@ func holdByPlan(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase, 
 				t.Fatalf("seed the hold of %s: %v", key, put)
 			}
 		}
+		if reason == record.HoldForChildren {
+			// The transition holds a parent for its children only while an issue beneath it is in
+			// the workflow (workflow's beneathRetro), and the last one's leave starts the retro.
+			parent := key
+			if err := records.PutIssue(ctx, tx, record.Issue{Key: heldBeneath, Repo: held.Repo, DefaultBranch: "main", GitHubRepo: held.GitHubRepo, Tree: held.Tree,
+				Project: testProject, Title: heldBeneath, Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+				Rank: "C", LastDispatchSeq: 3}); err != nil {
+				t.Fatalf("seed %s beneath %s: %v", heldBeneath, key, err)
+			}
+		}
 		if reason == record.HoldTaskStopped {
 			if err := records.StopTask(ctx, tx, key, held.Generation, "a", "task a of "+key+" was stopped by its owner"); err != nil {
 				t.Fatalf("stop task a of %s: %v", key, err)
@@ -70,7 +83,7 @@ func workStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
 }
 
 // The fifth path that resumes work, a re-admission's promotion (startMidPhaseMembers), read
-// against the two holds of an owner's plan (C2-1; workflow's TestAStoppedTaskAndAHeldParentGetNoWork
+// against the two holds of an owner's plan (workflow's TestAStoppedTaskAndAHeldParentGetNoWork
 // reads the other four). A member held in either has no owner, since held has no role
 // (phase.RoleFor), so no phase worker of it is started and no start carries it work; a role of it
 // that has run comes back with no task, as each held member's does today. Nor does its step start
@@ -78,7 +91,7 @@ func workStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // later version of the plan starts the task again, and a parent held for its children has started
 // no retro (workflow's StartStepRecord). The twin is the same tree with no plan rows: its member
 // held from testing by a failed claim and its member in retro each start their step again, and the
-// one in retro gets its implementer's phase work, as today (R20).
+// one in retro gets its implementer's phase work, as today.
 func TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion(t *testing.T) {
 	t.Run("a stopped task and a parent held for its children", func(t *testing.T) {
 		pool, admission, engine := seedFinishingTree(t)

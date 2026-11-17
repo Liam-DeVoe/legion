@@ -57,7 +57,7 @@ import (
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
 // plugin sends one. ReturnTo is the step of the issue's running task that a failed
-// step names as the one its task returns to (R7), by its place in the task, 1 for its first: only
+// step names as the one its task returns to, by its place in the task, 1 for its first: only
 // a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
 // the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
 // Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
@@ -525,7 +525,7 @@ func planRatingOf(req HandoffCompleteRequest, endsRetro bool, pluginContract int
 		"%s: a rating of the plan is a whole number from %d to %d in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planRatingLeast, planRatingMost, planReasonMax)}
 }
 
-// returnToRefusal holds a completion's returnTo (R7) to its rule, and is nil when the completion
+// returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
 // names none or names one it may. failsAStep is whether the completion fails a step (a tester's
 // verdict fail, which VERDICT_ROLE_FORBIDDEN leaves to the tester alone), and what names the
 // completion in a refusal. Every refusal is a 400 its caller writes before anything is recorded,

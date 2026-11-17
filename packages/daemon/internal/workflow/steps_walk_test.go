@@ -99,13 +99,13 @@ func stepStartCounts(t *testing.T, pool *pgxpool.Pool, key string) []string {
 	return counts
 }
 
-// The step records of an issue whose owner gave a plan are the plan's (B-7, C1): each names the
+// The step records of an issue whose owner gave a plan are the plan's: each names the
 // plan's task, the step's place in it, from 1, and the role and the type the plan's rows record
 // for it, and the retro and the merge are that task's too, at place 0. A start and the end of its
 // run have one id, computed from the count of starts of that place (step_starts), which each start
 // raises. A step the plan does not hold has no record. A task its owner stops ends the record of
 // its running step stopped. An issue with no plan rows records today's steps under the task
-// default, at their places in today's line, with the ids they always had (R20).
+// default, at their places in today's line, with the ids they always had.
 func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 	implementer := func(attempt int64) walkedWrite {
 		return walkedWrite{start: true, task: "a", kind: record.PlaceStep, step: 1, role: "implementer", typ: "implementation", attempt: attempt}
@@ -195,7 +195,7 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 }
 
 // assertNoPlanRowsRunTodaysSteps fails unless an issue with no plan rows that engine moves out of
-// implementing records today's steps of the task default at today's places (R20): its
+// implementing records today's steps of the task default at today's places: its
 // implementer's end at step 2 and its tester's start at step 3. The implementer's run started
 // under no count of this release (EndUncountedStep), so its end is the record of count 0; the
 // tester's start is the first of its place.
@@ -232,11 +232,11 @@ func assertRowsName(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, when 
 	}
 }
 
-// Each phases row of an issue with plan rows names the step its role runs (C2-5): the task and
+// Each phases row of an issue with plan rows names the step its role runs: the task and
 // the step's place in it, written by the start that raises the row's entry (enter), so the facts
 // of that row are the facts of that step's run. The implementer's row names its step 1 until the
 // retro's start raises it again, at the retro's place 0, and the merger's names the merge, at 0.
-// An issue with no plan rows keeps no task and place 0 on each row, as it always did (R20).
+// An issue with no plan rows keeps no task and place 0 on each row, as it always did.
 func TestEachPhaseRowNamesItsStep(t *testing.T) {
 	t.Run("the plan implementer reviewer", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -272,7 +272,7 @@ func TestEachPhaseRowNamesItsStep(t *testing.T) {
 }
 
 // The start and the end of one run of a step of an owner's plan are two writes, and a boot of the
-// daemon between them rebuilds the engine on the same store (A-8). They meet in one record only
+// daemon between them rebuilds the engine on the same store. They meet in one record only
 // because both compute one id, and the count of starts is what carries it: the one count of the
 // place, in step_starts, raised by the start and read unchanged by the end. So the reviewer's
 // start, before the boot, and its end, after it, both carry the id of the first start of task a's
@@ -337,7 +337,7 @@ func ownersNode(version int) record.PlanRecord {
 		Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
 }
 
-// The plan node of a run is the plan its walk holds (C9, B-7). An owner's plan given before the
+// The plan node of a run is the plan its walk holds. An owner's plan given before the
 // work starts is the node the start writes: the source owner, the document, version 1 and the
 // task a with its steps; a version given before the start writes no node of its own, since the
 // start writes the version then in force. A version 2 taken while a runs writes the node again,
@@ -434,7 +434,7 @@ func topLevelNames(t *testing.T) (map[string]bool, int) {
 // plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
 // default of those two steps, and the package declares no DefaultSteps of its own: a scan of its
 // source finds none, and the same scan finds PlanID, so it read the package. An issue with no
-// plan rows runs today's steps at today's places whatever the project names (R20): under the
+// plan rows runs today's steps at today's places whatever the project names: under the
 // same setting its implementer is step 2 and its tester step 3 of the task default.
 func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {

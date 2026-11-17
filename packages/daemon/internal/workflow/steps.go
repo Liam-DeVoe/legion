@@ -40,7 +40,7 @@ type (
 // no plan rows, which walks today's line (stepAt). Its steps are the default steps of a project
 // that names none (config.Project.RunsByDefault), never the configured project's: such a run
 // walks today's line whatever `default_steps` says, so its places, and the ids of its records,
-// stay where the release before put them (R20). A held issue's step is the step of the phase its
+// stay where the release before put them. A held issue's step is the step of the phase its
 // hold is from (record.StandsAt), which the caller reads.
 func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	return stepIn(config.Project{}.RunsByDefault(), p)
@@ -71,7 +71,7 @@ func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ stepType, ok
 // holds on the task's line (stepOfWalk), under the task's id, so an owner's plan of `implementer
 // reviewer` records its implementer at step 1 of its own task and has no step 3, 4 or 5. A run with
 // none runs today's step of the task default (stepOf), so an issue that ran before plan rows keeps
-// the ids of its records (R20). A phase the line does not hold, and one that runs no step, answer
+// the ids of its records. A phase the line does not hold, and one that runs no step, answer
 // ok false.
 func stepAt(w Walk, at phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	if !w.Stored {

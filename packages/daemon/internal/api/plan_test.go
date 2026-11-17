@@ -105,11 +105,11 @@ func givenPlan(issue string, generation uint64, by claim.Token, artifactID strin
 var implementerReviewer = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}
 
 // register_plan takes a plan from the architect of the issue's tree alone, at a version Dispatch
-// has, and answers each cause of a plan this release does not carry out with its own reason (C6)
-// and a role nobody defines with R14's: both checks run, so a plan with a cause of each kind is
-// answered both, and none of them records anything. A plan both checks take is recorded as the
-// one fact the workflow reads (intake.PlanGiven) and answered with its tasks; the same version
-// given again is that fact, answered the same.
+// has, and answers each cause of a plan this release does not carry out with its own reason
+// (plan.Supported) and a role nobody defines with plan.Validate's: both checks run, so a plan
+// with a cause of each kind is answered both, and none of them records anything. A plan both
+// checks take is recorded as the one fact the workflow reads (intake.PlanGiven) and answered with
+// its tasks; the same version given again is that fact, answered the same.
 func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -187,7 +187,7 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	}
 }
 
-// The rules of a later version are the workflow's (R16), which answers each refusal of them as
+// The rules of a later version are the workflow's, which answers each refusal of them as
 // a committed refusal of the fact: the route writes it as it came, a refused plan with its
 // reasons beside the code.
 func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
@@ -214,14 +214,14 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 	}
 }
 
-// An owner gives the plan before the work starts (C2-2): a root after its own start and before
+// An owner gives the plan before the work starts: a root after its own start and before
 // its gate opens, and a child before release_children records it, which the daemon has no record
 // of yet. The route takes a plan for such a child when Dispatch's parent chain reaches the
 // architect's tree and the child has not entered the workflow, and records it at generation 0;
 // it answers an issue whose chain does not reach the tree, a key Dispatch does not have, one in
 // the workflow already, and a recorded issue of another tree, as release_children answers them.
 //
-// This is the route's half of the test of Task 9b: what the engine does with the fact — the
+// This is the route's half: what the engine does with the fact — the
 // root's gate opens and its first step is implementing, the released child's first phase is
 // implementing, and the same child released with no plan given starts planning — is the engine's
 // half, which reads these facts by these names (intake.PlanGiven).
@@ -264,13 +264,13 @@ func TestAPlanGivenBeforeTheWorkStartsIsTheFirstStep(t *testing.T) {
 	}
 }
 
-// A plan names the owner that gave it (C3-3): the architect of tree LEGION-208 gives a plan for
+// A plan names the owner that gave it: the architect of tree LEGION-208 gives a plan for
 // LEGION-209 before releasing it, and the fact names that architect. Once LEGION-209 is admitted
 // again as a root of its own, the plan is its new architect's to give: that architect's plan is
 // recorded at the issue's run, naming it, and the first architect, whose tree the issue has left,
 // is refused.
 //
-// This is the route's half of the test of Task 9b: that the first step of the re-admitted root
+// This is the route's half: that the first step of the re-admitted root
 // takes no plan of an earlier owner — the default steps or its own owner's plan, the log line and
 // the `plan-not-taken` notice — is the engine's half, which reads GivenBy.
 func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
@@ -360,7 +360,7 @@ func stopTask(h *harness, grant, issue, task string) *httptest.ResponseRecorder 
 	return h.request(http.MethodPost, "/legion/v1/tasks/stop", map[string]any{"grantId": grant, "issue": issue, "task": task}, nil)
 }
 
-// stop_task is the owner's stop of one task of a recorded issue (R16): the architect of the
+// stop_task is the owner's stop of one task of a recorded issue: the architect of the
 // issue's tree asks for it, and the route records the one fact the workflow stops the task by
 // (intake.TaskStopped), each request its own, so a task stopped, started again by a later version
 // and stopped once more is stopped twice. Whether the plan holds the task and whether it is done

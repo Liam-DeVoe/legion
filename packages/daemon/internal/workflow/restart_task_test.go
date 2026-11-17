@@ -57,10 +57,10 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 // pair, round or hook is counted. The step the stop ended is not ended again, and the start of
 // step 1 is written. The Dispatch status of step 1's phase is written over the todo Dispatch
 // shows. A todo on a root held for the issues beneath it leaves the hold, and one log line says
-// why. A task that is done, or left the workflow with its issue, under such a hold has nothing
-// left to start: a state no write of the workflow leaves, its restart is refused with its own
-// text and starts nothing. The twin (R20): a todo on a root with no plan rows that a failed claim
-// holds puts back the phase the hold is from and starts its role, as today.
+// why. A task that is done, or left the workflow with its issue, after a person moved its stopped
+// root to done or to backlog has nothing left to start: a todo on it is refused nothing and starts
+// nothing. The twin: a todo on a root with no plan rows that a failed claim holds puts back the
+// phase the hold is from and starts its role, as today.
 func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 	t.Run("a task stopped at testing starts again at step 1", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -129,13 +129,9 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 	})
 
 	t.Run("a todo on a root held for its children leaves the hold and says why", func(t *testing.T) {
-		const beneath = "LEGION-210"
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		root := stepRoot(t, pool, phase.Retro)
-		parent := root.Key
-		seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
-			Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
 		heldWork{from: phase.Retro, reason: record.HoldForChildren}.stand(t, pool, root)
 		task, outbox := taskOf(t, pool, engine, root.Key), outboxRowsOf(t, pool, root.Key)
 
@@ -156,8 +152,8 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		if got := outboxRowsOf(t, pool, root.Key); got != outbox {
 			t.Fatalf("the todo queued %d outbox rows of %s, want none: nothing starts and no status is written", got-outbox, root.Key)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a todo leaves the hold of a root that waits for the issues beneath it") != 1 || !strings.Contains(line, beneath) {
-			t.Fatalf("the log of the todo = %q, want one line saying the hold stays, naming %s", line, beneath)
+		if line := logged.String(); strings.Count(line, "workflow: a todo leaves the hold of a root that waits for the issues beneath it") != 1 || !strings.Contains(line, heldBeneath) {
+			t.Fatalf("the log of the todo = %q, want one line saying the hold stays, naming %s", line, heldBeneath)
 		}
 	})
 
@@ -166,8 +162,8 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 	// (leave, leaveState), and a left task keeps its stop's reason (record.Store.MoveTask). A
 	// person's todo after it has nothing of that task to start: it is refused nothing, the root
 	// stays done at its generation (a closed root's re-admission is admission's, a stub here), the
-	// task keeps its state, its place and its reason, the implementer's entry stands, and no step
-	// record or status is written.
+	// task keeps its state, its place and its reason, the implementer's entry stands, no start of the
+	// implementer is queued, and no step record or status is written.
 	for _, tc := range []struct {
 		name, status, state, reason string
 	}{
@@ -190,6 +186,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			}
 			entry := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 			writes, statuses := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key))
+			starts := len(startsOf(t, pool, root.Key, claim.RoleImplementer))
 			todo := personsTodo(root.Key)
 			todo.Seq = 3
 
@@ -205,6 +202,9 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			}
 			if got := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry; got != entry {
 				t.Fatalf("the implementer's entry is %d after the todo, want %d", got, entry)
+			}
+			if got := len(startsOf(t, pool, root.Key, claim.RoleImplementer)); got != starts {
+				t.Fatalf("the todo queued %d starts of the implementer, want none", got-starts)
 			}
 			if w, s := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key)); w != writes || s != statuses {
 				t.Fatalf("the todo wrote %d step records and %d status writes, want none", w-writes, s-statuses)

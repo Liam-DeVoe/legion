@@ -16,9 +16,10 @@ import (
 
 // heldWork is one issue a path that resumes work is read against: a task its owner stopped, held
 // from testing (record.HoldTaskStopped), a parent whose plan has no acceptance step, held for the
-// issues beneath it in place of its retro (record.HoldForChildren), and the twin of each, an issue
-// with no plan rows standing in the phase that hold is from, which each path resumes as today
-// (R20). The twins are the control: a path that gave no issue work would pass the held ones too.
+// open issue beneath it in place of its retro (record.HoldForChildren), and the twin of each, an
+// issue with no plan rows standing in the phase that hold is from, which each path resumes as
+// today. The twins are the control: a path that gave no issue work would pass the held ones
+// too.
 type heldWork struct {
 	name   string
 	from   phase.Phase
@@ -32,6 +33,11 @@ var heldWorks = []heldWork{
 	{name: "an issue with no plan rows in retro, as today", from: phase.Retro},
 }
 
+// heldBeneath is the open issue beneath a parent held for its children: the transition writes
+// that hold only while an issue beneath the parent is in the workflow (beneathRetro), and the last
+// one's leave starts the retro.
+const heldBeneath = "LEGION-210"
+
 func (h heldWork) held() bool { return h.reason != "" }
 
 // role is the role whose work the hold keeps from the issue, the role of its phase for a twin.
@@ -39,7 +45,7 @@ func (h heldWork) role() claim.Role { return phase.RoleFor(h.from) }
 
 // stand writes issue as h stands: a twin in h.from with no plan rows; a held issue with the plan
 // `implementer tester` of task a, its task stopped at step 2 with why (StopTask) or running at its
-// retro, which the hold stands in place of.
+// retro, which the hold stands in place of, with heldBeneath in implementing beneath it.
 func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) record.Issue {
 	t.Helper()
 	issue.Phase, issue.Hold = h.from, nil
@@ -49,6 +55,11 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 	}
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: h.from, Reason: h.reason}
 	seedIssue(t, pool, issue)
+	if h.reason == record.HoldForChildren {
+		parent := issue.Key
+		seedIssue(t, pool, record.Issue{Key: heldBeneath, Repo: issue.Repo, DefaultBranch: "main", GitHubRepo: issue.GitHubRepo, Tree: issue.Tree, Parent: &parent,
+			Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
+	}
 	seedStepsPlan(t, pool, issue.Key, issue.Generation, "implementer", "tester")
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		store := record.NewStore()
@@ -63,7 +74,7 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 	return issue
 }
 
-// A stopped task and a parent held for its children stand in held (C2-1), and each path that
+// A stopped task and a parent held for its children stand in held, and each path that
 // brings an issue back to work picks the role it gives work to by the role of the issue's phase,
 // which held has none of (phase.RoleFor, OpenPhaseRole). So none of these paths gives either one
 // work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
@@ -172,17 +183,17 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 	})
 }
 
-// No release of a hold resumes a hold of an owner's plan (C2-1): the architect's retry_or_escalate,
+// No release of a hold resumes a hold of an owner's plan: the architect's retry_or_escalate,
 // both of its decisions, and the operator's restart of the role (restartPhase; `legion claims
 // retry` sends a held issue's retry as the architect's, api's retryClaim) refuse a stopped task
 // 409 TASK_STOPPED and a parent held for its children 409 HELD_FOR_CHILDREN, each naming why and
 // what starts the work again, and change nothing: the hold stays with its reason, no role starts
 // and no notice is written. An escalation is refused the same way, since it would overwrite the
 // reason. The twin of each is a hold of an issue with no plan rows, a failed claim's (reason
-// none), which each release resumes as today (R20): the retry and the restart give back the phase
+// none), which each release resumes as today: the retry and the restart give back the phase
 // and start its role, and the escalation records `escalated` and tells the controller.
 func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
-	const beneath = "LEGION-210"
+	const beneath = heldBeneath
 	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan). This retry changed nothing."}
 	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro for these issues beneath it: " + beneath + ". Legion starts the retro when the last one leaves. This retry changed nothing."}
 	for _, h := range heldWorks {

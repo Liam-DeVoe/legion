@@ -27,8 +27,8 @@ func ownersStop(t *testing.T, key, task string) intake.TaskStopped {
 // stopped with.
 const stopsBy = "task a of LEGION-208 was stopped by its owner"
 
-// The owner's stop_task of a task that is not done stops it where it stands, in one transaction
-// (R16; C2-1): the task is stopped with its reason and keeps its place, its issue is held from
+// The owner's stop_task of a task that is not done stops it where it stands, in one transaction:
+// the task is stopped with its reason and keeps its place, its issue is held from
 // the phase of that place for the stopped task, keeping the slot of that phase and writing no
 // Dispatch status, the record of the running step ends stopped, and the process of the step's
 // role is stopped with its session kept (step_stop, whose source is the daemon's). The caller
@@ -37,8 +37,8 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
 // stopped at its merge closes the issue, as it closes an issue with no plan rows held from
 // merging. A stopped task whose issue then leaves the workflow is left, and keeps why it was
-// stopped. An issue with no plan rows has no task to stop (R20), and a stop in a lingering tree
-// changes nothing.
+// stopped. An issue with no plan rows has no task to stop, and a stop of a member of a
+// lingering tree, whose phase and running task the linger keeps, changes nothing.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 	t.Run("at testing", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -213,7 +213,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("the merger's step record ends %v, want the one end of the stop, stopped", ends)
 		}
 
-		// The R20 twin: an issue with no plan rows held from merging, by a failed merger's claim,
+		// The twin: an issue with no plan rows held from merging, by a failed merger's claim,
 		// is closed by its merge too: a hold from merging awaits that merge (awaitsMerge), as the
 		// close and the boot's sweep read it, so the architect is told no "not merging".
 		unplanned := migratedPool(t)
@@ -270,24 +270,24 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 	})
 
-	t.Run("a stop in a lingering tree changes nothing", func(t *testing.T) {
+	t.Run("a stop of a member of a lingering tree changes nothing", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Admitted)
-		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		lingering := issueOf(t, pool, engine, root.Key)
-		until := stepClock.Add(time.Hour)
-		lingering.LingerUntil = &until
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error { return engine.store.PutIssue(ctx, tx, lingering) })
-		before := standingOf(t, pool, engine, root.Key, true)
-		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a"))
-		want := "the tree LEGION-208 is lingering after it left the workflow, so the owner's stop of task a of LEGION-208 changed nothing"
+		root := stepRoot(t, pool, phase.Implementing)
+		member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+		seedStepsPlan(t, pool, member.Key, member.Generation, "implementer", "tester")
+		firstStep(t, pool, engine, member.Key)
+		// The root's leave as done begins the tree's linger (beginLinger), which writes the root
+		// done and keeps the member's phase and its running task.
+		leaveAs(t, pool, engine, root.Key, "done")
+		before := standingOf(t, pool, engine, member.Key, true)
+		result := applyFacts(t, pool, engine)("stop", ownersStop(t, member.Key, "a"))
+		want := "the tree LEGION-208 is lingering after it left the workflow, so the owner's stop of task a of LEGION-209 changed nothing"
 		if result.Refusal == nil || result.Refusal.Code != "TREE_LINGERING" || result.Refusal.Message != want {
 			t.Fatalf("the stop in a lingering tree = %+v, want TREE_LINGERING %q", result.Refusal, want)
 		}
-		if after := standingOf(t, pool, engine, root.Key, true); after.outbox != before.outbox || after.issue.Phase != before.issue.Phase || !reflect.DeepEqual(after.task, before.task) {
-			t.Fatalf("the refused stop changed %s:\n before %+v\n after  %+v", root.Key, before, after)
+		if after := standingOf(t, pool, engine, member.Key, true); after.outbox != before.outbox || after.issue.Phase != before.issue.Phase || !reflect.DeepEqual(after.task, before.task) {
+			t.Fatalf("the refused stop changed %s:\n before %+v\n after  %+v", member.Key, before, after)
 		}
 	})
 
@@ -316,7 +316,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("task a after its issue left = %s (%q) at %+v, want left at step 1 with the reason %q", task.State, task.StoppedReason, task.Place, stopsBy)
 		}
 
-		// The R20 twin: an issue with no plan rows leaves as today, and has no task rows after it.
+		// The twin: an issue with no plan rows leaves as today, and has no task rows after it.
 		unplanned := migratedPool(t)
 		bare := stepRoot(t, unplanned, phase.Implementing)
 		leave(unplanned, bare.Key)
