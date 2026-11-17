@@ -1833,6 +1833,10 @@ SESSIONS_STEP = "Test the session message-wait script"
 # scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
+# How check-ci-filters.sh and check-legion-version-inputs.sh run go, and the stand-in go both of
+# their harnesses read that environment with.
+GO_OFFLINE = f"{SCRIPTS}/go_offline.py"
+GO_OFFLINE_STAND_IN = f"{SCRIPTS}/go-offline-test-lib.sh"
 
 
 def harness(filter, step, harness_script, subjects, lib=True):
@@ -2045,27 +2049,35 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:75-76)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:78-79)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (GO_OFFLINE, "the module the engine runs go through, linked in beside it"),
+        (GO_OFFLINE_STAND_IN, "check-ci-filters.test.sh:54 sources the stand-in go its offline case reads the engine's go "
+                              "commands' environment with"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2240 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2694 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_legion_version_inputs_test", "Test the legion version input check",
             f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
-        (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:39)"),
+        (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:48-50)"),
+        (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
+        (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:26 sources the stand-in go its offline case reads the "
+                              "script's go commands' environment with"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
+        (GO_OFFLINE, "the module that engine imports for its go commands, linked in beside it"),
     ]),
     harness("go_test_step_expansion_test", "Test the go test step expansion",
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
         (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:38)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
+        (GO_OFFLINE, "the module that engine imports for its go commands"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
     ]),
@@ -3094,6 +3106,7 @@ GATES = [
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
+        (GO_OFFLINE, f"ci_filter_coverage.py and {VERSION_INPUTS} run every go command through it"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
         (GO_TARGETS, f"ci_job_reads.py expands the notices and pack runs over it, and {VERSION_INPUTS} its listings"),
         (CLIENT_TARGETS, f"ci_job_reads.py expands the notices runs over it, and {VERSION_INPUTS} its agent-secrets listings"),

@@ -53,12 +53,12 @@
 #      listing that does not name the program it lists, since what that program links is then
 #      unknown and a listing of nothing would pass everything.
 #
-# The go commands run as .github/scripts/check-ci-filters.sh's do, and its header says why: with
-# GOPROXY=off over an empty module cache, so nothing is downloaded and a cold runner gives the
-# answer a warm machine does. A third-party package then fails to load, which loses no package of
-# this repository, since no module outside it imports one. The toolchain each module pins is
-# resolved first, under this machine's own cache and proxy, and its own binary runs every go
-# command under GOTOOLCHAIN=local.
+# The go commands run through .github/scripts/go_offline.py, as check-ci-filters.sh's do, and that
+# module says why: with GOPROXY=off over an empty module cache, so nothing is downloaded and a
+# cold runner gives the answer a warm machine does. A third-party package then fails to load,
+# which loses no package of this repository, since no module outside it imports one. The
+# toolchain each module pins is resolved first, under this machine's own cache and proxy, and its
+# own binary runs every go command under GOTOOLCHAIN=local.
 #
 # THE TWO MODES. `check`, the default a bare call takes, is every refusal above. `write` rewrites
 # the block in release.yaml instead of refusing rule 1, and refuses everything else as `check`
@@ -83,17 +83,20 @@ case "$#:${1:-}" in
     ;;
 esac
 
-PYTHONDONTWRITEBYTECODE=1 exec python3 - "${1:-check}" <<'PY'
+# go_offline.py sits beside this script in the repository it checks. PYTHONDONTWRITEBYTECODE keeps
+# the import from leaving a __pycache__ in the tree.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 - "${1:-check}" <<'PY'
 import json
-import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import yaml
+
+import go_offline
+from go_offline import decode_stream
 
 MODE = sys.argv[1]
 SELF = ".github/scripts/check-legion-version-inputs.sh"
@@ -160,28 +163,13 @@ def load(path, text):
 
 
 def rel(path):
-    """`path` relative to the repository's root, or None when it is outside it."""
-    try:
-        return Path(path).resolve().relative_to(REPO).as_posix()
-    except ValueError:
-        return None
+    return go_offline.relative(path, REPO)
 
 
 def covers(spec, path):
     """Whether the plain pathspec `spec` matches `path`, a file or a directory written with its /."""
     spec, path = spec.rstrip("/"), path.rstrip("/")
     return path == spec or path.startswith(spec + "/")
-
-
-def decode_stream(text):
-    decoder, index, out = json.JSONDecoder(), 0, []
-    while True:
-        while index < len(text) and text[index].isspace():
-            index += 1
-        if index >= len(text):
-            return out
-        obj, index = decoder.raw_decode(text, index)
-        out.append(obj)
 
 
 def env_of(path, doc):
@@ -228,20 +216,15 @@ class Go:
     def __init__(self, workdir, modcache):
         self.workdir, self.modcache = workdir, modcache
         try:
-            found = subprocess.run(["go", "env", "GOROOT"], cwd=workdir, capture_output=True, text=True, check=False)
+            self.binary, stderr = go_offline.toolchain(workdir)
         except FileNotFoundError:
             fatal(f"no go on PATH, so what {workdir}'s programs link is unknown", SELF)
-        root = found.stdout.strip()
-        self.binary = Path(root) / "bin" / "go" if root else None
-        if found.returncode != 0 or not self.binary or not self.binary.is_file():
-            fatal(f"`go env GOROOT` in {workdir} names no toolchain ({' '.join(found.stderr.split())[:500]}), "
+        if not self.binary:
+            fatal(f"`go env GOROOT` in {workdir} names no toolchain ({' '.join(stderr.split())[:500]}), "
                   f"so what its programs link is unknown", SELF)
 
     def __call__(self, args, **extra):
-        environment = dict(os.environ, GOPROXY="off", GOMODCACHE=self.modcache, GOFLAGS="", GOWORK="",
-                           GOTOOLCHAIN="local", **extra)
-        result = subprocess.run([str(self.binary), *args], cwd=self.workdir, env=environment,
-                                capture_output=True, text=True, check=False)
+        result = go_offline.run(self.binary, args, self.workdir, self.modcache, extra)
         if result.returncode != 0:
             fatal(f"in {self.workdir}, go {' '.join(args)} failed, so what it lists is unknown: "
                   f"{' '.join(result.stderr.split())[:500]}", SELF)

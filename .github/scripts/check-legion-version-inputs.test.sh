@@ -17,12 +17,13 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-check_script="$script_dir/check-legion-version-inputs.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+# shellcheck source=.github/scripts/go-offline-test-lib.sh
+source "$script_dir/go-offline-test-lib.sh"
 
 # The hand-written arguments and the version step every fixture starts from.
 hand_args='    -- packages/daemon/ .github/go-release-targets.json'
@@ -44,7 +45,9 @@ fixture() {
     "$root/packages/envoy/gamma" "$root/packages/envoy/internal/delta" "$root/packages/envoy/infra/x" \
     "$root/packages/envoy/cmd/listener" "$root/packages/envoy/cmd/agent-secrets" \
     "$root/packages/envoy/cmd/agent-secrets-helper"
-  ln -s "$check_script" "$root/.github/scripts/check-legion-version-inputs.sh"
+  for linked in check-legion-version-inputs.sh go_offline.py; do
+    ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
+  done
   printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$root/go.work"
   : > "$root/go.work.sum"
   printf 'module example.com/envoy\n\ngo 1.22\n' > "$root/packages/envoy/go.mod"
@@ -342,5 +345,20 @@ replace "$root/.github/workflows/release-envoy-listener.yaml" 'LEGION_ENVOY_VERS
 run_check "$root"
 check "exits 1 with the paths gone" "$(is "$status" 1)"
 check "names the key" "$(contains "$out" "release-envoy-listener.yaml's workflow env: holds no LEGION_ENVOY_VERSION_ARGS string")"
+
+# The environment go_offline.py runs every go command in, seen by a stand-in go
+# (go-offline-test-lib.sh): what a cold runner and a warm machine agree on only while it holds.
+echo "case: every go command of both lines runs offline over an empty module cache"
+root=$(fixture offline)
+go_spy "$work/spy-offline"
+set +e
+out=$(PATH="$work/spy-offline/shim:$PATH" "$root/.github/scripts/check-legion-version-inputs.sh" write 2>&1)
+status=$?
+set -e
+check "exits 0" "$(is "$status" 0)"
+check "every go command ran with GOPROXY=off over an empty cache of its own" \
+  "$(is "$(go_spy_verdict "$work/spy-offline")" offline)"
+check "the stand-in saw both lines' listings" \
+  "$(is "$(($(wc -l < "$work/spy-offline/log") >= 10))" 1)"
 
 summary "check-legion-version-inputs.sh"
