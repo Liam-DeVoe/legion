@@ -1777,6 +1777,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
 		}
+	case MergeQueueRemoval:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
+		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
@@ -1788,10 +1792,6 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
-		}
-	case MergeQueueRemoval:
-		if value.Number < 1 || value.Head == "" {
-			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
