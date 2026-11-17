@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"maps"
@@ -28,7 +29,9 @@ import (
 // directory that the process may not write. A link that the system refuses is no fault: the run
 // copies kept.yaml with its mode. The control changes the three files in one step and keeps each
 // other entry: the same inode for README, kept.yaml, the subdirectory and the file in it, and the
-// same target for the link.
+// same target for the link. A row that needs a user who is not root, a second group or /dev/shm
+// skips where the process cannot make its state, and fails in the CI job, which makes each state
+// (skipOutsideCI).
 func TestWriteDirChangesAllOrNone(t *testing.T) {
 	t.Parallel()
 	files := map[string][]byte{"a.yaml": []byte("a before\n"), "b.yaml": []byte("b before\n"), "kept.yaml": []byte("kept\n")}
@@ -121,7 +124,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 	t.Run("a directory that the process may not write", func(t *testing.T) {
 		t.Parallel()
 		if os.Geteuid() == 0 {
-			t.Skip("root writes into a directory of mode 555")
+			skipOutsideCI(t, "root writes into a directory of mode 555")
 		}
 		dir, lock := setUp(t)
 		before, ino := entries(t, dir), inodes(t, dir, kept...)
@@ -139,7 +142,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 	t.Run("a parent that the process may not write", func(t *testing.T) {
 		t.Parallel()
 		if os.Geteuid() == 0 {
-			t.Skip("root writes into a directory of mode 555")
+			skipOutsideCI(t, "root writes into a directory of mode 555")
 		}
 		dir, lock := setUp(t)
 		before, ino := entries(t, dir), inodes(t, dir, kept...)
@@ -167,7 +170,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		const dir = "/dev/shm"
 		mount, parent := new(syscall.Stat_t), new(syscall.Stat_t)
 		if os.Geteuid() == 0 || syscall.Stat(dir, mount) != nil || syscall.Stat(filepath.Dir(dir), parent) != nil || mount.Dev == parent.Dev || syscall.Access(filepath.Dir(dir), 2) == nil {
-			t.Skipf("%s is no mount point that this process may write in a parent that it may not", dir)
+			skipOutsideCI(t, dir+" is no mount point that this process may write in a parent that it may not")
 		}
 		want := "print builds the directory that takes the place of " + dir + " beside it, in /dev, and this process may not write there (write /dev: permission denied): " +
 			dir + " is a mount point, which print cannot put another directory in the place of: " + mountPointWayOut
@@ -193,7 +196,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 			}
 		}
 		if other < 0 {
-			t.Skipf("the process is in no group but its own (%d), so the new directory takes the group of the directory", os.Getegid())
+			skipOutsideCI(t, fmt.Sprintf("the process is in no group but its own (%d), so the new directory takes the group of the directory", os.Getegid()))
 		}
 		dir, lock := setUp(t)
 		before, ino := entries(t, dir), inodes(t, dir, kept...)
@@ -652,7 +655,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 	t.Run("a change of another program in an old directory that print cannot rename, which the next run keeps", func(t *testing.T) {
 		t.Parallel()
 		if os.Geteuid() == 0 {
-			t.Skip("root may write a directory of mode 555, so the rename that the row needs to fail does not fail")
+			skipOutsideCI(t, "root may write a directory of mode 555, so the rename that the row needs to fail does not fail")
 		}
 		root := t.TempDir()
 		dir := filepath.Join(root, "spec")
@@ -812,4 +815,53 @@ func inodeOf(t *testing.T, path string) uint64 {
 		t.Fatal(err)
 	}
 	return uint64(info.Sys().(*syscall.Stat_t).Ino)
+}
+
+// skipper is the part of a *testing.T that skipOutsideCI calls.
+type skipper interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	Skip(args ...any)
+}
+
+// skipOutsideCI skips a row that cannot make its state here, as for root or for a process in one
+// group alone, with its reason, and fails it with the reason in a CI job (GITHUB_ACTIONS is
+// "true"), where each row makes its state: so the job passes only when each row ran.
+func skipOutsideCI(t skipper, reason string) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf("the CI job runs each row, and this one cannot make its state here: %s", reason)
+		return
+	}
+	t.Skip(reason)
+}
+
+// skipRecord is a skipper that records the one call that skipOutsideCI makes.
+type skipRecord struct{ call string }
+
+func (*skipRecord) Helper() {}
+func (r *skipRecord) Fatalf(format string, args ...any) {
+	r.call = "fail: " + fmt.Sprintf(format, args...)
+}
+func (r *skipRecord) Skip(args ...any) { r.call = "skip: " + fmt.Sprint(args...) }
+
+// A row that cannot make its state here skips with its reason, except in a CI job (GITHUB_ACTIONS
+// is "true"), where it fails with the reason: the CI job of this package must run each row, and go
+// test prints no skip of a package that passes, so only a failure there shows a row that did not
+// run.
+func TestARowThatCannotMakeItsStateSkipsOutsideCIAndFailsInCI(t *testing.T) {
+	for _, row := range []struct{ env, want string }{
+		{"true", "fail: the CI job runs each row, and this one cannot make its state here: the reason"},
+		{"", "skip: the reason"},
+		{"false", "skip: the reason"},
+	} {
+		t.Run("GITHUB_ACTIONS="+row.env, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", row.env)
+			var got skipRecord
+			skipOutsideCI(&got, "the reason")
+			if got.call != row.want {
+				t.Errorf("skipOutsideCI: %q, want %q", got.call, row.want)
+			}
+		})
+	}
 }
