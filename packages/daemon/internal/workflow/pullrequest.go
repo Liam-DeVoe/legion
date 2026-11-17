@@ -18,11 +18,10 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but two: the row is written from ten places — a pull request opened, reopened,
-// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review, the
-// task of the run named on it (nameTaskOnPullRequest) — and a write site added later would
-// otherwise have to remember the mark. Routing them through one function is what makes
-// forgetting it hard rather than easy.
+// it but two: the row is written from nine places — a pull request opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review —
+// and a write site added later would otherwise have to remember the mark. Routing them through
+// one function is what makes forgetting it hard rather than easy.
 //
 // The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built
@@ -57,30 +56,6 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 		return nil
 	}
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
-}
-
-// pullRequestTask is the task the pull request of w's run names (record.PullRequest.Task): the
-// run's one task, and none for a run with no plan rows, which names a task nowhere (R20).
-func pullRequestTask(w Walk) string {
-	if !w.Stored {
-		return ""
-	}
-	return w.Task
-}
-
-// nameTaskOnPullRequest writes the task of w's run on issue's pull request row, where the record
-// holds one that names another (record.PullRequest.Task). Every other write keeps the task the
-// row was read with; these two name it again: the first step of a run, whose open pull request can
-// outlive an earlier run of another plan (planFirstStep), and the start of the task a version put
-// in the place of a stopped one (restartTask). An issue with no pull request recorded has nothing
-// to name it on, and its opened names the task when it arrives (pullRequestOpened).
-func (e *Engine) nameTaskOnPullRequest(ctx context.Context, tx pgx.Tx, issue string, w Walk) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue)
-	if err != nil || pr == nil || pr.Task == pullRequestTask(w) {
-		return err
-	}
-	pr.Task = pullRequestTask(w)
-	return e.putPullRequest(ctx, tx, *pr)
 }
 
 // pullRequestNews says whether the write of after over before is news of the pull request: the
@@ -150,9 +125,7 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
-// branch's new pull request replaces the merged one. The row of a pull request the record does
-// not hold is the row's first write, so it names the task of the issue's run (pullRequestTask); a
-// reopen keeps the task its row names, as every later write does.
+// branch's new pull request replaces the merged one.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
@@ -194,8 +167,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		}
 		// The reopen keeps the pushes - facts about commits - and the head run, so a push that
 		// arrives after the reopen settles the move the reopen made as it would have had it
-		// arrived first (classify.Reopen); the CI settlement starts afresh. It keeps the task its
-		// row names too.
+		// arrived first (classify.Reopen); the CI settlement starts afresh.
 		carried := classify.Reopen(*recorded, fact.HeadSHA)
 		pr.ReviewSeen = recorded.ReviewSeen
 		pr.Pushes, pr.Moves, pr.Run = carried.Pushes, carried.Moves, carried.Run
@@ -207,13 +179,6 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			pr.Base = recorded.Base
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
-		pr.Task = recorded.Task
-	} else {
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		pr.Task = pullRequestTask(w)
 	}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err

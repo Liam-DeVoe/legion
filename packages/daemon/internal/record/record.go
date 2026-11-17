@@ -877,16 +877,6 @@ type PullRequest struct {
 	// before the column existed. Nothing fills it later — no compare is left to — so the check's
 	// task says the commit is unknown and the agent reads it from GitHub (workflow.checkTask).
 	MergeSHA string
-	// Task is the plan's task whose work the pull request carries (PlanTask.Task), for an issue
-	// with plan rows. Four writes name it, and every other write of the row keeps it as it was
-	// read: the row's first write, at the opened pull request (workflow's pullRequestOpened); the
-	// carry of a plan into a new generation (CarryPlan), where the carried plan has exactly one
-	// task; the first step of a run (workflow's planFirstStep), since an open pull request
-	// outlives the clear of a generation and the new run's task can have another id; and the start
-	// of the task a later version put in the place of a stopped one (workflow's restartTask), whose
-	// id is its own. The last two write it through workflow's nameTaskOnPullRequest. "" for an
-	// issue with no plan rows, and on every row the release before the column wrote.
-	Task string
 }
 
 // HeadRun is a pull request's head run (PullRequest.Run): Anchor, the judgement before the run's
@@ -1807,7 +1797,7 @@ type Store interface {
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
 	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
-	// no plan rows, and gives the pull request row of issue the id of the new plan's one task.
+	// no plan rows.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
 	// DeletePlan deletes the plan of issue at generation from its three tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error

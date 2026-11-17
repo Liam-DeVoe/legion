@@ -137,8 +137,7 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
-// telling names (tellPassedOver). A pull request the record already holds, which an earlier run of
-// another plan can have opened, names the task the run walks (nameTaskOnPullRequest).
+// telling names (tellPassedOver).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
@@ -164,13 +163,6 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 		if err := e.store.CarryPlan(ctx, tx, issue.Key, stored.Version.Generation, issue.Generation, false); err != nil {
 			return err
 		}
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	if err := e.nameTaskOnPullRequest(ctx, tx, issue.Key, w); err != nil {
-		return err
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
@@ -513,8 +505,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // raises its pass, so that a completion of this run takes a key of its own (the completion key
 // names the task and its pass), and no pair, round or hook is counted, since no step failed; a
 // new task keeps its counts of zero. The act is task_restarted, which the log line names: no row
-// of the table moves a held issue. The issue's pull request names the task that starts
-// (nameTaskOnPullRequest), since the new task of a later version has an id of its own.
+// of the table moves a held issue.
 //
 // A task that is done, or left the workflow with its issue, has nothing left to start, and the
 // store's move refuses neither state: each is refused here, before anything is written
@@ -563,9 +554,6 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		"act", "task_restarted", "from", from, "to", first, "reason", reason)
 	role := phase.RoleFor(first)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
-		return nil, err
-	}
-	if err := e.nameTaskOnPullRequest(ctx, tx, issue.Key, w); err != nil {
 		return nil, err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)

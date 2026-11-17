@@ -83,8 +83,8 @@ import (
 // creates tables and a function of its own, and its roll forward (20261117064152) changes nothing
 // on a database no rollback touched; neither touches outbox_kind_check, and nor does the plan of
 // an issue (20261117034837), which creates the three tables of the plan and adds
-// `phases.step_task`, `phases.step_place` and `pull_requests.task`, each at a default that every
-// row it finds reads as no plan (migration_20261117034837_test.go).
+// `phases.step_task` and `phases.step_place`, each at a default that every row it finds reads as
+// no plan (migration_20261117034837_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

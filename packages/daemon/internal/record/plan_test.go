@@ -199,8 +199,7 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 // A run of a child again, a person's todo on it and a re-admission of a root start the owner's plan
 // from its start (CarryPlan with carried false): the new generation holds the same versions and
 // the same steps, each task waiting at no act with every count 0, and no step's reviewed commit;
-// the old generation's rows stay as they were. The pull request the clear of a generation keeps
-// takes the id of the new generation's one task. The count of starts of each place is not the
+// the old generation's rows stay as they were. The count of starts of each place is not the
 // plan's: it lives in step_starts alone (record.StepPlace), which the copy does not touch.
 func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	st := migratedStore(t)
@@ -211,11 +210,9 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	tasks[0].State, tasks[0].Place = TaskRunning, TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 2, Rounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}
 	steps[1].ReviewedHead = "2222222222222222222222222222222222222222"
-	pr := PullRequest{Issue: planIssue, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-42", Generation: 1, State: PullRequestOpen, Task: "default"}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, NewStore().PutIssue(ctx, tx, issue))
 		putPlan(t, tx, v, tasks, steps)
-		must(t, NewStore().PutPullRequest(ctx, tx, pr))
 		must(t, NewStore().CarryPlan(ctx, tx, planIssue, 1, 2, false))
 	})
 
@@ -235,11 +232,6 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 		}
 		if got, want := readPlan(t, tx, planIssue, 1), storedOf(v, tasks, steps); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plan of the old generation after the copy = %#v, want it as it was: %#v", got, want)
-		}
-		got, err := NewStore().PullRequest(ctx, tx, planIssue)
-		must(t, err)
-		if got == nil || got.Task != "c" {
-			t.Fatalf("the pull request after the copy = %+v, want the task c of the new generation's plan", got)
 		}
 	})
 }

@@ -382,10 +382,6 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 // and no step holds a reviewed commit. Neither copies a count of starts, which step_starts keeps by
 // place alone. Where from has no plan rows it writes nothing, so an issue that ran before plans
 // goes on as it did; a generation to that holds a plan already is refused.
-//
-// The pull request row of issue, where one stands, takes the id of the new plan's one task: the
-// clear of a generation keeps the row of an open pull request, and the new plan's task can have
-// another id. A plan of several tasks leaves the row as it is.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {
@@ -425,11 +421,6 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
-	}
-	if _, err := tx.Exec(ctx, `update pull_requests set task = sole.task
-		from (select min(task) as task from plan_tasks where issue = $1 and generation = $2 having count(*) = 1) sole
-		where pull_requests.issue = $1`, issue, int64(to)); err != nil {
-		return fmt.Errorf("%s: give the pull request the new plan's task: %w", describe, err)
 	}
 	return nil
 }
