@@ -30,6 +30,6 @@ runs:
         retry_fetch "the pinned Claude Code" 180 -- \
           bun add --cwd "$directory" --exact --no-save "@anthropic-ai/claude-code@$pin"
         claude="$directory/node_modules/.bin/claude"
-        "$claude" --version
+        "$directory/node_modules/.bin/claude" --version
         echo "installed @anthropic-ai/claude-code@$pin in $(( $(date +%s) - started ))s"
         echo "LEGION_TEST_CLAUDE=$claude" >> "$GITHUB_ENV"

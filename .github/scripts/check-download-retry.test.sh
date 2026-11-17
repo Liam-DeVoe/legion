@@ -6003,8 +6003,11 @@ check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" f
 
 # The same places naming a script that fetches nothing are neither charged nor refused
 # (dispatch://INFRA-1545, round 37): zz-quiet.sh holds no retried call, so whatever runs it
-# waits for no attempt, and there is no figure to ask for.
-echo "case: a place rule 8 does not read, naming a script that fetches nothing, passes"
+# waits for no attempt, and there is no figure to ask for. The run of `"$p"` is another matter:
+# its target is built from data, so this check cannot know which script it runs or whether that
+# one fetches, and it fails closed, refusing the run by name (round 37's one refusal of a run it
+# cannot name). Until round 37 this step passed.
+echo "case: a place rule 8 does not read, naming a script that fetches nothing, is not refused, and a run through a variable is refused by name"
 root=$(fixture unread-quiet)
 cat > "$root/.github/scripts/zz-quiet.sh" <<'SH'
 #!/usr/bin/env bash
@@ -6029,8 +6032,11 @@ jobs:
           f() { .github/scripts/zz-quiet.sh; }; f
 YAML
 run_check "$root"
-check "exits 0" "$(is "$status" 0)"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the run through a variable by name, since its target is unnamed" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::step 'Run it through a variable' of job 'build' runs .\$p. as a command, whose last path element is an expansion, so this check cannot name the script that runs there")"
 check "names zz-quiet.sh nowhere" "$(is "$(contains "$out" 'zz-quiet.sh')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A script is read as a step is: a place it does not read, naming a script that fetches, is
 # refused at the script's own file and line, and the script is named where a step would be
@@ -7480,12 +7486,14 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # A word of a `[[ … ]]`, an extglob pattern and a `case` pattern are not modelled
 # (dispatch://INFRA-1545, round 37): their `(`, `)`, `|`, `<` and `>` read as the shell's own, so
 # a path written there is a run charged in full or an argument refused where its script fetches,
-# never nothing. In an extglob pattern, a parenthesised pattern, a pattern on its own line and a
-# later pattern, the path reads as a run and is charged 1050 s, which the step does not wait for:
-# an overcharge this check accepts on a shape no step of this tree writes. After `[[ -x` it is an
-# argument of `-x`, refused by name. A run in a case arm, after a `[[ … ]]` and inside a `$(…)` a
-# `[[ … ]]` tests is a run, 1050 s each. Round 37 read the patterns and the tests for a while, and
-# refused each path written in one.
+# never nothing. In an extglob pattern, a parenthesised pattern and a later parenthesised pattern,
+# the `(` reads as a subshell, so the path is a run in a `( … )` subshell, refused by name. In a
+# pattern on its own line the path reads as a run and is charged 1050 s, which the step does not
+# wait for: an overcharge this check accepts on a shape no step of this tree writes. After `[[ -x`
+# it is an argument of `-x`, refused by name (dispatch://INFRA-1545, round 37: until round 37
+# this comment said the extglob and the parenthesised patterns were charged). A run in a case
+# arm, after a `[[ … ]]` and inside a `$(…)` a `[[ … ]]` tests is a run, 1050 s each. Round 37
+# read the patterns and the tests for a while, and refused each path written in one.
 echo "case: a path in a [[ … ]] or a case pattern is charged as a run or refused, and a run beside one is charged"
 root=$(fixture r37-tested-words)
 cp "$work/r37-comments/.github/scripts/r37-c.sh" "$root/.github/scripts/"
@@ -7720,10 +7728,13 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # runs the body, so the run of r37-c.sh in it, 1050 s, would be charged nothing under a key of
 # 1 minute; the gate at 179c3dc9 passed each of those steps. A body holding a retried curl is
 # refused the same way, and one that fetches nothing is not. Round 37 read those options as bash
-# does for a while, and charged each body; no step of this tree writes one. `-e`, a lone `-` and
-# `sh -eu` run their body, which is charged; a body fed to `bash -c` is data, since the `-c` text
-# is the script; and a body fed to `bash - <script>` is read as shell, its `-` standing as the
-# script, which charges a run the step does not make: an overcharge this check accepts.
+# does for a while, and charged each body; no step of this tree writes one. A body fed to `-e`, a
+# lone `-`, `sh -eu`, `bash -c` or `bash - <script>` is refused by name the same way and charged
+# nothing, since every shell is a consumer this tree feeds no heredoc to, whatever its options:
+# `-e`, `-` and `sh -eu` run the body, `bash -c` runs its text, which may read the body, and
+# `bash - <script>` runs the script with the body as its input (dispatch://INFRA-1545, round 37:
+# until round 37 this comment said the first three were charged, the fourth was data and the
+# last an accepted overcharge).
 echo "case: a heredoc fed to a shell given an option rule 8 does not read is refused by name where it fetches"
 root=$(fixture r37-heredoc-options)
 cat > "$root/.github/scripts/r37-c.sh" <<'SH'
@@ -12289,6 +12300,37 @@ for refusal in "12	A loop with a quoted done in its body	in quotes or after a ba
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
 
+# D1b. A `done)` written after `case … in` on that line opens no command: it is a word of the
+# `case` command, which neither opens nor closes a loop, so it is not refused and the loop around
+# it is read as written (dispatch://INFRA-1545, round 37). The loop runs its 1650 s call three
+# times, 4950 s, under a key of 10 minutes, 600 s. Until round 37 the header said every `done)` was
+# refused.
+echo "case: r37 D1b a done) pattern on the case's own line is no loop word, and the loop is charged"
+root=$(fixture r37-loop-word-inline)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A loop whose one-line case pattern is done
+        timeout-minutes: 10
+        run: |
+          . .github/scripts/ci-retry.sh
+          for attempt in 1 2 3; do
+            case "$state" in done) break ;; esac
+            retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "does not refuse the pattern" "$(is "$(contains "$out" 'writes .done.')" false)"
+check "charges the loop's three passes, 4950 s" \
+  "$(contains "$out" "step 'A loop whose one-line case pattern is done' carries .timeout-minutes: 10., 600 s, and its own retries take 4950 s to exhaust")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+
 # D2. A call through a variable in a command holding the word `]]` is a call, `"$fn" ]]`: only an
 # operand of a `[[ … ]]`, the command a `[[` opens and those `||` or `&&` split off up to its
 # `]]`, is left out, so a test's operand beside a fetching function stays unrefused.
@@ -12729,6 +12771,224 @@ check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "says the fetch is written on the definition's line or after it" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'A function name with no body after a fetch on its line' of job 'build' defines a function with a body that is not a .{ … }. group.*is in its reach: written on its line or after it")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+
+# E1. One refusal for a run this check cannot name (dispatch://INFRA-1545, round 37): the operand
+# of `bash`, `sh`, `.` or `source`, or a command word, that could be a script under
+# .github/scripts/ and is built from data or is a file the step wrote, and output piped into a
+# shell or into an `xargs` that runs one. Each refused step runs r37-c.sh, 1050 s, under a key of
+# 1 minute, through a path the gate cannot read: round 37's survey inputs 12a to 12d and 12f, the
+# assignment the gate already refused (12e), whose run is refused now too, and printf, tee, a
+# concatenated variable, sed piped into bash and a source through a variable beside them. The gate
+# at 2fa366e0 refused none of those runs: it passed every step but 12e's assignment. A path whose
+# last element is literal and no `.sh`, a tool or a data file; a variable path under a literal
+# directory outside .github/scripts/, which this check does not read; and the arguments a wrapper
+# hands on, which the reading of calls through a variable owns, pass.
+echo "case: r37 E1 a run whose script this check cannot name is refused by name"
+root=$(fixture r37-unnamed-runs)
+cat > "$root/.github/scripts/r37-c.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/r37-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cat it into a file and run the file
+        timeout-minutes: 1
+        run: |
+          cat > run.sh <<'EOF'
+          .github/scripts/r37-c.sh
+          EOF
+          bash run.sh
+      - name: Echo it into a file and run the file
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh > run.sh
+          bash run.sh
+      - name: Read it into a variable and run the variable
+        timeout-minutes: 1
+        run: |
+          read -r p <<'EOF'
+          .github/scripts/r37-c.sh
+          EOF
+          "$p"
+      - name: Echo it into a variable and run the variable
+        timeout-minutes: 1
+        run: |
+          p=$(echo .github/scripts/r37-c.sh)
+          "$p"
+      - name: Assign it to a variable and run the variable
+        timeout-minutes: 1
+        run: |
+          p=.github/scripts/r37-c.sh
+          "$p"
+      - name: Echo it into xargs running bash
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh | xargs bash
+      - name: Print its parts into a file and run the file
+        timeout-minutes: 1
+        run: |
+          printf '%s/%s\n' .github/scripts r37-c.sh > run.sh
+          bash run.sh
+      - name: Tee it into a file and run the file
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh | tee run.sh > /dev/null
+          bash run.sh
+      - name: Run it through a concatenated variable
+        timeout-minutes: 1
+        run: |
+          dir=.github/scripts
+          name=r37-c
+          "$dir/$name.sh"
+      - name: Pipe a line sed prints into bash
+        timeout-minutes: 1
+        run: |
+          sed -n 1p list.txt | bash
+      - name: Source a library named by a variable
+        timeout-minutes: 1
+        run: |
+          . ".github/scripts/$library"
+      - name: Run a tool by its literal path
+        timeout-minutes: 1
+        run: |
+          "$HOME/.local/bin/mise" --version
+          . "$state_dir/$name.state"
+      - name: Run a script outside .github/scripts by a variable
+        timeout-minutes: 1
+        run: |
+          bash "scripts/e2e/$SCRIPT" 2
+      - name: Hand a wrapper its command
+        timeout-minutes: 1
+        run: |
+          run() { "$@"; }
+          run true
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "13	Cat it into a file and run the file	runs .run.sh. with .bash., a file this text writes before it runs it" \
+  "18	Echo it into a file and run the file	runs .run.sh. with .bash., a file this text writes before it runs it" \
+  "25	Read it into a variable and run the variable	runs .\$p. as a command, whose last path element is an expansion" \
+  "30	Echo it into a variable and run the variable	runs .\$p. as a command, whose last path element is an expansion" \
+  "35	Assign it to a variable and run the variable	runs .\$p. as a command, whose last path element is an expansion" \
+  "39	Echo it into xargs running bash	pipes the output of .echo. into .xargs., which runs .bash. on what it reads" \
+  "44	Print its parts into a file and run the file	runs .run.sh. with .bash., a file this text writes before it runs it" \
+  "49	Tee it into a file and run the file	runs .run.sh. with .bash., a file this text writes before it runs it" \
+  "55	Run it through a concatenated variable	runs .\$dir/\$name.sh. as a command, which ends in .\.sh. and holds an expansion" \
+  "59	Pipe a line sed prints into bash	pipes the output of .sed. into .bash., which runs it as shell text" \
+  "63	Source a library named by a variable	sources .\.github/scripts/\$library., whose last path element is an expansion"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name at its run" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, so this check cannot name the script that runs there")"
+done
+check "tells each run to write the script's literal path" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "so this check cannot name the script that runs there.*Write the script's literal path at the run")" 11)"
+check "still refuses 12e's path in its assignment" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=34::step 'Assign it to a variable and run the variable' of job 'build' names .github/scripts/r37-c.sh in a variable assignment")"
+for step in "Run a tool by its literal path" "Run a script outside .github/scripts by a variable" \
+  "Hand a wrapper its command"; do
+  check "passes '$step'" "$(is "$(contains "$out" "step '$step'")" false)"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 12)"
+
+# E2. A function whose body runs one of its positional parameters runs the word its caller hands
+# it in that place, so a call handing it a word built from data is a run this check cannot name,
+# refused by name at the call (dispatch://INFRA-1545, round 37): `run "$p"` and `run
+# "$(cmd)"`, the second word after a `shift`, a library's function, and a function handing a
+# runner its own `"$@"`, `wrap() { run "$@"; }`, whose call `wrap "$p"` is the one refused, while
+# `run "$@"` inside it is read at wrap's callers. Each runs r37-c.sh, 1050 s, under a key of
+# 1 minute, and the gate before this refusal passed each step. A literal command, `run grep …`,
+# and a literal path pass. The tree's seven calls of such a function, check-plugin-names.sh's and
+# check-private-names.sh's `run`, each hand it `git` or `grep`.
+echo "case: r37 E2 a call handing a function the word it runs, built from data, is refused by name"
+root=$(fixture r37-runner-calls)
+cat > "$root/.github/scripts/r37-c.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/r37-quiet.sh" <<'SH'
+#!/usr/bin/env bash
+echo "nothing to fetch"
+SH
+cat > "$root/.github/scripts/r37-runlib.sh" <<'SH'
+#!/usr/bin/env bash
+r37_run() { "$1"; }
+SH
+chmod +x "$root/.github/scripts/r37-c.sh" "$root/.github/scripts/r37-quiet.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Hand a wrapper a variable
+        timeout-minutes: 1
+        run: |
+          run() { "$@" >> out.txt; }
+          p=$(echo .github/scripts/r37-c.sh)
+          run "$p"
+      - name: Hand a wrapper a substitution
+        timeout-minutes: 1
+        run: |
+          run() { "$1"; }
+          run "$(echo .github/scripts/r37-c.sh)"
+      - name: Hand a wrapper a variable after the word it shifts off
+        timeout-minutes: 1
+        run: |
+          run_as() { local what=$1; shift; "$@"; }
+          p=$(echo .github/scripts/r37-c.sh)
+          run_as "the asset" "$p"
+      - name: Hand a library's wrapper a variable
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/r37-runlib.sh
+          p=$(echo .github/scripts/r37-c.sh)
+          r37_run "$p"
+      - name: Hand a wrapper of a wrapper a variable
+        timeout-minutes: 1
+        run: |
+          run() { "$@"; }
+          wrap() { run "$@"; }
+          p=$(echo .github/scripts/r37-c.sh)
+          wrap "$p"
+          wrap date
+      - name: Hand a wrapper a literal command and a literal path
+        timeout-minutes: 1
+        run: |
+          run() { "$@" >> out.txt; }
+          run grep -c x notes.txt
+          run .github/scripts/r37-quiet.sh
+          run_as() { local what=$1; shift; "$@"; }
+          run_as "$label" grep -c x notes.txt
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "12	Hand a wrapper a variable	calls .run., which runs the word it is handed, with .\$p., whose last path element is an expansion" \
+  "17	Hand a wrapper a substitution	calls .run., which runs the word it is handed, with .\$(echo .github/scripts/r37-c.sh)., whose last path element is an expansion" \
+  "23	Hand a wrapper a variable after the word it shifts off	calls .run_as., which runs the word it is handed, with .\$p., whose last path element is an expansion" \
+  "29	Hand a library's wrapper a variable	calls .r37_run., which runs the word it is handed, with .\$p., whose last path element is an expansion" \
+  "36	Hand a wrapper of a wrapper a variable	calls .wrap., which runs the word it is handed, with .\$p., whose last path element is an expansion"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name at the call" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, so this check cannot name the script that runs there")"
+done
+check "tells each call to hand the function a literal name" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "Hand .[a-z0-9_]*. the script or the command it runs by its literal name")" 5)"
+check "passes the literal command and the literal path" \
+  "$(is "$(contains "$out" "step 'Hand a wrapper a literal command and a literal path'")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
 
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape

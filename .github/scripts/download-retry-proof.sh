@@ -272,7 +272,7 @@ probe() {
   [ -f "$file" ] || die "probe: no proxy named $name was started"
   local mode hosts log proxy
   # shellcheck disable=SC1090 # the file this verb's own `start` wrote, seven name=value lines
-  . "$file"
+  . "$state_dir/$name.state"
 
   local faulted control
   if [ -n "$hosts" ]; then
@@ -376,7 +376,7 @@ report() {
   [ -f "$file" ] || die "report: no proxy named $name was started"
   local mode log pid started probe_pair probe_lines
   # shellcheck disable=SC1090 # the file this verb's own `start` and `probe` wrote, name=value lines
-  . "$file"
+  . "$state_dir/$name.state"
   [ -n "${probe_pair:-}" ] ||
     die "report: no probe ran before $name's site, so this result would carry no reading of its own. Every fault drive records the pair a probe read through the proxy before the site (dispatch://INFRA-1545, the Verification document's proxy clauses): run \`download-retry-proof.sh probe $name\` in the step that starts the proxy."
   local now elapsed
