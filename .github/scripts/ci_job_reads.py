@@ -481,10 +481,10 @@ RULES = {
         (f"{DAEMON}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:22 has packages/envoy/testtmp's CheckPlacements walk every "
                                    "test file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/envoy_helper_copies_test.go": reads(
-        (f"{DAEMON}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:58 reads every .go file under packages/daemon (../.., :43) "
+        (f"{DAEMON}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:73 reads every .go file under packages/daemon (../.., :58) "
                               "but testdata's"),
-        (f"{ENVOY}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:44 reads the imports of every non-test .go file under "
-                             "packages/envoy (../../../envoy, :43) but testdata's, infra included, and every .go file of a test-helper package whole")),
+        (f"{ENVOY}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:59 reads the imports of every non-test .go file under "
+                             "packages/envoy (../../../envoy, :58) but testdata's, infra included, and every .go file of a test-helper package whole")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],

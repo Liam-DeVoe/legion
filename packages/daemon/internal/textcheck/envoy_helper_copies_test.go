@@ -16,11 +16,26 @@ import (
 
 // copyShare and copyFloor are what makes a daemon file a copy of an Envoy test helper's: at least
 // four fifths of the code lines of the smaller of the two files are lines of the other, and the
-// smaller file has at least copyFloor code lines. The share is of the smaller file so that a copy
-// with functions added (the daemon's testnkeys held Envoy's testnats.User beside three more) and
-// a copy of one function out of a larger helper both count. The floor keeps two short files whose
-// lines are all `}` and `t.Helper()` from counting; the shortest copy this check was written
-// against, Envoy's fixtureenv.Unset in the daemon's fixtureenv, has 13.
+// smaller file has at least copyFloor code lines. The floor keeps two short files whose lines are
+// all `}` and `t.Helper()` from counting; the shortest copy this check was written against,
+// Envoy's fixtureenv.Unset in the daemon's fixtureenv, has 13.
+//
+// What that catches is a copy of a whole file, or nearly a whole file, in either direction: a
+// helper file copied whole into a daemon file of any size (the daemon's fixtureenv held Envoy's
+// whole fixtureenv.go beside 138 lines of its own), and a daemon file that is nearly all one
+// helper file, even if the helper file is larger (the daemon's testnkeys held Envoy's
+// testnats/nkeys.go, User alone, beside three more functions). It does not catch a part of a
+// helper file pasted into a larger daemon file: testwait's WithinPolling and waitUntil appended
+// to internal/daemon/stop_budget_nats_test.go share 26 of testwait.go's 36 code lines, 72%, and
+// pass. Nor does it catch a copy shorter than copyFloor code lines, or one whose identifiers were
+// renamed, since a line counts only when its tokens are the same. Review is what reads those.
+//
+// The share is not lower because pairs that are no copy already come close to it: with the share
+// set to one half, this tree's highest such pairs were the nine-line TestMain of
+// internal/repocache and of internal/leakguard against Envoy's internal/cmdtest/cmdtest_test.go
+// (77%), this file against Envoy's sourcecheck (72%), and five daemon test files against Envoy's
+// 13-line fixtureenv.go (69%), each from lines such as `t.Helper()` and `}` that most Go files
+// hold.
 const (
 	copyShare = 0.8
 	copyFloor = 8
