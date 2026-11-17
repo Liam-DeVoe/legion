@@ -22,6 +22,15 @@ import (
 // that window deletes a consumer the server no longer has, which the watcher's end reports at WARN
 // because the consumer is gone either way (kvwatch.Watcher.End, LEGION-278). Every ERROR line
 // fails the test.
+//
+// The test tells a watcher the reconnect replaced from one it did not by which read follows the
+// reconnect, not by how soon a write arrives: no clock decides it. Each round waits for the first
+// read of the interest registry that completed after that restart's reconnect (interestReadAfter).
+// Only a watcher installed on the restarted server completes a read there, and installing it stops
+// the watcher from before the restart (kvwatch.Watcher.watch), so the write that follows the read
+// reaches the cache through a consumer made after the reconnect. A watcher the reconnect does not
+// replace completes no read after it, so the round fails however fast the machine is, while
+// nats.go's replacement of the old consumer serves the cache.
 func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "restart-test")
@@ -30,8 +39,9 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	// writerSession is the session a round's write subscribes.
 	writerSession := func(round int) string { return "ses_restart_writer_" + strconv.Itoa(round) }
 	// subscribe writes an interest through another listener's registry and waits for this
-	// listener's cache to list it, failing as round's write when it does not within 3s of since.
-	subscribe := func(round int, since time.Time) {
+	// listener's cache to list it. The wait is the listener's own (listenerWait): how soon the
+	// write arrives is the machine's, and which consumer can deliver it the read before it settled.
+	subscribe := func(round int) {
 		writer := testnats.Connect(t, uri)
 		registry, err := store.Open(writer)
 		if err != nil {
@@ -42,17 +52,15 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 			t.Fatalf("restart %d: subscribe through another listener: %v", round, err)
 		}
 		writer.Close()
-		deadline := time.Now().Add(3 * time.Second)
-		for !listsInterest(t, listener.port, sessionID) {
-			if time.Now().After(deadline) {
-				t.Fatalf("restart %d: %s after the listener reconnected, its interest cache still missed a subscription another listener wrote", round, time.Since(since).Round(time.Millisecond))
-			}
-			time.Sleep(100 * time.Millisecond)
+		wait := listenerWait(t)
+		if !testwait.Holds(wait, 100*time.Millisecond, func() bool { return listsInterest(t, listener.port, sessionID) }) {
+			t.Fatalf("restart %d: in the %v the test binary's deadline left, the listener's interest cache never listed a subscription another listener wrote:\n%s",
+				round, wait.Round(time.Millisecond), listener.Output.String())
 		}
 	}
 	// One interest before the first restart, so the read after the reconnect has a row to keep: an
 	// empty bucket's read keeps nothing and would prove nothing.
-	subscribe(0, time.Now())
+	subscribe(0)
 
 	for restart := 1; restart <= 3; restart++ {
 		// The restart's own reconnect: the first line of the registry's connection reconnecting
@@ -63,7 +71,6 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 		server.Stop(t)
 		server.Start(t)
 		reconnected := listenerLineAfter(t, listener, stopped, registryReconnected, "restart "+strconv.Itoa(restart)+": the registry's connection to reconnect")
-		reconnectedAt := time.Now()
 
 		// Every watcher a watch installs reads the whole bucket again, and nothing empties the
 		// cache first (kvwatch.Cache): the reconnect hook's Rewatch does not resume after the last
@@ -90,11 +97,20 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 		}
 		kept()
 
-		subscribe(restart, reconnectedAt)
+		subscribe(restart)
 	}
 
 	listener.Terminate(t)
-	listener.WaitExit(t, "SIGTERM")
+	// The exit itself, bounded by the test binary's deadline alone: how long an ordered shutdown
+	// takes is the machine's, and one that hangs still fails, at the deadline.
+	exitWait := listenerWait(t)
+	exited := time.NewTimer(exitWait)
+	select {
+	case <-listener.Exited:
+		exited.Stop()
+	case <-exited.C:
+		t.Fatalf("the listener was still running %v after its SIGTERM, all the test binary's deadline left:\n%s", exitWait.Round(time.Millisecond), listener.Output.String())
+	}
 	if !strings.Contains(listener.Output.String(), "envoy-listener shutdown complete") {
 		t.Fatalf("the listener did not finish its ordered shutdown:\n%s", listener.Output.String())
 	}
