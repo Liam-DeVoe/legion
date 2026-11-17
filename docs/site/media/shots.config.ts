@@ -55,7 +55,7 @@ const dispatch: ShotSet<DispatchWorkspace> = {
   shots: [
     {
       id: "inbox",
-      alt: "The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, a decision block, open in its own document on the right.",
+      alt: "The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, an ask block, open in its own document on the right.",
       route: "/",
       viewport: "desktop",
       theme: "light",
@@ -89,7 +89,7 @@ const dispatch: ShotSet<DispatchWorkspace> = {
     },
     {
       id: "issue-spec",
-      alt: "An issue's spec in the editor, with a decision block in the document and a comment thread in the margin.",
+      alt: "An issue's spec in the editor, with an ask block in the document and a comment thread in the margin.",
       route: spec,
       viewport: "desktop",
       theme: "light",

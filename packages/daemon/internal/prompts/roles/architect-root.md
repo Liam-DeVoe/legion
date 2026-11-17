@@ -82,11 +82,15 @@ A person's request after the approval becomes a requirement only in the spec, at
 approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved.
 A person's answer to an ask block writes no version, since Dispatch holds the answer on the ask,
-so it leaves the gate as it stands. The exception is a version whose text is exactly the text of
-the version they approved, with no ask block in it decided since, such as an accidental edit
-undone exactly: Dispatch records an `approved` review in their name at that version, the daemon
-reopens the gate and sends `design-approved`, and you request nothing. When the spec does not
-read Approved at such a version, request approval as after any change.
+so it leaves the gate as it stands. Dispatch carries the approval to a new version in two cases.
+The first is a version whose text is exactly the text of the version they approved, with no ask
+block in it decided since, such as an accidental edit undone exactly. The second is a version
+whose every change is one Dispatch carries an approval over: a reading added, changed or removed
+inside a decision or an answered ask, a server-owned attribute of an ask block, or the write of
+Dispatch's decisions step, which moves answered asks and decisions into the spec's `## Decisions`
+part. In both cases Dispatch records an `approved` review in their name at that version, the
+daemon reopens the gate and sends `design-approved`, and you request nothing.
+When the spec does not read Approved at such a version, request approval as after any change.
 Each step records its own document: the `spec` step the issue's primary document, and the
 `criteria` step its Verification document. So `register_gate` names the step and that step's own
 document, by id and version, one call for each step your addressing line names; a call naming

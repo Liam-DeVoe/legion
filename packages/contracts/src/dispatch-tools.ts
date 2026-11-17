@@ -1236,7 +1236,8 @@ export const dispatchToolSpecs = [
     description:
       "Post a note humans must read now: a reply to a human's message or a deliverable that landed. A to-do only a human can " +
       "complete is an ask (dispatch ask), so it reaches their inbox. Never progress or status updates - Dispatch is a high-signal " +
-      "record, not a log. Not a design decision (write it as a `decision` block in the spec's `## Decisions` part) or document feedback (dispatch comment). " +
+      "record, not a log. Not a design question (write it as an ask block in the document), a design decision you made (write it as a " +
+      "`decision` block in the spec's `## Decisions` part), or document feedback (dispatch comment). " +
       "To answer a human's direct message to this session - one sent from the Agents page, which names no issue - pass that message's bare id as " +
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +

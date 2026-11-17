@@ -327,9 +327,16 @@ reason, and answer it in the spec if the latest version does not already.
 Each step's approval is pinned to the version of the document that step records: a new version of
 that document closes that step again, with no wake to say so; you know from your own edit, or
 from the `artifact.version` event on your issue. One step closing holds the tree's work whatever
-the other steps stand at. The exception is a version whose text is exactly that of the version
-they approved, with no ask block in it decided since, such as an accidental edit undone exactly:
-Dispatch records an `approved` review in their name at the new version and emits
+the other steps stand at. Dispatch carries the approval to a new version in two cases:
+
+- The version's text is exactly that of the version they approved, with no ask block in it
+  decided since, such as an accidental edit undone exactly.
+- Every change in the version is one Dispatch carries an approval over: a reading added, changed
+  or removed inside a decision or an answered ask, a server-owned attribute of an ask block, or
+  the write of Dispatch's decisions step, which moves answered asks and decisions into the spec's
+  `## Decisions` part.
+
+In both cases Dispatch records an `approved` review in their name at the new version and emits
 `artifact.approved`, and the daemon reopens the gate and sends `design-approved`. Undo an
 accidental edit of an approved root spec exactly. When the spec then reads Approved at the new
 version, request nothing; when it does not (a block in it was decided since), request approval
