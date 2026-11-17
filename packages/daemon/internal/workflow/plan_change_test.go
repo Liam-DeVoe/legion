@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -161,9 +160,10 @@ func architectOf(t *testing.T) claim.Token {
 // task, also while the task runs: the held plan is read as its block was given, not from its steps.
 // The version taken while the task runs queues one row, the run's plan node at that version (C9).
 // An issue that started its work before Legion took plans is refused and walks today's line, and
-// so is a plan given at a generation the issue has left, and one in a lingering tree; each refusal
-// writes nothing and leaves the fact unspent. The twin: a root given no plan opens to planning, the
-// first of the default steps, in the rows of the task default that its first step writes.
+// so is a plan given at a generation the issue has left, and one given to a member of a lingering
+// tree, which the linger keeps admitted; each refusal writes nothing and leaves the fact unspent.
+// The twin: a root given no plan opens to planning, the first of the default steps, in the rows of
+// the task default that its first step writes.
 func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 	t.Run("a root at admitted takes it, and its gate opens to the plan's first step", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -322,20 +322,21 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		}
 	})
 
-	t.Run("a plan given in a lingering tree is refused", func(t *testing.T) {
+	t.Run("a plan given to a member of a lingering tree is refused", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Admitted)
-		until := stepClock.Add(time.Hour)
-		root.LingerUntil = &until
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error { return engine.store.PutIssue(ctx, tx, root) })
-		id := planID(root.Key, root.Generation, 1)
-		before := planStandingOf(t, pool, engine, root.Key, root.Generation)
+		root := stepRoot(t, pool, phase.Implementing)
+		member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+		// The root's leave as done begins the tree's linger (beginLinger), which writes the root
+		// done and keeps the member admitted, where a plan of its own would be stored.
+		leaveAs(t, pool, engine, root.Key, "done")
+		id := planID(member.Key, member.Generation, 1)
+		before := planStandingOf(t, pool, engine, member.Key, member.Generation)
 
-		result := applyFacts(t, pool, engine)(id, ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer")))
+		result := applyFacts(t, pool, engine)(id, ownersPlan(t, member.Key, member.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer")))
 
-		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, result, &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
-			Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-208 changed nothing"}, before)
+		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
+			Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-209 changed nothing"}, before)
 	})
 }
 
