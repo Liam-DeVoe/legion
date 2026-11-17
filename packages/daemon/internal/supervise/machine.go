@@ -290,12 +290,6 @@ type Claim struct {
 	// yesterday, and a claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
-	// RecordTurn is the record of the turn that confirmed the daemon's own relaunch record, which
-	// is what that turn's end reads to decide what it takes back of the deaths and the run of pod
-	// ends from outside the pod (RecordTurn, turnEndsCounts), and nil for none. It is persisted,
-	// so a daemon restarted in the middle of that turn, or between a record's cut turn and its
-	// confirmation sent again, decides as the daemon before it would have.
-	RecordTurn *RecordTurn
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
 	// reported, in (generation, sequence) order and bounded by the launch failure limit
 	// (recordTurnOutcome). They are the window RefusedRun derives the run of refused turns from,
@@ -377,11 +371,10 @@ type Claim struct {
 	// DeathCharged is whether the death of the process this claim records has been charged, or
 	// found to have nothing to charge: the decision died makes for one dead process, and the
 	// record that keeps a second report of that same process from being charged a second death.
-	// An end of that process's pod from outside it is decided once in the same way: endedFromOutside
-	// counts it in one of its two runs (Budgets.PodEndsNotOurs, Budgets.StartEndsNotOurs) and
-	// writes this, so a second report of the one end counts nothing more. The rule it keeps is
-	// written where it is applied (died, endedFromOutside); what leaves a claim to be reported
-	// twice is ProcessGone's two windows above.
+	// An end of that process's pod from outside it charges nothing and writes this all the same
+	// (endedFromOutside), so a later report of that same process is charged no death either. The
+	// rule it keeps is written where it is applied (died, endedFromOutside); what leaves a claim
+	// to be reported twice is ProcessGone's two windows above.
 	//
 	// It is durable, and it is the one of these marks that is: a restart restores the claim a
 	// refused or parked relaunch left standing over its dead process, and the sweep's first
@@ -2083,21 +2076,16 @@ func (m *Machine) logTurn(line, delivery string) {
 // retires nothing and the task stays confirmed in the worker's hands — and a turn of the agent's
 // own starting in that window is no task's, so its start line names no delivery while a claim
 // read at its end would name that task and a reader would count the task's turn twice.
-//
-// What the turn is the turn of for the counts its end ends is no part of this identity: it is
-// the persisted claim's (Claim.RecordTurn), which a restart keeps and this identity does not, and
-// the end reads it there (turnEndsCounts).
 func (m *Machine) startTurn(delivery string) {
 	m.turnsDelivery = delivery
 	m.logTurn(turnStartedLine, delivery)
 }
 
 // endTurn writes the turn's end line, naming what its own start line named, and forgets the turn
-// with it (Machine.turnsDelivery), so nothing of a turn that is over is left for the next turn's
-// end to read. A turn this daemon never saw begin — a restart mid-turn, or a turn a busy answer
-// recorded whose own start was never read — holds no identity here, and its end line names no
-// delivery rather than the claim's pending task, which is the safe answer for a turn nobody can
-// say the task of.
+// with it, so nothing of a turn that is over is left for the next turn's end to read. A turn this
+// daemon never saw begin — a restart mid-turn, or a turn a busy answer recorded whose own start
+// was never read — holds no identity here, and its end line names no delivery rather than the
+// claim's pending task, which is the safe answer for a turn nobody can say the task of.
 func (m *Machine) endTurn() {
 	m.logTurn(turnEndedLine, m.turnsDelivery)
 	m.turnsDelivery = ""
@@ -3058,18 +3046,17 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // record any more (lostCompaction) — and the process the claim records, when it records one,
 // moves into previous — the claim no longer runs it (it was stopped, found dead, or left
 // behind), and the next launch of the same session waits it out. The identity of the turn that
-// process was running goes with it (turnsDelivery): a turn whose process is gone ends by a line of
-// its own rather than by turnEnded, and a later turn must never end naming the delivery of a turn
-// that died with its process. So does the record a busy answer made of that turn (busyTurn): the
-// question it arms has no process left to answer it, and the next process is sent the task anew.
-// The claim's record of a relaunch record's turn stays (Claim.RecordTurn): it is the base the
-// confirmation of that record sent again measures this end's charge from (turnEndsCounts). What
-// the runtime last reported of that process goes with it too, and what was charged for its death
-// with that (processGone, Claim.DeathCharged): the claim records no process for a report to be
-// about, and the one the next launch starts has been reported nothing and charged nothing. The
-// clear of the charge reaches the store with the write every caller of this makes of the claim it
-// leaves — the launch that records the new process, the suspension, the retirement, the failure —
-// so no stored charge ever outlives the process it was made for.
+// process was running goes with it (turnsDelivery): a turn whose process is gone ends by a line
+// of its own rather than by turnEnded, so nothing is left to read it, and a later turn must never end
+// naming the delivery of a turn that died with its process. So does the record a busy answer
+// made of that turn (busyTurn): the question it arms has no process left to answer it, and the
+// next process is sent the task anew. What the runtime last reported of that process goes with it
+// too, and what was charged for its death with that (processGone, Claim.DeathCharged): the claim
+// records no process for a report to be about, and the one the next launch starts has been
+// reported nothing and charged nothing. The clear of the charge reaches the store with the write
+// every caller of this makes of the claim it leaves — the launch that records the new process,
+// the suspension, the retirement, the failure — so no stored charge ever outlives the process it
+// was made for.
 //
 // Before any of that, what the process ended is recorded for cause, the caller's reading of why
 // it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
@@ -3177,11 +3164,10 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		m.compactionLostProcess()
 		// The daemon's own replacement of a pod is no fault of the process (Displaced). An end
 		// something outside the pod made is read in one place, here, and goes to the one site
-		// that decides what it costs (endedFromOutside): uncharged, until such ends come
-		// launch_failure_limit times in one of its two runs — with no turn completed between
-		// them, or with no ready between them while the agent starts. An end the daemon itself
-		// made, and one the runtime read neither way, are charged exactly as they were before
-		// the reading existed.
+		// that decides it (endedFromOutside), which continues the claim in its own session
+		// charged nothing, however often such ends come. An end the daemon itself made, and one
+		// the runtime read neither way, are charged exactly as they were before the reading
+		// existed.
 		if observation.Displaced {
 			return m.displaced(ctx, observation, endDisplaced)
 		}
@@ -3655,10 +3641,6 @@ func copyClaim(c Claim) Claim {
 	if c.Pending != nil {
 		d := *c.Pending
 		c.Pending = &d
-	}
-	if c.RecordTurn != nil {
-		r := *c.RecordTurn
-		c.RecordTurn = &r
 	}
 	c.BootTokenHash = bytes.Clone(c.BootTokenHash)
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)

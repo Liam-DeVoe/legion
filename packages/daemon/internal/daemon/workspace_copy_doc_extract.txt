@@ -32,7 +32,7 @@ Three ends differ in what reaches the issue's next pod, and this is how a reader
   The disk goes with the pod, as it does at every end.
   What comes back is the newer of the issue's two saved copies, restored before any role starts:
   the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
-  Each role keeps its session, keeps the task it owed and is charged no death, until such ends reach `launch_failure_limit` in one of the two runs above.
+  Each role keeps its session, keeps the task it owed and is charged no death and no launch failure, however often such ends come.
   What no copy holds goes with the disk:
   the issue's scratch, each role's temporary directory and logs, every ignored file and the workspace's CodeGraph index;
 

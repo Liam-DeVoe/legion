@@ -175,8 +175,8 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 }
 
 // The two readings that earn an uncharged continue, the end reasons the second covers, the reason
-// that needs the condition, the run of such ends that is charged all the same, and the ends that
-// are still charged as a death.
+// that needs the condition, that no count of such ends is kept however often they come, and the
+// ends that are still charged as a death.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
 	lines, region := testdoc.Region(t, workspaceCopyDocExtract, what, podEndReadingsStart, podEndReadingsEnd)
@@ -185,12 +185,9 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 		{Fact: "that each role is continued in its own session", Phrase: "in that role's own session"},
 		{Fact: "that neither a death nor a launch failure is charged", Phrase: "charges no death and no launch failure"},
 		{Fact: "that each role is sent the task it owed again", Phrase: "sends each role the task it owed again"},
-		{Fact: "that the third such end in a row is charged", Phrase: "The third such end in a row is charged all the same"},
-		{Fact: "that only a completed turn between the ends keeps them apart", Phrase: "with no turn of that claim completed between those ends"},
-		{Fact: "the limit the run is counted to", Phrase: "`launch_failure_limit`"},
-		{Fact: "why the condition cannot answer that run", Phrase: "can drive its own node into pressure"},
-		{Fact: "that a completed turn starts the count again", Phrase: "A completed turn starts the count again"},
-		{Fact: "where the count is kept, so a restart keeps it", Phrase: "`claims.pod_ends_not_ours`"},
+		{Fact: "that no run of such ends is ever charged", Phrase: "costs its roles nothing, however often it comes"},
+		{Fact: "that no count of such ends is kept", Phrase: "The daemon keeps no count of these ends"},
+		{Fact: "that the ends of a start are uncharged too", Phrase: "whether its agent was ready or still starting"},
 		{Fact: "the end that is still charged", Phrase: "An end of neither reading is charged as a death"},
 		{Fact: "that the kubelet's eviction with no condition is charged", Phrase: "`" + evictedReason + "` with no `DisruptionTarget` condition is such an end"},
 		{Fact: "the three limits that eviction is for", Phrase: "its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`"},

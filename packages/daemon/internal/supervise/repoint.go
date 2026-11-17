@@ -49,8 +49,8 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // fault of its own: the daemon itself replaced its pod while it ran, to launch another role there
 // (runtime.Observation.Displaced); something outside the pod ended the pod it ran in — the
 // cluster evicted, preempted or shut that pod down, or something deleted it that no act of the
-// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside sends here until such ends
-// run out their count); or it was another runtime's process — a Sandbox role process a daemon
+// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside sends here every time);
+// or it was another runtime's process — a Sandbox role process a daemon
 // running the project under kubernetes recorded — that this daemon takes over
 // (`runtime.tmux.take_over`) and cannot see. The
 // observation's detail names which. The process did
@@ -94,121 +94,50 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 }
 
 // endedFromOutside is the claim's process gone with a pod the runtime read as ended by something
-// outside it (runtime.PodEndNotOurs): an eviction, a preemption, a node going down, or a delete no
-// act of the daemon's accounts for. Such an end is continued uncharged (displaced), recorded as an
-// end from outside the pod (endFromOutside) and never as the daemon's replacement of it, and
-// counted in one of two runs, by whether the claim's agent was ready when its pod ended. At
-// launch_failure_limit ends in a run the end is charged as the claim's own death (died), and so
-// is every end of that run after it until the run is reset: a pod that uses more memory than it
-// requested can drive its own node into pressure, and that eviction carries the same
-// DisruptionTarget condition a neighbour's does. An outcome the daemon cannot read is charged,
-// and a claim that keeps ending its own pod that way is bounded as a crash loop is, rather than
-// relaunched for ever.
+// outside it (runtime.PodEndNotOurs): an eviction the cluster marked a disruption target, a
+// preemption, a node going down, or a delete no act of the daemon's accounts for. Such an end is
+// continued in the claim's own session (displaced), recorded as an end from outside the pod
+// (endFromOutside) and never as the daemon's replacement of it, and charged nothing — neither a
+// death nor a launch failure — however often it comes, whatever the claim's agent was doing and
+// whether it was ready or still starting. Nothing the role in the pod can do fixes a cause
+// outside it, and stopping the role fixes a cause that stays no better: a charge at some count
+// would only turn a loop of restarts into a stall. An end the runtime read neither way is charged
+// as a death (died), as it always was: the kubelet's eviction of a pod over a limit of its own,
+// which carries no DisruptionTarget condition, is such an end, since the pod that replaces it runs
+// the same task into the same limit.
 //
-// The first run (Budgets.PodEndsNotOurs) counts the ends that find the agent ready with work
-// outstanding (workOutstanding): a task the claim holds, or a turn open on that agent. At the
-// limit its end is charged a death, which reads the same condition (chargeDeath). A turn of the
-// claim's own that completes resets it (turnEnded), and so does the end of the task it was
-// counted against (retirePending); nothing else does. The agent's ready does not (ready), as it
-// resets nothing of the deaths: a turn a message started — the turns of an architect and of the
-// controller, which messages start — is counted against the open turn alone, and the agent
-// relaunched after it comes up with no task and no turn. Reset there, the run would be one again
-// at every such turn the cluster ends, and a claim whose messages keep ending its pod would be
-// relaunched for ever, never reaching the limit. Nor does a turn of the daemon's own relaunch
-// record, or any record's retirement (turnEndsCounts): the daemon gives the record to such an
-// agent at its ready, since it holds nothing (queueRelaunch), so a turn completed on it is the
-// daemon's own act and no evidence that the claim's work gets through. Taken for one, it would
-// end the run at every such relaunch, as a reset at the ready would, and from the limit on it
-// would end the deaths each charged end counts, so the claim would never fail. The record whose
-// turn a let-go cut off, sent again, completes the work that end cut off, so its turn takes back
-// that one end's charge — one from the run, and one from the deaths where the end was charged as
-// a death — and nothing counted before it. An end that finds a ready agent with no work
-// outstanding — idle, holding no task, in no turn — is counted in neither run and charged
-// nothing: it is displaced as it always was. Such a claim completes no turn, so a count it could
-// raise would only grow, and a pod the cluster repacks once a week would cost it a launch failure
-// and a backoff from its third repacking on, for work it was not doing.
+// It records two things all the same, before the relaunch, because a parked relaunch writes
+// nothing until its turn; a write the store would not take is owed and the relaunch goes on
+// under it (died states why):
 //
-// The second run (Budgets.StartEndsNotOurs) counts the ends that find the agent not yet ready
-// (unready), whatever work the claim holds, and such an end counts in it alone. A pod's own start
-// — the workspace's restore and six agents starting at once in a Burstable pod — can drive its
-// node into memory pressure, and that eviction carries DisruptionTarget, so a start that keeps
-// ending its own pod would otherwise be relaunched for ever, whether it holds a task it never
-// reaches or holds none, as an architect a message woke, the controller and a phase worker
-// between assignments do. At the limit such an end goes to died as any other does, and died
-// charges an agent not yet ready a launch failure rather than a death (chargeDeath reads
-// workOutstanding): the launch failures then bound the loop. The agent's ready resets this run,
-// as it resets the launch failures (ready): a start that reaches ready is one the cluster let
-// finish, so the ends of starts that each reach ready charge nothing.
+//   - the end of the turn the end cut off (Claim.LastTurnEnd), as a charged death records it
+//     (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is gone
+//     and never ends it, so without that record a later death of the relaunched agent, idle with
+//     nothing pending, would find the dead turn open and be charged against it;
+//   - that the ended process is decided (Claim.DeathCharged), the record died keeps for one dead
+//     process, so a later report of that same process — the orphan sweep's, over a claim whose
+//     relaunch the lifecycle refused or the wake pacing parked — is charged no death.
 //
-// The two are separate runs because one count cannot bound both loops. Without the ready's reset
-// a run could not count the start of a claim with no task — that claim completes no turn, so its
-// count would only grow and charge it for starts the cluster ends now and then — and those ends
-// went uncounted, a start loop nothing bounded. With the reset, the run of a message's turns
-// would be cleared by each relaunch's ready and never reach the limit.
-//
-// One ended process is counted once, however often the runtime reports it gone, by the record
-// died keeps for the same purpose (Claim.DeathCharged): the report that counts the end writes
-// it, and a later report of that same process — the orphan sweep's, over a claim whose relaunch
-// the lifecycle refused or the wake pacing parked — counts nothing. The count and the record are
-// written before the relaunch, as died writes its charge, because a parked relaunch writes
-// nothing until its turn; a write the store would not take is owed and the relaunch goes on under
-// it (died states why). At the limit the charge is died's whole, so a second report of the end it
-// charged is died's second report and charged nothing more.
-//
-// An end counted in the first run ends the turn it interrupted (Claim.LastTurnEnd), as a charged
-// death does (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is
-// gone and never ends it, so without that record every later end of the relaunched agent, idle
-// with nothing pending, would find the dead turn open and be counted against it. An agent not yet
-// ready was in no turn, so an end counted in the second run records none. At the limit the turn
-// is left for died's charge to end, since that charge reads the same open turn.
-//
-// Each end counted in a run writes one line for the claim saying what the claim got for it: the
-// continue below the limit (continuedFromOutsideLine) and the charge at it
-// (chargedFromOutsideLine). The runtime's line for the pod's end is written before any claim is
-// decided and names every role the end ended, so these lines, one per claim, are what tell a role
-// continued from one charged. An end with no work outstanding writes displaced's line alone.
+// Each end writes one line for the claim saying what it got (continuedFromOutsideLine) before
+// displaced writes its own. The runtime's line for the pod's end is written before any claim is
+// decided and names every role the end ended, so this line, one per claim, is what says what each
+// role got.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
-	starting := slices.Contains(unready, m.claim.State)
-	run := &m.claim.Budgets.PodEndsNotOurs
-	switch {
-	case starting:
-		run = &m.claim.Budgets.StartEndsNotOurs
-	case !m.workOutstanding():
-		return m.displaced(ctx, observation, endFromOutside)
-	}
-	if !m.claim.DeathCharged {
-		*run++
-	}
-	// The charge line and the continued line are read together, so they carry one key list.
-	attrs := []any{"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
-		"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail}
-	if *run >= m.deps.Limits.LaunchFailures {
-		m.log.Warn(chargedFromOutsideLine, attrs...)
-		return m.died(ctx, observation)
-	}
-	m.log.Info(continuedFromOutsideLine, attrs...)
+	m.log.Info(continuedFromOutsideLine, "starting", slices.Contains(unready, m.claim.State), "detail", observation.Detail)
 	m.claim.DeathCharged = true
-	if !starting {
+	if m.turnOpen() {
 		m.claim.LastTurnEnd = m.deps.Clock.Now()
 	}
 	return errors.Join(m.persist(ctx), m.displaced(ctx, observation, endFromOutside))
 }
 
-// continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod that is
-// continued: counted in one of the two runs and below launch_failure_limit, so the claim's own
-// session is resumed and nothing is charged (endedFromOutside). It carries the keys the charge
-// line carries — both runs' counts, the limit, and `starting`, which says which run counted the
-// end — so an operator reads one claim's ends from outside its pod by the same keys whichever
-// line each wrote. It is pinned as a constant, beside chargedFromOutsideLine, because an operator
-// and a production check read the two whole and together: the runtime's line for the pod's end
-// says what ended, and each claim's line says what that claim got.
+// continuedFromOutsideLine is the line, at Info, of an end from outside the claim's pod: the
+// claim's own session is resumed and nothing is charged (endedFromOutside). It carries
+// `starting`, whether the claim's agent was still starting when its pod ended, and the `detail`
+// of the reading. It is pinned as a constant because an operator and a production check read it
+// whole beside the runtime's line for the pod's end: that line says what ended, and each claim's
+// line says what that claim got.
 const continuedFromOutsideLine = "supervise: the claim's pod ended from outside it; continued in its own session and charged nothing"
-
-// chargedFromOutsideLine is the line, at Warn, of an end from outside the claim's pod that
-// reached launch_failure_limit in its run and is charged as the claim's own death, or as a launch
-// failure while its agent starts (endedFromOutside, died). It is pinned for the reason
-// continuedFromOutsideLine gives.
-const chargedFromOutsideLine = "supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts"
 
 // ProcessEnd is what a replacement did to the claim's process (replaceProcess): the end the
 // machine reached, which is not always the one it set out to make. It is read from the claim the

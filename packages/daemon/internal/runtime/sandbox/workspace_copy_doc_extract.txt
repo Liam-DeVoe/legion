@@ -41,7 +41,7 @@ to: with no death charged
     An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
     it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
     What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node;
-    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged, except for the end that completes a run of `launch_failure_limit` such ends, which is charged (as a death, or as a launch failure while the agent starts), and an `Evicted` end with no `DisruptionTarget` condition, which is not read as an end from outside the pod and is charged as a death ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod");
+    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged and no launch failure, however often the cluster ends it, except for an `Evicted` end with no `DisruptionTarget` condition, which is not read as an end from outside the pod and is charged as a death ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod");
 
 from: An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while
 to: rather than into a node of its own.
@@ -59,7 +59,7 @@ Two readings say something outside the pod ended it:
 
 - the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for, while the pod was not yet terminal.
   The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and it records each such act of its own before it makes it, so an end no record of its own answers for was made by something else.
-  That record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged, which the run limit below bounds;
+  That record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged;
 
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
   `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
@@ -71,40 +71,15 @@ The rule has one cost: an outside delete the daemon first sees when the pod is a
 That is rare: the informer hands the daemon each watch event in order, and a graceful delete sets the deletion timestamp on the running pod before the kubelet makes it terminal, so the daemon sees the running pod's deletion first.
 It sees the terminal pod first only when its watch missed that update and a relist delivered only the later state, which is an inference from how client-go's watch and relist behave that no test proves.
 
-An end of either reading costs its roles nothing.
+An end of either reading costs its roles nothing, however often it comes.
 The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
 The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
-
-The third such end in a row is charged all the same.
-The daemon counts these ends in two runs, by whether the claim's agent was ready when its pod ended: the third end of either run is charged, and so is every end of that run after it until the run is reset (`launch_failure_limit`, 3 by default).
-A pod that uses more memory than it requested can drive its own node into pressure, its start as much as its work, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
-Both runs are kept in the claim's row (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), so a daemon restart starts neither again.
-Each claim writes its own line for what it got:
-`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing` at info for an end below the limit, and, for the end that reaches the limit, `supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts` at warn in its place.
-Both lines carry the same keys: the two runs' counts (`podEndsNotOurs` and `startEndsNotOurs`), the `limit`, `starting`, which says which run counted the end (`true` for the run of a start's ends), and the `detail` of the reading.
-
-The first run counts the ends that find the claim's agent ready with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
-When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own.
-Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it.
-A completed turn starts the count again, and so does the end of the task the run was counted against, however that task ends: a suspension or a phase change that retires it ends the run with it, as it ends the claim's deaths.
-A turn of the daemon's own relaunch record, which tells a relaunched agent that holds nothing what its last process ended, starts nothing again, and neither does that record's end: the record is the daemon's act, not the claim's work.
-An end that cuts off a turn of the record is counted against that turn, and the daemon sends the record again, so the completed turn of the record sent again takes back what that one end charged: one from this run, and one from the claim's deaths where the end was charged as a death.
-Every end counted before it stands, so a run of ends whose last end cut off a turn of the record still reaches the limit.
-A turn of a record no end cut off takes back nothing, since what it finds was counted against a turn a message started or a task.
-The daemon measures what the end charged from the two counts it keeps in the claim's row when a turn of the record starts (`claims.record_turn`), so a daemon restart between the end and the completed turn of the record sent again changes nothing.
-A record cut off twice and then completed takes back the second end alone, and a record sent again takes back nothing when another turn of the agent's started between the end and the record's own, so in both cases the claim fails sooner.
-The ends inside the record's turns are counted all the same, so a claim whose pod or process ends in every such turn completes no turn and is charged at the limit.
-Nothing else resets it, the agent's ready included, so the run survives a relaunch: the agent that comes up has completed no turn, and the count goes on from where the last pod left it.
-An architect's turns and the controller's start from messages, so a claim whose pod the cluster ends in every such turn adds one to its run each time and is charged at the limit rather than being relaunched for ever.
-An end that finds the agent ready and idle between assignments, with no task and no turn open, is neither counted nor charged and leaves both runs where they were, since a claim that completes no turn would otherwise be charged for a pod the cluster repacks now and then.
-
-The second run counts the ends that find the claim's agent not yet ready, whatever work the claim holds, and such an end counts in it alone.
-Its third end is charged as the end of any process whose agent never came up is, as a launch failure, so a start the cluster ends every time fails its claim once its launch failures run out rather than being relaunched for ever, with a task or without one.
-The agent's ready resets this run, as it resets the launch failures: a start that reaches ready is one the cluster let finish, so the ends of starts that each reach ready cost nothing.
-
-One run could not bound both loops.
-Reset at the agent's ready, it would start again at each turn a message started and the cluster ended, since the agent relaunched after such a turn comes up with no task and no turn, and that claim would never reach the limit.
-Kept past the ready, it could not count the start of a claim with no task, such as an architect a message woke, the controller or a phase worker between assignments: such a claim completes no turn, so its count would only grow and charge it for starts the cluster ends now and then.
+The daemon keeps no count of these ends, so the tenth in a row costs a role what the first did, whether its agent was ready or still starting and whatever work it held.
+So a pod whose own memory use drives its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` exactly as a neighbour's does.
+That is chosen: the role cannot fix a cause outside its pod, and charging such ends at a limit would only turn a loop of restarts into a claim that runs nothing.
+Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it, so a later death of the relaunched agent is not charged against that turn.
+Each claim writes its own line for what it got, at info:
+`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing`, with `starting`, which says whether the claim's agent was still starting when its pod ended, and the `detail` of the reading.
 
 An end of neither reading is charged as a death exactly as before, so a pod that fails by itself still ends its claim once that claim's deaths run out ([Liveness rules](#liveness-rules)).
 `Evicted` with no `DisruptionTarget` condition is such an end:

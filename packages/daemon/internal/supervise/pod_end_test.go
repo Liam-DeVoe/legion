@@ -3,16 +3,14 @@ package supervise
 // What the daemon charges for a process that ended with its pod, by what the runtime read about
 // the cause of that end (runtime.Observation.PodEnd). An end something outside the pod made is the
 // uncharged continue a displacement gets: the role's own session is resumed at once, neither a
-// death nor a launch failure is charged, and the task the role owed is sent again. Such ends are
-// counted in two runs: the ends that find the agent ready with work outstanding, with no turn of
-// the claim's own completed between them (Budgets.PodEndsNotOurs; the turn of a fresh relaunch
-// record of the daemon's own is none), and the ends that find it not yet ready, with no ready
-// between them (Budgets.StartEndsNotOurs). At launch_failure_limit ends in a run the end is
-// charged as the claim's own death, which while the agent starts is a launch failure. An end the
-// daemon itself made, and one the runtime read neither way, are charged exactly as they were
-// before the reading existed — which is what keeps these cases from being an amnesty.
+// death nor a launch failure is charged, and the task the role owed is sent again — every time,
+// however many such ends come, whatever the claim's agent was doing and whether it was ready or
+// still starting (endedFromOutside). An end the daemon itself made, and one the runtime read
+// neither way, are charged exactly as they were before the reading existed — which is what keeps
+// these cases from being an amnesty.
 
 import (
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -36,20 +34,24 @@ func (h *harness) observePodEnd(kind runtime.ObservationKind, reading runtime.Po
 // death in. Without it "no death charged" would say nothing at all.
 const owedTask = "implement the plan"
 
+// farPastTheLimit is how many ends from outside the pod each never-fails walk below makes: five
+// more than launch_failure_limit, so a charge at any count up to the limit, or a little past it,
+// shows as a death, a launch failure or a failed claim.
+func farPastTheLimit() int { return testLimits().LaunchFailures + 5 }
+
 // A role whose pod something outside it ended — the cluster evicted, preempted or shut that pod
 // down, or something deleted it that no act of the daemon's accounts for — is continued in its own
 // session: its process is replaced at once, nothing is charged, and the task it owed is sent
-// again. The end is counted, the first of a run (Budgets.PodEndsNotOurs), which costs nothing
-// until the run reaches the limit. The claim holds that task unconfirmed when the end arrives, so
-// the same walk under an end the runtime read neither way charges the death and the launch failure
-// it always did: that is the control, and it is what makes the uncharged half mean anything.
+// again. The claim holds that task unconfirmed when the end arrives, so the same walk under an end
+// the runtime read neither way charges the death and the launch failure it always did: that is
+// the control, and it is what makes the uncharged half mean anything.
 func TestAnEvictedPodsRoleIsContinuedChargingNoDeathAndSentItsTaskAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		reading runtime.PodEndReading
 		want    Budgets
 	}{
-		{name: "something outside the pod ended it", reading: runtime.PodEndNotOurs, want: Budgets{PodEndsNotOurs: 1}},
+		{name: "something outside the pod ended it", reading: runtime.PodEndNotOurs},
 		{name: "the end was read neither way", want: Budgets{LaunchFailures: 1, Deaths: 1}},
 	} {
 		for _, kind := range []runtime.ObservationKind{runtime.Gone, runtime.NotRecordedProcess} {
@@ -140,42 +142,6 @@ func TestAnEndOutsideTheClustersOwnReasonsIsChargedADeathAndFailsTheClaimAtTheTh
 	}
 }
 
-// The uncharged continue is of the cause of the end and not of the kind of pod, so the project
-// controller's claim — which is no role of an issue and shares its pod with nobody — is continued
-// under an end from outside its pod as any role is. The second half is the condition for the
-// first: under an end the runtime read neither way that same claim is charged the death it always
-// was, so the rule waives what the cluster did and nothing else.
-func TestTheControllersEvictedPodIsContinuedUnchargedAndItsOwnDeathIsStillCharged(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		reading runtime.PodEndReading
-		want    Budgets
-	}{
-		{name: "something outside its pod ended it", reading: runtime.PodEndNotOurs, want: Budgets{PodEndsNotOurs: 1}},
-		{name: "the end was read neither way", want: Budgets{LaunchFailures: 1, Deaths: 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarnessOf(t, controllerClaim())
-			h.reach(StateReady)
-			h.must(RequestDeliver{Claim: h.token, Task: "Legion controller start"})
-			h.wantPrompts(1)
-			ended := h.locator()
-
-			h.observePodEnd(runtime.Gone, tc.reading)
-
-			h.wantState(StateLaunching)
-			h.wantBudgets(tc.want)
-			if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != ended {
-				t.Fatalf("resumed from %+v, want the controller's own ended incarnation", resume.Previous)
-			}
-			h.relaunched()
-			if resent := h.wantPrompts(2)[1]; !strings.HasSuffix(resent.Message, "Legion controller start") {
-				t.Fatalf("re-sent %+v, want the task the controller owed", resent)
-			}
-		})
-	}
-}
-
 // outsideEndClaims are the two kinds of claim an end from outside the pod is decided for, each
 // with the task it is handed: an issue's role and the project controller. The rule is of the
 // cause of the end and never of the kind of pod, so every walk below runs over both. record is
@@ -213,179 +179,12 @@ func (h *harness) wantOwed(task string) {
 	}
 }
 
-// A claim whose pod something outside it ends launch_failure_limit times in a row, with no turn
-// of the claim completed between, is charged a death at that end, and at every such end after it,
-// until its deaths run out and it fails (endedFromOutside). The reading cannot tell a neighbour's
-// pressure from the pod's own: a pod that uses more memory than it requested drives its own node
-// into pressure, and that eviction carries the same DisruptionTarget condition. The ends before
-// the limit are the uncharged continue each always was, which is the half that shows the count
-// and not the reading decides.
-//
-// The run is the claim's and durable (claims.pod_ends_not_ours): a daemon restart in the middle
-// of it, which this walk makes just before the end that reaches the limit, starts nothing again.
-// The claim holds its task unconfirmed at every end, so "no death charged" before the limit says
-// something.
-func TestEvictionsInARowWithNoCompletedTurnAreChargedADeathAtTheLimitAndFailTheClaim(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	for _, kind := range outsideEndClaims {
-		t.Run(kind.name, func(t *testing.T) {
-			h := owingTask(t, kind.claim(), kind.task)
-			for end := 1; end < limit; end++ {
-				h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-
-				h.wantState(StateLaunching)
-				h.wantBudgets(Budgets{PodEndsNotOurs: end})
-				h.relaunched()
-				h.wantOwed(kind.task)
-			}
-			if stored := h.store.load(h.token).Budgets; stored.PodEndsNotOurs != limit-1 {
-				t.Fatalf("the stored claim carries a run of %d ends from outside its pod, want %d: a restart reads this and nothing else",
-					stored.PodEndsNotOurs, limit-1)
-			}
-			h.restart()
-
-			for death := 1; death < limit; death++ {
-				h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-
-				h.wantState(StateLaunching)
-				// One launch failure for the relaunch each charged end makes, which the launch
-				// that reaches ready clears; the deaths are what accumulate to the limit.
-				h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: death, PodEndsNotOurs: limit - 1 + death})
-				h.relaunched()
-				h.wantOwed(kind.task)
-			}
-
-			h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-
-			h.wantState(StateFailed)
-			if got := h.claim(); got.Budgets.Deaths != limit || got.FailureCause != CauseDied {
-				t.Fatalf("the failed claim carries %d deaths and cause %q, want the limit %d and %q",
-					got.Budgets.Deaths, got.FailureCause, limit, CauseDied)
-			}
-		})
-	}
-}
-
-// The two lines an end from outside a claim's pod ends in, as an operator and a production check
-// read them: whole, and not as the constants that carry them, so a reword turns this test red
-// rather than leaving a search for what each claim got counting nothing.
-const (
-	continuedLine = "supervise: the claim's pod ended from outside it; continued in its own session and charged nothing"
-	chargedLine   = "supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts"
-)
-
-// Each claim of a pod that ended from outside it says, in a line of its own, what it got for that
-// end (endedFromOutside). The runtime's line for the pod's end is written before any claim is
-// decided and names every role the end ended, so it cannot say which were continued and which
-// charged. An end below launch_failure_limit writes the continued line at Info, carrying the keys
-// the charge line carries: both runs' counts, the limit, whether the claim's agent was starting,
-// which says which run counted the end, and the observation's detail. The end that reaches the
-// limit writes the charge line at Warn instead, and no continued line. A claim whose agent is
-// still starting counts the end in the run of a start's ends.
-func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	const detail = "the cluster marked the pod a disruption target (TerminationByKubelet)"
-	podEndedFromOutside := func(h *harness) {
-		h.t.Helper()
-		h.must(RuntimeObservation{Observation: runtime.Observation{
-			Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), PodEnd: runtime.PodEndNotOurs, Detail: detail,
-		}})
-	}
-	// wantRunLine fails unless line was written lines times, the last of them at level carrying
-	// the two runs' counts, the limit, starting and the observation's detail: the continued line
-	// and the charge line carry one key list, and each is held to it.
-	wantRunLine := func(h *harness, line string, level slog.Level, lines int, runs Budgets, starting bool) {
-		h.t.Helper()
-		written := h.records.of(line)
-		if len(written) != lines {
-			h.t.Fatalf("%q was written %d times, want %d", line, len(written), lines)
-		}
-		r := written[lines-1]
-		if r.level != level {
-			h.t.Fatalf("%q is %s, want %s", line, r.level, level)
-		}
-		for _, want := range []struct{ key, value string }{
-			{"podEndsNotOurs", strconv.Itoa(runs.PodEndsNotOurs)}, {"startEndsNotOurs", strconv.Itoa(runs.StartEndsNotOurs)},
-			{"limit", strconv.Itoa(limit)}, {"starting", strconv.FormatBool(starting)}, {"detail", detail},
-		} {
-			if got, ok := r.attr(want.key); !ok || got.String() != want.value {
-				h.t.Errorf("%q carries %s=%v (present %v), want %q", line, want.key, got, ok, want.value)
-			}
-		}
-	}
-
-	t.Run("an agent ready with work outstanding", func(t *testing.T) {
-		h := owingTask(t, queuedClaim(), owedTask)
-		for end := 1; end < limit; end++ {
-			podEndedFromOutside(h)
-
-			h.wantState(StateLaunching)
-			h.wantBudgets(Budgets{PodEndsNotOurs: end})
-			wantRunLine(h, continuedLine, slog.LevelInfo, end, Budgets{PodEndsNotOurs: end}, false)
-			h.relaunched()
-			h.wantOwed(owedTask)
-		}
-		if charged := h.records.of(chargedLine); len(charged) != 0 {
-			t.Fatalf("%q was written %d times below the limit, want never", chargedLine, len(charged))
-		}
-
-		podEndedFromOutside(h)
-
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1, PodEndsNotOurs: limit})
-		if continued := h.records.of(continuedLine); len(continued) != limit-1 {
-			t.Fatalf("%q was written %d times, want the %d of the ends below the limit: the end the limit charges was logged as continued",
-				continuedLine, len(continued), limit-1)
-		}
-		wantRunLine(h, chargedLine, slog.LevelWarn, 1, Budgets{PodEndsNotOurs: limit}, false)
-	})
-	t.Run("an agent still starting", func(t *testing.T) {
-		h := newHarnessOf(t, queuedClaim())
-		h.launch()
-		h.wantState(StateLaunching)
-
-		podEndedFromOutside(h)
-
-		h.wantBudgets(Budgets{StartEndsNotOurs: 1})
-		wantRunLine(h, continuedLine, slog.LevelInfo, 1, Budgets{StartEndsNotOurs: 1}, true)
-	})
-}
-
-// A turn the claim completes between two ends from outside its pod starts the run again: the
-// process held a pod long enough to finish work, so the end after it is the first of a new run
-// and costs nothing. The claim reaches one end short of the limit, completes a turn, and is handed
-// a new task it holds unconfirmed when its pod ends again — the end that, with no turn between,
-// is charged a death (TestEvictionsInARowWithNoCompletedTurnAreChargedADeathAtTheLimitAndFailTheClaim).
-func TestACompletedTurnBetweenEvictionsStartsTheCountAgainAndChargesNoDeath(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	const next = "the next task"
-	for _, kind := range outsideEndClaims {
-		t.Run(kind.name, func(t *testing.T) {
-			h := owingTask(t, kind.claim(), kind.task)
-			for end := 1; end < limit; end++ {
-				h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-				h.wantBudgets(Budgets{PodEndsNotOurs: end})
-				h.relaunched()
-			}
-
-			h.must(StreamTurnStart{Claim: h.token})
-			h.must(StreamTurnEnd{Claim: h.token})
-
-			h.wantState(StateIdle)
-			h.wantBudgets(Budgets{})
-			if stored := h.store.load(h.token).Budgets; stored != (Budgets{}) {
-				t.Fatalf("the stored budgets after the completed turn are %+v, want the reset written", stored)
-			}
-			h.must(RequestDeliver{Claim: h.token, Task: next})
-			h.wantOwed(next)
-
-			h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-
-			h.wantState(StateLaunching)
-			h.wantBudgets(Budgets{PodEndsNotOurs: 1})
-			h.relaunched()
-			h.wantOwed(next)
-		})
+// wantNothingCharged fails unless the claim, in memory and in the store, carries no budget spent:
+// no death, no launch failure, no prompt failure.
+func (h *harness) wantNothingCharged(when string) {
+	h.t.Helper()
+	if got, stored := h.budgets(), h.store.load(h.token).Budgets; got != (Budgets{}) || stored != (Budgets{}) {
+		h.t.Fatalf("%s: the claim carries budgets %+v (%+v stored), want nothing charged", when, got, stored)
 	}
 }
 
@@ -424,169 +223,111 @@ func TestAnEvictionWithNoDisruptionTargetIsChargedADeathAndFailsTheClaimAtTheThi
 			h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
 
 			h.wantState(StateLaunching)
-			h.wantBudgets(Budgets{PodEndsNotOurs: 1})
+			h.wantNothingCharged("the end")
 			h.relaunched()
 			h.wantOwed(kind.task)
 		})
 	}
 }
 
-// An end from outside the pod that the daemon's orphan sweep reports again, over the process a
-// refused relaunch left the claim standing on, is the one end read twice and is counted once
-// (endedFromOutside, Claim.DeathCharged). Counted twice, one eviction would bring the claim a step
-// nearer the end that is charged a death, and a claim whose relaunches are refused now and then
-// would be charged for ends it never had.
-func TestAnEvictionReportedAgainOverTheKeptProcessIsCountedOnce(t *testing.T) {
-	h := owingTask(t, queuedClaim(), owedTask)
-	dead := h.locator()
-	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
-	h.m.deps.Store = store
+// The uncharged continue is of the cause of the end and not of the kind of pod, so the project
+// controller's claim — which is no role of an issue and shares its pod with nobody — is continued
+// under an end from outside its pod as any role is. The second half is the condition for the
+// first: under an end the runtime read neither way that same claim is charged the death it always
+// was, so the rule waives what the cluster did and nothing else.
+func TestTheControllersEvictedPodIsContinuedUnchargedAndItsOwnDeathIsStillCharged(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		reading runtime.PodEndReading
+		want    Budgets
+	}{
+		{name: "something outside its pod ended it", reading: runtime.PodEndNotOurs},
+		{name: "the end was read neither way", want: Budgets{LaunchFailures: 1, Deaths: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessOf(t, controllerClaim())
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "Legion controller start"})
+			h.wantPrompts(1)
+			ended := h.locator()
 
-	gone := RuntimeObservation{Observation: runtime.Observation{
-		Locator: dead, Kind: runtime.Gone, At: h.clock.Now(), PodEnd: runtime.PodEndNotOurs,
-	}}
-	if err := h.handle(gone); err == nil {
-		t.Fatal("the relaunch the end raised was taken, want the lifecycle recheck's refusal of it")
+			h.observePodEnd(runtime.Gone, tc.reading)
+
+			h.wantState(StateLaunching)
+			h.wantBudgets(tc.want)
+			if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != ended {
+				t.Fatalf("resumed from %+v, want the controller's own ended incarnation", resume.Previous)
+			}
+			h.relaunched()
+			if resent := h.wantPrompts(2)[1]; !strings.HasSuffix(resent.Message, "Legion controller start") {
+				t.Fatalf("re-sent %+v, want the task the controller owed", resent)
+			}
+		})
 	}
-	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
-	if stored := h.store.load(h.token); stored.Budgets.PodEndsNotOurs != 1 || !stored.DeathCharged {
-		t.Fatalf("the stored claim carries a run of %d with DeathCharged %v, want 1 with the end recorded as counted",
-			stored.Budgets.PodEndsNotOurs, stored.DeathCharged)
-	}
-
-	store.failing = false
-	h.must(gone)
-
-	h.wantState(StateLaunching)
-	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
-	h.relaunched()
 }
 
-// An end from outside the pod that finds the claim's agent ready with no work outstanding is
-// neither counted nor charged, however many come (endedFromOutside, workOutstanding): the rule
-// bounds a task that keeps ending its own pod, and a claim idle between assignments completes no
-// turn, so a count it could raise would only grow, and a pod the cluster repacks now and then
-// would cost it a launch failure and a backoff from its third repacking on. Each claim here holds
-// no task and starts one end short of the limit, a run its agent's ready keeps (ready), so an end
-// counted or charged would show at the first: its count must stand where it was and its budgets
-// stay clear through limit+1 ends.
-func TestAnEvictionWithNoWorkOutstandingIsDisplacedNeitherCountedNorChargedADeath(t *testing.T) {
-	limit := testLimits().LaunchFailures
+// A claim whose pod something outside it ends again and again while its ready agent holds its
+// task is continued uncharged every time, far past launch_failure_limit, and never fails
+// (endedFromOutside): the role in the pod cannot fix a cause outside it, and a charge at some
+// count would only turn a loop of restarts into a claim that runs nothing. Each end finds the task
+// unconfirmed, the state a death is charged in, and the relaunch sends it again. A daemon restart
+// in the middle of the run changes nothing, since nothing is counted for it to keep.
+func TestEndsFromOutsideFarPastTheLimitNeverFailAReadyAgentHoldingItsTask(t *testing.T) {
+	ends := farPastTheLimit()
 	for _, kind := range outsideEndClaims {
 		t.Run(kind.name, func(t *testing.T) {
-			c := kind.claim()
-			c.Budgets.PodEndsNotOurs = limit - 1
-			h := newHarnessOf(t, c)
+			h := owingTask(t, kind.claim(), kind.task)
+			for end := 1; end <= ends; end++ {
+				if end == ends/2 {
+					h.restart()
+					h.wantState(StateReady)
+				}
+				h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
+
+				h.wantState(StateLaunching)
+				h.wantNothingCharged("end " + strconv.Itoa(end))
+				h.relaunched()
+				h.wantOwed(kind.task)
+			}
+			h.wantNoFailure()
+		})
+	}
+}
+
+// An end from outside the pod that finds the claim's agent ready with no work outstanding — idle
+// between assignments, holding no task, in no turn — is continued uncharged as any other is,
+// however many come: a pod the cluster repacks now and then costs the claim nothing, and it is
+// never failed for it.
+func TestEndsFromOutsideFarPastTheLimitNeverFailAnIdleClaim(t *testing.T) {
+	ends := farPastTheLimit()
+	for _, kind := range outsideEndClaims {
+		t.Run(kind.name, func(t *testing.T) {
+			h := newHarnessOf(t, kind.claim())
 			h.reach(StateReady)
 			if p := h.claim().Pending; p != nil {
 				t.Fatalf("the claim holds %+v, want no task: this case is about a claim with no work outstanding", p)
 			}
-			want := Budgets{PodEndsNotOurs: limit - 1}
-			h.wantBudgets(want)
 
-			for range limit + 1 {
+			for end := 1; end <= ends; end++ {
 				h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
 
 				h.wantState(StateLaunching)
-				h.wantBudgets(want)
+				h.wantNothingCharged("end " + strconv.Itoa(end))
 				h.relaunched()
 			}
-			if stored := h.store.load(h.token).Budgets; stored != want {
-				t.Fatalf("the stored budgets are %+v, want %+v: an end with no work outstanding moves nothing", stored, want)
-			}
+			h.wantNoFailure()
 			h.wantPrompts(0)
 		})
 	}
 }
 
-// The run of ends from outside the pod that find the ready agent holding a task is counted
-// against that task and ends with it, as the deaths do (retirePending): a task that ends
-// some other way than a completed turn — here the daemon's suspension a phase transition sends,
-// which retires the phase's task — takes the run with it. The claim reaches one end short of the
-// limit holding its task, the suspension retires it, and a new task is delivered and left
-// unconfirmed: the next end from outside the pod is the first of a new run, charged nothing.
-// Kept, the old run would charge that end a death against a task it was never counted for.
-func TestAnEvictionAfterTheTaskItsRunWasCountedAgainstEndedIsTheFirstOfANewRunAndNoDeath(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: "round one", Phase: "implementing", Generation: 5})
-	h.wantOwed("round one")
-	for end := 1; end < limit; end++ {
-		h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-		h.wantBudgets(Budgets{PodEndsNotOurs: end})
-		h.relaunched()
-		h.wantOwed("round one")
-	}
-
-	h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon})
-
-	h.wantState(StateSuspended)
-	if p := h.claim().Pending; p != nil {
-		t.Fatalf("pending %+v after the daemon's suspension, want the finished phase's task retired", p)
-	}
-	h.wantBudgets(Budgets{})
-	if stored := h.store.load(h.token).Budgets; stored != (Budgets{}) {
-		t.Fatalf("the stored budgets after the task was retired are %+v, want the run ended in the retirement's write", stored)
-	}
-
-	h.must(RequestDeliver{Claim: h.token, Task: "round two", Phase: "implementing", Generation: 6})
-	h.relaunched()
-	h.wantOwed("round two")
-
-	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-
-	h.wantState(StateLaunching)
-	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
-	h.relaunched()
-	h.wantOwed("round two")
-}
-
-// An end from outside the pod counted against an open turn ends that turn, as a charged death
-// does (chargeDeath, TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged): a turn a
-// message started is work outstanding with no task behind it, so the first end is counted, and
-// nothing else records the end of a turn whose agent is gone. Left open, that turn would make
-// every later end of the parked relaunched agent — idle, with nothing pending — count against it
-// too, and the third would charge a death for work that was never there.
-func TestAnEndFromOutsideThePodEndsTheTurnItInterruptedSoLaterIdleEndsAreNotCounted(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	h := newHarness(t)
-	h.reach(StateIdle)
-	h.advance(time.Minute)
-	h.must(StreamTurnStart{Claim: testToken})
-	h.advance(time.Minute)
-
-	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
-	h.relaunched()
-	// The relaunch carries the record of the turn the end cut off (the daemon's own relaunch
-	// record, which is no task: HoldsTask), and nothing else.
-	if p := h.claim().Pending; p == nil || !p.Relaunch() {
-		t.Fatalf("the relaunched claim holds %+v, want the relaunch's record alone", p)
-	}
-
-	for end := 2; end <= limit+1; end++ {
-		h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
-		if got := h.budgets(); got != (Budgets{PodEndsNotOurs: 1}) {
-			t.Fatalf("end %d of the parked agent left budgets %+v, want {PodEndsNotOurs:1}: "+
-				"the turn the first end interrupted is over", end, got)
-		}
-		h.wantState(StateLaunching)
-		h.relaunched()
-	}
-	h.wantState(StateReady)
-}
-
-// relaunchRecordTurnCompletes is what a claim relaunched holding nothing is given at its ready and
+// relaunchRecordRuns is what a claim relaunched holding nothing is given at its ready and
 // does with it, for a kind whose relaunch is given the daemon's own relaunch record (record): the
 // record's turn runs to completion — its start confirms the record, its end completes it, and the
-// prompt's result behind that end retires it — and the claim's budgets are where they stood
-// before, in memory and in the store, after the turn's end and after the retirement. The record
-// is a fresh one, since no let-go has cut off a turn of it, so neither its turn nor its
-// retirement ends the run of pod ends from outside the pod or the deaths (turnEndsCounts). A
-// kind given no record, the controller, holds nothing at all, though what its last let-go ended
-// is still to tell.
-func (h *harness) relaunchRecordTurnCompletes(record bool) {
+// prompt's result behind that end retires it — so the claim holds nothing again, and the next
+// turn a message starts is a message's. A kind given no record, the controller, holds nothing at
+// all, though what its last let-go ended is still to tell.
+func (h *harness) relaunchRecordRuns(record bool) {
 	h.t.Helper()
 	h.wantState(StateReady)
 	p := h.claim().Pending
@@ -600,14 +341,6 @@ func (h *harness) relaunchRecordTurnCompletes(record bool) {
 	if p == nil || !p.Relaunch() {
 		h.t.Fatalf("the relaunched claim holds %+v, want the relaunch's record alone", p)
 	}
-	found := h.budgets()
-	wantRun := func(after string) {
-		h.t.Helper()
-		if got, stored := h.budgets(), h.store.load(h.token).Budgets; got != found || stored != found {
-			h.t.Fatalf("%s left budgets %+v (%+v stored), want the %+v it found: "+
-				"the record's turn and its retirement end neither the run nor the deaths", after, got, stored, found)
-		}
-	}
 	// The agent takes the record's prompt at once, as it takes any prompt sent at its ready.
 	h.must(StreamTurnStart{Claim: h.token})
 	if c := h.claim().Pending; c == nil || c.ID != p.ID || c.ConfirmedAt.IsZero() {
@@ -615,22 +348,11 @@ func (h *harness) relaunchRecordTurnCompletes(record bool) {
 	}
 	h.advance(time.Minute)
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-
 	h.wantState(StateIdle)
-	if c := h.claim().Pending; c == nil || c.ID != p.ID {
-		h.t.Fatalf("the record's turn ended with %+v pending, want the record held until its prompt's result", c)
-	}
-	wantRun("the end of the record's turn")
-
 	h.must(StreamPromptResult{Claim: h.token, DeliveryID: p.ID, AgentInvoked: true})
-
 	if c := h.claim().Pending; c != nil {
 		h.t.Fatalf("the record's turn ended with %+v pending, want the record retired", c)
 	}
-	if stored, held := h.store.delivery(h.token); held {
-		h.t.Fatalf("the store holds %+v after the record's turn, want the record retired", stored)
-	}
-	wantRun("the record's retirement")
 }
 
 // messageTurnEndedWithItsPod is a message's turn on the agent, which holds nothing, so the turn
@@ -651,80 +373,6 @@ func (h *harness) messageTurnEndedWithItsPod(reading runtime.PodEndReading) {
 	h.observePodEnd(runtime.Gone, reading)
 }
 
-// A claim whose pod something outside it ends in a turn a message started, again after each
-// relaunch, is charged at the limit (endedFromOutside); messages are how an architect's turns and
-// the controller's start. Each end is counted against the open turn alone, since the claim holds
-// no task, and the agent relaunched after it comes up with no task and no turn, a ready that
-// resets nothing of the run (ready). An issue's role relaunched so is given the daemon's own
-// relaunch record at that ready (queueRelaunch), and each cycle after the first runs the record's
-// turn to completion before the message's turn the pod ends in: the turn of that fresh record and
-// its retirement end neither the run nor the deaths (turnEndsCounts). The controller is given no
-// record, and its relaunch holds nothing. The run grows by one at each message's turn, the end at
-// launch_failure_limit is charged a death against its turn, writing the charge line once at WARN
-// (chargedLine), and so is each end after it, until the deaths run out and the claim fails rather
-// than relaunching for ever. In each cycle before the limit the relaunch's own start is ended
-// from outside as well, which finds the agent not yet ready, so it counts in the run of a start's
-// ends alone (Budgets.StartEndsNotOurs): the ready that follows ends that run and leaves the
-// turns' run where it stood. Reset at each ready, or at each turn of the record, the turns' run
-// would be one at every end and never reach the limit; and the deaths, ended at each turn of the
-// record, would be one at every charge, so an issue's role would never fail.
-func TestAMessageStartedTurnEndedFromOutsideAtEachRelaunchIsChargedADeathAtTheLimitAndFailsTheClaim(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	for _, kind := range outsideEndClaims {
-		t.Run(kind.name, func(t *testing.T) {
-			h := newHarnessOf(t, kind.claim())
-			h.reach(StateReady)
-
-			for end := 1; end < limit; end++ {
-				if end > 1 {
-					h.relaunchRecordTurnCompletes(kind.record)
-				}
-				h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
-
-				h.wantState(StateLaunching)
-				h.wantBudgets(Budgets{PodEndsNotOurs: end})
-
-				h.startEndedFromOutside(true)
-
-				h.wantState(StateLaunching)
-				h.wantBudgets(Budgets{PodEndsNotOurs: end, StartEndsNotOurs: 1})
-
-				h.relaunched()
-
-				h.wantState(StateReady)
-				if got := h.budgets(); got != (Budgets{PodEndsNotOurs: end}) {
-					t.Fatalf("end %d: the relaunched agent came up with budgets %+v, want the run of %d kept and the start's ended: "+
-						"a ready completes no turn", end, got, end)
-				}
-				if stored := h.store.load(h.token).Budgets; stored != (Budgets{PodEndsNotOurs: end}) {
-					t.Fatalf("end %d: the stored budgets after ready are %+v, want the run of %d kept", end, stored, end)
-				}
-			}
-			for death := 1; death < limit; death++ {
-				h.relaunchRecordTurnCompletes(kind.record)
-				h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
-
-				h.wantState(StateLaunching)
-				h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: death, PodEndsNotOurs: limit - 1 + death})
-				if charged := h.records.of(chargedLine); death == 1 && (len(charged) != 1 || charged[0].level != slog.LevelWarn) {
-					t.Fatalf("%q was written %+v at the end at the limit, want once at WARN", chargedLine, charged)
-				}
-				h.relaunched()
-				h.wantBudgets(Budgets{Deaths: death, PodEndsNotOurs: limit - 1 + death})
-			}
-
-			h.relaunchRecordTurnCompletes(kind.record)
-			h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
-
-			h.wantState(StateFailed)
-			if got := h.claim(); got.Budgets.Deaths != limit || got.FailureCause != CauseDied {
-				t.Fatalf("the failed claim carries budgets %+v and cause %q, want deaths at the limit %d and %q",
-					got.Budgets, got.FailureCause, limit, CauseDied)
-			}
-		})
-	}
-}
-
 // startEndedFromOutside is the end of a claim's pod, read as made by something outside it, that
 // finds the claim's agent still starting: its shim connected when shim is true, launching
 // otherwise. Both are a start not yet over (unready).
@@ -738,56 +386,66 @@ func (h *harness) startEndedFromOutside(shim bool) {
 	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
 }
 
-// startEndsChargedUntilFailed ends the claim's start from outside its pod again and again, finding
-// its agent launching and with its shim connected by turns and never letting it come up, and
-// fails unless each end counts in the run of a start's ends alone (Budgets.StartEndsNotOurs), the
-// ends before launch_failure_limit are the uncharged continue, each end from there is charged a
-// launch failure, and the end that spends the launch failures fails the claim under died with no
-// death charged. The run is written as it grows, since a restart reads the store and nothing
-// else.
-func (h *harness) startEndsChargedUntilFailed() {
-	h.t.Helper()
-	limit := testLimits().LaunchFailures
-	for end := 1; end < limit; end++ {
-		h.startEndedFromOutside(end%2 == 0)
+// A claim whose pod something outside it ends in a turn a message started, again after each
+// relaunch and again while each relaunch starts, is continued uncharged every time, far past
+// launch_failure_limit, and never fails (endedFromOutside); messages are how an architect's turns
+// and the controller's start. The open turn is work outstanding with no task behind it, the state
+// a death is charged in. An issue's role relaunched so is given the daemon's own relaunch record
+// at its ready (queueRelaunch), whose turn completes before the next message's turn; the
+// controller is given none.
+func TestAMessageStartedTurnEndedFromOutsideFarPastTheLimitNeverFailsTheClaim(t *testing.T) {
+	ends := farPastTheLimit()
+	for _, kind := range outsideEndClaims {
+		t.Run(kind.name, func(t *testing.T) {
+			h := newHarnessOf(t, kind.claim())
+			h.reach(StateReady)
 
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{StartEndsNotOurs: end})
-	}
-	if stored := h.store.load(h.token).Budgets; stored != (Budgets{StartEndsNotOurs: limit - 1}) {
-		h.t.Fatalf("the stored budgets are %+v, want a run of %d of the start's ends: a restart reads this and nothing else",
-			stored, limit-1)
-	}
-	for charge := 1; charge < limit; charge++ {
-		end := limit - 1 + charge
-		h.startEndedFromOutside(end%2 == 0)
+			for end := 1; end <= ends; end++ {
+				if end > 1 {
+					h.relaunchRecordRuns(kind.record)
+				}
+				h.messageTurnEndedWithItsPod(runtime.PodEndNotOurs)
 
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{LaunchFailures: charge, StartEndsNotOurs: end})
-	}
+				h.wantState(StateLaunching)
+				h.wantNothingCharged("the end in message turn " + strconv.Itoa(end))
 
-	h.startEndedFromOutside(true)
+				h.startEndedFromOutside(true)
 
-	h.wantState(StateFailed)
-	got := h.claim()
-	if got.Budgets.LaunchFailures != limit || got.Budgets.Deaths != 0 || got.Budgets.PodEndsNotOurs != 0 || got.FailureCause != CauseDied {
-		h.t.Fatalf("the failed claim carries budgets %+v and cause %q, want launch failures at the limit %d, no death, no end counted against a ready agent's work and %q",
-			got.Budgets, got.FailureCause, limit, CauseDied)
+				h.wantState(StateLaunching)
+				h.wantNothingCharged("the end of relaunch " + strconv.Itoa(end) + "'s start")
+
+				h.relaunched()
+				h.wantState(StateReady)
+			}
+			h.wantNoFailure()
+		})
 	}
 }
 
+// startEndsNeverCharged ends the claim's start from outside its pod again and again, far past
+// launch_failure_limit, finding its agent launching and with its shim connected by turns and never
+// letting it come up, and fails unless every end is the uncharged continue: no launch failure, no
+// death, and the claim never failed. Then the agent comes up.
+func (h *harness) startEndsNeverCharged() {
+	h.t.Helper()
+	ends := farPastTheLimit()
+	for end := 1; end <= ends; end++ {
+		h.startEndedFromOutside(end%2 == 0)
+
+		h.wantState(StateLaunching)
+		h.wantNothingCharged("end " + strconv.Itoa(end) + " of the start")
+	}
+	h.wantNoFailure()
+	h.relaunched()
+	h.wantState(StateReady)
+}
+
 // A claim holding its task whose pod something outside it ends again and again while its agent
-// starts is charged for it (endedFromOutside): a pod's own start — the workspace's restore and
-// six agents starting at once in a Burstable pod — can drive its node into memory pressure, and
-// that eviction carries DisruptionTarget as a neighbour's does. The ends count in the run of a
-// start's ends (Budgets.StartEndsNotOurs) and never in the run of a ready agent's work, task or
-// no task. The ends before launch_failure_limit are the uncharged continue each always was; from
-// there each end is charged as the claim's own death, which for an agent not yet ready is a launch
-// failure, so the claim fails once its launch failures run out rather than relaunching for ever
-// with its task never sent. Each claim holds its task from before its first end. Counted only on
-// a ready agent, every one of these ends would be the uncharged continue, and the claim would stay
-// launching with nothing charged at all.
-func TestAStartEndedFromOutsideAgainAndAgainIsChargedLaunchFailuresAndFailsTheClaim(t *testing.T) {
+// starts is continued uncharged every time, far past launch_failure_limit, and never fails
+// (endedFromOutside): an end that finds the agent still starting charges no launch failure, as it
+// charges a ready agent no death. The claim holds its task from before its first end, and once its
+// agent comes up the task is sent.
+func TestAStartEndedFromOutsideFarPastTheLimitNeverFailsAClaimHoldingItsTask(t *testing.T) {
 	for _, kind := range outsideEndClaims {
 		t.Run(kind.name, func(t *testing.T) {
 			h := newHarnessOf(t, kind.claim())
@@ -797,22 +455,17 @@ func TestAStartEndedFromOutsideAgainAndAgainIsChargedLaunchFailuresAndFailsTheCl
 				t.Fatalf("pending %+v, want the task %q held while the agent starts", p, kind.task)
 			}
 
-			h.startEndsChargedUntilFailed()
+			h.startEndsNeverCharged()
+			h.wantOwed(kind.task)
 		})
 	}
 }
 
 // A claim with no task whose pod something outside it ends again and again while its agent
-// starts, never letting it come up, is charged for it exactly as a claim holding its task is
-// (endedFromOutside): the run of a start's ends counts whatever work the claim holds
-// (Budgets.StartEndsNotOurs). A claim relaunched with no task is an ordinary start — an architect
-// a message woke, the controller, a phase worker between assignments — and a start the cluster
-// ends every time is the same loop whatever the claim holds. The ends before
-// launch_failure_limit are the uncharged continue; from there each end is charged a launch
-// failure, and the claim fails once its launch failures run out. Counted only against a task, as
-// a single run that the agent's ready leaves alone has to be, every one of these ends would be
-// the uncharged continue, and the claim would stay launching for ever with nothing charged.
-func TestAStartWithNoTaskEndedFromOutsideAgainAndAgainIsChargedLaunchFailuresAndFailsTheClaim(t *testing.T) {
+// starts is continued uncharged exactly as a claim holding its task is (endedFromOutside). A claim
+// relaunched with no task is an ordinary start — an architect a message woke, the controller, a
+// phase worker between assignments.
+func TestAStartWithNoTaskEndedFromOutsideFarPastTheLimitNeverFailsTheClaim(t *testing.T) {
 	for _, kind := range outsideEndClaims {
 		t.Run(kind.name, func(t *testing.T) {
 			h := newHarnessOf(t, kind.claim())
@@ -821,96 +474,224 @@ func TestAStartWithNoTaskEndedFromOutsideAgainAndAgainIsChargedLaunchFailuresAnd
 				t.Fatalf("the claim holds %+v, want no task: this case is about a start with no work behind it", p)
 			}
 
-			h.startEndsChargedUntilFailed()
+			h.startEndsNeverCharged()
 			h.wantPrompts(0)
 		})
 	}
 }
 
-// A claim whose starts the cluster ends from outside the pod, each fewer than
-// launch_failure_limit times before its agent comes up, is charged nothing for them, however many
-// such starts come (endedFromOutside, ready): the agent's ready ends the run of a start's ends
-// (Budgets.StartEndsNotOurs), since a start that reaches ready is one the cluster let finish.
-// Each cycle here ends the start one end short of the limit, finding the agent launching and with
-// its shim connected by turns, brings the agent up, and has the cluster end the idle agent's pod
-// once more — an end with no work outstanding, counted in neither run — whose relaunch is the
-// next cycle's start. The claim holds no task and completes no turn, so the ready is the one
-// thing that ends the run, and over limit+1 cycles the claim is charged nothing and never fails.
-// Kept past the ready, the run would reach the limit at the second cycle's first end and charge
-// a launch failure there.
-func TestStartsEndedFromOutsideWithAReadyBetweenThemAreChargedNothingAndNeverFail(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	for _, kind := range outsideEndClaims {
-		t.Run(kind.name, func(t *testing.T) {
-			h := newHarnessOf(t, kind.claim())
-			h.launch()
+// The line an end from outside a claim's pod ends in, as an operator and a production check read
+// it: whole, and not as the constant that carries it, so a reword turns this test red rather than
+// leaving a search for what each claim got counting nothing.
+const continuedLine = "supervise: the claim's pod ended from outside it; continued in its own session and charged nothing"
 
-			for cycle := 1; cycle <= limit+1; cycle++ {
-				for end := 1; end < limit; end++ {
-					h.startEndedFromOutside(end%2 == 0)
+// Each claim of a pod that ended from outside it says, in a line of its own, what it got for that
+// end (endedFromOutside). The runtime's line for the pod's end is written before any claim is
+// decided and names every role the end ended, so it cannot say what each got. Every end writes the
+// continued line once, at Info, carrying whether the claim's agent was still starting and the
+// observation's detail, however many ends come: for a ready agent holding a task, for an idle one,
+// and for an agent still starting.
+func TestEachClaimLogsWhatItGotForAnEndFromOutsideItsPod(t *testing.T) {
+	ends := farPastTheLimit()
+	const detail = "the cluster marked the pod a disruption target (TerminationByKubelet)"
+	podEndedFromOutside := func(h *harness) {
+		h.t.Helper()
+		h.must(RuntimeObservation{Observation: runtime.Observation{
+			Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), PodEnd: runtime.PodEndNotOurs, Detail: detail,
+		}})
+	}
+	// wantLines fails unless the continued line was written lines times, the last of them at Info
+	// carrying starting and the observation's detail.
+	wantLines := func(h *harness, lines int, starting bool) {
+		h.t.Helper()
+		written := h.records.of(continuedLine)
+		if len(written) != lines {
+			h.t.Fatalf("%q was written %d times, want %d: one for each end", continuedLine, len(written), lines)
+		}
+		r := written[lines-1]
+		if r.level != slog.LevelInfo {
+			h.t.Fatalf("%q is %s, want %s", continuedLine, r.level, slog.LevelInfo)
+		}
+		for _, want := range []struct{ key, value string }{
+			{"starting", strconv.FormatBool(starting)}, {"detail", detail},
+		} {
+			if got, ok := r.attr(want.key); !ok || got.String() != want.value {
+				h.t.Errorf("%q carries %s=%v (present %v), want %q", continuedLine, want.key, got, ok, want.value)
+			}
+		}
+	}
 
-					h.wantState(StateLaunching)
-					if got := h.budgets(); got != (Budgets{StartEndsNotOurs: end}) {
-						t.Fatalf("cycle %d, end %d of the start: budgets %+v, want a run of %d of this start's ends and nothing charged: the ready before this start ended the last run",
-							cycle, end, got, end)
-					}
-				}
-
-				h.relaunched()
-
-				h.wantState(StateReady)
-				if p := h.claim().Pending; p != nil {
-					t.Fatalf("cycle %d: the claim holds %+v, want no task: this case is about a claim whose ready alone ends the run", cycle, p)
-				}
-				h.wantBudgets(Budgets{})
-				if stored := h.store.load(h.token).Budgets; stored != (Budgets{}) {
-					t.Fatalf("cycle %d: the stored budgets after ready are %+v, want the start's run ended in the ready's write", cycle, stored)
-				}
-
-				h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
+	for _, tc := range []struct {
+		name     string
+		reach    func(h *harness)
+		starting bool
+	}{
+		{name: "an agent ready with work outstanding", reach: func(h *harness) {
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: owedTask})
+		}},
+		{name: "an idle agent", reach: func(h *harness) { h.reach(StateIdle) }},
+		{name: "an agent still starting", reach: func(h *harness) { h.launch() }, starting: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim())
+			tc.reach(h)
+			for end := 1; end <= ends; end++ {
+				podEndedFromOutside(h)
 
 				h.wantState(StateLaunching)
-				h.wantBudgets(Budgets{})
+				h.wantNothingCharged("end " + strconv.Itoa(end))
+				wantLines(h, end, tc.starting)
+				if !tc.starting {
+					h.relaunched()
+				}
 			}
-			h.wantNoFailure()
-			h.wantPrompts(0)
 		})
 	}
 }
 
-// A claim holding its task whose pod is ended from outside while its agent starts comes up with
-// nothing of those ends left (ready): they counted in the run of a start's ends alone, never in
-// the run of a ready agent's work, and the ready ends the start's run. The claim reaches one end
-// short of the limit during its start, comes up and is sent its task, and the next end from
-// outside its pod, which finds the ready agent holding that task, is the first of the work's run
-// and charged nothing. Counted in the work's run, which outlives the ready, the start's ends
-// would make that end the run's last and charge it a death.
-func TestAClaimThatComesUpHoldingItsTaskAfterItsStartWasEndedFromOutsideStartsItsWorksRunAfresh(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	for _, kind := range outsideEndClaims {
-		t.Run(kind.name, func(t *testing.T) {
-			h := newHarnessOf(t, kind.claim())
-			h.launch()
-			h.must(RequestDeliver{Claim: h.token, Task: kind.task})
-			for end := 1; end < limit; end++ {
-				h.startEndedFromOutside(true)
-				h.wantBudgets(Budgets{StartEndsNotOurs: end})
+// Which of the claim's reports decides an end from outside the pod: the first report, which a
+// refused relaunch leaves the claim standing on, records the ended process as decided
+// (Claim.DeathCharged) in the store, the daemon restarts, and its orphan sweep reports that same
+// process again. Read again as an end from outside the pod, the second report is the same
+// uncharged continue. Read neither way, as it is once the runtime's reading of the end has
+// expired, it reaches died, which finds the process decided and charges it no death: it
+// relaunches it as it relaunches any death already decided, a launch failure the agent's ready
+// clears. Left undecided, the one eviction would be charged a death against the task the claim
+// holds.
+func TestAnEvictionReportedAgainOverTheKeptProcessIsChargedNoDeath(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		again   runtime.PodEndReading
+		charged Budgets
+	}{
+		{name: "read again as an end from outside the pod", again: runtime.PodEndNotOurs},
+		{name: "read neither way once the reading expired", charged: Budgets{LaunchFailures: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := owingTask(t, queuedClaim(), owedTask)
+			dead := h.locator()
+			store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			h.m.deps.Store = store
+
+			first := RuntimeObservation{Observation: runtime.Observation{
+				Locator: dead, Kind: runtime.Gone, At: h.clock.Now(), PodEnd: runtime.PodEndNotOurs,
+			}}
+			if err := h.handle(first); err == nil {
+				t.Fatal("the relaunch the end raised was taken, want the lifecycle recheck's refusal of it")
 			}
+			h.wantNothingCharged("the first report")
 
-			h.relaunched()
-
-			h.wantOwed(kind.task)
-			h.wantBudgets(Budgets{})
-			if stored := h.store.load(h.token).Budgets; stored != (Budgets{}) {
-				t.Fatalf("the stored budgets after ready are %+v, want none: the ready ended the start's run", stored)
-			}
-
-			h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
+			// The daemon restarts in the window the refusal left, so the second report is decided
+			// from what the first one wrote and nothing else.
+			h.restart()
+			h.must(RuntimeObservation{Observation: runtime.Observation{
+				Locator: dead, Kind: runtime.Gone, At: h.clock.Now(), PodEnd: tc.again,
+			}})
 
 			h.wantState(StateLaunching)
-			h.wantBudgets(Budgets{PodEndsNotOurs: 1})
+			h.wantBudgets(tc.charged)
 			h.relaunched()
-			h.wantOwed(kind.task)
+			h.wantNothingCharged("the relaunch's ready")
+			h.wantOwed(owedTask)
+		})
+	}
+}
+
+// An end from outside the pod ends the turn it interrupted (Claim.LastTurnEnd), as a charged death
+// does (chargeDeath, TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged): nothing
+// else records the end of a turn whose agent is gone. Here a message's turn is cut by an end from
+// outside the pod, and the parked agent relaunched after it — holding only the daemon's own
+// relaunch record, which is no task — then dies again and again, which the runtime reads neither
+// way. Left open, the cut turn would make each of those deaths a death with work outstanding, and
+// the claim would fail at the third for work that was never there.
+func TestAnEndFromOutsideThePodEndsTheTurnItInterruptedSoLaterDeathsAreNotCharged(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	h := newHarness(t)
+	h.reach(StateIdle)
+	h.advance(time.Minute)
+	h.must(StreamTurnStart{Claim: testToken})
+	h.advance(time.Minute)
+
+	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
+	h.wantNothingCharged("the end in the message's turn")
+	h.relaunched()
+	if p := h.claim().Pending; p == nil || !p.Relaunch() {
+		t.Fatalf("the relaunched claim holds %+v, want the relaunch's record alone", p)
+	}
+
+	for death := 1; death <= limit+1; death++ {
+		h.observePodEnd(runtime.Gone, "")
+		if got := h.budgets(); got.Deaths != 0 {
+			t.Fatalf("death %d of the parked agent left budgets %+v, want no death charged: "+
+				"the turn the end from outside the pod interrupted is over", death, got)
+		}
+		h.wantState(StateLaunching)
+		h.relaunched()
+	}
+	h.wantState(StateReady)
+	h.wantNoFailure()
+}
+
+// What a relaunched process is told ended its last one says who ended it (displaced): an end
+// something outside the pod made is recorded as an end from outside the pod (endFromOutside),
+// whether it is continued in a turn or finds no work outstanding, and only the daemon's own
+// replacement of the pod is recorded as a replacement (endDisplaced). Each is recorded first,
+// before its take-back (recordGoneEnd), so where a suspension is held for the turn the end cut
+// off, the stop that suspension then makes finds the record standing (endHeld): the resumed
+// process is told what ended its pod, never that it was suspended. The next process reads the
+// cause in the prompt it is sent — the task taken back from the turn, or the record alone for a
+// claim that held nothing.
+func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplacement(t *testing.T) {
+	const detail = "the cluster marked the pod a disruption target (TerminationByKubelet)"
+	for _, tc := range []struct {
+		name      string
+		idle      bool
+		held      bool
+		podEnd    runtime.PodEndReading
+		displaced bool
+		cause     string
+	}{
+		{name: "an end from outside the pod in a turn", podEnd: runtime.PodEndNotOurs, cause: endFromOutside},
+		{name: "an end from outside the pod in a turn a suspension is held for", held: true, podEnd: runtime.PodEndNotOurs, cause: endFromOutside},
+		{name: "an end from outside the pod with no work outstanding", idle: true, podEnd: runtime.PodEndNotOurs, cause: endFromOutside},
+		{name: "the daemon's replacement of the pod in a turn", displaced: true, cause: endDisplaced},
+		{name: "the daemon's replacement of the pod in a turn a suspension is held for", held: true, displaced: true, cause: endDisplaced},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			want := EndedWork{Cause: tc.cause, Background: true, Kinds: []string{"subagent"}, Reported: true}
+			if tc.idle {
+				h.reach(StateIdle)
+			} else {
+				h.reach(StateWorking)
+				want.Turn, want.TaskTurn = true, true
+			}
+			h.reportActivity("subagent")
+			if tc.held {
+				held := RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"}
+				if err := h.handle(held); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("the suspension answered %v, want it held for the turn's end", err)
+				}
+			}
+			want.Generation, want.At = h.generation(), h.clock.Now()
+
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+				PodEnd: tc.podEnd, Displaced: tc.displaced, Detail: detail}})
+
+			h.wantEnded(want)
+			h.wantEndedLine(tc.cause)
+			sent := len(h.prompts())
+			if tc.held {
+				h.wantState(StateSuspended)
+				h.must(RequestResume{Claim: h.token})
+				h.reach(StateReady)
+			} else {
+				h.relaunched()
+			}
+			if told, says := h.wantPrompts(sent + 1)[sent], "ended because "+tc.cause+"."; !strings.Contains(told.Message, says) {
+				t.Errorf("the next process was sent %q, want it to say %q", told.Message, says)
+			}
 		})
 	}
 }

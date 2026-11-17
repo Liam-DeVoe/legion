@@ -150,8 +150,6 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
 	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},
 		Reason: "when the agent last ended a turn, which says how long an idle seat has been told nothing"},
-	{Field: "RecordTurn", Column: ColumnWithheld,
-		Reason: "the supervisor's own accounting of one relaunch record's turn: what its end takes back of the deaths and the run of pod ends, which a reader decides nothing on and no daemon API version carries"},
 	{Field: "LastDeathCause", Column: ColumnAgents, Keys: []string{"lastDeathCause"},
 		Reason: "why the claim's process was last found gone, which an architect deciding a retry from an escalation reads"},
 	{Field: "LastStartFailure", Column: ColumnAgents, Keys: []string{"lastStartFailure"},

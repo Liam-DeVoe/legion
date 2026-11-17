@@ -3,9 +3,9 @@ package sandbox
 // What the daemon reads about the cause of a pod's end (runtime.Observation.PodEnd): the reading
 // is captured where the informer delivers the end (capturePodEnd), because neither fact it rests
 // on survives the object leaving the store, and every claim of that pod carries it from there.
-// An end something outside the pod made is continued uncharged by the supervisor (its judge) until
-// such ends run out their count; an end the daemon's own record names, and one of neither reading,
-// are charged as they always were.
+// An end something outside the pod made is continued uncharged by the supervisor (its judge),
+// however often it comes; an end the daemon's own record names, and one of neither reading, are
+// charged as they always were.
 
 import (
 	"context"

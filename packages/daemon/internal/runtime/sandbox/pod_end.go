@@ -152,8 +152,8 @@ func (e podEnd) detail() string {
 //
 // The record is held in memory alone. A daemon that restarts between the act and the pod's end
 // has lost it, so an end the daemon itself made is then read as an end from outside the pod and
-// its roles are relaunched uncharged. The run limit bounds that as it bounds every end from
-// outside a pod (launch_failure_limit, supervise's endedFromOutside).
+// its roles are relaunched uncharged, as for every end from outside a pod (supervise's
+// endedFromOutside).
 func (r *Runtime) meanToEndPod(uid, act string) {
 	if uid == "" {
 		return
@@ -285,10 +285,10 @@ func podEnding(pod *corev1.Pod, gone bool) bool {
 // pod, which reading was made, the words it was made from, the reason the cluster gave where it
 // gave one, and, as ended, the roles whose processes the end ended: every role of that pod the
 // runtime watches. The line names what ended and nothing of what any claim got for it. It is
-// written before any claim is decided, and the supervisor decides each claim on its own,
-// continuing a pod_end_not_ours end uncharged until such ends reach launch_failure_limit in one of
-// the claim's runs, a count this runtime does not keep, and charging it from there; so each
-// claim's own supervise line says what that claim got (supervise's endedFromOutside). One line
+// written before any claim is decided, and the supervisor decides each claim on its own — a
+// pod_end_not_ours end continued uncharged however often it comes, an end read neither way charged
+// as the claim's own death wherever that claim had work outstanding — so each claim's own
+// supervise line says what that claim got (supervise's endedFromOutside, died). One line
 // per pod end and not one per role: a pod's six roles end together, and the runtime knows every
 // watched claim whose locator names the pod. A reader of the line tells a restart an eviction
 // caused from one an out-of-memory kill caused.

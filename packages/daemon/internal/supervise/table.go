@@ -1690,9 +1690,6 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 	m.busyTurn = true
 	m.log.Info("supervise: the agent's busy answer records the claim working; its task waits for the end of the turn the agent is in",
 		"delivery", pendingID(m.claim.Pending), "outstanding", m.outstanding)
-	// The answer confirms nothing, so the turn it records is no relaunch record's
-	// (forgetRecordTurn); the turn's own start, read later, confirms what it confirms (beginTurn).
-	m.forgetRecordTurn()
 	m.startTurn("")
 	if err := m.durableWrite(ctx, StateWorking, m.persist); err != nil {
 		return err
@@ -1753,14 +1750,10 @@ func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
 	// The write is the confirmation where this start is the pending delivery's turn, and the
 	// claim alone where it is a foreign one; the delivery is named in the start's line for the
-	// same reason, so both are decided in the one place that asks the question. A foreign turn
-	// confirms no record, so the record turn goes with the claim's write (forgetRecordTurn); the
-	// pending delivery's own turn leaves it for confirm to read and write anew.
+	// same reason, so both are decided in the one place that asks the question.
 	persist, task := m.persist, ""
 	if own {
 		persist, task = m.confirm, p.ID
-	} else {
-		m.forgetRecordTurn()
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is
 	// a turn start whose claim write failed, and a line written after the write would leave
@@ -1861,9 +1854,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // (compactEnded). That turn's start line is written here (startTurn), because its end writes the
 // end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
 // begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
-// and its line names no delivery, and it confirms no record, so the record turn goes
-// (forgetRecordTurn), or its end would be read as the turn of the record the claim's last turn
-// confirmed. The compaction's end writes the claim.
+// and its line names no delivery.
 //
 // The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
 // busy answer records only a ready or idle one.
@@ -1875,7 +1866,6 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 	if m.compacting == nil {
 		return nil
 	}
-	m.forgetRecordTurn()
 	m.startTurn("")
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)
@@ -1903,10 +1893,8 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // the time is what tells an idle worker that finished a moment ago from one idle since yesterday.
 //
 // A turn that ends is also the end of the work the deaths were charged against (chargeDeath), so
-// the count goes with it — but for the turn of a relaunch record, which takes back only what the
-// end that cut its earlier turn charged (below): an agent killed twice in its turns and through
-// the third is making progress, and only deaths that keep a turn from ending should ever fail its
-// claim.
+// the count goes with it: an agent killed twice in its turns and through the third is making
+// progress, and only deaths that keep a turn from ending should ever fail its claim.
 //
 // Whose turn it was is a question background work made real, and settle is where it is answered:
 // a turn that ends while the task's prompt is still outstanding retires nothing, because Oh My
@@ -1988,27 +1976,11 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // return (endTurn), because the turn ended, and it closes a start line of its own: a turn that
 // starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
 // against ends finds the pair.
-//
-// A turn that ends ends the claim's deaths (Budgets.Deaths, chargeDeath), a turn a compaction
-// aborted included: the agent got through what it was doing. A turn that completes ends the first
-// of the claim's two runs of pod ends from outside it too, the run counted against a ready
-// agent's work (Budgets.PodEndsNotOurs, endedFromOutside): the process held a pod long enough to
-// finish work, so the next such end is the first of a new run. A turn of the daemon's own
-// relaunch record ends neither: it takes back from each only what the end that cut that record's
-// earlier turn charged, one at most, and a fresh record's turn takes back nothing
-// (turnEndsCounts, which states the rule and says why). Which turn this is reads the persisted
-// claim alone (Claim.recordsTurn), so neither the delivery the claim holds now nor a restart
-// since the turn began changes it. The counts move before either write below, so the claim leaves
-// this turn with them stored whichever of the two writes it, and the record's take-back is zeroed
-// in that same write. A turn a compaction aborted completed nothing, and takes nothing from the
-// run; the deaths it ends are ended before the compaction's early return, which writes nothing,
-// and the compaction's end writes them. The second run, of the ends of a start, is already over by
-// then: the agent's ready ended it (ready).
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
-	m.turnEndsCounts(m.compacting == nil)
 	m.endTurn()
 	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
+	m.claim.Budgets.Deaths = 0
 	if m.compacting != nil {
 		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
 		m.compacting.inTurn, m.compacting.back = false, StateIdle
@@ -2385,30 +2357,12 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
 // since it is what dates the two causes beside it — a death and a failed start are both older
 // than the agent that is running now (machine.go's Claim).
-//
-// The ready resets the launch failures, and with them the second of the two runs of pod ends from
-// outside the pod, the run of ends that found the agent not yet ready (Budgets.StartEndsNotOurs):
-// a start that reaches ready is one the cluster let finish, so the next start the cluster ends is
-// the first of a new run. It does not reset the first run, of ends that found the ready agent
-// with work outstanding (Budgets.PodEndsNotOurs), which outlives it as the deaths do: a relaunch
-// completes no turn, so only a turn of the claim's own that completes or the end of the task the
-// run was counted against resets it (turnEnded, retirePending). A turn of the record this ready
-// may queue (queueRelaunch) never resets it: it takes back only what the end that cut an earlier
-// turn of that record charged, once the record goes again, and the record's retirement takes
-// nothing (turnEndsCounts). An agent relaunched after a turn a message started comes up with no
-// task and no turn, and a run ended here would be one again at each such turn the cluster ends,
-// never reaching the limit. One run cannot do both, which is why there are two
-// (endedFromOutside): kept past the ready, the run of a start's ends could not count a claim with
-// no task, which completes no turn and would see its count only grow.
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
-	// when this agent came up (Claim.PendingCause). The run of the start's ends from outside the
-	// pod ends with them, since the start it counted is over and a launch failure is what its
-	// limit charges (Budgets.StartEndsNotOurs).
+	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
-	m.claim.Budgets.StartEndsNotOurs = 0
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

@@ -40,14 +40,14 @@ var _ supervise.Store = (*Store)(nil)
 // tellSilentPhaseWorkers).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
-	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires, c.pod_ends_not_ours, c.start_ends_not_ours,
+	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work, c.record_turn,
+	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -383,18 +383,6 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		}
 		endedWork = encoded
 	}
-	// Null is a claim no turn has confirmed the daemon's own relaunch record in, or one a later
-	// turn start or a task's confirmation cleared it on; one that holds it records the two counts
-	// at that turn's confirmation and what the turn takes back at its end (supervise's RecordTurn,
-	// turnEndsCounts).
-	var recordTurn []byte
-	if c.RecordTurn != nil {
-		encoded, err := json.Marshal(c.RecordTurn)
-		if err != nil {
-			return fmt.Errorf("put claim %s: encode its relaunch record's turn: %w", c.Token, err)
-		}
-		recordTurn = encoded
-	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
 		enrollmentID = &c.Enrollment.ID
@@ -409,7 +397,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		delivered = []int64{}
 	}
 	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
-		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires, pod_ends_not_ours, start_ends_not_ours,
+		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
 		plugin_contract, plugin_relaunch_for, delivered_rows,
@@ -418,12 +406,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
-		failure_cause, failed_at, pending_cause, leak_check_cause, ended_work, record_turn,
+		failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
+		$53, $54, $55, $56, $57,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -431,9 +419,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		locator = excluded.locator, state = excluded.state, failure = excluded.failure,
 		launch_failures = excluded.launch_failures, deaths = excluded.deaths,
 		prompt_failures = excluded.prompt_failures,
-		prompt_retires = excluded.prompt_retires, pod_ends_not_ours = excluded.pod_ends_not_ours,
-		start_ends_not_ours = excluded.start_ends_not_ours,
-		boot_token_hash = excluded.boot_token_hash,
+		prompt_retires = excluded.prompt_retires, boot_token_hash = excluded.boot_token_hash,
 		capability_hash = excluded.capability_hash, uncertain_streak = excluded.uncertain_streak,
 		last_start_row = excluded.last_start_row,
 		-- The number outbox_write_mark_seq hands this write, taken on the transition into
@@ -468,7 +454,6 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		pending_cause = excluded.pending_cause,
 		leak_check_cause = excluded.leak_check_cause,
 		ended_work = excluded.ended_work,
-		record_turn = excluded.record_turn,
 		handshake_entry = excluded.handshake_entry,
 		handshake_generation = excluded.handshake_generation,
 		handshake_queued_at = excluded.handshake_queued_at,
@@ -497,7 +482,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		updated_at = now()`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
-		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires, c.Budgets.PodEndsNotOurs, c.Budgets.StartEndsNotOurs,
+		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
 		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.GivenEntry, c.ServedEntry,
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
 		c.PluginContract, c.PluginRelaunchFor, delivered,
@@ -506,7 +491,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork, recordTurn,
+		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 	)
 	if err != nil {
@@ -830,7 +815,6 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
-		recordTurn                  []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept                        []byte
@@ -844,14 +828,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
-		&c.Budgets.PromptRetires, &c.Budgets.PodEndsNotOurs, &c.Budgets.StartEndsNotOurs, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
+		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry,
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
 		&turnStart, &turnEnd,
-		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork, &recordTurn,
+		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -903,16 +887,6 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		if err := json.Unmarshal(endedWork, &c.EndedWork); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
 		}
-	}
-	// Null is a claim that holds no record of a relaunch record's turn (putClaim). The decode
-	// refuses a record no confirmation writes: a negative count, or a take-back above one
-	// (supervise's RecordTurn.UnmarshalJSON).
-	if recordTurn != nil {
-		var turn supervise.RecordTurn
-		if err := json.Unmarshal(recordTurn, &turn); err != nil {
-			return supervise.Claim{}, fmt.Errorf("read claim %s: decode its relaunch record's turn: %w", token, err)
-		}
-		c.RecordTurn = &turn
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold

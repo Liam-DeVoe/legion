@@ -130,8 +130,6 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		ProviderErrorRun: 6,
 		LastTurnStart:    at.Add(-2 * time.Minute),
 		LastTurnEnd:      at.Add(-30 * time.Second),
-		RecordTurn: &supervise.RecordTurn{
-			Base: supervise.TurnCounts{Deaths: 1}, TakeBack: supervise.TurnCounts{Deaths: 1}},
 		LastReady:        at.Add(-3 * time.Minute),
 		LastDeathCause:   "the pod was evicted",
 		LastStartFailure: "the launcher refused the start",
