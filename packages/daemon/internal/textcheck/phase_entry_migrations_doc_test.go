@@ -30,11 +30,9 @@ import (
 // to it.
 const (
 	// phaseEntryMigration is the migration whose way back the list follows, by the name the guide
-	// writes. The list's subject is every embedded migration with a higher version.
+	// (wayBackGuide, way_back_doc_test.go) writes. The list's subject is every embedded migration
+	// with a higher version.
 	phaseEntryMigration = "20261111225552_phase_entry"
-	// phaseEntryListGuide is the guide that carries the list, read under ../../../.. by
-	// shippedText.
-	phaseEntryListGuide = "docs/kubernetes.md"
 	// phaseEntryListEnd opens the line after the list, the one that names the identifier of the
 	// phase entry's block.
 	phaseEntryListEnd = "The `20261111225552` is the identifier of "
@@ -64,7 +62,7 @@ func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 	if len(missing) > 0 {
 		t.Errorf("%s's list of the migrations recorded above %s does not name %s: give each an entry "+
 			"beside the one it belongs with, saying what it adds or changes and what the phase entry's "+
-			"block does to it", phaseEntryListGuide, phaseEntryMigration, strings.Join(missing, ", "))
+			"block does to it", wayBackGuide, phaseEntryMigration, strings.Join(missing, ", "))
 	}
 }
 
@@ -80,10 +78,10 @@ func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 		case slices.Contains(above, name):
 		case slices.Contains(all, name):
 			t.Errorf("%s's list of the migrations recorded above %s names %s, which is not above it",
-				phaseEntryListGuide, phaseEntryMigration, name)
+				wayBackGuide, phaseEntryMigration, name)
 		default:
 			t.Errorf("%s's list of the migrations recorded above %s names %s, and the daemon embeds no "+
-				"migration of that name", phaseEntryListGuide, phaseEntryMigration, name)
+				"migration of that name", wayBackGuide, phaseEntryMigration, name)
 		}
 	}
 }
@@ -106,7 +104,7 @@ func embeddedMigrationsAboveThePhaseEntry(t *testing.T) (above, all []string) {
 	at := slices.Index(all, phaseEntryMigration)
 	if at < 0 {
 		t.Fatalf("the daemon embeds no %s, whose way back the list in %s follows", phaseEntryMigration,
-			phaseEntryListGuide)
+			wayBackGuide)
 	}
 	return all[at+1:], all
 }
@@ -118,7 +116,7 @@ func embeddedMigrationsAboveThePhaseEntry(t *testing.T) (above, all []string) {
 // TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes.
 func phaseEntryListNames(t *testing.T) []string {
 	t.Helper()
-	lines := strings.Split(shippedText(t, phaseEntryListGuide), "\n")
+	lines := strings.Split(shippedText(t, wayBackGuide), "\n")
 	start := -1
 	for i, line := range lines {
 		if !phaseEntryListOpening.MatchString(line) {
@@ -126,26 +124,26 @@ func phaseEntryListNames(t *testing.T) []string {
 		}
 		if start >= 0 {
 			t.Fatalf("%s opens the list of the migrations above %s twice, at lines %d and %d",
-				phaseEntryListGuide, phaseEntryMigration, start+1, i+1)
+				wayBackGuide, phaseEntryMigration, start+1, i+1)
 		}
 		start = i
 	}
 	if start < 0 {
 		t.Fatalf("%s carries no line matching %s: that sentence, which carries no count, opens the list "+
-			"of the migrations recorded above %s after that migration's way back", phaseEntryListGuide,
+			"of the migrations recorded above %s after that migration's way back", wayBackGuide,
 			phaseEntryListOpening, phaseEntryMigration)
 	}
 	end := slices.IndexFunc(lines[start+1:], func(line string) bool { return strings.HasPrefix(line, phaseEntryListEnd) })
 	if end < 0 {
 		t.Fatalf("%s carries no line opening %q after line %d, which ends the list of the migrations above %s",
-			phaseEntryListGuide, phaseEntryListEnd, start+1, phaseEntryMigration)
+			wayBackGuide, phaseEntryListEnd, start+1, phaseEntryMigration)
 	}
 	var names []string
 	for _, line := range lines[start+1 : start+1+end] {
 		names = append(names, migrationNameInGuide.FindAllString(line, -1)...)
 	}
 	if len(names) == 0 {
-		t.Fatalf("%s's list after line %d names no migration", phaseEntryListGuide, start+1)
+		t.Fatalf("%s's list after line %d names no migration", wayBackGuide, start+1)
 	}
 	return names
 }
