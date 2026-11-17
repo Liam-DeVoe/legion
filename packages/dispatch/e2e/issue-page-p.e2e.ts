@@ -1,5 +1,5 @@
 import { statusGlyph } from "../web/src/features/issue-page/issue-status";
-import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { CONTROL_LABELS, STATE_LINES } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,
   createIssue,
@@ -1138,7 +1138,10 @@ test("a press on the status straight out of the title's editor lands on the stat
       })
       .toBe("testing");
     expect(statusWrites, "the status picked while the title saved was not written once").toBe(1);
-    await expect(status, "the status's write did not settle").toBeEnabled();
+    await expect(
+      issueHeader(page).getByRole("status"),
+      "the status's write did not settle"
+    ).toHaveCount(0);
     // A second write of the pick would be sent as the first one settles, so 500 ms past that is
     // many frames past where a late duplicate would show.
     await page.waitForTimeout(500);
@@ -1433,7 +1436,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect(palette, "Escape did not close the palette").toHaveCount(0);
     release.resolve();
     await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("todo");
-    await expect(status, "the status's write did not settle").toBeEnabled();
+    await expect(header.getByRole("status"), "the status's write did not settle").toHaveCount(0);
     await page.unroute(held);
 
     // The palette's Close issue closes the issue, which then offers Reopen issue and neither
@@ -1459,6 +1462,25 @@ test("the header's keys and the palette reach their controls", async ({ browser 
   });
 });
 
+/** Opens the issue `key` in a short window, `width` px wide and 420 px tall, and, once its header
+ *  is drawn, makes the page 2000 px tall, taller than the window, so that the page scrolls, and
+ *  scrolls it to its top. */
+async function openScrollingPage(page: Page, key: string, width: number): Promise<void> {
+  await page.setViewportSize({ height: 420, width });
+  await gotoIssue(page, `/issues/${key}`);
+  await expectHeaderDrawn(page);
+  // The outline opens with the focus on the first question that waits on the reader and holds
+  // that row on screen until the reader acts or the focus leaves it (part I's R8), so the page's
+  // growth below would scroll back to it: the focus lands, then leaves the tree.
+  await expect(page.locator("[data-node-row]:focus"), "the load focused no row").toHaveCount(1);
+  await focusThePage(page);
+  await page.evaluate(() => {
+    const page = document.querySelector("[data-issue-page]");
+    if (page instanceof HTMLElement) page.style.minHeight = "2000px";
+    window.scrollTo(0, 0);
+  });
+}
+
 // c-header (9): the header's half of the checkpoint's "the identity and the title stay when the
 // page scrolls, and on a phone the filter control @phone" (`e2e/issue-layout.e2e.ts:3472`). On
 // the phone it reads what the 390 px viewport decides (R1 of "Phone acceptance" in
@@ -1475,20 +1497,7 @@ test("the band stays when the page scrolls, and on a phone the header goes @phon
         : [DESKTOP.width, 761, 760, IPHONE_13.width];
     for (const width of widths) {
       const wide = width > 760;
-      // A short window, and a page made taller than it, so the page scrolls.
-      await page.setViewportSize({ height: 420, width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      await expectHeaderDrawn(page);
-      // The outline opens with the focus on the first question that waits on the reader and
-      // holds that row on screen until the reader acts or the focus leaves it (part I's R8), so
-      // the page's growth below would scroll back to it: the focus lands, then leaves the tree.
-      await expect(page.locator("[data-node-row]:focus"), "the load focused no row").toHaveCount(1);
-      await focusThePage(page);
-      await page.evaluate(() => {
-        const page = document.querySelector("[data-issue-page]");
-        if (page instanceof HTMLElement) page.style.minHeight = "2000px";
-        window.scrollTo(0, 0);
-      });
+      await openScrollingPage(page, seeded.key, width);
 
       // With the page at its top the band has no shadow, and the title is in its own type.
       const top = await stickyReading(page);
@@ -1897,5 +1906,232 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
       })
       .toBe("needs_review");
     expect(writes.length, "no status was written").toBeGreaterThan(0);
+  });
+});
+
+/** A Tab's walk through one part of the page, read where the page stands now (`tabWalk`). */
+interface TabWalk {
+  /** Each control of the part that a Tab reaches - drawn, not disabled, a `tabIndex` of 0 or
+   *  more - in document order: its name, its computed `scroll-margin-top` and its top on the
+   *  screen. */
+  readonly controls: readonly {
+    readonly margin: string;
+    readonly name: string;
+    readonly top: number;
+  }[];
+  /** Which of them holds the focus, or -1 where none does. */
+  readonly focused: number;
+  /** How far the page has scrolled. */
+  readonly scrolled: number;
+}
+
+/** `TabWalk` of `part`. With `focusNext`, it first focuses the control a Tab reaches next after
+ *  the part's last one, in document order, without scrolling the page (`preventScroll`): where a
+ *  focus that comes back into the part from below starts. It throws where the part holds no
+ *  control, or where no control follows its last one. */
+function tabWalk(part: Locator, focusNext = false): Promise<TabWalk> {
+  return part.evaluate((scope, focusNext) => {
+    const reached = [...document.querySelectorAll<HTMLElement>("*")].filter(
+      (element) =>
+        element.tabIndex >= 0 && !element.matches(":disabled") && element.checkVisibility()
+    );
+    const inside = reached.filter((element) => scope.contains(element));
+    const name = (element: Element) => {
+      const words = element.getAttribute("aria-label") ?? (element.textContent ?? "").trim();
+      return `${element.tagName.toLowerCase()} "${words}"`;
+    };
+    if (focusNext) {
+      const last = inside.at(-1);
+      if (last === undefined) throw new Error(`${scope.tagName} holds no control`);
+      const after = reached[reached.indexOf(last) + 1];
+      if (after === undefined) {
+        throw new Error(`no control follows the last one of ${scope.tagName}`);
+      }
+      after.focus({ preventScroll: true });
+      if (document.activeElement !== after) throw new Error(`${name(after)} took no focus`);
+    }
+    return {
+      controls: inside.map((element) => ({
+        margin: getComputedStyle(element).scrollMarginTop,
+        name: name(element),
+        top: element.getBoundingClientRect().top,
+      })),
+      focused: inside.indexOf(document.activeElement as HTMLElement),
+      scrolled: window.scrollY,
+    };
+  }, focusNext);
+}
+
+// Decision 113 of dispatch://INFRA-1196/artifact/part-decisions-md, amended: a focus that enters
+// the header from below moves no page. The page keeps the band at its top clear of what a focus
+// brings into view (`scroll-padding-top` in `web/src/styles.css`), so without a top scroll margin
+// of minus that band a focus on a header control lying in it scrolls the page up, and a control
+// of what stays does not move with it. At 1440 px the identity block is stuck: Shift+Tab from the
+// properties line under it walks back through every control of the block to its first and the
+// page does not move, each control of the block takes minus the padding, and each control of the
+// properties line takes none, so a focus there under the block still scrolls it out from under
+// it. At 390 px the whole header scrolls away and the padding is the view row's height: Shift+Tab
+// from below onto the header's last control, while that control lies 10 px below the top of the
+// window, does not move the page, and each control of the header takes minus the padding. On the
+// phone it reads 390 px.
+test("a focus that enters the header from below moves no page @phone", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const widths =
+      test.info().project.name === "iphone" ? [IPHONE_13.width] : [DESKTOP.width, IPHONE_13.width];
+    for (const width of widths) {
+      await openScrollingPage(page, seeded.key, width);
+
+      if (width > 760) {
+        await page.evaluate(() => window.scrollTo(0, 320));
+        await expect
+          .poll(async () => (await stickyReading(page))?.condensed, {
+            message: `the band is not stuck once scrolled at ${width} px`,
+          })
+          .toBe(true);
+        const padding = await page.evaluate(
+          () => getComputedStyle(document.documentElement).scrollPaddingTop
+        );
+        const from = await tabWalk(identityBand(page), true);
+        for (let at = from.controls.length - 1; at >= 0; at -= 1) {
+          const name = from.controls[at]?.name;
+          await page.keyboard.press("Shift+Tab");
+          await framesDrawn(page, 2);
+          const walk = await tabWalk(identityBand(page));
+          expect(walk.focused, `Shift+Tab did not reach the band's ${name} at ${width} px`).toBe(
+            at
+          );
+          expect(
+            walk.scrolled,
+            `Shift+Tab onto the band's ${name} moved the page at ${width} px`
+          ).toBe(from.scrolled);
+        }
+        expect(
+          from.controls.map(({ margin, name }) => `${name}: ${margin}`),
+          `a control of the band takes no top scroll margin of minus the padding at ${width} px`
+        ).toEqual(from.controls.map(({ name }) => `${name}: -${padding}`));
+        const properties = (await tabWalk(propertiesLine(page))).controls;
+        expect(
+          properties.length,
+          `the properties line holds no control at ${width} px`
+        ).toBeGreaterThan(0);
+        expect(
+          properties.map(({ margin, name }) => `${name}: ${margin}`),
+          `a control of the properties line takes a top scroll margin at ${width} px`
+        ).toEqual(properties.map(({ name }) => `${name}: 0px`));
+      } else {
+        const top = await tabWalk(issueHeader(page));
+        const last = top.controls.at(-1);
+        if (last === undefined) throw new Error(`the header holds no control at ${width} px`);
+        const to = Math.round(top.scrolled + last.top - 10);
+        await page.evaluate((to) => window.scrollTo(0, to), to);
+        await expect
+          .poll(() => page.evaluate(() => window.scrollY), {
+            message: `the page did not scroll the header's ${last.name} to the top at ${width} px`,
+          })
+          .toBeCloseTo(to, 0);
+        const padding = await page.evaluate(
+          () => getComputedStyle(document.documentElement).scrollPaddingTop
+        );
+        expect(
+          Number.parseFloat(padding),
+          `the padding at ${width} px does not reach the header's ${last.name} 10 px below the top`
+        ).toBeGreaterThan(10);
+        const from = await tabWalk(issueHeader(page), true);
+        await page.keyboard.press("Shift+Tab");
+        await framesDrawn(page, 2);
+        const walk = await tabWalk(issueHeader(page));
+        expect(
+          walk.focused,
+          `Shift+Tab did not reach the header's ${last.name} at ${width} px`
+        ).toBe(from.controls.length - 1);
+        expect(
+          walk.scrolled,
+          `Shift+Tab onto the header's ${last.name} moved the page at ${width} px`
+        ).toBe(from.scrolled);
+        expect(
+          from.controls.map(({ margin, name }) => `${name}: ${margin}`),
+          `a control of the header takes no top scroll margin of minus the padding at ${width} px`
+        ).toEqual(from.controls.map(({ name }) => `${name}: -${padding}`));
+      }
+    }
+  });
+});
+
+// The tester's finding at aec3a5b5 (dispatch://INFRA-3943, round 4), decision 162 of
+// dispatch://INFRA-1196/artifact/part-decisions-md, in decision 132's class: the header's ⋯ menu
+// gives the focus back to its own control, 'Issue actions', on Escape and after each action, as
+// the ARIA menu-button pattern does (WCAG 2.4.3). The menu hid the focused action as it closed,
+// and nothing gave the focus back, so the browser left it on the page's body: the next Tab
+// started again from the top of the page. Each focus is read once, after the menu has closed and
+// two frames are drawn, so a focus that only passes through the control is not taken for one
+// that stays there. It reads 1440 px and 390 px, where the menu is drawn as a panel of its own.
+test("the header's menu gives the focus back to its control on Escape and after an action", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const header = issueHeader(page);
+    const trigger = header.getByRole("button", {
+      exact: true,
+      name: CONTROL_LABELS.issue_actions,
+    });
+    const triggerFocused = () => trigger.evaluate((control) => control === document.activeElement);
+    // Opens the menu from the keyboard and puts the focus on its action `at`, counted from 1.
+    const onAction = async (at: number) => {
+      await trigger.focus();
+      await page.keyboard.press("Enter");
+      await expect(trigger).toHaveAttribute("aria-expanded", "true");
+      for (let step = 0; step < at; step += 1) await page.keyboard.press("Tab");
+      const focused = await page.evaluate(
+        () => (document.activeElement as HTMLElement | null)?.dataset.issueAction ?? null
+      );
+      if (focused === null) throw new Error(`Tab did not reach the menu's action ${at}`);
+      return focused;
+    };
+    for (const width of [DESKTOP.width, IPHONE_13.width]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await leaveFocus(page);
+
+      await onAction(1);
+      await page.keyboard.press("Escape");
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+      await framesDrawn(page, 2);
+      expect(
+        await triggerFocused(),
+        `Escape out of the menu left the focus off its control at ${width} px`
+      ).toBe(true);
+
+      for (const words of ["pin", "unpin"]) {
+        const action = await onAction(1);
+        expect(action, `the menu's first action is not the pin at ${width} px`).toBe("pin");
+        const written = page.waitForResponse(
+          (response) =>
+            response.request().method() !== "GET" &&
+            new URL(response.url()).pathname.includes(seeded.key)
+        );
+        await page.keyboard.press("Enter");
+        await written;
+        await expect(trigger).toHaveAttribute("aria-expanded", "false");
+        await framesDrawn(page, 2);
+        expect(
+          await triggerFocused(),
+          `the menu's ${words} by Enter left the focus off its control at ${width} px`
+        ).toBe(true);
+      }
+    }
+
+    // Close issue, last, since it closes the issue.
+    const action = await onAction(2);
+    expect(action, "the menu's second action is not Close issue").toBe("close");
+    await page.keyboard.press("Enter");
+    await expect(header.getByText(STATE_LINES.closed, { exact: true })).toBeVisible();
+    await framesDrawn(page, 2);
+    expect(
+      await triggerFocused(),
+      "the menu's Close issue by Enter left the focus off its control"
+    ).toBe(true);
   });
 });

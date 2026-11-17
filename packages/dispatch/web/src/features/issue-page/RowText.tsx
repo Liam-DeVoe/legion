@@ -160,10 +160,13 @@ const ROW_CHIP = "data-row-chip";
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
  *  decision's text holds the lines of a block its section quotes, and both its stored text and
  *  its reading carry them as they stand. */
-export const DIRECTIVE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
+const DIRECTIVE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
-/** `text` without a typed block's source lines, and with no blank line left where one stood. */
-function withoutDirectiveLines(text: string): string {
+/** `text` without a typed block's source lines, and with no blank line left where one stood:
+ *  the rule every view that draws a node's words leaves those lines out by (decision 94). The
+ *  pattern stays in this file, since its `g` flag carries `lastIndex` from one `test` or `exec`
+ *  to the next; `replace` starts from the beginning each time. */
+export function withoutDirectiveLines(text: string): string {
   return text.includes(":::") ? text.replace(DIRECTIVE_LINE, "") : text;
 }
 
@@ -208,8 +211,7 @@ function StoredText({
   const ambiguous = useKnownAmbiguousReferences();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   const found = useMemo(
-    () =>
-      rowReferences(markdown, knownIssueKeys(names)).filter((one) => !ambiguous.has(one.reference)),
+    () => rowReferences(markdown, knownIssueKeys(names), ambiguous),
     [ambiguous, markdown, names]
   );
   const follow = useFollowInPlace();
@@ -332,18 +334,9 @@ function DrawnText({
     const element = drawn.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    linkRowReferences(element, names);
+    linkRowReferences(element, names, ambiguous);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
-      // A reference the read answered as ambiguous is drawn as its author wrote it, with no
-      // link. The pass links only what the reading left as text, and the reading makes a
-      // dashboard address a link of its own, so what it linked here is a `dispatch://`
-      // reference, which is written as the reference reads. Each later pass links it again,
-      // and this takes the link out again.
-      if (ambiguous.has(reference)) {
-        anchor.replaceWith(reference);
-        continue;
-      }
       const route = parseNodeReference(reference);
       if (route !== undefined && route.kind !== "issue") {
         anchor.setAttribute(ROW_CHIP, "");
