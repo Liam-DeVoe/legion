@@ -1456,13 +1456,13 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
 }
 
-// InGroup is the sentence that names the group of issue: the variant of the experiment it was
-// drawn into, and how that variant's issues are done, by the arm's `plan` (group, a
+// GroupClause is the one text of a group: the sentence that names the variant of the experiment
+// issue was drawn into, and how that variant's issues are done, by the arm's `plan` (group, a
 // config.PlanGroup word): `default`, whose issues run the project's default steps, or
-// `owner-alone`, whose owner does the whole issue itself in one step. It is the one spelling of a
-// group that the refusals of register_plan and stop_task (PlanNotTaken, TaskNotStopped) and the
-// plan-not-taken notice of the issue's first step give the owner.
-func InGroup(issue, experiment, variant, group string) string {
+// `owner-alone`, whose owner does the whole issue itself in one step. The refusals of
+// register_plan and stop_task (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the
+// issue's first step each call it, and no other text states a group.
+func GroupClause(issue, experiment, variant, group string) string {
 	done := "issues run the project's default steps"
 	if group == "owner-alone" {
 		done = "owner does the whole issue itself in one step"
@@ -1477,7 +1477,7 @@ func InGroup(issue, experiment, variant, group string) string {
 // carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
 // each refusal of a plan, so the same registration sent again gets this same answer.
 func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
-	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: InGroup(issue, experiment, variant, group) +
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant, group) +
 		" Legion takes no plan from its owner for this issue."}
 }
 
@@ -1486,7 +1486,7 @@ func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
 // owner stops a task that it wrote (R16), and Legion took no plan from this issue's owner, so the
 // owner wrote none of its tasks; the code is the one register_plan answers for the same issue.
 func TaskNotStopped(issue, experiment, variant, group string) *Refusal {
-	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: InGroup(issue, experiment, variant, group) +
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant, group) +
 		" Legion takes no plan from its owner for this issue, so it stops none of its tasks."}
 }
 

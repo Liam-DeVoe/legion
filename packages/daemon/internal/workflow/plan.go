@@ -308,8 +308,8 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 			"experiment", group.Experiment, "variant", group.Variant)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"The first step of %s took no plan of its owner: %s. %s", issue.Key, strings.Join(described, "; "),
-		intake.InGroup(issue.Key, group.Experiment, group.Variant, group.Plan))})
+		"The first step of %s took no plan: %s. %s", issue.Key, strings.Join(described, "; "),
+		intake.GroupClause(issue.Key, group.Experiment, group.Variant, group.Plan))})
 }
 
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its

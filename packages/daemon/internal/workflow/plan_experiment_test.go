@@ -69,7 +69,7 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the plan of generation 0 deleted", child, got)
 		}
 		told := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + child +
-			" took no plan of its owner: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
+			" took no plan: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
 			". " + inPlanningB(child)}}
 		if got := noticesOf(t, pool, child, "plan-not-taken"); !reflect.DeepEqual(got, told) {
 			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, told)
@@ -111,12 +111,13 @@ func TestAPlanGivenBeforeTheDrawIsPassedOver(t *testing.T) {
 }
 
 // An issue whose owner changed keeps the group of its first draw. Where its group runs the
-// project's default steps, the plan an earlier owner gave is passed over in the same one notice as
-// the owner's own, which names the group and never tells the owner to give the plan again with
-// register_plan: that call is answered PLAN_NOT_TAKEN for this issue. Here the architect of
-// LEGION-208 gave the plan of LEGION-209 at generation 0, and LEGION-209 was then recorded as a
-// root of its own, whose owner is its own architect.
-func TestAnEarlierOwnersPlanInTheDefaultGroupIsToldOnce(t *testing.T) {
+// project's default steps, the plan an earlier owner gave is told in the one notice of the group,
+// which names the group and never tells the owner to give the plan again with register_plan: that
+// call is answered PLAN_NOT_TAKEN for this issue. Here the architect of LEGION-208 gave the plan of
+// LEGION-209 at generation 0, and LEGION-209 was then recorded as a root of its own, whose owner
+// is its own architect. The fault caught is the notice of an earlier owner's plan alone
+// (tellPassedOver) written for an issue of the group, which offers register_plan.
+func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 	const issue = "LEGION-209"
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -130,7 +131,7 @@ func TestAnEarlierOwnersPlanInTheDefaultGroupIsToldOnce(t *testing.T) {
 	assertDefaultPlan(t, planStandingOf(t, pool, engine, issue, 1).plan, issue, 1, todaysDefaultSteps)
 	told := noticesOf(t, pool, issue, "plan-not-taken")
 	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + issue +
-		" took no plan of its owner: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
+		" took no plan: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
 		". " + inPlanningB(issue)}}
 	if !reflect.DeepEqual(told, want) {
 		t.Fatalf("the plan-not-taken notices = %+v, want %+v", told, want)
@@ -159,28 +160,20 @@ func drawnForMemory(t *testing.T, pool *pgxpool.Pool, key string) {
 	})
 }
 
-// An issue whose group runs the project's default steps takes no plan from its owner:
-// register_plan is answered 409 PLAN_NOT_TAKEN with the sentence that names the group, nothing is
-// recorded, and the first step runs the project's default steps from planning, under a plan whose
-// source is the default. The control is the same issue drawn into the arm whose owner gives the
-// plan: the plan is taken and its first step is the implementer's.
+// An issue whose group runs the project's default steps takes the project's default steps at its
+// first step, from planning, under a plan whose source is the default. The control is the same
+// issue drawn into the arm whose owner gives the plan, with its owner's plan stored: the plan is
+// taken and its first step is the implementer's.
 func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 	given := func(t *testing.T, key string, generation uint64) (string, intake.PlanGiven) {
 		return planID(key, generation, 1), ownersPlan(t, key, generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 	}
 
-	t.Run("the group default refuses the plan and runs the default steps", func(t *testing.T) {
+	t.Run("the group default runs the default steps", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		drawnInto(t, pool, root.Key, "planning", "b", "default")
-		before := planStandingOf(t, pool, engine, root.Key, root.Generation)
-		id, plan := given(t, root.Key, root.Generation)
-
-		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, applyFacts(t, pool, engine)(id, plan), planNotTakenOfB(root.Key), before)
-		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
-			t.Fatalf("the plan rows of %s = %v, want none: Legion records nothing when it takes no plan", root.Key, got)
-		}
 
 		firstStep(t, pool, engine, root.Key)
 
@@ -233,8 +226,8 @@ func TestAPlanNotTakenIsAnsweredTheSameWhenGivenAgain(t *testing.T) {
 
 // An issue of no group runs as built (R20): an issue the daemon recorded before any experiment
 // set how an issue is done holds no row, and one whose rows name no plan — the `memory`
-// experiment's alone here — is of no group either. Each takes the plan its owner gives, and its
-// owner stops a task of it.
+// experiment's alone here — is of no group either. Each takes the plan its owner gives, a plan an
+// earlier owner gave is told as it always was (tellPassedOver), and its owner stops a task of it.
 func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -248,12 +241,20 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 			engine := returnEngine()
 			root := stepRoot(t, pool, phase.Admitted)
 			tc.drawn(t, pool, root.Key)
+			earlier := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "tester"))
+			earlier.GivenBy = claim.Token(token(t, "LEGION-300", claim.RoleArchitect))
+			mustTake(t, "an earlier owner's version 1 at generation 0", applyFacts(t, pool, engine)(planID(root.Key, 0, 1), earlier))
 
 			mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
 				ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
 			firstStep(t, pool, engine, root.Key)
 
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+			told := noticesOf(t, pool, root.Key, "plan-not-taken")
+			if len(told) != 1 || !strings.Contains(told[0].Reason, "took no plan of an earlier owner") ||
+				!strings.Contains(told[0].Reason, "give it again with register_plan as your own.") {
+				t.Fatalf("the plan-not-taken notices = %+v, want the one notice of an earlier owner's plan, as built", told)
+			}
 			if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
 				t.Fatalf("the owner's stop of a = %+v, want it taken", result.Refusal)
 			}
