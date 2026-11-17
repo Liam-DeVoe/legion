@@ -2,10 +2,8 @@ package api
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -174,27 +172,11 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// parsePlansWindow is the plans read's [since, until) window on the close: each bound an RFC 3339
-// time, nil when the query leaves it out or blank, and since before until when both are given, as
-// the caller wrote them; the read rounds each up to the microsecond it compares. Its error is the
-// text of the route's 400 INVALID_QUERY.
+// parsePlansWindow is the plans read's [since, until) window on the close (parseWindow); the read
+// rounds each bound up to the microsecond it compares.
 func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
-	var bounds [2]*time.Time
-	for index, bound := range []string{"since", "until"} {
-		text := strings.TrimSpace(query.Get(bound))
-		if text == "" {
-			continue
-		}
-		parsed, err := time.Parse(time.RFC3339, text)
-		if err != nil {
-			return workflowstore.Window{}, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
-		}
-		bounds[index] = &parsed
-	}
-	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
-		return workflowstore.Window{}, errors.New("since must be before until")
-	}
-	return workflowstore.Window{Since: bounds[0], Until: bounds[1]}, nil
+	since, until, err := parseWindow(windowBound{"since", query.Get("since")}, windowBound{"until", query.Get("until")})
+	return workflowstore.Window{Since: since, Until: until}, err
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a
