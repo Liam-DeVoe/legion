@@ -1610,7 +1610,9 @@ test("Details clears the parent with an empty editor save", async () => {
 });
 
 // The editor closes as the save goes out, so a parent Dispatch refuses is said in the row the
-// reader saved it from, in Dispatch's own words, and not as the line for a write that failed.
+// reader saved it from, in Dispatch's own words, and not as the line for a write that failed. The
+// focus is back on the row's control by then, so the line is an alert: it is announced as it
+// arrives.
 test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1638,6 +1640,10 @@ test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason
         "the Parent row does not say why Dispatch refused the parent"
       ).toBe(reason)
     );
+    expect(
+      within(detailsRow(PROPERTY_LABELS.parent)).queryByRole("alert")?.textContent,
+      "the Parent row does not announce why Dispatch refused the parent"
+    ).toBe(reason);
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
   } finally {
     unmount();

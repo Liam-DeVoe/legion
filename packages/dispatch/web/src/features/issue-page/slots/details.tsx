@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefCallback, useCallback, useMemo, useState } from "react";
+import { type ReactNode, type RefCallback, useCallback, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -43,12 +43,15 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
   // The one editor open in a row of Details - the parent's or the route's - which the rows'
   // own controls and the add menu open.
   const [editingField, setEditingField] = useState<IssueField | null>(null);
-  const stage = useMemo(() => {
+  // The panel's stage, one for the life of the page (above): state and not a memo, since React
+  // may throw a memo's value away, and a second stage would draw the panel again and close an
+  // open editor.
+  const [stage] = useState(() => {
     const element = document.createElement("div");
     // No box of its own: the panel is a child of the host that holds it.
     element.className = "contents";
     return element;
-  }, []);
+  });
   // The drawer's `aside` the stage sits in, where a control elsewhere on the page asks for a row
   // of the panel (`IssueMarginPanel`): read as the host takes the stage, since the panel is drawn
   // before any host holds it.

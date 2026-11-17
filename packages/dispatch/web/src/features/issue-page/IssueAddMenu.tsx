@@ -49,7 +49,7 @@ export function IssueAddMenu({
   const [open, setOpen] = useState(false);
   // Whether any entry can be reached, as the layout effect below reads it after a commit: false
   // until the first one, which that effect corrects before the page is painted.
-  const [reachable, setReachable] = useState(false);
+  const [anyReachable, setAnyReachable] = useState(false);
   const drawer = useMarginDrawer();
   const wrapper = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -89,15 +89,15 @@ export function IssueAddMenu({
     };
   }, [open]);
 
+  const fields = emptyFields(issue);
   // After every commit of the menu, since any of them can draw, rename or remove a control an
   // entry reaches. The answer is a boolean, so a commit that leaves it as it was sets nothing and
   // draws the menu no further time.
   useLayoutEffect(() => {
-    setReachable(emptyFields(issue).some((field) => field.reachable()));
+    setAnyReachable(fields.some((field) => field.reachable()));
   });
 
-  if (isClosed || !reachable) return null;
-  const fields = emptyFields(issue);
+  if (isClosed || !anyReachable) return null;
   return (
     <div className="relative flex shrink-0" ref={wrapper}>
       <button
@@ -198,7 +198,7 @@ export function IssueAddMenu({
       // words are passed.
       fields.push({
         label: PROPERTY_LABELS.labels,
-        ...atControl(labelsControlName([], details.key, CONTROL_LABELS, undefined)),
+        ...atControl(labelsControlName([], details.key, CONTROL_LABELS)),
       });
     }
     if (details.route === null || details.route === "") {
