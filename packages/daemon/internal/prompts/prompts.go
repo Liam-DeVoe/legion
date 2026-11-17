@@ -127,25 +127,27 @@ func (c *Composer) Part(name string) string {
 }
 
 // Compose returns the shared role parts followed by this daemon's parts: the role's own, then the
-// text every architect (architect-common.md) or every phase worker (worker-common.md) shares. The
-// runtime appends addressing and deployment instructions after these paths.
+// text every owner (architect-common.md) or every phase worker (worker-common.md) shares. An owner
+// is the role claim.OwnsPlan names, the one rule of who owns a plan, which the daemon's launch of
+// an owner and the plan routes read too. The runtime appends addressing, an owner's plan guidance
+// and the deployment instructions after these paths.
 func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	if c == nil {
 		return Parts{}, fmt.Errorf("compose role prompt: nil composer")
 	}
 	var shared, daemonParts []string
-	switch role {
-	case claim.RoleArchitect:
+	switch {
+	case claim.OwnsPlan(role):
 		name := "architect.md"
 		if isRoot {
 			name = "architect-root.md"
 		}
 		shared, daemonParts = []string{name}, []string{name, "architect-common.md"}
-	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
+	case role == claim.RolePlanner, role == claim.RoleImplementer, role == claim.RoleTester, role == claim.RoleReviewer:
 		name := string(role)
 		shared = []string{"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"}
 		daemonParts = []string{name + ".md", "worker-common.md"}
-	case claim.RoleMerger:
+	case role == claim.RoleMerger:
 		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}
 	default:
 		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)

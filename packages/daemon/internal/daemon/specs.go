@@ -160,12 +160,13 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 	return backend, s.prompts.Part(info.PromptPart), nil
 }
 
-// OwnsPlan is whether the claim's launch is an owner's: the agent that writes a plan of its issue
-// and gives it to Legion, today each architect, a tree's root architect and a sub-architect alike.
-// It is the one test of an owner's launch: the deployment's plan guidance reaches an owner's
-// prompt and no other.
+// OwnsPlan is whether the claim's launch is an owner's, which claim.OwnsPlan decides from its
+// role. It is the one test of an owner's launch: the deployment's plan guidance reaches an owner's
+// prompt and no other. A release whose owner is no longer told by its role alone (an owner that
+// takes a step of its own plan keeps its owner's claim) changes this body; a release that changes
+// which role owns a plan changes claim.OwnsPlan, which the composer and the plan routes read too.
 func OwnsPlan(c supervise.Claim) bool {
-	return c.Role == claim.RoleArchitect
+	return claim.OwnsPlan(c.Role)
 }
 
 // workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It is the one
