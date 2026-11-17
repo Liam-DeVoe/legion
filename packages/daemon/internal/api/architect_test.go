@@ -614,6 +614,67 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 	}
 }
 
+// The merger's backward move carries GitHub's answer for the head of its pull request, read just
+// before the route applies the move (Options.MergerMoveRead), so that a move a conflict with the
+// base made is classified as one (workflow's recordPass). The read is the merger's alone: a
+// tester's move and the architect's are not read for and carry nothing. A read that answers
+// nothing leaves the merger's move applied all the same, carrying nothing.
+func TestOnlyTheMergersBackwardMoveCarriesTheDaemonsRead(t *testing.T) {
+	h := newHarness(t)
+	facts := &factRecorder{}
+	conflicting := &intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main", HeadSHA: "code",
+		Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty}
+	answer := conflicting
+	var readFor []string
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
+		Handlers: []intake.Handler{facts}, Dispatch: &statusRecorder{},
+		MergerMoveRead: func(_ context.Context, issue string) *intake.PullRequestMergeability {
+			readFor = append(readFor, issue)
+			return answer
+		},
+	}).Handler
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	moveBack := func(c liveClaim, issue string) {
+		t.Helper()
+		body := map[string]any{"grantId": c.grant(t), "to": "implementing", "reason": "the head conflicts with main"}
+		if issue != "" {
+			body["issue"] = issue
+		}
+		if got := h.request(http.MethodPost, "/legion/v1/phase/backward", body, nil); got.Code != http.StatusOK {
+			t.Fatalf("backward move of %s = %d: %s", c.issue, got.Code, got.Body)
+		}
+	}
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+	moveBack(merger, "")
+	moveBack(newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleTester), "")
+	moveBack(newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect), "LEGION-209")
+	answer = nil
+	moveBack(merger, "")
+
+	if want := []string{"LEGION-208", "LEGION-208"}; !slices.Equal(readFor, want) {
+		t.Fatalf("GitHub was read for %v, want %v: the merger's two moves and no other role's", readFor, want)
+	}
+	got := facts.recorded()
+	if len(got) != 4 {
+		t.Fatalf("facts = %#v, want four", got)
+	}
+	for i, want := range []struct {
+		issue     string
+		requester claim.Role
+		read      *intake.PullRequestMergeability
+	}{
+		{"LEGION-208", claim.RoleMerger, conflicting}, {"LEGION-209", claim.RoleTester, nil},
+		{"LEGION-209", claim.RoleArchitect, nil}, {"LEGION-208", claim.RoleMerger, nil},
+	} {
+		fact, ok := got[i].(intake.BackwardMove)
+		if !ok || fact.Issue != want.issue || fact.Requester != want.requester || fact.Mergeability != want.read {
+			t.Fatalf("backward fact %d = %#v, want the %s's move of %s carrying %+v", i, got[i], want.requester, want.issue, want.read)
+		}
+	}
+}
+
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
 // notice router decides (owningArchitect): the root architect the reviewer's phase-finished notice

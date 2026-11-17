@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A merger that sends its issue back from `merging` to `implementing` because GitHub shows the head
+  dirty, after the merge queue removed the pull request for a merge conflict, no longer counts a
+  `merging-implementing` move back or fires the deployment's work-back hooks. The daemon's own read
+  at the removal records no conflict, so the move used to be counted as work sent back. The daemon
+  now reads from GitHub whether the head conflicts with its base just before it applies the
+  merger's move, and records the answer before it counts the move, so a conflicting head makes a
+  conflict round, as the daemon's own move for a conflict does. A mergeable or not yet computed
+  answer, and a read GitHub does not answer, leave the move counted as before; the move itself is
+  never held back by the read. Backward moves from other phases are unchanged.
+time: 2026-11-17T23:05:09.000000000Z
+custom:
+    Issue: pr2230

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -170,13 +173,59 @@ func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (rec
 	if recorded == nil || recorded.State != record.PullRequestOpen {
 		return record.MergeStateUnread, nil
 	}
-	read, cancel := context.WithTimeout(ctx, issueRead)
-	_, pull, err := w.readPullRequest(read, *recorded)
-	answeredAt := time.Now().UTC()
-	cancel()
+	pull, answeredAt, err := w.readPullRequestAnswered(ctx, *recorded)
 	if err != nil {
 		return record.MergeStateUnread, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
 	}
 	w.applyMergeability(ctx, *recorded, pull, answeredAt)
 	return pull.mergeState(), nil
+}
+
+// mergerMoveRead reads, for the merger's backward move of issue (the API's
+// Options.MergerMoveRead), what GitHub answers now for whether the head of the issue's pull
+// request can be merged into its base: one GET /pulls/{number}, bounded by issueRead as every
+// read of one pull request is. The move carries the answer, and the workflow writes it to the
+// record before it classifies the move (intake.BackwardMove.Mergeability), so a head the merger
+// sends back because GitHub shows it dirty makes a conflict round, which raises no pair and fires
+// no hook. The merger reads that state after the merge queue took the pull request out, and the
+// daemon's own read at that removal applies no mergeability (mergeQueueRead), so the record can
+// hold none.
+//
+// GitHub is read only when the answer can change what the move is: the issue stands in merging,
+// its record holds an open pull request, and that pull request's own head is not held
+// conflicting already (classify.ConflictRound), which would make the move a conflict round
+// without a read. Anything else answers nil, and so does a read that fails, which is logged: the
+// move is applied all the same and classified on the record as it stands, since a read of GitHub
+// never holds a worker's move back.
+func (w *workflowRuntime) mergerMoveRead(ctx context.Context, issue string) *intake.PullRequestMergeability {
+	recordedIssue, recorded, err := w.issueRecord(ctx, issue)
+	if err != nil {
+		w.log.Warn("read the record of an issue its merger moves back; the move is applied unread", "issue", issue, "error", err)
+		return nil
+	}
+	if recordedIssue == nil || recordedIssue.Phase != phase.Merging || recorded == nil ||
+		recorded.State != record.PullRequestOpen || classify.ConflictRound(*recorded) {
+		return nil
+	}
+	pull, answeredAt, err := w.readPullRequestAnswered(ctx, *recorded)
+	if err != nil {
+		w.log.Warn("read whether the head an issue's merger moves back conflicts with its base; the move is applied unread",
+			"issue", issue, "repo", recorded.Repo, "pullRequest", recorded.Number, "head", recorded.HeadSHA, "error", err)
+		return nil
+	}
+	fact := pull.mergeabilityFact(*recorded, answeredAt)
+	return &fact
+}
+
+// readPullRequestAnswered reads pr from GitHub once (readPullRequest), bounded by issueRead as
+// every read of one pull request is, and returns GitHub's answer with the moment it was in hand.
+// That moment is taken straight after readPullRequest returns, before the bound is released and
+// before the caller does anything with the answer, since the stamp records the age of the answer
+// and not of the work that comes after it (applyMergeability, record.PullRequest.StateReadAt).
+func (w *workflowRuntime) readPullRequestAnswered(ctx context.Context, pr record.PullRequest) (githubPullRequest, time.Time, error) {
+	read, cancel := context.WithTimeout(ctx, issueRead)
+	_, pull, err := w.readPullRequest(read, pr)
+	answeredAt := time.Now().UTC()
+	cancel()
+	return pull, answeredAt, err
 }

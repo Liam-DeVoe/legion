@@ -127,6 +127,17 @@ func (p githubPullRequest) mergeState() record.MergeState {
 	}
 }
 
+// mergeabilityFact is what this answer says about merging pr's head into its base, as the fact
+// that records it carries (intake.PullRequestMergeability): the head GitHub answered for, its
+// mergeability and merge state, the base it names, and readAt, the moment the reader had the
+// answer in hand. applyMergeability applies it for the per-issue read and the merge-state ladder,
+// and the merger's backward move carries it (mergerMoveRead), so each is written from one reading
+// of the answer.
+func (p githubPullRequest) mergeabilityFact(pr record.PullRequest, readAt time.Time) intake.PullRequestMergeability {
+	return intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: p.Base.Ref, HeadSHA: p.Head.SHA,
+		Mergeable: p.mergeability(), MergeState: p.mergeState(), ReadAt: readAt}
+}
+
 // readPullRequest reads pr from one GET /pulls/{number}: the base the mergeability is recorded
 // against, that mergeability itself, and the head and its clock followHead compares with the
 // record, in the single read they share. It also returns the githubrest.Client its own token mint

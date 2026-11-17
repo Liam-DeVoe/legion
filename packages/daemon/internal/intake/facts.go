@@ -903,11 +903,23 @@ type HandoffComplete struct {
 func (HandoffComplete) isFact() {}
 
 // BackwardMove asks the workflow to return to an earlier phase.
+//
+// Mergeability is GitHub's answer for the pull request's head, read by the daemon just before the
+// merger's move out of merging is applied (the daemon's mergerMoveRead), and nil for every other
+// move: the record is written from it as a read of GitHub is (workflow's recordMergeability)
+// before the move is classified, so a merger that sends a dirty head back after the merge queue
+// took it out makes a conflict round (classify.ConflictRound) although the merge queue's own read
+// recorded no conflict. It rides the move rather than being applied as a mergeability fact of
+// its own because that fact would move the issue itself (workflow's mergeability, TriggerConflict),
+// and the merger's move would then be refused for an issue no longer in its phase, its reason lost.
+// Nil is also what a read GitHub did not answer leaves, and the move is then classified on the
+// record as it stands.
 type BackwardMove struct {
-	Issue     string
-	Requester claim.Role
-	To        phase.Phase
-	Reason    string
+	Issue        string
+	Requester    claim.Role
+	To           phase.Phase
+	Reason       string
+	Mergeability *PullRequestMergeability
 }
 
 func (BackwardMove) isFact() {}

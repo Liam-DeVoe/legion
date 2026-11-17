@@ -78,7 +78,8 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
-// acts on the two things that read can say.
+// acts on the two things that read can say. What the read writes to the record, and when it is
+// dropped, is recordMergeability's.
 //
 // A head that conflicts with its base sends the issue back to implementing from whatever later
 // phase it stands in (TriggerConflict):
@@ -92,11 +93,39 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
 // once the state is recorded - this read is the one that moves an approved issue to accepting, as
-// often as not. The base the read names is recorded with
-// them, since that read is the only one that names the base of a pull request opened before the
-// record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
-// read that answers for a base push already recorded clears the push's mark, the two having been
-// read together.
+// often as not.
+func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
+	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+	if err != nil || pr == nil {
+		return intake.Result{}, err
+	}
+	prior := *pr
+	if recorded, err := e.recordMergeability(ctx, tx, pr, fact); err != nil || !recorded {
+		return intake.Result{}, err
+	}
+	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if classify.HeadConflicts(*pr) {
+		reason := fmt.Sprintf("the head conflicts with %s: GitHub runs no checks on it; merge %s forward", pr.Base, pr.Base)
+		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, reason)
+	}
+	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
+}
+
+// recordMergeability writes to pr, and to the record, what a read of GitHub found for the pull
+// request's head (fact): its mergeability, GitHub's merge state, the base the read names, the
+// conflict mark and the read time. It answers false, having written nothing, for a read it drops.
+// Two facts carry such a read, and both write it here so that the record means the same thing
+// whichever of them carried it: the daemon's own read (mergeability), and the read the daemon
+// makes just before the merger's backward move out of merging (backward,
+// intake.BackwardMove.Mergeability).
+//
+// The base the read names is recorded with the rest, since that read is the only one that names
+// the base of a pull request opened before the record kept one: it is what a push onto that branch
+// finds the pull request by (basePush), and a read that answers for a base push already recorded
+// clears the push's mark, the two having been read together.
 //
 // A read that answers for another head than the record stands at is dropped whole, and logged: a
 // push landed between GitHub's answer and this apply, so the verdict is about a tree the record
@@ -112,29 +141,24 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // writes no stamp and erases none, so the recorded one stands as the last real read left it.
 //
 // Whatever the read decides, it is also the judgement the conflict-round exemption is read from
-// (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
-// own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN read,
-// which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it is -
-// GitHub has not computed an answer, so there is nothing to record and nothing to take back. The
-// mark is a second column rather than a reading of Mergeability because every read rewrites that
-// one from GitHub's answer: the UNKNOWN of a read on the ladder that follows would lose the
+// (record.PullRequest.ConflictingHead, recordPass, recordRound): a CONFLICTING read holds the pull
+// request's own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN
+// read, which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it
+// is - GitHub has not computed an answer, so there is nothing to record and nothing to take back.
+// The mark is a second column rather than a reading of Mergeability because every read rewrites
+// that one from GitHub's answer: the UNKNOWN of a read on the ladder that follows would lose the
 // conflict, and the next round at the conflicting head would count.
-func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
-	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
-	if err != nil || pr == nil {
-		return intake.Result{}, err
-	}
+func (e *Engine) recordMergeability(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact intake.PullRequestMergeability) (bool, error) {
 	if fact.HeadSHA != pr.HeadSHA {
 		e.logOnCommit(ctx, "workflow: GitHub's merge state answered for a head the pull request has moved past; the read is dropped",
 			"issue", pr.Issue, "pullRequest", pr.Number, "answered", fact.HeadSHA, "head", pr.HeadSHA,
 			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
-		return intake.Result{}, nil
+		return false, nil
 	}
 	base := pr.Base
 	if fact.Base != "" {
 		base = fact.Base
 	}
-	prior := *pr
 	conflicting := pr.ConflictingHead
 	switch fact.Mergeable {
 	case record.MergeabilityConflicting:
@@ -155,18 +179,10 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.StateReadAt =
 			fact.Mergeable, fact.MergeState, base, "", conflicting, stateReadAt
 		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
-			return intake.Result{}, err
+			return false, err
 		}
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil {
-		return intake.Result{}, err
-	}
-	if classify.HeadConflicts(*pr) {
-		reason := fmt.Sprintf("the head conflicts with %s: GitHub runs no checks on it; merge %s forward", base, base)
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, reason)
-	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
+	return true, nil
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it

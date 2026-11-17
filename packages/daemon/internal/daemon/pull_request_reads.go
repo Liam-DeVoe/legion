@@ -136,11 +136,8 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // can land between GitHub's answer and the apply.
 // An apply that fails is logged, and the next read of the pull request applies it again.
 func (w *workflowRuntime) applyMergeability(ctx context.Context, pr record.PullRequest, pull githubPullRequest, readAt time.Time) {
-	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
 	eventID := fmt.Sprintf("mergeability:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, readAt.UnixNano())
-	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
-		Mergeable: mergeable, MergeState: state, ReadAt: readAt}
-	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, pull.mergeabilityFact(pr, readAt), w.handlers...); err != nil {
 		w.log.Warn("apply whether a pull request's head can be merged into its base", "repo", pr.Repo, "pullRequest", pr.Number, "error", err)
 	}
 }

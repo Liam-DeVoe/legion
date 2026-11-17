@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,5 +193,91 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 	}
 	if counted != 4 {
 		t.Fatalf("the pairs add up to %d moves back, want the 4 moves somebody made, of the 5 passes the implementer's row counts; the whole count is %v", counted, conflicted)
+	}
+}
+
+// mergerConflictReason is the merger's reason for sending the work back after the merge queue
+// took the pull request out for a conflict and GitHub then showed the head dirty.
+const mergerConflictReason = "the merge queue removed the pull request for a merge conflict and GitHub shows the head dirty"
+
+// mergerReads is the daemon's read of GitHub made just before the merger's move out of merging
+// (intake.BackwardMove.Mergeability): pull request number of sjawhar/legion answering mergeable,
+// with state, for head.
+func mergerReads(number int, head string, mergeable record.Mergeability, state record.MergeState) *intake.PullRequestMergeability {
+	return &intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: number, Base: "main", HeadSHA: head,
+		Mergeable: mergeable, MergeState: state, ReadAt: time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)}
+}
+
+// A merger that sends the work back because GitHub shows the head conflicting with its base,
+// after the merge queue took the pull request out for a conflict, makes a conflict round: it
+// raises no pair and fires no hook, as a move made at a head the record holds conflicting never
+// has (recordPass). The record held no conflict when the merger moved, since the daemon's own read
+// at the removal records none (the daemon's mergeQueueRead), so what makes the move one is the
+// read of GitHub the daemon makes for the move itself: the move carries it, and the workflow
+// records it before it classifies the move (backward, recordMergeability).
+//
+// Each case starts from one record: the issue in merging, its pull request open at headOne with
+// no conflict recorded, and a hook that fires on every move back. A read that answers the
+// recorded head conflicting is the one case excused: no pair, no hook, the pass risen as on every
+// move back, the head held conflicting afterwards, and the issue in implementing on the merger's
+// own move, with the merger's reason in the implementer's task. Every other case is counted under
+// merging-implementing and fires the hook: the move carrying no read, which is the control the
+// first case is read against; a read answering the head mergeable; one GitHub has not computed
+// yet; and one that answers for a head the record does not stand at, or for another pull request
+// than the record holds, which is dropped.
+func TestAMergersMoveBackForAConflictWithTheBaseRaisesNoPair(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read *intake.PullRequestMergeability
+		// excused is whether the move is a conflict round, and conflicting the head the record
+		// holds conflicting once it is applied.
+		excused     bool
+		conflicting string
+	}{
+		{name: "GitHub answers the recorded head conflicting", read: mergerReads(42, headOne, record.MergeabilityConflicting, record.MergeStateDirty),
+			excused: true, conflicting: headOne},
+		{name: "the move carries no read", read: nil},
+		{name: "GitHub answers the recorded head mergeable", read: mergerReads(42, headOne, record.MergeabilityMergeable, record.MergeStateClean)},
+		{name: "GitHub has not computed an answer", read: mergerReads(42, headOne, record.MergeabilityUnknown, record.MergeStateUnknown)},
+		{name: "GitHub answers for a head the record does not stand at", read: mergerReads(42, headTwo, record.MergeabilityConflicting, record.MergeStateDirty)},
+		{name: "GitHub answers for another pull request", read: mergerReads(43, headOne, record.MergeabilityConflicting, record.MergeStateDirty)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := workBackEngine(50, Hook{Name: "work-back", On: HookEventWorkBack, Every: 1,
+				Roles: []claim.Role{claim.RoleImplementer}, Prompt: saySoFar})
+			seedWorkBackIssue(t, pool, headOne)
+			standsIn(t, pool, phase.Merging, "retro")
+
+			applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleMerger,
+				To: phase.Implementing, Reason: mergerConflictReason, Mergeability: tc.read})
+
+			moves, prompts, posted := backwardMoves(t, pool), hookPrompts(t, pool), firingMessages(t, pool)
+			if tc.excused && (len(moves) != 0 || len(prompts) != 0 || len(posted) != 0) {
+				t.Fatalf("the move counted %v and the hook wrote %d role messages and posted %q, want no pair and no firing: GitHub answered the head conflicting with its base, so nobody sent the work back",
+					moves, len(prompts), posted)
+			}
+			if !tc.excused {
+				if moves["merging-implementing"] != 1 || len(moves) != 1 {
+					t.Fatalf("the move counted %v, want the one move back under merging-implementing", moves)
+				}
+				want := "Legion hook work-back fired at 1 moves back: merging to implementing. Prompted: implementer."
+				if len(prompts) != 1 || !sameStrings(posted, []string{want}) {
+					t.Fatalf("the hook wrote %d role messages and posted %q, want one message to the implementer and the one line %q", len(prompts), posted, want)
+				}
+			}
+			if pass := implementerPass(t, pool); pass != 1 {
+				t.Fatalf("the implementer's row counts %d passes, want 1: every move back raises the pass, a conflict round too", pass)
+			}
+			if got := conflictingHead(t, pool); got != tc.conflicting {
+				t.Fatalf("the record holds %q conflicting after the move, want %q", got, tc.conflicting)
+			}
+			if got := issuePhase(t, pool); got != phase.Implementing {
+				t.Fatalf("after the merger's move the issue is in %s, want implementing", got)
+			}
+			if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "Reason: "+mergerConflictReason+".") {
+				t.Fatalf("the implementer was started with %q, want the merger's own reason in it: the move is the merger's, made once", task)
+			}
+		})
 	}
 }

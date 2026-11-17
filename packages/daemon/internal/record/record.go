@@ -823,20 +823,21 @@ type PullRequest struct {
 	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
 	// when GitHub was last asked.
 	StateReadAt time.Time
-	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
-	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
-	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
-	// for the head unmergeable on the base branch's own tip (workflow's mergeQueueConflict). A read
-	// that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's answer
-	// for a head sitting in the merge queue, neither writes nor clears it. "" means no head is held
-	// conflicting.
+	// ConflictingHead is the head the daemon last judged conflicting with its base, written by a
+	// read of GitHub that finds CONFLICTING for this head (workflow's recordMergeability): the
+	// daemon's own read of the pull request, and the read it makes just before the merger's
+	// backward move out of merging, which that move carries (intake.BackwardMove.Mergeability). A
+	// read that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's
+	// answer for a head sitting in the merge queue, neither writes nor clears it. "" means no head
+	// is held conflicting.
 	//
 	// A backward move made while it is non-empty and equal to HeadSHA is a conflict round, which
-	// review_round_cap does not count (PhaseRow.ConflictRounds): the implementer answers such a
-	// round with a forward merge, which moves HeadSHA and so ends the exemption with no write of
-	// its own. Mergeability beside it cannot carry the fact, because every read rewrites it from
-	// GitHub's answer and that answer is UNKNOWN while the head is queued, so a move made after a
-	// later read would read as no conflict.
+	// review_round_cap does not count (PhaseRow.ConflictRounds) and which raises no pair and fires
+	// no hook (workflow's recordPass): the implementer answers such a round with a forward merge,
+	// which moves HeadSHA and so ends the exemption with no write of its own. Mergeability beside
+	// it cannot carry the fact, because every read rewrites it from GitHub's answer and that
+	// answer is UNKNOWN while the head is queued, so a move made after a later read would read as
+	// no conflict.
 	ConflictingHead string
 	// MergeSHA is the merge commit GitHub reported for the pull request, which the production
 	// check's agent looks for in production: empty until the merge, and for a pull request merged

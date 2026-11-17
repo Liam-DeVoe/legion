@@ -1438,6 +1438,21 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// The merger's move out of merging carries the daemon's read of GitHub made just before it
+	// (intake.BackwardMove.Mergeability), written to the record as any read of GitHub is
+	// (recordMergeability) and before the move is classified: a merger sends a head back when
+	// GitHub shows it dirty after the merge queue took it out, and the merge queue's own read
+	// records no conflict, so without this the record would hold none and the move would be
+	// counted as work sent back (recordPass). The read is recorded and nothing else is done with
+	// it here: the one transition below is the merger's own, with the merger's reason, where the
+	// mergeability handler's conflict move would leave the merger's refused. A read of another
+	// pull request, or of a head the record has moved past, is dropped, and the move is then
+	// classified on the record as it stands, as it is when there was no read at all.
+	if read := fact.Mergeability; read != nil && pr != nil && read.Number == pr.Number && e.sameRepository(read.Repo, pr.Repo) {
+		if _, err := e.recordMergeability(ctx, tx, pr, *read); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 

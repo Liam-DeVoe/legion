@@ -482,8 +482,12 @@ pull request's merge state, which GitHub computes once the entry is no longer qu
 GitHub still merges conflicted with an entry queued ahead of it rather than with the base, so the
 merger enqueues that head once more and no further, says so on the issue, and the issue stays in
 `merging`. A head GitHub reports dirty conflicts with the base itself and goes back to
-`implementing`; a merge state GitHub answers unknown is asked again on the merger's own backoff
-for up to five minutes and then read the same way.
+`implementing`. The daemon reads the head's mergeability from GitHub just before it applies the
+merger's move back: where that read answers conflicting, the daemon records the conflict before it
+counts the move, which is then a conflict round and raises no pair; where GitHub does not answer,
+or answers mergeable or not yet computed, the move is counted as work sent back. A merge state
+GitHub answers unknown is asked again on the merger's own backoff for up to five minutes and then
+read the same way.
 
 What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
 or by its own read: it writes `done`, whether the merger's completion arrived before that or after
