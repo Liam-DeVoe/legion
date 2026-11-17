@@ -198,9 +198,9 @@ type PlanWrite struct {
 }
 
 // IssuePlan is one finished issue of a project as the read of the project answers it: its plan
-// (the node of its newest run, nil where it has none), the rating of each retro of its runs, the
-// earliest start and the latest end its runs hold (each nil where none holds one), and its count
-// of runs of kind step that failed.
+// (the node of its newest run, nil where it has none), the rating of each retro of its runs (nil
+// where no retro rated it; the route answers that as []), the earliest start and the latest end its
+// runs hold (each nil where none holds one), and its count of runs of kind step that failed.
 type IssuePlan struct {
 	Issue, Title       string
 	ClosedAt           time.Time

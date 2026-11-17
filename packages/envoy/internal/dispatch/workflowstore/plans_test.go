@@ -376,7 +376,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closedSecond, Plan: plan,
 			Ratings:   []Rating{{Rating: 4, Reason: "The tester found the bug.", StepID: retroOne, EndedAt: new(minute(22))}},
 			StartedAt: new(minute(0)), EndedAt: new(minute(30)), FailedSteps: 2},
-		{Issue: "LEG-4", Title: "Title of LEG-4", ClosedAt: closedFirst, Ratings: []Rating{}},
+		{Issue: "LEG-4", Title: "Title of LEG-4", ClosedAt: closedFirst},
 	}
 	got := make([]string, len(read))
 	for index, issue := range read {
@@ -388,11 +388,6 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	}
 	if !slices.Equal(got, wanted) {
 		t.Fatalf("the read lists\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wanted, "\n"))
-	}
-	for _, issue := range read {
-		if issue.Ratings == nil {
-			t.Fatalf("%s lists its ratings as nil, want an empty list", issue.Issue)
-		}
 	}
 
 	other, err := ProjectPlans(context.Background(), pool, "LEGX", nil, nil)

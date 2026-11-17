@@ -125,7 +125,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 			return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 		}
 		if len(issues) == 0 || issues[len(issues)-1].issue.Issue != key {
-			issues = append(issues, gathering{issue: IssuePlan{Issue: key, Title: title, ClosedAt: closed.UTC(), Ratings: []Rating{}}})
+			issues = append(issues, gathering{issue: IssuePlan{Issue: key, Title: title, ClosedAt: closed.UTC()}})
 		}
 		last := &issues[len(issues)-1]
 		switch {
