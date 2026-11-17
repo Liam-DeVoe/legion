@@ -16,7 +16,11 @@
 -- this release: the issue moved (its phase, its generation or its pass), the role that works the
 -- place had its entry raised, which a start of that place does after the run before it ended, or,
 -- for a step that is no merge, its root lingered or was re-admitted. A merge runs on through the
--- linger and the root's re-admission, until its merger starts again. Such a run gets its end here,
+-- linger and the root's re-admission, until its merger starts again, it lands, or the linger's
+-- close retires it: a close the release applied, at a generation of the root from the rollback's
+-- to now's, marks its fact processed ('linger:<root>:<generation>', internal/daemon's outbox), and
+-- it ends the merge of a member it did not hand over whose pull request is not open, or whose pull
+-- request closed after it (workflow's lingerExpired and closed). Such a run gets its end here,
 -- stopped, at the moment of the rollback, when Legion stopped recording it, as one step_record
 -- row of the identity the row kept (record) — the moment the run really ended is nowhere to be
 -- read, and a record left without an end would read running for good.
@@ -48,7 +52,7 @@
 -- on conflict (issue) do nothing;
 -- delete from schema_version where version = 20261117064152;
 with witnessed as (
-  select s.issue, s.task, s.kind, s.place, s.run, s.record, r.taken_at, r.witness as was,
+  select s.issue, s.task, s.kind, s.place, s.run, s.record, r.tree, r.taken_at, r.witness as was,
     step_run_witness(r.issue, r.tree) as now,
     -- The role whose entry each start of the place raises (workflow's stepOf): accepting's, the
     -- architect's, raises none.
@@ -63,7 +67,12 @@ with witnessed as (
       or w.was->'pass' is distinct from w.now->'pass'
       or w.was->'entries'->w.worker is distinct from w.now->'entries'->w.worker
       or w.kind <> 'merge' and (w.was->'root_generation' is distinct from w.now->'root_generation'
-        or w.was->'lingers' is distinct from w.now->'lingers')) as ended
+        or w.was->'lingers' is distinct from w.now->'lingers')
+      or w.kind = 'merge' and exists (
+          select 1 from generate_series((w.was->>'root_generation')::bigint, (w.now->>'root_generation')::bigint) g
+          join processed_events p on p.source = 'outbox' and p.event_id = 'linger:' || w.tree || ':' || g
+          where not exists (select 1 from handovers h where h.issue = w.issue and h.tree = w.tree and h.linger_generation = g))
+        and not exists (select 1 from pull_requests pr where pr.issue = w.issue and pr.state = 'open')) as ended
   from witnessed w
 ), counted as (
   select j.*, (j.run <> 'open' or j.ended) and (

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
@@ -93,6 +94,17 @@ func (s rollBackStore) entry(key, role string) {
 	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass, entry)
 		values ('%s', '%s', '', '', 0, '', 0, 1)
 		on conflict (issue, role) do update set entry = phases.entry + 1`, key, role))
+}
+
+// pullRequest is key's pull request, #number, in state.
+func (s rollBackStore) pullRequest(key string, number int, state record.PullRequestState) {
+	s.t.Helper()
+	if err := pgx.BeginFunc(s.t.Context(), s.store.Pool(), func(tx pgx.Tx) error {
+		return record.NewStore().PutPullRequest(s.t.Context(), tx, record.PullRequest{Issue: key, Repo: "sjawhar/legion", Number: number,
+			Branch: "legion/" + key, HeadSHA: "head-" + key, State: state, MergeState: record.MergeStateClean, Failing: []string{}})
+	}); err != nil {
+		s.t.Fatalf("put the pull request of %s: %v", key, err)
+	}
 }
 
 // stepRole and stepType are the role and the type of the record of each place (workflow's
@@ -414,6 +426,109 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 		}
 		s.assertRollForwardEnd(key+" step 5", ends[key][0], rolledBackAt)
 	}
+}
+
+// The close of a parked tree's linger ends the merge of a member it does not hand over whose pull
+// request can no longer land, and the unmerged close of that pull request after it ends one the
+// close left open (workflow's lingerExpired and closed). An earlier release makes the close and
+// writes no end, and nothing of the member's witness moves, so the roll forward reads the close
+// where it is durable: the processed fact of the linger's expiry at the root's generation, no
+// hand-over of the member by that close, and a pull request that is not open. It ends that run
+// once, stopped, at the moment of the rollback: a held merger's and an unheld one's whose pull
+// request closed, and a held merger's the close left open before the rollback, whose pull request
+// closed under the earlier release. The controls stay open: a linger whose deadline passed with no
+// close applied, a linger still running, a member the close handed over, and a held merger whose
+// pull request is open, which the close leaves open for its merge. A second rollback and roll
+// forward write no second end.
+func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
+	s := newRollBackStore(t)
+	type tree struct {
+		root, member string
+		held         bool
+		pr           record.PullRequestState
+		// running is a linger whose deadline has not passed; expired, the close of the linger
+		// the earlier release applied, and closedBefore, one this release applied before the
+		// rollback; handed, its hand-over of the member; closesAfter, the pull request's
+		// unmerged close under the earlier release.
+		running, expired, closedBefore, handed, closesAfter bool
+		ends                                                bool
+	}
+	trees := []tree{
+		{root: "LEGION-290", member: "LEGION-291", held: true, pr: record.PullRequestClosed, expired: true, ends: true},
+		{root: "LEGION-300", member: "LEGION-301", pr: record.PullRequestClosed, expired: true, ends: true},
+		{root: "LEGION-350", member: "LEGION-351", held: true, pr: record.PullRequestOpen, closedBefore: true, closesAfter: true, ends: true},
+		{root: "LEGION-310", member: "LEGION-311", held: true, pr: record.PullRequestClosed},
+		{root: "LEGION-320", member: "LEGION-321", held: true, pr: record.PullRequestClosed, running: true},
+		{root: "LEGION-330", member: "LEGION-331", pr: record.PullRequestOpen, expired: true, handed: true},
+		{root: "LEGION-340", member: "LEGION-341", held: true, pr: record.PullRequestOpen, expired: true},
+	}
+	expire := func(tr tree) {
+		s.exec(fmt.Sprintf(`insert into processed_events (source, event_id) values ('outbox', 'linger:%s:1')`, tr.root))
+	}
+	for i, tr := range trees {
+		deadline := "now() - interval '1 minute'"
+		if tr.running {
+			deadline = "now() + interval '1 hour'"
+		}
+		s.issue(tr.root, tr.root, "done", "", 1)
+		s.exec(fmt.Sprintf(`update issues set status = 'backlog', linger_until = %s where key = '%s'`, deadline, tr.root))
+		phase, held := "merging", ""
+		if tr.held {
+			phase, held = "held", "merging"
+		}
+		s.issue(tr.member, tr.root, phase, held, 4)
+		s.entry(tr.member, "merger")
+		s.pullRequest(tr.member, 40+i, tr.pr)
+		s.row(tr.member, "merge", 0, "open")
+		if tr.closedBefore {
+			expire(tr)
+		}
+	}
+	s.wayBack()
+	var rolledBackAt time.Time
+	if err := s.store.Pool().QueryRow(s.t.Context(), `select taken_at from step_starts_rollback where issue = 'LEGION-291'`).Scan(&rolledBackAt); err != nil {
+		t.Fatalf("read the moment the way back kept: %v", err)
+	}
+	// The earlier release: the close of each linger it applies retires the tree's claims and
+	// workspaces, hands over what it hands over, and marks the fact processed, writing no end.
+	for _, tr := range trees {
+		if tr.expired {
+			expire(tr)
+		}
+		if tr.handed {
+			s.exec(fmt.Sprintf(`insert into handovers (issue, tree, linger_generation) values ('%s', '%s', 1)`, tr.member, tr.root))
+		}
+		if tr.closesAfter {
+			s.exec(fmt.Sprintf(`update pull_requests set state = 'closed' where issue = '%s'`, tr.member))
+		}
+	}
+	s.rollForward()
+	check := func(when string) {
+		t.Helper()
+		starts, ends := s.starts(), s.ends()
+		for _, tr := range trees {
+			place := tr.member + " merge 0"
+			want := keptStart{run: "open", starts: 2, id: s.recordID(place)}
+			if tr.ends {
+				want.run = "ended"
+			}
+			if got := starts[place]; got != want {
+				t.Errorf("%s %s = %+v, want %+v", when, place, got, want)
+			}
+			switch {
+			case !tr.ends && len(ends[tr.member]) != 0:
+				t.Errorf("%s the roll forward ended %s, whose merge the close left open: %+v", when, place, ends[tr.member])
+			case tr.ends && len(ends[tr.member]) != 1:
+				t.Errorf("%s the roll forward wrote %+v for %s, want the one end of the merge the close retired", when, ends[tr.member], place)
+			case tr.ends:
+				s.assertRollForwardEnd(place, ends[tr.member][0], rolledBackAt)
+			}
+		}
+	}
+	check("after the roll forward")
+	s.wayBack()
+	s.rollForward()
+	check("after a second rollback and roll forward")
 }
 
 // The way back an operator runs keeps what the roll forward needs and touches nothing else: every
