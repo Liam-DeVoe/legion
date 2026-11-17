@@ -185,9 +185,11 @@ func forceMetadataMachine(t *testing.T) {
 // the name to, so it must ask under brokerclient.SessionFor and never under
 // AGENT_SECRETS_SESSION — which is unset on most boxes, and on the rest is the name this machine
 // trades its own identity under.
-// Serial: it sets process-wide variables - AGENT_SECRETS_KEY_DIR and the brokerclient sign-in
-// ones (BrokerURLVar, SignInDirVar, SessionVar, IdentityVar, MachineTokenFileVar) - which
-// login and brokerclient.SignIns read for themselves; t.Setenv panics under t.Parallel.
+// Serial: it sets process-wide variables - AGENT_SECRETS_KEY_DIR, the brokerclient sign-in ones
+// (SignInDirVar, BrokerURLVar, SessionVar, and loginIssuer's SignInIssuerVar, SignInClientIDVar
+// and SignInClientSecretFileVar), and forceMetadataMachine's IdentityVar, MachineAudienceVar and
+// GCE_METADATA_HOST - which login and brokerclient.SignIns read for themselves; t.Setenv panics
+// under t.Parallel.
 func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 	const person = "ada@example.com"
 	for _, machineSession := range []string{"", "machine-of-this-box"} {
@@ -232,9 +234,11 @@ func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 // somebody ran `agent-secrets login` again — which made a second box key and a second sign-in
 // on that person's own list. The box registers the session again under the same box key
 // instead, once, and writes the fresh id into the record it already has.
-// Serial: it sets process-wide variables - AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_HELPER_SOCK and
-// the brokerclient sign-in ones - which login and brokerclient.SignIns read for themselves;
-// t.Setenv panics under t.Parallel.
+// Serial: it sets process-wide variables - AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_HELPER_SOCK, the
+// brokerclient sign-in ones (SignInDirVar, BrokerURLVar, SessionVar, and loginIssuer's
+// SignInIssuerVar, SignInClientIDVar and SignInClientSecretFileVar), and forceMetadataMachine's
+// IdentityVar, MachineAudienceVar and GCE_METADATA_HOST - which login and brokerclient.SignIns
+// read for themselves; t.Setenv panics under t.Parallel.
 func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	const person = "ada@example.com"
 	broker := newLoginBroker(t)
@@ -327,6 +331,11 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 // configures, and `agent-secrets login` finds it from the broker's exchange audience: the trade
 // carries the metadata server's identity token as its actor. A broker that names no exchange
 // audience is refused naming that, since a sign-in has no machine to act on.
+// Serial: each row sets process-wide variables - loginIssuer's SignInIssuerVar, SignInClientIDVar
+// and SignInClientSecretFileVar, GCE_METADATA_HOST (startMetadataServer), HOME, SignInDirVar,
+// BrokerURLVar, SessionVar, IdentityVar and GOOGLE_APPLICATION_CREDENTIALS - and clientConfig,
+// the package-level settings the login form's loadClientConfig fills; t.Setenv panics under
+// t.Parallel.
 func TestLoginFindsTheMachineWithNoSetting(t *testing.T) {
 	for _, row := range []struct {
 		name     string

@@ -466,6 +466,9 @@ func machineExchanges(broker *chainBroker) []url.Values {
 // starts with no AGENT_SECRETS_* variable at all, and the use command still finds the broker in
 // ~/.config/agent-secrets/config and trades the machine's own identity there. A variable that is
 // set wins over the file.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer points at
+// the metadata server withMetadata starts and the rig copies into the binary's environment;
+// t.Setenv panics under t.Parallel.
 func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 	binary := chainBinary(t)
 	fromFile := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -503,6 +506,9 @@ func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 // AGENT_SECRETS_HELPER_SOCK but is in no session the helper registered is skipped by the helper
 // and reaches the machine, which trades its own identity, registers one enrollment and keeps it in
 // the machine cache. Each backend's row reads the injection line its own store names.
+// Serial: each row sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer
+// points at the metadata server withMetadata starts and the rig copies into the binary's
+// environment; t.Setenv panics under t.Parallel.
 func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 	binary := chainBinary(t)
 	for _, store := range []string{"aws", "gcp"} {
@@ -531,6 +537,9 @@ func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 // TestAnOlderBrokerWithoutExchangeAudiencesSkipsTheMachineSource: a broker that names no exchange
 // audience accepts no machine identity, so the machine source is skipped with that reason and the
 // metadata server is never asked.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer points at
+// the metadata server withMetadata starts and the rig copies into the binary's environment;
+// t.Setenv panics under t.Parallel.
 func TestAnOlderBrokerWithoutExchangeAudiencesSkipsTheMachineSource(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", ""))
@@ -569,6 +578,10 @@ func (r *chainRig) writeConfigFile(settings map[string]string) {
 // identity the machine source trades, from the environment or the config file, and detection is
 // not tried: a broker that names no exchange audience, which detection would skip, still sees the
 // forced identity's trade. A machine session already in the cache signs before either.
+// Serial: its environment and config-file rows set a process-wide variable, GCE_METADATA_HOST,
+// which startMetadataServer points at the metadata server withMetadata starts and the rig copies
+// into the binary's environment; t.Setenv panics under t.Parallel. Its cached-session row starts
+// no metadata server and runs in parallel.
 func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 	binary := chainBinary(t)
 	for _, row := range []string{"the environment", "the config file"} {
@@ -595,6 +608,7 @@ func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 	}
 
 	t.Run("a cached machine session", func(t *testing.T) {
+		t.Parallel()
 		broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 		r := newChainRig(t, binary, broker)
 		r.writeMachineCacheFixture("cached-enrollment")
@@ -614,6 +628,9 @@ func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 // for a Kubernetes identity, so AGENT_SECRETS_MACHINE_IDENTITY=kubernetes, from the environment or
 // the config file, is a usage error naming the values agent-secrets takes, and nothing is asked of
 // the broker or the metadata server.
+// Serial: each row sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer
+// points at the metadata server withMetadata starts and the rig copies into the binary's
+// environment; t.Setenv panics under t.Parallel.
 func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 	binary := chainBinary(t)
 	for _, row := range []string{"the environment", "the config file"} {
@@ -645,6 +662,12 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 // TestSignInTakesEffectAfterAMachineCache is c5's unit half: a machine that has already used its
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
+// Serial: it sets process-wide variables - GCE_METADATA_HOST (withMetadata's startMetadataServer,
+// and forceMetadataMachine's again), XDG_STATE_HOME, AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL
+// and AGENT_SECRETS_SESSION, AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_AUDIENCE
+// (forceMetadataMachine), and loginIssuer's AGENT_SECRETS_SIGNIN_ISSUER,
+// AGENT_SECRETS_SIGNIN_CLIENT_ID and AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE - which the
+// in-process login reads for itself; t.Setenv panics under t.Parallel.
 func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -682,6 +705,9 @@ func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
 // session in the launcher's key directory, marked machine-session. The first use moves it into the
 // machine cache, so the key directory is a launcher's alone again, and signs with it; a cache that
 // already holds a session keeps its own and the key directory's is removed.
+// Serial: each row sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer
+// points at the metadata server withMetadata starts and the rig copies into the binary's
+// environment; t.Setenv panics under t.Parallel.
 func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 	binary := chainBinary(t)
 	t.Run("an empty cache", func(t *testing.T) {
@@ -750,6 +776,10 @@ func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 // machine with no identity keeps no audience pin, so a later audience or broker still gets the
 // no-source refusal. Each backend's rows that run the command read the injection line its own
 // store names.
+// Serial: its rows that start a metadata server set a process-wide variable, GCE_METADATA_HOST,
+// which startMetadataServer points at the metadata server withMetadata starts and the rig copies
+// into the binary's environment; t.Setenv panics under t.Parallel. The rows that start none (no
+// source, and the two machines with no identity) run in parallel.
 func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 	binary := chainBinary(t)
 	// stoppedHelper is the check of a row whose helper is expected and not running: the command
@@ -799,6 +829,9 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 				name  string
 				setup func(t *testing.T, r *chainRig, broker *chainBroker) *metadataServer
 				check func(t *testing.T, r *chainRig, broker *chainBroker, metadata *metadataServer, code int, stdout, stderr string)
+				// parallel is a row that starts no metadata server, and so sets no variable of
+				// the process.
+				parallel bool
 			}{
 				{
 					name: "helper says not a session",
@@ -908,9 +941,10 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 					},
 				},
 				{
-					name:  "no source",
-					setup: func(*testing.T, *chainRig, *chainBroker) *metadataServer { return nil },
-					check: noSource,
+					name:     "no source",
+					setup:    func(*testing.T, *chainRig, *chainBroker) *metadataServer { return nil },
+					check:    noSource,
+					parallel: true,
 				},
 				{
 					// A laptop with no identity of its own ran a use command once, and then the
@@ -923,7 +957,8 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 						broker.setSettings(storeSettings(store, "rotated-audience"))
 						return nil
 					},
-					check: noSourceAndNoPin,
+					check:    noSourceAndNoPin,
+					parallel: true,
 				},
 				{
 					name: "a machine with no identity, after a switch to another broker",
@@ -934,7 +969,8 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 						r.env["AGENT_SECRETS_URL"] = other.URL()
 						return nil
 					},
-					check: noSourceAndNoPin,
+					check:    noSourceAndNoPin,
+					parallel: true,
 				},
 				{
 					// A broker of #4143's first head still names the Kubernetes exchange audience
@@ -961,6 +997,9 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 			}
 			for _, row := range rows {
 				t.Run(row.name, func(t *testing.T) {
+					if row.parallel {
+						t.Parallel()
+					}
 					broker := newChainBroker(t, storeSettings(store, "agent-secrets-vm"))
 					r := newChainRig(t, binary, broker)
 					metadata := row.setup(t, r, broker)
@@ -976,6 +1015,9 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 // choose the audience the machine mints its Google identity token for, so the first audience the
 // machine reads is kept beside its session, and a later read naming another is refused before any
 // token is minted for it, naming both audiences and the file that keeps the first.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer points at
+// the metadata server withMetadata starts and the rig copies into the binary's environment;
+// t.Setenv panics under t.Parallel.
 func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -1008,6 +1050,9 @@ func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 // the old key.pem (a home backup, a disk kept across a reboot) signs for no later enrollment. The
 // call that met the refusal is signed again by the new key, its request object included, which the
 // broker holds to the enrollment's own key.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer points at
+// the metadata server withMetadata starts and the rig copies into the binary's environment;
+// t.Setenv panics under t.Parallel.
 func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -1047,6 +1092,9 @@ func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
 // TestMachineRegistrationsAtOnceKeepOneSession: processes that each find the machine cache empty
 // at once register one session between them, and every one signs with it: the cache's key.pem is
 // always the key its enrollment was registered for.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which startMetadataServer points at
+// the metadata server withMetadata starts and the rig copies into the binary's environment;
+// t.Setenv panics under t.Parallel.
 func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -1096,6 +1144,12 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 // User= with no HOME at all. The client then reads its settings file, and keeps its machine
 // session, under the home the password database gives its user, so the unit's second command
 // signs with the session its first registered rather than trading and enrolling again.
+// Serial: it sets process-wide variables - isolateChain's HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR,
+// AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, then HOME and
+// XDG_STATE_HOME again, AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_HELPER_SOCK,
+// GOOGLE_APPLICATION_CREDENTIALS and GCE_METADATA_HOST (startMetadataServer) - and the
+// package-level passwdHome and clientConfig (loadClientConfig), which the in-process buildSigner
+// reads; t.Setenv panics under t.Parallel.
 func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
 	isolateChain(t)
 	home := t.TempDir()
@@ -1154,12 +1208,18 @@ func pemThumbprint(t *testing.T, data []byte) string {
 // would take its identity from, registering nothing, and the helper's socket on a line of its own
 // whenever the helper answered and is not that source; with none it prints nothing on stdout and
 // the chain's refusal on stderr.
+// Serial: its metadata row sets a process-wide variable, GCE_METADATA_HOST, which
+// startMetadataServer points at the metadata server withMetadata starts and the rig copies into
+// the binary's environment; t.Setenv panics under t.Parallel. Every other row starts no metadata
+// server and runs in parallel.
 func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
 		setup func(t *testing.T, r *chainRig) string // the stdout the row wants
 		exit  int
+		// serial is the row that starts a metadata server, and so sets a variable of the process.
+		serial bool
 	}{
 		{name: "key dir", setup: func(t *testing.T, r *chainRig) string {
 			writeSessionFiles(t, r.keyDir(), "launcher-enrollment")
@@ -1174,7 +1234,7 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 			r.env["AGENT_SECRETS_HELPER_SOCK"] = sock
 			return "helper: " + sock + "\n"
 		}},
-		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
+		{name: "metadata", serial: true, setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
 			return "machine: " + brokerclient.NewMetadataIdentity("agent-secrets-vm").Describe() + "\n"
 		}},
@@ -1192,6 +1252,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
+			if !row.serial {
+				t.Parallel()
+			}
 			broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 			r := newChainRig(t, binary, broker)
 			want := row.setup(t, r)

@@ -272,6 +272,7 @@ func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
 // BROKER_EXCHANGE_K8S_AUDIENCE: a pod's trade there mints no launcher credential, so no machine
 // could register a session under it.
 func TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor(t *testing.T) {
+	t.Parallel()
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")
