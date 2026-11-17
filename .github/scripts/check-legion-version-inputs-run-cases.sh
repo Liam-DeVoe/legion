@@ -226,6 +226,26 @@ check "names the spelling that is not canonical, and the one to write" \
   "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`./go.work.sum\`, a path that is not canonical: .*; write it \`go.work.sum\`")"
 check "names the glob" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`packages/envoy/\*\`, a path with a wildcard")"
 
+# A directory argument without its / was read as a file: a push pattern naming the directory alone
+# counted as covering it (R7), and a `!` pattern inside it went unseen (R8). Both are refused as a
+# plain path in the wrong spelling.
+dir_rule="this check reads a path without one as a file, so it cannot say what a push pattern covers inside it"
+echo "case: a directory the version step reads written without its / (R7, R8)"
+root=$(written plain-dir-literal)
+replace "$root/.github/workflows/release-envoy-listener.yaml" ' packages/envoy/ ' ' packages/envoy '
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/envoy", "packages/daemon/**", ".github/**", "go.work", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on packages/envoy with the literal push path packages/envoy (R7)" "$(is "$status" 1)"
+check "names it and the spelling to write" \
+  "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`packages/envoy\`, the directory packages/envoy without its trailing /: $dir_rule; write it \`packages/envoy/\`")"
+root=$(written plain-dir-negated)
+replace "$root/.github/workflows/release-envoy-listener.yaml" ' packages/envoy/ ' ' packages/envoy '
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!packages/envoy/alpha/**"]\n'
+run_check "$root"
+check "exits 1 on packages/envoy with a ! pattern inside it (R8)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`packages/envoy\`, the directory packages/envoy without its trailing /")"
+
 echo "case: a later ! pattern reaching into a path the version step reads"
 root=$(written paths-negated)
 replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!packages/envoy/alpha/**"]\n'
