@@ -246,22 +246,29 @@ export function IssueMarginPanel({
   // The command bar runs the reader asked that changed the issue, from the outline's tree read:
   // this observes that read and sends no request of its own (`useRunRows`).
   const runs = useRunRows(issue);
-  // A Retry of the tree read that holds no answer takes the failure's line away as the read
-  // starts again, and the focus on that Retry would fall to the page's body with it, where no
-  // keyboard action may leave it (decision 162 of dispatch://INFRA-1196). Once the line has gone
-  // under the reader's press, a focus left on the body goes to the list's own control, as a
-  // focused row's list hands it to its control (`NodeReferences.tsx`).
+  // A Retry of the tree read takes the focus off itself, and the focus would be left on the
+  // page's body, where no keyboard action may leave it (decision 162 of dispatch://INFRA-1196).
+  // Where the read holds no answer, the failure's line goes as the read starts again; where it
+  // holds one, the line stays under the rows with its Retry disabled until the read ends, and a
+  // browser moves the focus off a control that becomes disabled. So once no Retry of the line
+  // waits on the read the reader's press sent, a focus left on the body goes back to the line's
+  // Retry where that read failed again, and to the list's own control where the line has gone,
+  // as a focused row's list hands it to its control (`NodeReferences.tsx`).
   const referencesToggle = useRef<HTMLButtonElement>(null);
+  const runsFailure = useRef<HTMLDivElement>(null);
   const runsRetryHeld = useRef(false);
   const retryRuns = () => {
     runsRetryHeld.current = true;
     runs.retry();
   };
   useLayoutEffect(() => {
-    if (!runsRetryHeld.current || runs.failed) return;
+    if (!runsRetryHeld.current || runs.retrying) return;
     runsRetryHeld.current = false;
     if (document.activeElement === null || document.activeElement === document.body) {
-      referencesToggle.current?.focus({ preventScroll: true });
+      (runs.failed
+        ? runsFailure.current?.querySelector("button")
+        : referencesToggle.current
+      )?.focus({ preventScroll: true });
     }
   });
   // Approve and Request changes are here wherever no approval request waits on the reader,
@@ -572,11 +579,13 @@ export function IssueMarginPanel({
               {/* A tree read that failed leaves the list's own rows drawn, with the failure
                   under them and its Retry, which reads the tree again. */}
               {runs.failed ? (
-                <DetailsErrorLine
-                  message={ANSWER_LINES.references_unreadable}
-                  onRetry={retryRuns}
-                  retrying={runs.retrying}
-                />
+                <div ref={runsFailure}>
+                  <DetailsErrorLine
+                    message={ANSWER_LINES.references_unreadable}
+                    onRetry={retryRuns}
+                    retrying={runs.retrying}
+                  />
+                </div>
               ) : null}
             </>
           ) : null}

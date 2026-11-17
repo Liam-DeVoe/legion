@@ -18,6 +18,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { ApiError, api } from "../../../api/client";
+import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { RUN_PATH } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
@@ -95,14 +96,23 @@ function draw(answer: () => Promise<GraphReferences>, id = RUN) {
   return { getReferences, view };
 }
 
-/** `NotFoundPage` drawn on its own: its markup, and the title it gives the tab. */
-function notFoundAlone(): { readonly markup: string; readonly title: string } {
+/** `NotFoundPage` drawn on its own: its markup, the title it gives the tab, and the name of its
+ *  one link. */
+function notFoundAlone(): {
+  readonly link: string;
+  readonly markup: string;
+  readonly title: string;
+} {
   const alone = render(
     <MemoryRouter>
       <NotFoundPage />
     </MemoryRouter>
   );
-  const drawn = { markup: alone.container.innerHTML, title: document.title };
+  const drawn = {
+    link: within(alone.container).getByRole("link").textContent ?? "",
+    markup: alone.container.innerHTML,
+    title: document.title,
+  };
   alone.unmount();
   return drawn;
 }
@@ -135,6 +145,27 @@ test("a 404 draws NotFoundPage", async () => {
     const { getReferences, view } = draw(() => Promise.resolve(answerOf([])), id);
     expect(view.container.innerHTML).toBe(alone.markup);
     expect(getReferences).toHaveBeenCalledTimes(0);
+    restore?.();
+    restore = undefined;
+  }
+});
+
+// The run's read keeps its own retry rule in a client whose default is another: a missing run
+// (400 or 404) is asked for once, and any other failure as often as `queryRetry` asks every read
+// again (`main.tsx`).
+test("a missing run is asked for once, and any other failure as every read is", async () => {
+  const failure = new ApiError(500, {});
+  let asked = 1;
+  while (queryRetry(asked - 1, failure)) asked += 1;
+  for (const [refusal, times] of [
+    [new ApiError(404, { code: "NOT_FOUND" }), 1],
+    [new ApiError(400, {}), 1],
+    [failure, asked],
+  ] as const) {
+    const { getReferences } = draw(() => Promise.reject(refusal));
+    // The loading line stands while the read is asked again, and goes once it has failed.
+    await waitFor(() => expect(screen.queryByText(ANSWER_LINES.loading_older)).toBeNull());
+    expect(getReferences, `the asks of a ${refusal.status}`).toHaveBeenCalledTimes(times);
     restore?.();
     restore = undefined;
   }
@@ -232,6 +263,27 @@ test("a Retry the reader pressed keeps its line until the read lands, then hands
   const heading = await screen.findByRole("heading", { level: 1, name: RUN_WORD });
   expect(screen.queryByRole("alert")).toBeNull();
   expect(document.activeElement, "the answer left the focus off the page's heading").toBe(heading);
+});
+
+// A Retry whose read the server answers 404 draws the not-found page in place of the line and
+// the Retry the reader's focus is on, and the focus goes to that page's link rather than fall
+// to the page's body (decision 162 of dispatch://INFRA-1196).
+test("a Retry the server answers 404 hands the focus to the not-found page's link", async () => {
+  const alone = notFoundAlone();
+  const user = userEvent.setup();
+  const { getReferences, view } = draw(() => Promise.reject(new ApiError(500, {})));
+  expect(await screen.findByRole("alert")).toHaveTextContent(ANSWER_LINES.run_unreadable);
+  getReferences.mockImplementation(() => Promise.reject(new ApiError(404, { code: "NOT_FOUND" })));
+  act(() => screen.getByRole("button", { name: CONTROL_LABELS.retry }).focus());
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(view.container.innerHTML).toContain(alone.markup));
+  for (const phrase of RUN_PAGE_PHRASES) {
+    expect(view.container.textContent).not.toContain(phrase);
+  }
+  const link = within(view.container).getByRole("link");
+  expect(link).toHaveAccessibleName(alone.link);
+  expect(document.activeElement, "the not-found page left the focus off its link").toBe(link);
 });
 
 test("the answered page draws the question as typed, the time and what it changed", async () => {

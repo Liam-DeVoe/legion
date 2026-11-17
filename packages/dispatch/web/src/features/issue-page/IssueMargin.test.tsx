@@ -1082,6 +1082,91 @@ test("the tree read's Retry hands the focus to Referenced by's control when its 
   }
 });
 
+// A Retry of the tree read that holds an answer keeps its line under the rows, disabled while
+// the read runs, and a browser moves the focus off a control that becomes disabled to the page's
+// body (decision 162 of dispatch://INFRA-1196): once the read fails again, the focus goes back
+// to the line's Retry.
+test("the tree read's Retry gives the focus back to its line when the read fails again", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const getIssueTree = spyOn(api, "getIssueTree").mockRejectedValue(new ApiError(500, {}));
+  const run = "6b1d3f5a-8c2e-4a7b-9d0f-1e2c3b4a5d6f";
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    // The outline's tree read holds an answer with the reader's run in it, and its read again
+    // failed: the answer stays, and so does the run's row.
+    await act(async () => {
+      queryClient.setQueryData<TreeAnswer>(issueTreeKey(issue.key), {
+        ...EMPTY_TREE,
+        nodes: [
+          {
+            attributes: {},
+            author: { id: "alice", kind: "user" },
+            id: run,
+            made_at: "2026-11-17T09:00:00Z",
+            parent: issue.key,
+            rank: null,
+            state: "live",
+            supertag: "interaction",
+            text: "Close this once the checks pass",
+            visibility: "author",
+          },
+        ],
+        tuples: [{ from: issue.key, kind: "changed_by_run", to: run }],
+      });
+      await queryClient.prefetchQuery({ ...issueTreeQuery(issue.key), staleTime: 0 });
+    });
+    const treeState = queryClient.getQueryState(issueTreeKey(issue.key));
+    expect(treeState?.status, "the tree read did not fail").toBe("error");
+    expect(treeState?.data, "the failed tree read dropped its answer").toBeDefined();
+    await user.click(await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by }));
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    expect(
+      list.querySelector("[data-extra-references]"),
+      "the list draws no row of the reader's run"
+    ).not.toBeNull();
+    const line = (await screen.findByText(ANSWER_LINES.references_unreadable)).parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    const retry = within(line).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    // The read the Retry sends fails once the Retry is disabled and the browser has moved the
+    // focus off it to the page's body. happy-dom keeps the focus on a disabled control and
+    // refuses to blur one, so the move is the body taking the focus.
+    const treeRead = Promise.withResolvers<TreeAnswer>();
+    getIssueTree.mockImplementation(() => treeRead.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(retry, "Retry is not disabled while its read is out").toBeDisabled()
+    );
+    act(() => document.body.focus());
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      treeRead.reject(new ApiError(500, {}));
+    });
+    await waitFor(() => expect(retry, "Retry is disabled once its read failed").toBeEnabled());
+    expect(
+      screen.getByText(ANSWER_LINES.references_unreadable).parentElement,
+      "the tree read's failure went from the line it stood in"
+    ).toBe(line);
+    expect(
+      document.activeElement,
+      "the tree read failed again and left the focus on the page's body"
+    ).toBe(retry);
+  } finally {
+    unmount();
+    getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // R11: the menu lists the properties with no value and presses the control that sets each one,
 // rather than drawing a second copy of it. It finds that control by the name the control
 // exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed

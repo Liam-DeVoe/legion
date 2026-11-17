@@ -235,6 +235,10 @@ test("a window focus sends no read of a loaded agent artifact, and the conversat
     type: "message.created",
   } as unknown as Parameters<typeof eventRefreshTargets>[0];
   const options = agentArtifactQuery("planner-session", "shot-png");
+  // A link mounted again reads by event, not by age.
+  expect(agentArtifactQuery("planner-session", "shot-png").staleTime).toBe(
+    Number.POSITIVE_INFINITY
+  );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.mount();
   const observer = new QueryObserver(queryClient, options);
