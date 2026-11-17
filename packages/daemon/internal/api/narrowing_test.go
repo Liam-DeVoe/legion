@@ -92,9 +92,10 @@ func narrowingState(t *testing.T) State {
 // narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
 // stateFor applies them: the `dropped` of every row of stateNarrowings whose contract is above
 // the caller's, since narrowingState carries something of every row. It does not run the rows,
-// so it checks stateFor rather than repeating it. One row writes no line where its contract
-// alone says it should: below whyAndLineFieldsContract, waitingOnIssueContract's row finds no
-// member's `kind` left, because the earlier row already took it, and so drops nothing.
+// so it checks stateFor rather than repeating it. Two rows write no line where their contract
+// alone says they should: below whyAndLineFieldsContract, waitingOnIssueContract's row finds no
+// member's `kind` left, because the earlier row already took it, and below assignmentsContract,
+// assignmentPlanContract's row finds no assignment left to take `plan` from; each drops nothing.
 func narrowingsExpected(contract int) []string {
 	var dropped []string
 	for _, narrowing := range stateNarrowings {
@@ -102,6 +103,9 @@ func narrowingsExpected(contract int) []string {
 			continue
 		}
 		if narrowing.contract == waitingOnIssueContract && contract < whyAndLineFieldsContract {
+			continue
+		}
+		if narrowing.contract == assignmentPlanContract && contract < assignmentsContract {
 			continue
 		}
 		dropped = append(dropped, narrowing.dropped)
@@ -284,15 +288,16 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every contract
-	// in stateNarrowings is served one line per row that finds something of its own, and a caller
-	// at quietTimeContract, the row just before waitingOnIssueContract's, the line of every row
-	// above it, the one row the first caller's body no longer reaches among them. One line for all
-	// of them, or a line that named the contract and nothing else, would leave a reader of the log
-	// to find out elsewhere what left the body. Three checks share the work. The table check
-	// guards the table: no two rows of stateNarrowings name the same keys, whichever callers would
-	// see them, so a line names one row. The per-caller check guards what one caller is told: no
-	// line twice. The last loop guards the sample: between the two callers every row writes its
-	// line.
+	// in stateNarrowings is served one line per row that finds something of its own, a caller at
+	// quietTimeContract, the row just before waitingOnIssueContract's, the line of every row
+	// above it, the one row the first caller's body no longer reaches among them, and a caller at
+	// assignmentsContract the line of assignmentPlanContract's row, which no assignment is left
+	// for below that contract. One line for all of them, or a line that named the contract and
+	// nothing else, would leave a reader of the log to find out elsewhere what left the body.
+	// Three checks share the work. The table check guards the table: no two rows of
+	// stateNarrowings name the same keys, whichever callers would see them, so a line names one
+	// row. The per-caller check guards what one caller is told: no line twice. The last loop
+	// guards the sample: between the three callers every row writes its line.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
 		namedBy := map[string]int{}
 		for _, narrowing := range stateNarrowings {
@@ -303,7 +308,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			namedBy[narrowing.dropped] = narrowing.contract
 		}
 		dropped := map[string]bool{}
-		for _, contract := range []int{supervise.PodUpdateContract - 1, quietTimeContract} {
+		for _, contract := range []int{supervise.PodUpdateContract - 1, quietTimeContract, assignmentsContract} {
 			told := map[string]bool{}
 			_, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(contract))
 			want := narrowingsExpected(contract)

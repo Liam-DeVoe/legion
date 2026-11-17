@@ -808,11 +808,13 @@ func statementBound(bound time.Duration) int64 {
 // served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
-// below OwnerPlanContract, the contract that added the hold reasons `task-stopped` and `children`
-// and the two words of `admission.held` for those holds, is served every issue held for either
-// with no `holdReason` and every held row of either word as `unclassified` with no `heldBy`
-// (withoutNewHoldReasons), values and not keys.
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); a caller below
+// OwnerPlanContract, the contract that added the hold reasons `task-stopped` and `children` and
+// the two words of `admission.held` for those holds, is served every issue held for either with
+// no `holdReason` and every held row of either word as `unclassified` with no `heldBy`
+// (withoutNewHoldReasons), values and not keys; and a caller below assignmentPlanContract, the
+// contract that added the group an experiment's arm set at each issue's draw, is served every
+// assignment without `plan` (withoutAssignmentPlans).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -943,6 +945,7 @@ var stateNarrowings = []stateNarrowing{
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{OwnerPlanContract, carriesNewHoldReasons, withoutNewHoldReasons, "the issues' holdReason task-stopped and children, " +
 		"and admission.held's words children_before_retro and task_stopped"},
+	{assignmentPlanContract, carriesAssignmentPlans, withoutAssignmentPlans, "the issues' assignments' plan"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1113,6 +1116,13 @@ const mergeWaitContract = 133
 // to below this one is served the one experiment's answer in the three keys it has read since 49
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
 const assignmentsContract = 141
+
+// assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
+// experiment's arm set at the issue's draw (version.go's 163). A plugin before it is served every
+// assignment without the key: its reader strips a key it does not name, so the strip is what keeps
+// the group from a caller that did not ask for it rather than what keeps such a caller reading.
+// The rest of each row stays as assignmentsContract serves it.
+const assignmentPlanContract = 163
 
 // entryTimesContract is the daemon contract that added each issue's `entryQueuedAt` and
 // `entryConfirmedAt`, the time the task of its phase entry was first queued to its role's claim
@@ -1581,6 +1591,39 @@ func withoutAssignments(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.Assignments = nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesAssignmentPlans is whether any assignment of any issue of state carries `plan`, the key
+// assignmentPlanContract added: a state of no issue an experiment that sets how issues are done
+// has drawn carries it nowhere.
+func carriesAssignmentPlans(state State) bool {
+	for _, issue := range state.Issues {
+		for _, assignment := range issue.Assignments {
+			if assignment.Plan != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withoutAssignmentPlans is state with no assignment carrying `plan`, the one key
+// assignmentPlanContract added to the state; every other key of each row stays. The issue map and
+// each list of assignments are copied, so the state the source answered is left as it was.
+func withoutAssignmentPlans(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if len(issue.Assignments) > 0 {
+			assignments := slices.Clone(issue.Assignments)
+			for i := range assignments {
+				assignments[i].Plan = ""
+			}
+			issue.Assignments = assignments
+		}
 		issues[key] = issue
 	}
 	state.Issues = issues

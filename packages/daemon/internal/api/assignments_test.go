@@ -114,3 +114,50 @@ func TestTheAssignmentsContractIsTheContractThatAddedTheField(t *testing.T) {
 			assignmentsContract, DaemonAPIVersion)
 	}
 }
+
+// A caller below the contract that added each assignment's group is served every assignment
+// without `plan`, and the rest of each row as it stands; a caller at this daemon's contract is
+// served the group. The fixture's child LEGION-209 runs under `planning`, whose arm set
+// `default`.
+func TestTheStateServedBelowTheGroupContractCarriesNoPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contract int
+		plan     bool
+	}{
+		{name: "a pod a contract below the group", contract: assignmentPlanContract - 1},
+		{name: "a pod at the assignments contract", contract: assignmentsContract},
+		{name: "a pod at this contract", contract: DaemonAPIVersion, plan: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(tc.contract))
+			var planning map[string]any
+			for _, row := range assignmentsOf(t, body, "LEGION-209") {
+				if row["experiment"] == "planning" {
+					planning = row
+				}
+			}
+			if planning == nil || planning["variant"] != "b" || planning["mode"] != "random" {
+				t.Fatalf("LEGION-209 runs under %v, want the planning row with its arm b and its mode at every contract from the assignments' on",
+					assignmentsOf(t, body, "LEGION-209"))
+			}
+			if plan, carried := planning["plan"]; carried != tc.plan || (carried && plan != "default") {
+				t.Errorf("the planning row carries plan %v (%v), want it carried = %v, as default", plan, carried, tc.plan)
+			}
+		})
+	}
+}
+
+// assignmentPlanContract is the contract whose entry in version.go added the key, and this
+// daemon's own contract is never below it: a caller at this contract is served the group.
+func TestTheAssignmentPlanContractIsTheContractThatAddedTheKey(t *testing.T) {
+	const addedPlan = 163
+	if assignmentPlanContract != addedPlan {
+		t.Fatalf("assignmentPlanContract = %d, want %d, the contract whose entry in version.go added each assignment's plan",
+			assignmentPlanContract, addedPlan)
+	}
+	if assignmentPlanContract > DaemonAPIVersion {
+		t.Fatalf("assignmentPlanContract = %d, above DaemonAPIVersion %d: no caller would ever be served the key",
+			assignmentPlanContract, DaemonAPIVersion)
+	}
+}

@@ -2158,8 +2158,17 @@ package api
 // RECORD_UNAVAILABLE` and `500 DISPATCH_UNAVAILABLE`, and stop_task's `400 INVALID_ISSUE` and
 // `409 TREE_LINGERING`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes
 // the two routes answer of their own from the source and holds each to this history.
+// `GET /legion/v1/state` gains one key: each assignment of `issues.<KEY>.assignments` carries
+// `plan`, the group the arm of an experiment that sets how its issues are done set at the issue's
+// draw (`owner` or `default`), as the draw recorded it, and absent where the arm named none. The
+// issue runs on that group for its whole life, and the project's file can change an arm's `plan`
+// or rename the arm after the draw, so a reader takes the group from the record and never from
+// `settings`. A caller from a pod whose claims record a contract below 163 is served every
+// assignment without the key (one row of `stateNarrowings`, `withoutAssignmentPlans`). The key
+// `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with the experiment's draw
+// in the settings block the plugin parses loosely, so it narrows nothing.
 // (This entry took 163 on 2026-11-17, one above the 162 of the branch it stacks on, and no open
-// pull request declared 163 or above at a reading of every open head made at 23:29Z. Read the
+// pull request declared 163 or above at a reading of every open head made at 23:40Z. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 156
+const DaemonAPIVersion = 163
