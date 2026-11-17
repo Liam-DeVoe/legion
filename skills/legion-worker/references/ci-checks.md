@@ -18,7 +18,11 @@ does not lift the rule, since the retracted result stays recorded.
 
 A check carrying `ci_check` is CI's. No role runs its work in its own pod, and no role records a
 result for it: Dispatch refuses a role's result with `409 CHECK_PROVED_BY_CI`, and takes the result
-of a run of its CI job. The CI job stays a job like any other, and the rules for a red CI job apply
+of a run of its CI job. A `ci_check` that a person adds or removes in the browser takes effect
+when Dispatch stores the edit as a new version of the document, about 2 s after the last keystroke
+in it: until then, a role's result of a check given `ci_check` is taken, and the store then
+removes that `ci_check` as above, and a role's result of a check whose `ci_check` was removed is
+refused. The CI job stays a job like any other, and the rules for a red CI job apply
 to it. `dispatch results --issue <issue>` reads the named check run at the head of the issue's pull
 request and derives one result from it. A run of the named job on a push of the change's branch
 also records its own result, at the commit it tested, through the secrets broker. The command

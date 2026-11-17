@@ -7,6 +7,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +182,73 @@ func TestACheckTheIndexDoesNotHoldYetIsNoCheckOfEitherRoute(t *testing.T) {
 	}
 	checkOf(t, readResults(t, rig.handler, rig.issue), "c9")
 	jobRecorded(t, "the control: the tester's result of c9 once it settled", rig.post(t, rig.issue, rig.sessionToken(), tester))
+}
+
+// TestACICheckABrowserGivesACheckHoldingNoResultTakesEffectWhenTheEditSettles is the window of a
+// ci_check a person writes in the browser, on k1, an ordinary check that holds no result before
+// the edit. While the edit that gives k1 ci_check has not settled, both routes take k1 as the
+// block index holds it, an ordinary check: the read serves it with no ci_check, and a tester's pass
+// of it is recorded. The settlement then finds k1 holding a role's result and holds it to the
+// fourth rule: it takes k1's ci_check off with one block.invalid naming that rule, and the tester's
+// pass stands. The control: the same edit, settled before the tester's pass, makes k1 CI's, so
+// that pass is refused 409 CHECK_PROVED_BY_CI, and k1 keeps its ci_check with no block.invalid.
+func TestACICheckABrowserGivesACheckHoldingNoResultTakesEffectWhenTheEditSettles(t *testing.T) {
+	ordinary := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
+	edited := strings.Replace(ciJobVerification, ordinary,
+		ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`), 1)
+	if edited == ciJobVerification {
+		t.Fatalf("fixture: no ordinary k1 block %q in %q", ordinary, ciJobVerification)
+	}
+	tester := resultBody("k1", "pass", ciJobCommit, map[string]any{"role": "tester"})
+	// edit is a rig whose pull request #70 is open at the commit the tester records, whose k1
+	// holds no result, and whose browser has given k1 ci_check in an edit that has not settled.
+	edit := func(t *testing.T) (*ciJobRig, *docs.Service) {
+		t.Helper()
+		rig, documents := newUnsettledCIJobRig(t)
+		writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "open", rig.issue)
+		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != "" || len(k1.Results) != 0 {
+			t.Fatalf("k1 reads %+v before the edit, want an ordinary check holding no result", k1)
+		}
+		writeBrowserDocument(t, documents, rig.verification, edited)
+		return rig, documents
+	}
+
+	t.Run("the tester records k1 while the edit is unsettled", func(t *testing.T) {
+		rig, documents := edit(t)
+		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != "" {
+			t.Fatalf("while the edit is unsettled the read serves k1 with ci_check %q, want the ordinary k1 it settled as", k1.CICheck)
+		}
+		jobRecorded(t, "a tester's pass of k1 while the edit giving it ci_check is unsettled", rig.post(t, rig.issue, rig.sessionToken(), tester))
+		if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
+			t.Fatal(err)
+		}
+		k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
+		if k1.CICheck != "" {
+			t.Fatalf("k1 once settled reads ci_check %q, want it taken off, since k1 holds a role's result", k1.CICheck)
+		}
+		passStandsFrom(t, k1, "the tester's pass of k1 once the edit settled", model.PassStandsYes, "tester")
+		want := []ciCheckRefusalEvent{{BlockID: "k1", Reason: ciCheckRecordedRule, BlockType: "check"}}
+		if got := ciCheckRefusalEvents(t, rig.handler, rig.issue); !slices.Equal(got, want) {
+			t.Fatalf("block.invalid events = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("the control: the edit settles before the tester records k1", func(t *testing.T) {
+		rig, documents := edit(t)
+		if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
+			t.Fatal(err)
+		}
+		refused := rig.post(t, rig.issue, rig.sessionToken(), tester)
+		if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
+			t.Fatalf("a tester's pass of k1 once the edit settled = %d %s, want 409 CHECK_PROVED_BY_CI", refused.Code, refused.Body.String())
+		}
+		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != ciJobName {
+			t.Fatalf("k1 once settled reads ci_check %q, want %q", k1.CICheck, ciJobName)
+		}
+		if got := ciCheckRefusalEvents(t, rig.handler, rig.issue); len(got) != 0 {
+			t.Fatalf("block.invalid events = %+v, want none", got)
+		}
+	})
 }
 
 // TestAJobsResultCountsOnlyForTheJobItsCheckNames is the second line of the binding of a CI job's
