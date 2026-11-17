@@ -6378,7 +6378,8 @@ each issue's pod (every role of it alike) and the image probe's.
   A name two claims recorded is held for neither, and a name a rolled-back daemon let a claim take from another stays the first claim's: at each boot the daemon logs each at Error with the claims whose current session records it, suspends with the operator's suspend each of them it can, and names at Warn each it leaves as it was, being queued, launching uncertainly, failed or retired.
   A name no row can hold, a session id or a file's name past 255 bytes or a session file that is not a clean path, which only a daemon from before the hold could record, is logged the same way (`a session name this daemon cannot hold`), with no statement to settle it, and every claim whose current session records it is suspended and takes nothing under it until it has a new session.
   A name only an abandoned session records suspends nothing, since nothing resumes or enrolls an abandoned session; the boot logs it at Warn.
-  A suspension that fails for another reason, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run: the claim's process may still run, but its hold refuses every relaunch, resume and new enrollment of it, and the daemon sends that process no task and no enrollment it held already; the next boot asks again.
+  A suspension that fails for another reason, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run: the claim's process may still run, but its hold refuses every relaunch, resume and new enrollment of it, the daemon revokes the enrollment that process already holds, and it sends that process no task and no compaction; the next boot asks again.
+  Once the line's statement makes such a claim the holder of its session, Dispatch is shown it as its role's holder at the next boot, or once the claim is suspended and resumed, since the statement writes no claim and the publication follows claim writes.
   Only a boot whose time runs out on the suspensions fails.
 
 - An operator settles what the boot names; each `legion claims` command below also takes `--operator-token-file`.
@@ -6391,7 +6392,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A name held for another claim stays that claim's; the line gives no statement for it.
 
 - A session id, and a session file's name, are at most 255 bytes, and a session file is a clean path, with no `.` or `..` part and no doubled or trailing `/`: a registration of either is refused `400`.
-  A claim a daemon from before the hold recorded under such a name takes nothing under it: its relaunch, resume and new enrollment are refused `409`, its process is sent no task and no enrollment, and the boot names and suspends it (above).
+  A claim a daemon from before the hold recorded under such a name takes nothing under it: its relaunch, resume and new enrollment are refused `409`, its process's enrollment is revoked and it is sent no task and no compaction, and the boot names and suspends it (above).
 
 - One claim holds at most 2,048 names, 10 times what the busiest claim in production could hold.
   A registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), recording nothing.

@@ -48,11 +48,14 @@ import (
 // suspended here with no change to this list. A suspension that fails for any other reason — a
 // stop the runtime refuses, a write the store refuses — is logged at Error naming the claim, and
 // the boot goes on: the claim is left as it was, its process may still run, and its hold refuses
-// every relaunch, resume and new enrollment of it before anything starts and sends that process
-// nothing, no task and no enrollment it held already (holdRecorded, sendPending, ensureEnrolled).
-// The next boot asks again, and the operator's steps above need a daemon that serves (review
-// rounds 11 and 12 of #4220). A boot whose budget runs out on the suspensions still fails, since
-// every later step would too. A store that refuses
+// every relaunch, resume and new enrollment of it before anything starts, revokes the enrollment
+// that process already holds, and sends it no task and no compaction (holdRecorded,
+// ensureEnrolled, sendPending, compactStart). The next boot asks again, and the operator's steps
+// above need a daemon that serves (review rounds 11 to 13 of #4220). A statement that makes such a
+// claim the holder of its session writes no claim, and the publication of an issue's role holders
+// follows claim writes, so Dispatch is shown that claim as its role's holder at the next boot, or
+// once the claim is suspended and resumed. A boot whose budget runs out on the suspensions still
+// fails, since every later step would too. A store that refuses
 // the conflicts' read refuses the boot, naming what failed, as the controller's boot stop does
 // (stopLaunchedController). A suspension the claim holds for later is no failure: a
 // working claim's is held for its turn and stops the process at the operator's stop timeout
@@ -128,7 +131,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, its hold refuses every relaunch, resume and new enrollment of it and sends its process no task and no enrollment, and the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, its hold refuses every relaunch, resume and new enrollment of it, revokes the enrollment its process holds and sends that process no task and no compaction, and the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}

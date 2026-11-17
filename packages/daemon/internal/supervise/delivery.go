@@ -788,7 +788,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			m.log.Warn("supervise: the store did not answer whether this claim holds its session; the task waits", "delivery", p.ID, "error", err)
 		case m.unheldDelivery != p.ID:
 			m.unheldDelivery = p.ID
-			m.log.Error("supervise: this claim records a session it does not hold, so no task is sent to its process; the task waits for an operator to give the claim a new session",
+			m.log.Error("supervise: this claim records a session it does not hold, so no task is sent to its process; the task waits until the claim holds it: an operator gives the claim a new session, or records it as the rightful holder of a name held for none",
 				"delivery", p.ID, "session", m.claim.Session, "error", err)
 		}
 		return nil

@@ -202,21 +202,34 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 			return err
 		}
 	}
+	// An enrollment this claim already holds is kept only while the claim holds its session: one a
+	// daemon from before the hold enrolled under a name another claim holds, or no claim does, is
+	// revoked at the broker, since its process, which the boot could not suspend, keeps that
+	// enrollment's file and renewer across connections and would go on reading what it adopted
+	// (review rounds 12 and 13 of #4220). The claim then has no enrollment, so the next decision
+	// asks the hold again before any new one and waits for the shim's next hello, and an operator's
+	// settle of the name enrolls the process again. The hold is asked once per session when held
+	// (Machine.heldNames), so a claim holding its session pays nothing here. A store that does not
+	// answer revokes nothing and hands nothing over, and the next observation asks again.
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) {
+			m.log.Warn("supervise: agent-secrets: the store did not hold the session; handing the enrollment over at the next observation",
+				"enrollment", m.claim.Enrollment.ID, "error", err)
+			return nil
+		}
+		enrollment := ClearEnrollment(&m.claim)
+		m.revoke(*enrollment)
+		m.enrollmentSent = false
+		m.log.Error("supervise: agent-secrets: revoking the enrollment of a claim that does not hold its session; its process is enrolled again once the claim holds it",
+			"enrollment", enrollment.ID, "incarnation", enrollment.Incarnation, "session", m.claim.Session, "error", err)
+		return m.persist(ctx)
+	}
 	if m.enrollmentSent {
 		return nil
 	}
 	conn, ok := m.deps.Conns.Conn(m.claim.Token)
 	if !ok {
-		return nil
-	}
-	// An enrollment this claim already holds is handed to each new connection only while the claim
-	// holds its session: one a daemon from before the hold enrolled under a name another claim
-	// holds, or no claim does, goes to no new connection of a process the boot could not suspend
-	// (review round 12 of #4220). The hold is asked once per session when held (Machine.heldNames)
-	// and at each observation when refused, so an operator's settle of the name hands it over.
-	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
-		m.log.Warn("supervise: agent-secrets: not handing the enrollment to the shim: the claim does not hold its session, or the store did not say",
-			"enrollment", m.claim.Enrollment.ID, "error", err)
 		return nil
 	}
 	sending, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)

@@ -1408,6 +1408,10 @@ type Machine struct {
 	// session it does not hold, so its Error line is written once per delivery rather than at every
 	// sweep that asks again. Memory only.
 	unheldDelivery string
+	// refusalLogged is the Warn line holdRecorded last wrote for a refused hold, so a refusal asked
+	// again at every sweep (sendPending, for a claim that does not hold its session) is written
+	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
+	refusalLogged string
 	// registration is the pod-session registration this machine keeps written for the claim's
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
 	// writes it again at its shim's first hello to the new daemon.

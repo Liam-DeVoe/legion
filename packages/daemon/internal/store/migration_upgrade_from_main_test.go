@@ -219,15 +219,19 @@ const todaysMainsNewestMigration = 20261116165926
 // thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
 const thisBranchsClaimSessions = 20261116144907
 
-// A database today's main migrated has recorded every embedded migration but claim_sessions,
-// main's newer 20261116165926 among them. Store.Migrate applies every migration that database has
-// not recorded, whatever version stands highest (apply asks each migration whether its own version
-// is recorded), so the upgrade applies 20261116144907 below that newest: claim_sessions is created,
-// its backfill holds the session a claim of main's daemon recorded for that claim, and the store
-// still reports main's newest version. So this branch's migration keeps its number.
+// A database today's main migrated has recorded every migration up to main's newest,
+// 20261116165926, but claim_sessions, which is numbered below it. Store.Migrate applies every
+// migration that database has not recorded, whatever version stands highest (apply asks each
+// migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
+// newest: claim_sessions is created, and its backfill holds the session a claim of main's daemon
+// recorded for that claim. So this branch's migration keeps its number.
+//
+// The database is built from the migrations numbered up to main's newest alone (review round 13),
+// so a migration added after this test still finds the database today's main left, and the upgrade
+// applies it too, after claim_sessions.
 //
 // The control (the pull request records the run): a loader that skips a migration numbered below
-// the newest version recorded applies nothing, and the test fails naming the missing table.
+// the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
 func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -235,18 +239,24 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	ours := false
+	var mains []migrations.Migration
+	ours, later, newest := false, 0, 0
 	for _, migration := range all {
-		if migration.Version == thisBranchsClaimSessions {
+		switch {
+		case migration.Version == thisBranchsClaimSessions:
 			ours = true
-			continue
+		case migration.Version <= todaysMainsNewestMigration:
+			mains = append(mains, migration)
+		default:
+			later++
 		}
-		if _, err := store.apply(ctx, migration); err != nil {
-			t.Fatalf("apply %s as today's main's run did: %v", migration.Name, err)
-		}
+		newest = max(newest, migration.Version)
 	}
 	if !ours {
 		t.Fatalf("the embedded set has no migration %d, so this test upgrades nothing", thisBranchsClaimSessions)
+	}
+	if _, err := store.migrate(ctx, mains); err != nil {
+		t.Fatalf("migrate the database as today's main did: %v", err)
 	}
 	if version, err := store.SchemaVersion(ctx); err != nil || version != todaysMainsNewestMigration {
 		t.Fatalf("the database today's main migrated reports version %d (%v), want main's newest, %d", version, err, todaysMainsNewestMigration)
@@ -263,8 +273,15 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	if err != nil {
 		t.Fatalf("upgrade the database today's main migrated: %v", err)
 	}
-	if applied != 1 {
-		t.Errorf("the upgrade applied %d migrations, want 1, claim_sessions", applied)
+	if applied != 1+later {
+		t.Errorf("the upgrade applied %d migrations, want %d: claim_sessions and the %d numbered after main's newest", applied, 1+later, later)
+	}
+	var recorded int
+	if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, thisBranchsClaimSessions).Scan(&recorded); err != nil {
+		t.Fatalf("read whether the upgrade recorded %d: %v", thisBranchsClaimSessions, err)
+	}
+	if recorded != 1 {
+		t.Errorf("the upgrade recorded claim_sessions (%d) %d times, want once", thisBranchsClaimSessions, recorded)
 	}
 	var holder string
 	if err := store.pool.QueryRow(ctx, `select claim from claim_sessions where project = 'legion' and kind = 'session' and name = $1`,
@@ -274,7 +291,7 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	if holder != token {
 		t.Errorf("%s is held for %q after the upgrade, want %s, the claim that recorded it", session, holder, token)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != todaysMainsNewestMigration {
-		t.Errorf("after the upgrade the store reports version %d (%v), want main's newest, %d, still", version, err, todaysMainsNewestMigration)
+	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
 	}
 }

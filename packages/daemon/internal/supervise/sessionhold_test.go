@@ -132,14 +132,19 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		}
 	})
 
-	// A claim the boot could not suspend keeps its live process (review round 12 of #4220): one a
-	// daemon from before the hold enrolled, ready on a session the store now holds for another
-	// claim. Its process's new connection is handed no enrollment, and a task for it is held back
-	// unsent, since either would put that process to work under the other claim's session.
+	// A claim the boot could not suspend keeps its live process (review rounds 12 and 13 of #4220):
+	// one a daemon from before the hold enrolled, ready on a session the store now holds for
+	// another claim. That process keeps its enrollment's file and renewer across connections, so
+	// the enrollment is revoked at the broker rather than only withheld from the new connection; a
+	// task for it is held back unsent and a compaction of its session is not taken, since either
+	// would put that process to work under the other claim's session. The refusal asked again at
+	// each sweep is written at Warn once.
 	//
-	// The control (the pull request records the run): sendPending and the handover in
-	// ensureEnrolled without their holdRecorded checks hand the enrollment over again and send the
-	// task.
+	// The controls (the pull request records the runs): the handover in ensureEnrolled without its
+	// holdRecorded check hands the enrollment over again and revokes nothing; one that only
+	// withholds it revokes nothing; sendPending without its check sends the task; compactStart
+	// without its check compacts the session; holdRecorded writing every refusal writes the Warn
+	// line at each sweep.
 	t.Run("a live claim whose session another claim holds is sent nothing", func(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
@@ -150,12 +155,23 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if enrolled := broker.enrolled(); len(enrolled) != 1 {
 			t.Fatalf("enrollments %+v, want the first process's one", enrolled)
 		}
+		enrollment := h.claim().Enrollment
+		if enrollment == nil {
+			t.Fatal("the first process's claim records no enrollment")
+		}
 		handed := len(h.conn.Enrollments())
 		h.store.setHold(sessionID(session), claim.Token("legion-legion-LEGION-209-tester"))
 		h.restart()
 		h.helloWithIdentity()
+		h.m.Wait()
 		if got := h.conn.Enrollments(); len(got) != handed {
 			t.Fatalf("the new connection was handed enrollments %v, want none beyond the %d before: the claim does not hold %s", got[handed:], handed, session)
+		}
+		if revoked := broker.revocations(); !slices.Equal(revoked, []string{enrollment.ID}) {
+			t.Fatalf("revoked %v, want the enrollment the process still holds, %s: the claim does not hold %s", revoked, enrollment.ID, session)
+		}
+		if c := h.claim(); c.Enrollment != nil {
+			t.Fatalf("the claim still records enrollment %+v after its revocation", *c.Enrollment)
 		}
 		base := len(h.prompts())
 		h.must(RequestDeliver{Claim: h.token, Task: "the task"})
@@ -164,8 +180,21 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if p := h.pending(); p.Task != "the task" || !p.ConfirmedAt.IsZero() {
 			t.Fatalf("pending %+v, want the task held back unsent", p)
 		}
+		if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
+			t.Fatalf("a compaction of the claim's session answered %v, want ErrCompactNotTaken: the claim does not hold %s", err, session)
+		}
+		if got := h.conn.Compactions(); len(got) != 0 {
+			t.Fatalf("compactions %+v were asked of %s, which the claim does not hold", got, session)
+		}
+		for range 3 {
+			h.observe(runtime.Alive)
+		}
+		h.m.Wait()
 		if enrolled := broker.enrolled(); len(enrolled) != 1 {
 			t.Fatalf("enrollments %+v, want no new one", enrolled)
+		}
+		if lines := h.logs.lines("refused a session another claim recorded first", string(h.token)); len(lines) != 1 {
+			t.Fatalf("the refusal was written at Warn %d times over the sweeps, want once:\n%s", len(lines), strings.Join(lines, "\n"))
 		}
 	})
 

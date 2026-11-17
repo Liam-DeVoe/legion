@@ -296,7 +296,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		if unheld[0].Kind == HoldFileName {
 			what = "session file"
 		}
-		m.log.Warn("supervise: refused a session whose name this daemon cannot hold",
+		m.warnRefusal("supervise: refused a session whose name this daemon cannot hold",
 			"kind", unheld[0].Kind, "name", unheld[0].Name, "bytes", len(unheld[0].Name), "claim", m.claim.Token, "holder", "none")
 		return fmt.Errorf("%s as %s of %d bytes: %w", m.claim.Token, what, len(unheld[0].Name), claim.SessionNameUnheldRefusal(what))
 	}
@@ -307,6 +307,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		}
 	}
 	if len(ask) == 0 {
+		m.refusalLogged = ""
 		return nil
 	}
 	var holders []claim.Token
@@ -335,7 +336,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 			if holder == "" {
 				holder = "none"
 			}
-			m.log.Warn("supervise: refused a session another claim recorded first",
+			m.warnRefusal("supervise: refused a session another claim recorded first",
 				"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", holder)
 			return fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))
 		}
@@ -346,5 +347,20 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 	for _, h := range ask {
 		m.heldNames[h] = true
 	}
+	m.refusalLogged = ""
 	return nil
+}
+
+// warnRefusal writes a refused hold's Warn line unless it is the line this machine wrote last
+// (Machine.refusalLogged). A claim that does not hold its session is asked again at every decision
+// that would send its process anything, sendPending at every sweep among them, and each such line
+// says nothing the first did not (review round 13 of #4220). A hold admitted clears it, so a
+// refusal after an admission is written again.
+func (m *Machine) warnRefusal(msg string, args ...any) {
+	line := fmt.Sprint(append([]any{msg}, args...)...)
+	if line == m.refusalLogged {
+		return
+	}
+	m.refusalLogged = line
+	m.log.Warn(msg, args...)
 }
