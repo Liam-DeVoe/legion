@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,10 +11,11 @@ import (
 )
 
 // TestChanged runs changed in a scratch git repository: commit A holds a/data.json and a/a.go, B is
-// A with `git mv a/data.json docs/data.json`, and C adds to B a file whose name holds a line break.
-// Each git command, the command's own included, reads no configuration of this machine. C is made
-// with git's plumbing (update-index, write-tree, commit-tree), since a git wrapper that checks a
-// commit's text can refuse such a name, and the test is about what changed prints.
+// A with `git mv a/data.json docs/data.json`, C adds to B a file whose name holds a line break, and
+// D adds to B a directory whose tree object the clone then loses. Each git command, the command's
+// own included, reads no configuration of this machine. C and D are made with git's plumbing
+// (update-index, write-tree, commit-tree), since a git wrapper that checks a commit's text can
+// refuse such a name, and the test is about what changed prints.
 func TestChanged(t *testing.T) {
 	binary := cmdtest.Build(t, "spec-check")
 	for _, entry := range gitEnv {
@@ -99,4 +101,20 @@ func TestChanged(t *testing.T) {
 	c := git("commit-tree", git("write-tree"), "-p", b, "-m", "C")
 	expect(t, runBinary(t, binary, "", "changed", "--repo", repo, "--base", b, "--head", c), result{code: 2,
 		stderr: "spec-check: " + repo + `: the path "a/line\nbreak.go" holds a line break, which a list of one path a line cannot hold` + "\n"})
+
+	// The clone holds D, so git reads the commit, but git diff cannot read the tree of gone: changed
+	// prints the fault of the history, which names the two commits, the clone and git's reason, and
+	// gives no list, where a list of the paths would read as a diff that git made.
+	git("read-tree", b)
+	git("update-index", "--add", "--cacheinfo", "100644,"+blob+",gone/x")
+	d := git("commit-tree", git("write-tree"), "-p", b, "-m", "D")
+	gone := git("rev-parse", d+":gone")
+	if err := os.Remove(filepath.Join(repo, ".git", "objects", gone[:2], gone[2:])); err != nil {
+		t.Fatal(err)
+	}
+	line := "spec-check: specgraph: history: git cannot read the commits " + strconv.Quote(b) + " and " + strconv.Quote(d) + " of the clone at "
+	if got := runBinary(t, binary, "", "changed", "--repo", repo, "--base", b, "--head", d); got.code != 2 || got.stdout != "" ||
+		!strings.HasPrefix(got.stderr, line) || strings.Count(got.stderr, "\n") != 1 {
+		t.Errorf("changed --base B --head D: exit %d, stdout %q, stderr %q; want exit 2 and one line that starts %q", got.code, got.stdout, got.stderr, line)
+	}
 }
