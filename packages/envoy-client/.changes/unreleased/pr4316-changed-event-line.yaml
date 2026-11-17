@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `dispatch read` names what an `issue.updated` event changed, from the event's `changed` list:
+  a write of `advances` alone reads `advances`, and a rename with new labels reads `title, labels`.
+  A status change still reads `status <status>`, in its place in the list. An event written by a
+  Dispatch older than the `changed` list keeps the old `status <status>` line, and an event that
+  changed nothing has no head.
