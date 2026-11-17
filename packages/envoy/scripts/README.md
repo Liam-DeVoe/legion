@@ -296,7 +296,7 @@ No line it prints is a credential: the child reads its token out of its own
 environment and prints the repository it asked for and the status it got, and a
 refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
 child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+served over plain http on `127.0.0.1`, because the broker mints a type's value with
 an HTTP client that trusts the host's own roots and nothing else.
 
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
@@ -323,10 +323,15 @@ NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
 addition is empty. The check prints one line per property:
 a session subscribes its own delivery channel; it is refused another session's, in
 nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
-with no credential is refused; a token neither broker issued is refused (a stand-in token
-endpoint plays the other broker); the hub lists the listener's connection authorized as
+with no credential is refused, and a token neither broker issued is refused (a stand-in token
+endpoint plays the other broker), each in nats-server's own `Authorization Violation`, the only
+answer `natsprobe` exits 4 for; the hub lists the listener's connection authorized as
 `listener/<its machine id>`; and with one broker killed, three new sessions are each
-admitted within 2 s. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+admitted within 2 s, the first counted from the kill. A session opened before the hub has
+read the killed broker's close can be routed to the dead replica and refused at the hub's
+authorization timeout, so the check opens the first session once the hub lists one
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
+how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
 assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
 
 ```bash
@@ -342,7 +347,9 @@ outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subje
 hand too: as a session it trades the stack's pod token for a broker token, as a service
 it presents `--service-token-file`, and `--no-credential` presents nothing.
 `callout-check.test.sh` holds the verdicts to fakes, including the negative control:
-`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2.
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
+a hub that never drops the killed broker's connection fails line 6.
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
@@ -350,18 +357,21 @@ own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test
 so a store or use change cannot pass on one backend alone.
 
 ```bash
-packages/envoy/scripts/backend-count.sh TEST...
+packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
 ```
 
-It runs only the named tests, `go test -json -count=1 -timeout 5m -run '^(TEST|…)$'
-./cmd/agent-secrets/`, and prints `TEST aws=N gcp=M` for each, then `go_test_exit=E`. It
-exits 1 when no test is named, when a name is not a Go test name, when a named test has no
-passing run on either backend, or when go test failed. It counts only the tests it names,
-so the `aws` and `gcp` subtests of other tests cannot stand in for a new test's.
+It runs only the named tests in only the named packages, `go test -json -count=1 -timeout 5m
+-run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints
+`TEST aws=N gcp=M` for each, then `go_test_exit=E`. It exits 1 when no package or no test is
+named, when a package is not a `./` path, when a name is not a Go test name, when a named test
+has no passing run on either backend (a test in none of the named packages included), or when go
+test failed. It counts only the tests it names, so the `aws` and `gcp` subtests of other tests
+cannot stand in for a new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
-in its time budget; the job runs it as "Count the store-form rows on each backend".
+in its time budget; the job runs it as "Count the store-form rows on each backend", over
+`./cmd/agent-secrets/` and `./internal/broker/api/`.
 
 ## database-skips.sh
 

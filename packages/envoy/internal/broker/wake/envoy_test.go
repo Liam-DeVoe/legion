@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // accountTokens is the broker's account token as Notify reads it: each read answers the next of
@@ -142,15 +143,11 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 }
 
 func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	}))
-	srv.Close() // guarantees connection failure below
-
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	// A port the test holds and nothing listens on: the connection fails.
+	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {

@@ -379,15 +379,20 @@ const systemAccountPrefix = "$SYS"
 
 // NamesSystemSubject returns the first entry of p, publish then subscribe, that can match a
 // system subject: one whose first token is $SYS, or a wildcard that a $SYS subject's first token
-// matches (* or >). A subscribe entry's queue group, after a space, is not part of its subject.
+// matches (* or >). A subscribe entry's queue group is not part of its subject, and the entry is
+// split as nats-server splits it (server/client.go, splitSubjectQueue: strings.Fields), at any
+// whitespace, so a tab or a no-break space before a queue group hides no subject from this.
 // The auth service refuses any answer whose grant names one: the server takes from a callout
 // client only the publish of $SYS.REQ.USER.AUTH, so a grant naming a system subject would hand a
 // connection a subscribe the server does not take away.
 func NamesSystemSubject(p Permissions) (string, bool) {
 	for _, entries := range [...][]string{p.Publish, p.Subscribe} {
 		for _, entry := range entries {
-			subject, _, _ := strings.Cut(strings.TrimSpace(entry), " ")
-			first, _, _ := strings.Cut(subject, ".")
+			fields := strings.Fields(entry)
+			if len(fields) == 0 {
+				continue
+			}
+			first, _, _ := strings.Cut(fields[0], ".")
 			if first == systemAccountPrefix || first == "*" || first == ">" {
 				return entry, true
 			}
