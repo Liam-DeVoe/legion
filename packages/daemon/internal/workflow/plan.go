@@ -85,6 +85,53 @@ func defaultPlan(issue record.Issue) record.PlanRecord {
 		Tasks: []record.PlanRecordTask{{ID: defaultTask, Steps: DefaultSteps()}}}
 }
 
+// passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first
+// step reads its plan, so the walk never takes one (C3-3, C4-2). An earlier owner's plan is the
+// version in force of a generation whose giver is no architect of the issue's tree now
+// (record.Store's PlansOfEarlierOwners, record.ArchitectOfTree, the rule the routes hold every
+// architect's call to): the owner of an issue changes where an orphan is admitted again as a root
+// of its own and where an adoption moves a member to another tree, and the plan the earlier owner
+// gave is not the new owner's to run. Nothing is passed over in silence: each version passed over
+// is one log line naming the plan the first step runs, the owner's own where it gave one at the
+// issue's generation and otherwise the default steps, and the issue's architect is told once, in a
+// plan-not-taken notice. The rows go in this transaction, so the next first step finds none. An
+// issue with no plan rows, or only its owners', is read and nothing is written.
+func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
+	if err != nil || len(earlier) == 0 {
+		return err
+	}
+	for _, version := range earlier {
+		if err := e.store.DeletePlan(ctx, tx, issue.Key, version.Generation); err != nil {
+			return err
+		}
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return err
+	}
+	runs, told := "default steps", "the default steps"
+	if stored != nil && stored.Version.Source == record.PlanSourceOwner {
+		runs = describeVersion(stored.Version)
+		told = runs
+	}
+	passed := make([]string, len(earlier))
+	for i, version := range earlier {
+		passed[i] = describeVersion(version)
+		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is not taken", "issue", issue.Key, "generation", version.Generation,
+			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", runs)
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
+		"The first step of %s took no plan of an earlier owner: %s. It runs %s. To run a plan it did not take, give it again with register_plan as your own.",
+		issue.Key, strings.Join(passed, "; "), told)})
+}
+
+// describeVersion names an owner's version of a plan as a log line and a notice name it: its
+// version, its document and who gave it.
+func describeVersion(version record.PlanVersion) string {
+	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, version.GivenBy)
+}
+
 // rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in
 // the transaction of the completion that ended the retro: a step record row whose id is the id of
 // the retro's latest run (StepID, from the count of its starts, which the retro's end left as it

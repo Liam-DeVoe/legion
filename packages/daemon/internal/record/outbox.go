@@ -1903,13 +1903,20 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // or by a failed step that no step before it of the type implementation can take the work back
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
+//
+// `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
+// (workflow's passOverEarlierOwners): its giver is no architect of the issue's tree now
+// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// moves a member to another tree. The first step deletes its rows and tells the issue's architect
+// once, whatever number of versions it passed over; the reason names each version, its document
+// and its giver, and the plan the first step runs, the owner's own or the default steps.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
-	"session-lost", "session-store-fault", "task-stopped",
+	"session-lost", "session-store-fault", "task-stopped", "plan-not-taken",
 }
 
 // validNoticeKind says whether kind is a notice an architect is told.

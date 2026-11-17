@@ -158,8 +158,9 @@ its conclusion; and hold the merge, where GitHub applies the base branch's own r
 
 ### The plan of an issue
 
-The table is the line of the **default steps**. The architect, as the owner of each issue of its
-tree, can give an issue a **plan** that picks which of these steps it runs: one task whose steps are
+The table is the line of the **default steps**. Each architect of a tree, the root's or a
+sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
+**plan** that picks which of these steps it runs: one task whose steps are
 some of `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer`
 among them, where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
@@ -171,6 +172,11 @@ reason for each cause. An issue whose owner gives it no plan, or a task with no 
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
 unless the project sets others; so does an issue whose work started before its owner gave it a
 plan, until the owner stops that task with `stop_task` and gives a plan whose one task replaces it.
+An issue that leaves its tree, as an orphan admitted again as a root of its own does, takes no plan
+its earlier owner gave: at its first step Legion deletes that plan, logs
+`workflow: a plan of an earlier owner is not taken`, and tells the issue's architect once, in a
+`plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
+new owner's or the default steps.
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, and a reviewer step refuses to approve while any of

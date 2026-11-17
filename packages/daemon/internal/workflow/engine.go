@@ -1839,8 +1839,12 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // creating its branch (record.IssueBranch): its planner's start, the first worker start of every
 // member, waits for that row, so no planner's push is the one that creates the branch. A member
 // whose earlier row a linger dropped, or one admitted before the daemon queued such rows, gets its
-// row here.
+// row here. A plan an earlier owner of the issue gave is passed over first (passOverEarlierOwners),
+// so the walk the transition reads never takes it.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if err := e.passOverEarlierOwners(ctx, tx, issue); err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err
 	}
