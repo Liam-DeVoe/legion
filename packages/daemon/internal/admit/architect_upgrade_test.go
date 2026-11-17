@@ -485,16 +485,21 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// leftStandingVersion is the highest migration neither way back deletes,
-// 20261114031356_merge_queue_removal (dispatch://INFRA-3274, which main carries above the phase
-// entry), which is the version the store reports once both ways back have run.
+// reversedVersions are the version rows the two ways back delete between them, so that the
+// roll-forward applies each of those migrations again. No other row is theirs to delete: a
+// migration above them stands through its own release's rollback where that rollback needs no
+// statement for it (docs/kubernetes.md), so the highest version the store reports after the two
+// blocks depends on what main carries above them, and only these rows' absence is the blocks'.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114031356
 )
+
+var reversedVersions = []int64{
+	phaseEntryVersion, stalledNoticesVersion, architectUpgradeVersion, claimHandshakeVersion, entryVerbatimVersion,
+}
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
@@ -511,8 +516,8 @@ const (
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it reports that release's own version and holds no marks' table, no handshake column
-// and no column of the mark.
+// release's: it holds no version row of the migrations the two blocks reverse (reversedVersions),
+// no marks' table, no handshake column and no column of the mark.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -585,9 +590,10 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if unsent != 0 {
 					t.Fatalf("the two ways back left %d unsent architect wakes, want none: the older release refuses their kind", unsent)
 				}
-				version, err := st.SchemaVersion(ctx)
-				if err != nil {
-					t.Fatalf("read the version the store reports after the way back: %v", err)
+				var standing []int64
+				if err := pool.QueryRow(ctx, `select coalesce(array_agg(version order by version), '{}')::bigint[]
+					from schema_version where version = any($1::bigint[])`, reversedVersions).Scan(&standing); err != nil {
+					t.Fatalf("read the reversed migrations' version rows after the way back: %v", err)
 				}
 				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
@@ -603,10 +609,10 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if version != leftStandingVersion || marksTable || handshakeColumn || markColumn {
-					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
-						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, leftStandingVersion)
+				if len(standing) > 0 || marksTable || handshakeColumn || markColumn {
+					t.Fatalf("after the two ways back the version rows %v of the migrations they reverse stand, the marks' table "+
+						"stands: %v, a handshake column stands: %v, and the phases row's mark stands: %v; want none of them, "+
+						"so the roll-forward runs those migrations again", standing, marksTable, handshakeColumn, markColumn)
 				}
 			}
 
