@@ -514,7 +514,7 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
 			"issue", issue.Key, "beneath", beneath)
-		return nil, e.store.PutIssue(ctx, tx, released)
+		return nil, e.putIssue(ctx, tx, released)
 	case record.HoldTaskStopped:
 		w, err := e.walk(ctx, tx, released)
 		if err != nil {
@@ -524,7 +524,7 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		if err != nil || refusal == nil {
 			return nil, err
 		}
-		return refusal, e.store.PutIssue(ctx, tx, released)
+		return refusal, e.putIssue(ctx, tx, released)
 	}
 	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
 	if err != nil {
@@ -618,7 +618,7 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	return e.store.PutIssue(ctx, tx, observed)
+	return e.putIssue(ctx, tx, observed)
 }
 
 // rejectStaleHandover consumes a daemon-authored todo that was written for a closed tree but
@@ -798,7 +798,7 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
 		Generation: generation, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
-	if err := e.store.PutIssue(ctx, tx, child); err != nil {
+	if err := e.putIssue(ctx, tx, child); err != nil {
 		return err
 	}
 	ancestor, err := record.AcceptedAncestorOf(ctx, e.store, tx, root.Tree, child.Key, parentKey)
@@ -1099,7 +1099,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	// The hold keeps the task's place (moveTask): the task does not move, and held overlays the
 	// phase its place derives, which Hold.From names.
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from}
-	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+	if err := e.putIssue(ctx, tx, *issue); err != nil {
 		return intake.Result{}, err
 	}
 	// A claim that failed takes its issue into held, which is a phase change and so a movement
@@ -1380,7 +1380,7 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		// Recorded on the issue as well as sent: the controller reads holds from the record at every
 		// start, so an escalation made while none ran still reaches it.
 		issue.Hold.Reason = record.HoldEscalated
-		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+		if err := e.putIssue(ctx, tx, *issue); err != nil {
 			return intake.Result{}, err
 		}
 		// The architect's own words where it named any, beside the cause the hold already names:
@@ -1469,7 +1469,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// The retry keeps the task's place (moveTask): it puts back Hold.From, the phase that place
 	// derives, so the task never moved.
 	issue.Phase, issue.Hold = from, nil
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.putIssue(ctx, tx, issue); err != nil {
 		return "", err
 	}
 	// The retry puts the issue back in the phase its worker failed in, which is a phase write
@@ -1741,7 +1741,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.putIssue(ctx, tx, issue); err != nil {
 		return err
 	}
 	// The issue has moved: this is the write that takes it into another phase, the plainest

@@ -119,19 +119,13 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
 	return phase.Admitted
 }
 
-// moveTask is the one writer of where a task stands (C8): it moves w's task to the place of to in
-// state (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the
-// phase that place derives (issuePhaseOf), in the caller's transaction and before the caller's
-// write of issue (record.Store.PutIssue), so the two never disagree in the store. w then stands
-// where the task does, for whatever the caller reads of it after the move. A run with no plan rows
-// has no task to move, and issue.Phase is to, as it always was. A move to where the task already
-// stands writes nothing. The caller clears or keeps issue.Hold itself.
-//
-// A write of issues.phase that does not move the task keeps its place and says so where it is
-// made: a hold, which overlays held on the derived phase (claimFailed); the retry of a hold, which
-// puts back Hold.From, the derived phase (retryPhase); a root's wait on a person before its first
-// step (enterAwaiting); a root the operator's tree holds, whose task never started
-// (leaveUnderOperator); and an adopted member parked at a new run (moveIntoTree).
+// moveTask is the one writer of where a task stands: it moves w's task to the place of to in state
+// (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the phase
+// that place derives (issuePhaseOf), in the caller's transaction and before the caller's write of
+// issue (putIssue). w then stands where the task does, for whatever the caller reads of it after
+// the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
+// move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
+// itself.
 func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, state string) error {
 	if !w.Stored {
 		issue.Phase = to
@@ -152,6 +146,33 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	}
 	issue.Phase = issuePhaseOf(*w, place, state)
 	return nil
+}
+
+// putIssue writes issue (record.Store.PutIssue), and is the one write of an issue in this package.
+// issues.phase and the place of the run's task are two records of where the issue stands, and
+// putIssue refuses a write in which they disagree: the issue stands in the phase its task's place
+// and state derive (issuePhaseOf), a hold overlays that phase and names it (record.StandsAt), and
+// a root that waits on a person before its first step stands in awaiting_person over the admitted
+// of a task at no act. It reads the walk in the caller's transaction, after any move of the task
+// (moveTask), so a write that names its phase itself is checked against the store and not against
+// the caller's copy. A run with no plan rows has only its phase, and nothing is checked.
+func (e *Engine) putIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if w.Stored {
+		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
+		if at != task && (at != phase.AwaitingPerson || task != phase.Admitted) {
+			stands := string(at)
+			if at != issue.Phase {
+				stands = "held from " + stands
+			}
+			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
+				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
+		}
+	}
+	return e.store.PutIssue(ctx, tx, issue)
 }
 
 // row is the row of w's table that moves an issue standing in from on trigger, into target where

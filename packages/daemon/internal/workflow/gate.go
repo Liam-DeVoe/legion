@@ -355,7 +355,7 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 		e.logOnCommit(ctx, "workflow: a version the person is still asked to review moves the wait to it and answers nothing", "issue", issue.Key,
 			"version", fact.Version, "version_seq", fact.Mark.Seq, "since_seq", waiting.Since.Seq)
 		waiting.GateVersion = fact.Version
-		return false, e.store.PutIssue(ctx, tx, *issue)
+		return false, e.putIssue(ctx, tx, *issue)
 	case fact.Kind == intake.DispatchArtifactVersion:
 		waiting.GateVersion, by = fact.Version, record.AnsweredByVersion
 	case fact.Version < waiting.GateVersion:
@@ -405,7 +405,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 		e.logOnCommit(ctx, "workflow: a registration of another document moves the wait to it", "issue", issue.Key,
 			"artifact", fact.ArtifactID, "was", waiting.Artifact, "version", gate.LatestVersion)
 		waiting.Artifact, waiting.GateVersion = fact.ArtifactID, gate.LatestVersion
-		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+		if err := e.putIssue(ctx, tx, *issue); err != nil {
 			return false, err
 		}
 	}
@@ -434,7 +434,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 			e.logOnCommit(ctx, "workflow: a registration of a version the person is asked to review moves the wait to it", "issue", issue.Key,
 				"version", gate.LatestVersion, "waited", waiting.GateVersion)
 			waiting.GateVersion = gate.LatestVersion
-			return false, e.store.PutIssue(ctx, tx, *issue)
+			return false, e.putIssue(ctx, tx, *issue)
 		}
 		return false, nil
 	}

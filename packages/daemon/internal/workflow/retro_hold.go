@@ -90,7 +90,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if status != "" {
 		parent.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, parent); err != nil {
+	if err := e.putIssue(ctx, tx, parent); err != nil {
 		return err
 	}
 	// The release takes the issue out of held into a phase, which is a movement (the rule in

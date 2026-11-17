@@ -60,9 +60,9 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 // step 1 is written. The Dispatch status of step 1's phase is written over the todo Dispatch
 // shows. A todo on a root held for the issues beneath it leaves the hold, and one log line says
 // why. A task that is done, or left the workflow with its issue, under such a hold has nothing
-// left to start: each todo is refused with its own text and starts nothing. The twin (R20): a
-// todo on a root with no plan rows that a failed claim holds puts back the phase the hold is from
-// and starts its role, as today.
+// left to start: a state no write of the workflow leaves, its restart is refused with its own
+// text and starts nothing. The twin (R20): a todo on a root with no plan rows that a failed claim
+// holds puts back the phase the hold is from and starts its role, as today.
 func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 	t.Run("a task stopped at testing starts again at step 1", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -163,8 +163,10 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		}
 	})
 
-	// A task done, or left the workflow with its issue, under a hold for the stopped task: the
-	// store's move refuses neither state, so the restart refuses each before it.
+	// A task done, or left the workflow with its issue, under a hold for the stopped task: no write
+	// of the workflow leaves that state, since the write of the issue in it is refused (putIssue),
+	// so the fixture moves the task through the store alone. The store's move refuses neither
+	// state, so the restart refuses each before it writes anything.
 	for _, tc := range []struct {
 		name, state, want string
 	}{
@@ -183,25 +185,37 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			task, entry := taskOf(t, pool, engine, root.Key), roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 			writes, statuses := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key))
 
-			result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key))
+			var refusal *intake.Refusal
+			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				issue, err := engine.store.Issue(ctx, tx, root.Key)
+				if err != nil {
+					return err
+				}
+				w, err := engine.walk(ctx, tx, *issue)
+				if err != nil {
+					return err
+				}
+				refusal, err = engine.restartTask(ctx, tx, *issue, w, restartReason)
+				return err
+			})
 
-			if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "TASK_DONE" || result.Refusal.Message != tc.want {
-				t.Fatalf("the todo on %s = %+v, want 409 TASK_DONE %q", tc.name, result.Refusal, tc.want)
+			if refusal == nil || refusal.Status != 409 || refusal.Code != "TASK_DONE" || refusal.Message != tc.want {
+				t.Fatalf("the restart of %s = %+v, want 409 TASK_DONE %q", tc.name, refusal, tc.want)
 			}
 			issue := issueOf(t, pool, engine, root.Key)
 			if issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}) ||
-				issue.Status != root.Status || issue.DispatchStatus != "todo" || issue.LastDispatchSeq != 2 {
-				t.Fatalf("%s after the refused todo stands in %s with hold %+v, status %q, Dispatch at %q and sequence %d, want held from testing for the stopped task, %q kept, todo and 2 recorded",
-					root.Key, issue.Phase, issue.Hold, issue.Status, issue.DispatchStatus, issue.LastDispatchSeq, root.Status)
+				issue.Status != root.Status {
+				t.Fatalf("%s after the refused restart stands in %s with hold %+v and status %q, want held from testing for the stopped task and %q kept",
+					root.Key, issue.Phase, issue.Hold, issue.Status, root.Status)
 			}
 			if after := taskOf(t, pool, engine, root.Key); !reflect.DeepEqual(after, task) {
-				t.Fatalf("task a after the refused todo = %+v, want %+v as it stood", after, task)
+				t.Fatalf("task a after the refused restart = %+v, want %+v as it stood", after, task)
 			}
 			if got := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry; got != entry {
-				t.Fatalf("the implementer's entry is %d after the refused todo, want %d", got, entry)
+				t.Fatalf("the implementer's entry is %d after the refused restart, want %d", got, entry)
 			}
 			if w, s := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key)); w != writes || s != statuses {
-				t.Fatalf("the refused todo wrote %d step records and %d status writes, want none", w-writes, s-statuses)
+				t.Fatalf("the refused restart wrote %d step records and %d status writes, want none", w-writes, s-statuses)
 			}
 		})
 	}

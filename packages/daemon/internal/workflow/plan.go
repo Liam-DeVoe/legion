@@ -378,7 +378,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from, Reason: record.HoldTaskStopped}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.putIssue(ctx, tx, issue); err != nil {
 		return err
 	}
 	// The stop takes the issue into held, which is a phase change and so a movement (the rule in
@@ -523,7 +523,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.putIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
 	// The restart takes the issue out of held into a phase, which is a movement (the rule in
