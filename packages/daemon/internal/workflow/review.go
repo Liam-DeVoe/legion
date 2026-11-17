@@ -457,6 +457,7 @@ func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (
 // reviewersClaim is the claim the daemon starts issue's reviewer under (reviewerToken) and the
 // session the claims record holds for it (record.Store.ClaimSession), the session of that claim's
 // current launch: the one reading of who issue's reviewer is, for every judgement of a review-App
+// review (byReviewer). It finds the claim by that token, never by the claim the reviewer's row
 // names: the completion handler is the one writer of record.PhaseRow.Claim, and the reviewer
 // submits the review of its first round before it completes, so read from the row no session
 // would be recorded in round 1, and no review-App review, the reviewer's own among them, could
