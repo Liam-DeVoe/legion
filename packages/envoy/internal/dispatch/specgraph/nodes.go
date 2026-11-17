@@ -3,6 +3,7 @@ package specgraph
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -78,13 +79,15 @@ type (
 
 // printNode is the document of n, a Statement, Check, Component or Term: "---\n", then the file
 // struct of n written by a yaml.v3 Encoder with SetIndent(2). Lists are sorted. A text is split at
-// "\n" into its lines; "" is no key. A scalar that holds U+2028 or U+2029 is written double-quoted,
-// as \L or \P: yaml.v3 reads those two as line ends (YAML 1.1) and writes them as a line break in
-// a single-quoted scalar, which a YAML 1.2 reader, such as the TypeScript yaml library, reads as
-// the character and the indentation after it. The error wraps ErrUnprintable and names the node
-// and the field: an empty id, a string that is not UTF-8 or that holds NUL or CR, a line of a
-// one-line field that holds LF, a text with an empty line, a test part that names nothing, or a
-// negative time limit.
+// "\n" into its lines; "" is no key. Two kinds of scalar are written double-quoted (quotedScalar):
+// one that holds U+2028 or U+2029, as \L or \P, since yaml.v3 reads those two as line ends (YAML
+// 1.1) and writes them as a line break in a single-quoted scalar, which a YAML 1.2 reader, such as
+// the TypeScript yaml library, reads as the character and the indentation after it; and one that a
+// YAML 1.1 or a YAML 1.2 resolver reads, as a plain scalar, as another type than a string
+// (nonStringPlain), which yaml.v3 writes plain when its own resolver reads it as a string. The
+// error wraps ErrUnprintable and names the node and the field: an empty id, a string that is not
+// UTF-8 or that holds NUL or CR, a line of a one-line field that holds LF, a text with an empty
+// line, a test part that names nothing, or a negative time limit.
 func printNode(n any) (string, error) {
 	file, p := fileOf(n)
 	if p == nil {
@@ -141,9 +144,11 @@ func fileOf(n any) (any, *nodePrinter) {
 }
 
 // nodePrinter checks the values of one node as printNode writes them, and keeps the first refusal.
+// quote is whether a value of the node is a quotedScalar.
 type nodePrinter struct {
 	kind, id string
 	err      error
+	quote    bool
 }
 
 func newNodePrinter(kind, id string) *nodePrinter {
@@ -175,6 +180,7 @@ func (p *nodePrinter) line(field, value string) string {
 	case strings.ContainsRune(value, '\n'):
 		p.refuse(field, "it is one line")
 	}
+	p.quote = p.quote || value != "" && quotedScalar(value)
 	return value
 }
 
@@ -203,18 +209,21 @@ func (p *nodePrinter) ids(field string, ids []string) []string {
 }
 
 // document writes file as one YAML document, or answers the first refusal. Only a document that
-// holds U+2028 or U+2029 takes the way through a yaml.Node, where its scalars get their style.
+// holds a quotedScalar takes the way through a yaml.Node, where its scalars get their style.
 func (p *nodePrinter) document(file any) (string, error) {
 	if p.err != nil {
 		return "", p.err
 	}
-	text, err := encodeYAML(file)
-	if err == nil && strings.ContainsAny(text, "\u2028\u2029") {
+	var text string
+	var err error
+	if p.quote {
 		var node yaml.Node
 		if err = node.Encode(file); err == nil {
-			quoteLineSeparators(&node)
+			quoteScalars(&node)
 			text, err = encodeYAML(&node)
 		}
+	} else {
+		text, err = encodeYAML(file)
 	}
 	if err != nil {
 		return "", fmt.Errorf("%w: %s %q: %v", ErrUnprintable, p.kind, p.id, err)
@@ -236,15 +245,50 @@ func encodeYAML(v any) (string, error) {
 	return b.String(), nil
 }
 
-// quoteLineSeparators makes each scalar under node that holds U+2028 or U+2029 double-quoted.
-func quoteLineSeparators(node *yaml.Node) {
-	if node.Kind == yaml.ScalarNode && strings.ContainsAny(node.Value, "\u2028\u2029") {
-		node.Style = yaml.DoubleQuotedStyle
+// quoteScalars makes each quotedScalar under node a double-quoted string. The tag is set too: the
+// yaml.Node that yaml.v3 reads from a plain "<<" carries the tag !!merge, which a double-quoted
+// scalar would write out.
+func quoteScalars(node *yaml.Node) {
+	if node.Kind == yaml.ScalarNode && quotedScalar(node.Value) {
+		node.Style, node.Tag = yaml.DoubleQuotedStyle, "!!str"
 	}
 	for _, child := range node.Content {
-		quoteLineSeparators(child)
+		quoteScalars(child)
 	}
 }
+
+// quotedScalar reports whether printNode writes s double-quoted, whatever style yaml.v3 would
+// pick: s holds U+2028 or U+2029, or nonStringPlain matches it.
+func quotedScalar(s string) bool {
+	return strings.ContainsAny(s, "\u2028\u2029") || nonStringPlain.MatchString(s)
+}
+
+// nonStringPlain matches each text that a YAML 1.1 or a YAML 1.2 resolver reads, written as a
+// plain scalar, as another type than a string: a null, a bool in each spelling, an int in each
+// base, a float, a timestamp, the merge key "<<" and the value key "=". The YAML 1.1 forms are
+// those of its type repository (yaml.org/type) and of PyYAML's resolver, whose floats differ in
+// what may follow the point ("1.2.3" in the repository, "1.5_" in PyYAML); the YAML 1.2 forms are
+// those of its core schema, which holds those of its JSON schema.
+var nonStringPlain = regexp.MustCompile(`^(?:` + strings.Join([]string{
+	// null, in YAML 1.1 and 1.2
+	`~|null|Null|NULL|`,
+	// bool: YAML 1.1, which holds the spellings of YAML 1.2
+	`y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF`,
+	// int: YAML 1.1 in base 2, 8, 10, 16 and 60, then YAML 1.2 in base 10, 8 and 16
+	`[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+`,
+	`[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+`,
+	// float: YAML 1.1 by the type repository, by PyYAML, and in base 60, then YAML 1.2
+	`[-+]?(?:[0-9][0-9_]*)?\.[0-9.]*(?:[eE][-+][0-9]+)?`,
+	`[-+]?[0-9][0-9_]*\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?`,
+	`[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*`,
+	`[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?`,
+	`[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)`,
+	// timestamp: YAML 1.1, a date, or a date and a time
+	`[0-9]{4}-[0-9]{2}-[0-9]{2}`,
+	`[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?`,
+	// the merge key and the value key of YAML 1.1
+	`<<|=`,
+}, "|") + `)$`)
 
 // splitLines is the lines of text, split at "\n"; nil for "".
 func splitLines(text string) []string {

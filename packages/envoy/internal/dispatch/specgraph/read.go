@@ -78,11 +78,74 @@ func refusedLine(data []byte) int {
 	for offset := 0; offset < len(data); {
 		r, width := utf8.DecodeRune(data[offset:])
 		if r == utf8.RuneError && width == 1 || !yamlCharacter(r) {
-			return 1 + bytes.Count(data[:offset], []byte("\n"))
+			return lineOf(lineStarts(data), offset)
 		}
 		offset += width
 	}
 	return 0
+}
+
+// lineStarts is the byte offset of the start of each line of data, from line 1. A line ends at
+// each line break that yaml.v3 reads as one: CR LF, and each other CR, LF, U+0085, U+2028 and
+// U+2029 (is_break and is_crlf of yaml.v3, in skip_line and read_line of its scanner, the only
+// steps that add to its line). So for a file in UTF-8, the line that a message of yaml.v3 or a
+// yaml.Node names starts at lineStarts(data)[line-1], and each reader of lines in this package
+// counts them with it.
+func lineStarts(data []byte) []int {
+	starts := []int{0}
+	for i := 0; i < len(data); {
+		n := lineBreak(data[i:])
+		if n == 0 {
+			i++
+			continue
+		}
+		i += n
+		starts = append(starts, i)
+	}
+	return starts
+}
+
+// lineBreak is the length in bytes of the line break that data starts with, as lineStarts counts
+// one, and 0 when data does not start with a line break.
+func lineBreak(data []byte) int {
+	switch {
+	case bytes.HasPrefix(data, []byte("\r\n")):
+		return 2
+	case data[0] == '\r' || data[0] == '\n':
+		return 1
+	case bytes.HasPrefix(data, []byte("\u0085")):
+		return 2
+	case bytes.HasPrefix(data, []byte("\u2028")) || bytes.HasPrefix(data, []byte("\u2029")):
+		return 3
+	}
+	return 0
+}
+
+// lineOf is the line, from 1, that holds the byte at offset, of a text whose lines start at
+// starts.
+func lineOf(starts []int, offset int) int {
+	i, found := slices.BinarySearch(starts, offset)
+	if found {
+		return i + 1
+	}
+	return i
+}
+
+// textLines is each line of text as lineStarts counts them, with its line break; a text that ends
+// in a line break has no empty line after it.
+func textLines(text string) []string {
+	starts := lineStarts([]byte(text))
+	all := make([]string, 0, len(starts))
+	for i, start := range starts {
+		end := len(text)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		if start < end {
+			all = append(all, text[start:end])
+		}
+	}
+	return all
 }
 
 // yamlCharacter reports whether YAML allows r in a stream, as the reader of yaml.v3 checks it: a
@@ -188,14 +251,20 @@ func stringKeys(value any) bool {
 // schema's types, so one fault gives one problem. When the file has no other problem, it must be
 // exactly the documents that printNode writes for its nodes, in its order: one node has one
 // spelling. The texts of the documents, joined, are data: the text of a document runs from the
-// line of its "---" to the next document's (the first from the start of the file), and the part of
-// a file after a fault that stopped the reading is a document of its own with no node, from the
-// first line after the last document read that starts the next one ("---" or "...").
-func readFile(name string, data []byte) ([]Document, []Problem) {
-	documents, problems, stopped := readDocuments(name, data)
+// line of its "---" to the next document's (the first from the start of the file), each line as
+// yaml.v3 counts it (lineStarts), and the part of a file after a fault that stopped the reading is
+// a document of its own with no node, from the first line after the last document read that
+// starts the next one ("---" or "..."). uncounted is why the reader cannot say for certain which
+// documents the file holds, "" when it can (splitFile).
+func readFile(name string, data []byte) (documents []Document, problems []Problem, uncounted string) {
+	read, problems, stopped := readDocuments(name, data)
+	stop := 0
+	if stopped {
+		stop = problems[len(problems)-1].Pos.Line
+	}
 	var nodes []any
 	var lines []int
-	for _, d := range documents {
+	for _, d := range read {
 		if d.data == nil {
 			continue
 		}
@@ -207,34 +276,44 @@ func readFile(name string, data []byte) ([]Document, []Problem) {
 		}
 	}
 	if len(problems) == 0 {
-		if line, node := firstUnprinted(data, nodes, lines); line > 0 {
-			problems = append(problems, idProblem(Position{File: name, Line: line}, nodeID(node), fmt.Sprintf("not-printed: line %d is not as Print writes the node", line)))
+		if u := firstUnprinted(data, nodes, lines); u.line > 0 {
+			problems = append(problems, idProblem(Position{File: name, Line: u.line}, nodeID(u.node), u.detail()))
 		}
 	}
-	return splitFile(data, documents, nodes, lines, stopped), problems
+	documents, uncounted = splitFile(data, read, nodes, lines, stop)
+	return documents, problems, uncounted
 }
 
 // splitFile is the documents of data, each with its node: documents is each document read, at
-// its line, and nodes the node of each document at lines that gave one.
-func splitFile(data []byte, documents []document, nodes []any, lines []int, stopped bool) []Document {
+// its line, nodes the node of each document at lines that gave one, and stop the line of the
+// fault that stopped the reading, 0 when the reader read the whole file. uncounted is why the
+// texts may not be the documents that yaml.v3 read, "" when they are: a file that yaml.v3 reads as
+// UTF-16, whose lines lineStarts does not count; a file whose reading stopped, since the reader
+// counts no document after the fault; and, as a check of lineStarts, a document at a line that the
+// file does not hold or at the line of the document before it.
+func splitFile(data []byte, documents []document, nodes []any, lines []int, stop int) ([]Document, string) {
 	text := string(data)
-	// starts is the byte offset of the start of each line, from line 1.
-	starts := []int{0}
-	for i := range len(text) {
-		if text[i] == '\n' {
-			starts = append(starts, i+1)
-		}
-	}
+	starts := lineStarts(data)
 	offset := func(line int) int { return starts[min(max(line, 1), len(starts))-1] }
+	uncounted := ""
+	switch {
+	case bytes.HasPrefix(data, []byte("\xff\xfe")) || bytes.HasPrefix(data, []byte("\xfe\xff")):
+		uncounted = "the YAML library reads it as UTF-16, and the reader counts the lines of UTF-8 only"
+	case stop > 0:
+		uncounted = fmt.Sprintf("the YAML library stops at line %d, so the reader does not know the documents after that line", stop)
+	}
 	cuts := make([]int, 0, len(documents)+1)
 	for i, d := range documents {
 		at := offset(d.line)
-		if i == 0 {
+		switch {
+		case i == 0:
 			at = 0
+		case uncounted == "" && (d.line > len(starts) || d.line <= documents[i-1].line):
+			uncounted = fmt.Sprintf("the YAML library reads a document at line %d, which the reader does not count after the document at line %d", d.line, documents[i-1].line)
 		}
 		cuts = append(cuts, at)
 	}
-	if stopped {
+	if stop > 0 {
 		rest := len(text)
 		if len(documents) == 0 {
 			rest = 0
@@ -268,7 +347,7 @@ func splitFile(data []byte, documents []document, nodes []any, lines []int, stop
 	if len(result) == 0 && len(text) > 0 {
 		result = []Document{{Text: text}}
 	}
-	return result
+	return result, uncounted
 }
 
 // schemaRefusals is one schema problem at pos, of the node id, for each place where the data inst
@@ -403,38 +482,125 @@ func jsonPointer(tokens []string) string {
 	return b.String()
 }
 
+// unprinted is the first line of a file that is not as printNode writes the nodes of its
+// documents: the line, the node whose document holds it (nil for none), and the text of that line
+// in the file (got) and in the documents that printNode writes (want), each with its line break,
+// "" past the end of its text. For a node that printNode refuses, line is the line of its
+// document, and refused is the refusal.
+type unprinted struct {
+	line      int
+	node      any
+	got, want string
+	refused   error
+}
+
+// detail is the detail of the not-printed problem: the two texts of the line, quoted as Go quotes
+// a string so that a space at the end, a carriage return or a byte order mark shows, what differs
+// in kind, and the command that writes each node in its printed form.
+func (u unprinted) detail() string {
+	if u.refused != nil {
+		return fmt.Sprintf("not-printed: print writes no document for the node at line %d: %v", u.line, u.refused)
+	}
+	got, want := "past the end of the file", "nothing"
+	if u.got != "" {
+		got = strconv.Quote(u.got)
+	}
+	if u.want != "" {
+		want = strconv.Quote(u.want)
+	}
+	return fmt.Sprintf("not-printed: line %d is %s, and print writes %s there (%s); spec-check print writes each node in that form", u.line, got, want, lineDifference(u.got, u.want))
+}
+
+// lineDifference names in kind how the line got of a file differs from the line want that print
+// writes: a byte order mark, a line break that is not LF or no line break, a space or a tab, a
+// comment, quotes, an indent, other spaces, an order of keys, a line that only one of them holds,
+// or another spelling.
+func lineDifference(got, want string) string {
+	if got == "" {
+		return "the file ends before this line"
+	}
+	if want == "" {
+		return "a line after the last node"
+	}
+	if strings.Contains(got, "\ufeff") {
+		return "a byte order mark"
+	}
+	body := strings.TrimRight(got, "\r\n\u0085\u2028\u2029")
+	wantBody := strings.TrimSuffix(want, "\n")
+	switch end := got[len(body):]; {
+	case end == "\n":
+	case strings.HasPrefix(end, "\r"):
+		return "a carriage return: print ends each line with a line feed only"
+	case end != "":
+		r, _ := utf8.DecodeRuneInString(end)
+		return fmt.Sprintf("the character %U, which YAML reads as a line break", r)
+	case body == wantBody:
+		return "no line break at the end of the file"
+	}
+	key := func(line string) string {
+		if k, _, found := strings.Cut(line, ":"); found && !strings.HasPrefix(line, " ") {
+			return k
+		}
+		return ""
+	}
+	switch {
+	case strings.TrimRight(body, " \t") == wantBody:
+		return "a space at the end of the line"
+	case strings.Contains(body, "\t"):
+		return "a tab"
+	case strings.HasPrefix(strings.TrimLeft(body, " "), "#") || strings.Contains(body, " #") && !strings.Contains(wantBody, " #"):
+		return "a comment"
+	case quoteMarks.Replace(body) == quoteMarks.Replace(wantBody):
+		return "other quotes"
+	case strings.TrimLeft(body, " ") == strings.TrimLeft(wantBody, " "):
+		return "another indent"
+	case strings.Join(strings.Fields(body), " ") == strings.Join(strings.Fields(wantBody), " "):
+		return "other spaces"
+	case key(body) != "" && key(wantBody) != "" && key(body) != key(wantBody):
+		return "another order of keys"
+	}
+	return "another spelling"
+}
+
+// quoteMarks removes the quote marks of a line.
+var quoteMarks = strings.NewReplacer(`'`, "", `"`, "")
+
 // firstUnprinted is the first line of data that is not as printNode writes nodes, which the
-// documents at lines hold, and the node whose document holds that line; 0 when data is exactly
-// their documents. Past the end of the shorter text, the line is the one after it. A node that
-// printNode refuses is at the line of its document. With no node, the node is nil: a file whose
-// documents give no node is not as Print writes any node.
-func firstUnprinted(data []byte, nodes []any, lines []int) (int, any) {
+// documents at lines hold, with the node whose document holds that line; its line is 0 when data
+// is exactly their documents. Lines are counted as yaml.v3 counts them (textLines). Past the end
+// of the shorter text, the line is the one after it. A node that printNode refuses is at the line
+// of its document. With no node, the node is nil: a file whose documents give no node is not as
+// Print writes any node.
+func firstUnprinted(data []byte, nodes []any, lines []int) unprinted {
 	var printed strings.Builder
 	for i, node := range nodes {
 		document, err := printNode(node)
 		if err != nil {
-			return lines[i], node
+			return unprinted{line: lines[i], node: node, refused: err}
 		}
 		printed.WriteString(document)
 	}
 	if printed.String() == string(data) {
-		return 0, nil
+		return unprinted{}
 	}
-	got, want := strings.SplitAfter(string(data), "\n"), strings.SplitAfter(printed.String(), "\n")
-	line := 1
-	for line <= len(got) && line <= len(want) && got[line-1] == want[line-1] {
-		line++
+	got, want := textLines(string(data)), textLines(printed.String())
+	i := 0
+	for i < len(got) && i < len(want) && got[i] == want[i] {
+		i++
 	}
-	if len(nodes) == 0 {
-		return line, nil
+	u := unprinted{line: i + 1}
+	if i < len(got) {
+		u.got = got[i]
 	}
-	holder := 0
-	for i, start := range lines {
-		if start <= line {
-			holder = i
+	if i < len(want) {
+		u.want = want[i]
+	}
+	for k, start := range lines {
+		if k == 0 || start <= u.line {
+			u.node = nodes[k]
 		}
 	}
-	return line, nodes[holder]
+	return u
 }
 
 // nodeID is the id of node, a Statement, Check, Component or Term; "" for nil.
@@ -466,14 +632,21 @@ func IsFile(name string, entryKind notes.Kind) bool {
 // ReadLayout reads the spec files, keyed by their names directly in the spec directory, as Parse
 // does, and keeps each document of each file with its node and its text, so Layout.Bytes gives
 // each file back byte for byte. Parse is ReadLayout and the tree of its documents, so one reader
-// serves both. The problems are sorted by SortProblems.
+// serves both. Uncounted names each file whose documents the reader cannot say for certain. The
+// problems are sorted by SortProblems.
 func ReadLayout(files map[string][]byte) (Layout, []Problem) {
 	l := Layout{Files: make(map[string][]Document, len(files))}
 	var problems []Problem
 	for _, name := range slices.Sorted(maps.Keys(files)) {
-		documents, found := readFile(name, files[name])
+		documents, found, uncounted := readFile(name, files[name])
 		l.Files[name] = documents
 		problems = append(problems, found...)
+		if uncounted != "" {
+			if l.Uncounted == nil {
+				l.Uncounted = map[string]string{}
+			}
+			l.Uncounted[name] = uncounted
+		}
 	}
 	SortProblems(problems)
 	return l, problems

@@ -295,7 +295,7 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 		{"a document of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", `The page shows it.\n---\ntype: term\nid: page\nname: page\ndefinition:\n  - A page is a view.`)) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document holds 2 nodes, not one`},
 		{"a document that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind:  behavior\ntext:\n  - The page shows it.\n"`) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: not-printed: line 4 is not as Print writes the node`},
+			`approved node "a-page-shows-it" version 1: not-printed: line 4 is "kind:  behavior\n", and print writes "kind: behavior\n" there (other spaces)`},
 		{"a document that Print does not write, of a node that breaks a rule of the schema", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\ntext:\n  -   The page shows it.\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is not as Print writes it`},
 	} {
@@ -362,7 +362,8 @@ func TestCurrentNamesADocumentThatDoesNotRead(t *testing.T) {
 	if len(current.Statements) != 0 {
 		t.Errorf("Current holds %+v, want no statement", current.Statements)
 	}
-	want := []Problem{{Position{"approved a-page-shows-it version 1", 2}, "a-page-shows-it", "not-printed", "not-printed: line 2 is not as Print writes the node"}}
+	want := []Problem{{Position{"approved a-page-shows-it version 1", 2}, "a-page-shows-it", "not-printed",
+		`not-printed: line 2 is "# A comment.\n", and print writes "type: requirement\n" there (a comment); spec-check print writes each node in that form`}}
 	if !reflect.DeepEqual(problems, want) {
 		t.Errorf("Current problems:\n got %+v\nwant %+v", problems, want)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
+	"gopkg.in/yaml.v3"
 )
 
 // testPrint runs print over the fixtures of testdata/compare: it writes the current approved
@@ -183,11 +185,11 @@ func TestPrintedFilesPassTheComparison(t *testing.T) {
 	if texts := readTexts(t, only); len(texts) != 0 {
 		t.Fatalf("print wrote %q, want nothing", texts)
 	}
-	after, _, refusals := planPrint(only, map[string][]byte{}, a, statements, notes.MaxFileSize)
+	after, _, refusals := planPrint(only, notes.Set{Files: map[string][]byte{}}, a, statements, notes.MaxFileSize)
 	if len(refusals) == 0 || after == nil {
 		t.Fatalf("planPrint of the statements only: refusals %q, after %v; want the refusal and the files", refusals, after)
 	}
-	if err := writeFiles(only, nil, after); err != nil {
+	if err := writeFiles(osFileSystem, only, nil, after); err != nil {
 		t.Fatal(err)
 	}
 	expect(t, runBinary(t, binary, "", "tree", "--dir", only), result{
@@ -287,16 +289,324 @@ func TestPrintRefusesANodeHeldTwoTimes(t *testing.T) {
 	}
 }
 
+// print never exits 0 with a node lost or changed that the run does not name, whatever line breaks
+// a file holds: the two files of the red team of print (three terms with CR line ends, and three
+// terms whose first name holds 30 U+2028 in single quotes), then each other line break that yaml.v3
+// reads as one (U+0085, U+2028, U+2029, CR LF and CR) in a quoted key, after a key, in a quoted
+// text, in a block text and between two documents, and a CR at the end of the file. A run of print
+// of the third term, and one of the first, each either exits 2 with the file as it was, or exits 0
+// with each other term as yaml.v3 read it before the run. No refusal names a node that the run
+// would lose, since the reader cuts each file where yaml.v3 reads its documents. LF alone is the
+// control: print writes it.
+func TestPrintLosesNoNodeOfAFileWithOtherLineBreaks(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	term := func(id string) string {
+		return "---\ntype: term\nid: " + id + "\nname: " + id + "\ndefinition:\n  - A term is a unit of meaning.\n"
+	}
+	first, rest := term("first-term"), term("second-term")+term("third-term")
+	approved := writeApproved(t, map[string]string{"first-term": first, "second-term": term("second-term"), "third-term": term("third-term")})
+	rows := map[string]string{
+		"LF alone":                      first + rest,
+		"carriage returns as line ends": strings.ReplaceAll(first+rest, "\n", "\r"),
+		"U+2028 in a quoted name":       strings.Replace(first, "name: first-term", "name: 'A"+strings.Repeat("\u2028  B", 30)+"'", 1) + rest,
+		"a CR at the end of the file":   first + rest + "\r",
+	}
+	for name, lineBreak := range map[string]string{"U+0085": "\u0085", "U+2028": "\u2028", "U+2029": "\u2029", "CR LF": "\r\n", "CR": "\r"} {
+		rows[name+" in a quoted key"] = strings.Replace(first, "definition:\n", "'a"+lineBreak+"  key': x\ndefinition:\n", 1) + rest
+		rows[name+" after a key"] = strings.Replace(first, "name: first-term", "name:"+lineBreak+"  first-term", 1) + rest
+		rows[name+" in a quoted text"] = strings.Replace(first, "name: first-term", "name: 'first"+lineBreak+"  term'", 1) + rest
+		rows[name+" in a block text"] = strings.Replace(first, "  - A term is a unit of meaning.\n", "  - |-\n    A term"+lineBreak+"    is a unit of meaning.\n", 1) + rest
+		rows[name+" between documents"] = first + lineBreak + rest
+	}
+	for name, text := range rows {
+		for _, id := range []string{"third-term", "first-term"} {
+			t.Run(name+", print of "+id, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				file := filepath.Join(dir, "terms.yaml")
+				writeFile(t, file, []byte(text))
+				before := yamlNodes(t, map[string][]byte{"terms.yaml": []byte(text)})
+				got := runBinary(t, binary, "", "print", "--approved", approved, "--id", id, "--dir", dir)
+				if strings.Contains(got.stderr, "print would lose or change node") {
+					t.Errorf("the plan of the run loses a node, so the reader cut the file in another way than yaml.v3: %s", got.stderr)
+				}
+				after := readDir(t, dir)
+				switch got.code {
+				case 2:
+					if name == "LF alone" {
+						t.Fatalf("print of the printed file: exit 2, stderr %q", got.stderr)
+					}
+					if !bytes.Equal(after["terms.yaml"], []byte(text)) || len(after) != 1 {
+						t.Errorf("a refused run changed the directory: %q", after)
+					}
+				case 0:
+					want := maps.Clone(before)
+					want[id] = yamlNodes(t, map[string][]byte{"run.yaml": []byte(term(id))})[id]
+					if nodes := yamlNodes(t, after); !maps.EqualFunc(nodes, want, slices.Equal) {
+						t.Errorf("print exits 0, and the files hold %q; want %q", nodes, want)
+					}
+				default:
+					t.Fatalf("print: exit %d, stderr %q", got.code, got.stderr)
+				}
+			})
+		}
+	}
+}
+
+// A file whose documents the reader cannot say for certain is refused by its name, and print
+// writes nothing: a file whose reading stops at a fault of the YAML, beside a valid file that the
+// run would write into.
+func TestPrintRefusesAFileItCannotCut(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	term := "---\ntype: term\nid: first-term\nname: first term\ndefinition:\n  - A term is a unit of meaning.\n"
+	approved := writeApproved(t, map[string]string{"first-term": term})
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
+	writeFile(t, filepath.Join(dir, "broken.yaml"), []byte(term+"---\ntype: [\n"))
+	before := readDir(t, dir)
+	expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "first-term", "--dir", dir), result{
+		code: 2,
+		stderr: "spec-check: print would write into " + dir + ", and the reader cannot say which documents " + filepath.Join(dir, "broken.yaml") +
+			" holds: the YAML library stops at line 8, so the reader does not know the documents after that line. Correct that file, then run print again\n",
+	})
+	if got := readDir(t, dir); !maps.EqualFunc(got, before, bytes.Equal) {
+		t.Errorf("the directory changed: %q", got)
+	}
+}
+
+// A run of print changes all of its files or none (B2). The case of the review: a directory named
+// components.yaml beside the file of a statement, and a run that changes the statement and adds
+// a component, which goes into components.yaml. print refuses before it writes anything, and the
+// directory is byte for byte as it was, so tree still takes it.
+func TestPrintWritesNothingWhenOneFileCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	statement := "---\ntype: requirement\nid: a-claim\nkind: behavior\ntext:\n  - The daemon keeps each claim.\n"
+	check := "---\ntype: check\nid: claim-check\nserves: a-claim\nsubject: graph\nprocedure: query\nclaim: The graph holds each claim.\n" +
+		"procedure_text:\n  - Read each claim.\nfailing_example:\n  - A graph with no claims.\n"
+	approved := writeApproved(t, map[string]string{
+		"a-claim":     "---\ntype: requirement\nid: a-claim\nkind: structure\nabout:\n  - z-component\ntext:\n  - The daemon keeps each claim.\n",
+		"claim-check": check,
+		"z-component": "---\ntype: component\nid: z-component\nname: A component\nkind: component\npurpose:\n  - It keeps each claim.\n",
+	})
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.yaml"), []byte(statement+check))
+	components := filepath.Join(dir, "components.yaml")
+	if err := os.Mkdir(components, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// entries is each entry of dir by name: a file's text, or "directory".
+	entries := func() map[string]string {
+		all := map[string]string{}
+		list, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range list {
+			all[entry.Name()] = "directory"
+			if !entry.IsDir() {
+				content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				all[entry.Name()] = string(content)
+			}
+		}
+		return all
+	}
+	before := entries()
+	expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "a-claim", "--id", "z-component", "--dir", dir), result{
+		code: 2,
+		stderr: "spec-check: warning: " + components + ": not a spec file (directory); the importer passes over it\n" +
+			"spec-check: print would write " + components + ", where " + dir + " holds a directory, not a spec file: print replaces a spec file only\n",
+	})
+	if got := entries(); !maps.Equal(got, before) {
+		t.Errorf("the directory changed: %q, want %q", got, before)
+	}
+	if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 0 {
+		t.Errorf("tree after the refused run: exit %d, stderr %q", got.code, got.stderr)
+	}
+}
+
+// writeFiles changes all of the files of a run or none: with a step that fails at each place, the
+// directory is byte for byte as it was. The run changes a.yaml and b.yaml and adds c.yaml. The
+// faults: no temporary file can be made (the first, and the fourth, which holds the old text of
+// b.yaml); the directory takes no new file, a stand-in for a full disk; and the rename of the
+// second file fails, after the first file was renamed, so writeFiles puts the first back. A rename
+// that fails, and then a put-back that fails too, names the file that it changed. The control
+// writes all three.
+func TestWriteFilesChangesAllOrNone(t *testing.T) {
+	t.Parallel()
+	files := map[string][]byte{"a.yaml": []byte("a before\n"), "b.yaml": []byte("b before\n"), "kept.yaml": []byte("kept\n")}
+	after := map[string][]byte{"a.yaml": []byte("a after\n"), "b.yaml": []byte("b after\n"), "c.yaml": []byte("c after\n"), "kept.yaml": []byte("kept\n")}
+	setUp := func(t *testing.T) string {
+		dir := t.TempDir()
+		for name, content := range files {
+			writeFile(t, filepath.Join(dir, name), content)
+		}
+		return dir
+	}
+	failing := func(n int, step string) fileSystem {
+		var calls int
+		fsys := osFileSystem
+		fail := errors.New(step + " fails")
+		switch step {
+		case "create":
+			fsys.createTemp = func(dir, pattern string) (*os.File, error) {
+				if calls++; calls == n {
+					return nil, fail
+				}
+				return os.CreateTemp(dir, pattern)
+			}
+		case "rename":
+			fsys.rename = func(oldpath, newpath string) error {
+				if calls++; calls == n || n == 0 && calls > 1 {
+					return fail
+				}
+				return os.Rename(oldpath, newpath)
+			}
+		}
+		return fsys
+	}
+	for _, row := range []struct {
+		name string
+		fsys fileSystem
+		err  string
+	}{
+		{"the first temporary file", failing(1, "create"), "create fails"},
+		{"the temporary file of the old text of b.yaml", failing(4, "create"), "create fails"},
+		{"the rename of the second file", failing(2, "rename"), "rename fails"},
+		{"the rename of the second file and each put-back", failing(0, "rename"), "rename fails; print changed DIR/a.yaml and could not put back the text it held"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := setUp(t)
+			err := writeFiles(row.fsys, dir, files, after)
+			if want := strings.ReplaceAll(row.err, "DIR", dir); err == nil || err.Error() != want {
+				t.Fatalf("writeFiles: %v, want %q", err, want)
+			}
+			got := readDir(t, dir)
+			if row.name == "the rename of the second file and each put-back" {
+				got["a.yaml"] = files["a.yaml"] // the one file that the error names
+			}
+			if !maps.EqualFunc(got, files, bytes.Equal) {
+				t.Errorf("the directory is %q, want it as it was, %q", got, files)
+			}
+		})
+	}
+	t.Run("a directory that takes no new file", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root writes into a directory of mode 555")
+		}
+		dir := setUp(t)
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		if err := writeFiles(osFileSystem, dir, files, after); err == nil {
+			t.Fatal("writeFiles into a directory of mode 555: no error")
+		}
+		if got := readDir(t, dir); !maps.EqualFunc(got, files, bytes.Equal) {
+			t.Errorf("the directory is %q, want it as it was, %q", got, files)
+		}
+	})
+	t.Run("the control: no step fails", func(t *testing.T) {
+		t.Parallel()
+		dir := setUp(t)
+		if err := writeFiles(osFileSystem, dir, files, after); err != nil {
+			t.Fatal(err)
+		}
+		if got := readDir(t, dir); !maps.EqualFunc(got, after, bytes.Equal) {
+			t.Errorf("the directory is %q, want %q", got, after)
+		}
+	})
+}
+
+// Two runs of print at one time into one directory each write their node (N1): print holds the
+// lock of the directory for its whole run, so the second run waits for the first and reads the
+// files that the first wrote. Five trials of four runs, each with another term of about 12 KB, into
+// a directory that does not exist yet; after each trial the directory holds the four terms. A run
+// that cannot take the lock within its wait refuses by name and writes nothing.
+func TestPrintRunsOneAtATimeOnADirectory(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	documents := map[string]string{}
+	var ids []string
+	for i := range 20 {
+		id := fmt.Sprintf("term-%c%c", 'a'+i/10, 'a'+i%10)
+		var b strings.Builder
+		b.WriteString("---\ntype: term\nid: " + id + "\nname: term " + id + "\ndefinition:\n")
+		for line := range 500 {
+			fmt.Fprintf(&b, "  - Line %d of the term.\n", line)
+		}
+		documents[id] = b.String()
+		ids = append(ids, id)
+	}
+	approved := writeApproved(t, documents)
+	for trial := range 5 {
+		dir := filepath.Join(t.TempDir(), "spec")
+		var wg sync.WaitGroup
+		results := make([]result, 4)
+		for i := range 4 {
+			wg.Go(func() {
+				results[i] = runBinary(t, binary, "", "print", "--approved", approved, "--id", ids[4*trial+i], "--dir", dir)
+			})
+		}
+		wg.Wait()
+		for i, got := range results {
+			if got.code != 0 {
+				t.Errorf("trial %d, run %d: exit %d, stderr %q", trial, i, got.code, got.stderr)
+			}
+		}
+		held := yamlNodes(t, readDir(t, dir))
+		for _, id := range ids[4*trial : 4*trial+4] {
+			if len(held[id]) != 1 {
+				t.Errorf("trial %d: the directory holds %s %d times, want 1: a run wrote over the files of another", trial, id, len(held[id]))
+			}
+		}
+	}
+
+	t.Run("a run that waits too long refuses by name", func(t *testing.T) {
+		dir := t.TempDir()
+		lock, err := lockSpecDir(dir, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := readApprovedFile(t, approved)
+		var stderr strings.Builder
+		if code := printApproved(io.Discard, &stderr, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 2 ||
+			stderr.String() != "spec-check: "+dir+": another run of print holds the lock of the directory, and this run waited 100ms for it; run print again when that run ends\n" {
+			t.Errorf("print while another run holds the lock: exit %d, stderr %q", code, stderr.String())
+		}
+		if got := readDir(t, dir); len(got) != 0 {
+			t.Errorf("print wrote %q while another run held the lock", got)
+		}
+		lock.release(true)
+		stderr.Reset()
+		if code := printApproved(io.Discard, &stderr, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 0 {
+			t.Errorf("print after the lock is released: exit %d, stderr %q", code, stderr.String())
+		}
+	})
+}
+
 // The invariant of print: after each run, each file is within the bound, each node stands in
-// exactly one file, no file is empty, the judgment of tree finds no problem, each check that the
-// run wrote is in the block of its statement, and a second run changes no byte; a refused run
-// writes nothing. The test runs print's own path after its arguments (printApproved, with a bound
-// of 4,096 bytes) over random approved sets: printSeeds seeds, each up to 40 runs of 1 to 5 nodes
-// on one directory, with a new approved version of a node between runs. It replays each run with
-// Layout.Place to name the answer that each node got, and requires each answer that print can give
-// to occur: W (written at home), M (moved to the next file of its series) and T (refused, its
-// block over the bound) for each kind of node, new and replaced, and S and P (refused, its
-// statement or its parent not in the files).
+// exactly one file, no file is empty, the judgment of tree finds no problem, the files hold each
+// node that they held before the run as yaml.v3 reads it, each node of the run as its approved
+// document, and no other node, each check that the run wrote is in the block of its statement, and
+// a second run changes no byte; a refused run writes nothing. The test runs print's own path after
+// its arguments (printApproved, with a bound of 4,096 bytes) over random approved sets: printSeeds
+// seeds, each up to 40 runs of 1 to 5 nodes on one directory, with a new approved version of a
+// node between runs. Before one run in four it plants a fault in one file (plantFault): the same
+// nodes with other line breaks, a term in front whose name holds a line break of YAML 1.1, or a
+// fault of the YAML after the documents. The plan of no run loses a node, and print refuses a run
+// over a file whose reading stops, by its name. It replays each run with Layout.Place to name the
+// answer that each node got, and requires each answer that print can give to occur: W (written at
+// home), M (moved to the next file of its series) and T (refused, its block over the bound) for
+// each kind of node, new and replaced, and S and P (refused, its statement or its parent not in
+// the files).
 //
 // The proof of the rule itself is TestPlace, a row for each cell of its table; this test proves
 // that print follows the rule. Over the seeds 1 to 2,000, the last answer to occur first occurs at
@@ -365,12 +675,13 @@ func printSeeds(t *testing.T) uint64 {
 }
 
 // printSeed runs the printer over the random approved set of seed, and answers each answer that
-// a node got.
+// a node got. After a run that print refuses, it puts a file with a planted fault back.
 func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 	r := rand.New(rand.NewPCG(seed, seed))
 	g := newPrintSet(r)
 	dir := t.TempDir()
 	answers := map[string]bool{}
+	bounds := printBounds{limit: limit, wait: printLockWait}
 	for range 1 + r.IntN(40) {
 		g.change(r)
 		a := g.approved()
@@ -378,35 +689,75 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 		for range 1 + r.IntN(5) {
 			ids = append(ids, g.ids[r.IntN(len(g.ids))])
 		}
-		files := readDir(t, dir)
+		clean := readDir(t, dir)
+		files, planted, stops := clean, "", false
+		if len(clean) > 0 && r.IntN(4) == 0 {
+			planted = slices.Sorted(maps.Keys(clean))[r.IntN(len(clean))]
+			files = maps.Clone(clean)
+			files[planted], stops = plantFault(r, clean[planted])
+			writeFile(t, filepath.Join(dir, planted), files[planted])
+		}
 		current, _ := a.Current()
-		replay, _ := specgraph.ReadLayout(files)
-		for _, node := range printRun(current, ids) {
-			answer, ok := placeAnswer(&replay, node, limit)
-			answers[answer] = true
-			if !ok {
-				break
+		run := printRun(current, ids)
+		if !stops {
+			replay, _ := specgraph.ReadLayout(files)
+			for _, node := range run {
+				answer, ok := placeAnswer(&replay, node, limit)
+				answers[answer] = true
+				if !ok {
+					break
+				}
 			}
 		}
 		var stderr strings.Builder
-		switch code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, limit); code {
+		code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, bounds)
+		for _, lost := range []string{"print would lose or change node", "print would not leave node", "which neither the files nor the run held"} {
+			if strings.Contains(stderr.String(), lost) {
+				t.Fatalf("seed %d: the plan of a run loses or changes a node, so the reader cut a file in another way than yaml.v3 reads it: %s", seed, stderr.String())
+			}
+		}
+		if stops && (code != 2 || !strings.Contains(stderr.String(), "the reader cannot say which documents "+filepath.Join(dir, planted)+" holds")) {
+			t.Fatalf("seed %d: print over %s, whose reading stops at a fault, did not refuse it by name: exit %d: %s", seed, planted, code, stderr.String())
+		}
+		switch code {
 		case 2:
 			if got := readDir(t, dir); !maps.EqualFunc(got, files, bytes.Equal) {
 				t.Fatalf("seed %d: a refused run changed the files: %s", seed, stderr.String())
+			}
+			if planted != "" {
+				writeFile(t, filepath.Join(dir, planted), clean[planted])
 			}
 			continue
 		case 0:
 		default:
 			t.Fatalf("seed %d: print exit %d: %s", seed, code, stderr.String())
 		}
-		holdsTheInvariant(t, seed, dir, limit, printRun(current, ids))
+		holdsTheInvariant(t, seed, dir, limit, files, run)
 		written := readDir(t, dir)
 		stderr.Reset()
-		if code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, limit); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
+		if code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, bounds); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
 			t.Fatalf("seed %d: a second run with the same arguments exits %d or changes the files: %s", seed, code, stderr.String())
 		}
 	}
 	return answers
+}
+
+// plantFault is content, a file that print wrote, as an editor or another tool can leave it, and
+// whether yaml.v3 stops reading it: the same documents with a carriage return or CR LF as each
+// line end; a term in front whose name holds U+0085, U+2028 or U+2029 as yaml.v3 writes it, a
+// line break in a single-quoted scalar; or a fault of the YAML after the documents.
+func plantFault(r *rand.Rand, content []byte) ([]byte, bool) {
+	switch r.IntN(4) {
+	case 0:
+		return bytes.ReplaceAll(content, []byte("\n"), []byte("\r")), false
+	case 1:
+		return bytes.ReplaceAll(content, []byte("\n"), []byte("\r\n")), false
+	case 2:
+		lineBreak := []string{"\u0085", "\u2028", "\u2029"}[r.IntN(3)]
+		term := "---\ntype: term\nid: planted-term\nname: 'planted" + strings.Repeat(lineBreak+"  term", 1+r.IntN(20)) + "'\ndefinition:\n  - A planted term is a word.\n"
+		return append([]byte(term), content...), false
+	}
+	return append(slices.Clone(content), "---\ntype: [\n"...), true
 }
 
 // placeAnswer places node into l and names its answer: "<kind> new|replaced W|M|T", or S or P;
@@ -477,8 +828,8 @@ func placeAnswer(l *specgraph.Layout, node any, limit int64) (string, bool) {
 }
 
 // holdsTheInvariant fails the test when the files of dir break the invariant of print after a run
-// that wrote the nodes of run.
-func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, run []any) {
+// that wrote the nodes of run into the files before.
+func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, before map[string][]byte, run []any) {
 	t.Helper()
 	files := readDir(t, dir)
 	for name := range files {
@@ -493,6 +844,23 @@ func holdsTheInvariant(t *testing.T, seed uint64, dir string, limit int64, run [
 	tree, problems := specgraph.Parse(files)
 	if problems = append(problems, specgraph.Validate(tree, specgraph.Options{})...); len(problems) > 0 {
 		t.Fatalf("seed %d: tree refuses the files that print wrote: %+v", seed, problems)
+	}
+	// The nodes as yaml.v3 reads them: each node of the files before the run, with each node of
+	// the run in place of its id's.
+	want := yamlNodes(t, before)
+	for id, data := range yamlNodes(t, map[string][]byte{"run.yaml": printed(t, printable(run)...)}) {
+		want[id] = data
+	}
+	got := yamlNodes(t, files)
+	for id := range got {
+		if _, held := want[id]; !held {
+			want[id] = nil
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(want)) {
+		if !slices.Equal(got[id], want[id]) {
+			t.Fatalf("seed %d: node %s: the files hold %q, and want %q", seed, id, got[id], want[id])
+		}
 	}
 	// The nodes of each file in their order, from the line of each.
 	type held struct {
@@ -727,4 +1095,38 @@ func printed(t *testing.T, nodes ...interface{ Print() (string, error) }) []byte
 		b.WriteString(document)
 	}
 	return []byte(b.String())
+}
+
+// printable is each node of nodes, a Statement, Check, Component or Term, as printed takes it.
+func printable(nodes []any) []interface{ Print() (string, error) } {
+	all := make([]interface{ Print() (string, error) }, len(nodes))
+	for i, node := range nodes {
+		all[i] = node.(interface{ Print() (string, error) })
+	}
+	return all
+}
+
+// yamlNodes is the data of each document of files, in name order, as yaml.v3 reads it and as JSON
+// writes it, by the id that it holds: the nodes of a directory as the YAML library counts them,
+// with no reader of specgraph. A file whose reading stops at a fault gives the documents before it.
+func yamlNodes(t *testing.T, files map[string][]byte) map[string][]string {
+	t.Helper()
+	nodes := map[string][]string{}
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		decoder := yaml.NewDecoder(bytes.NewReader(files[name]))
+		for {
+			var data any
+			if decoder.Decode(&data) != nil {
+				break // the end of the file, or a fault that stops the reading
+			}
+			js, err := json.Marshal(data)
+			if err != nil {
+				t.Fatalf("%s: a document with no JSON form: %v", name, err)
+			}
+			object, _ := data.(map[string]any)
+			id, _ := object["id"].(string)
+			nodes[id] = append(nodes[id], string(js))
+		}
+	}
+	return nodes
 }

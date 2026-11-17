@@ -102,7 +102,8 @@ func TestTheBuiltBinary(t *testing.T) {
 		})
 	})
 	// The reader normalizes nothing: a CRLF copy of the valid tree reads as the same nodes, so the
-	// counts stay, and each file is refused at its first line, as Print writes no CR.
+	// counts stay, and each file is refused at its first line, as Print writes no CR; the line
+	// shows the carriage return and the line that print writes.
 	t.Run("tree refuses a CRLF copy of the valid tree and counts the same nodes", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
@@ -113,12 +114,14 @@ func TestTheBuiltBinary(t *testing.T) {
 			}
 			writeFile(t, filepath.Join(dir, name), []byte(strings.ReplaceAll(string(content), "\n", "\r\n")))
 		}
+		crlf := `not-printed: line 1 is "---\r\n", and print writes "---\n" there (a carriage return: print ends each line with a line feed only); ` +
+			"spec-check print writes each node in that form\n"
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			code:   1,
 			stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is refused\n",
 			stderr: "spec-check: " + dir + noList +
-				"spec-check: " + filepath.Join(dir, "claims.yaml") + ":1: legion-keeps-each-claim-in-dispatch: not-printed: line 1 is not as Print writes the node\n" +
-				"spec-check: " + filepath.Join(dir, "interfaces.yaml") + ":1: dispatch: not-printed: line 1 is not as Print writes the node\n",
+				"spec-check: " + filepath.Join(dir, "claims.yaml") + ":1: legion-keeps-each-claim-in-dispatch: " + crlf +
+				"spec-check: " + filepath.Join(dir, "interfaces.yaml") + ":1: dispatch: " + crlf,
 		})
 	})
 	t.Run("tree refuses a file that is not UTF-8 or holds a NUL byte, naming the file and the line", func(t *testing.T) {
@@ -198,7 +201,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		})
 	})
 	// A *.md file of the block form, beside the YAML files, is no spec file: the command warns of
-	// it and reads the tree without it.
+	// it, says what a spec file is, and reads the tree without it.
 	t.Run("tree warns of each entry that is not a spec file", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
@@ -214,11 +217,12 @@ func TestTheBuiltBinary(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, "nested.yaml"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+		const notSpec = ": not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it\n"
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			stdout: validLine(dir),
 			stderr: "spec-check: warning: " + filepath.Join(dir, "nested.yaml") + ": not a spec file (directory); the importer passes over it\n" +
-				"spec-check: warning: " + filepath.Join(dir, "notes.txt") + ": not a spec file (file); the importer passes over it\n" +
-				"spec-check: warning: " + filepath.Join(dir, "old.md") + ": not a spec file (file); the importer passes over it\n" +
+				"spec-check: warning: " + filepath.Join(dir, "notes.txt") + notSpec +
+				"spec-check: warning: " + filepath.Join(dir, "old.md") + notSpec +
 				"spec-check: " + dir + noList,
 		})
 	})

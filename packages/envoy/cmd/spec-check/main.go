@@ -81,14 +81,21 @@
 // parent's file or of <id>.yaml, a component or an interface at the end of components.yaml, a term
 // at the end of terms.yaml, and a block that does not fit moves to the next file of its file's
 // series (<stem>-2.yaml and on). The run places the components and interfaces, then the terms,
-// then each statement with its checks, parents first. It writes nothing, and exits 2 with one line
-// for each refusal on standard error, when Place refuses a node ("spec-check: print would write …",
+// then each statement with its checks, parents first. It holds an exclusive lock on --dir for the
+// whole run, and waits up to 10 seconds for another run that holds it. It writes nothing, and
+// exits 2 with one line for each refusal on standard error: when another run holds the lock after
+// the wait; when --dir holds a file whose documents the reader cannot say for certain
+// ("spec-check: print would write into <dir>, and the reader cannot say which documents
+// <dir>/<file> holds: <reason>…"); when Place refuses a node ("spec-check: print would write …",
 // for a check whose statement or a statement whose parent the files do not hold, a block larger
-// than one file, or a node that two places hold), or when the judgment of tree finds a problem in
-// the files that the run would leave ("spec-check: print would leave <dir>/<file>:<line>: <node>:
-// <detail>"); it exits 2 too when the approved spec does not hold an id or removed it. Else it
-// writes each file that changes, through a temporary file and a rename, prints "spec-check: wrote
-// <id> to <dir>/<file>:<line>" for each node, and exits 0.
+// than one file, or a node that two places hold); when the run would write a name that is no spec
+// file of --dir, such as a directory of that name; when the files that the run would leave would
+// not hold a node as the files held it, or a node of the run as its approved document
+// ("spec-check: print would lose or change node …"); or when the judgment of tree finds a problem
+// in the files that the run would leave ("spec-check: print would leave <dir>/<file>:<line>:
+// <node>: <detail>"). It exits 2 too when the approved spec does not hold an id or removed it. Else
+// it writes each file that changes, all of them or none as far as the file system allows, prints
+// "spec-check: wrote <id> to <dir>/<file>:<line>" for each node, and exits 0.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts as text, and names each line that names the command that
@@ -339,16 +346,27 @@ func read(stderr io.Writer, dir string) (judged, error) {
 	return judged{dir: dir, tree: tree, problems: problems, files: len(files)}, nil
 }
 
-// readFiles reads the spec files of dir with notes.ReadSet and specgraph.IsFile, and warns on
-// stderr of each entry that is not a spec file. The error is ReadSet's: notes.ErrNoDirectory for a
-// directory that does not exist, a *notes.SizeRefusal for a file above the bound, and an error
-// naming the path for any other failure to read.
+// readFiles reads the spec files of dir with readSet, and answers them, by name.
 func readFiles(stderr io.Writer, dir string) (map[string][]byte, error) {
+	set, err := readSet(stderr, dir)
+	return set.Files, err
+}
+
+// readSet reads the spec files of dir with notes.ReadSet and specgraph.IsFile, and warns on stderr
+// of each entry that is not a spec file; for a file, the warning says what a spec file is. The
+// error is ReadSet's: notes.ErrNoDirectory for a directory that does not exist, a
+// *notes.SizeRefusal for a file above the bound, and an error naming the path for any other
+// failure to read.
+func readSet(stderr io.Writer, dir string) (notes.Set, error) {
 	set, err := notes.ReadSet(os.DirFS(dir), dir, specgraph.IsFile)
 	for _, entry := range set.Rejected {
+		if entry.Kind == notes.KindFile {
+			say(stderr, "warning: %s: not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it", entry.Path)
+			continue
+		}
 		say(stderr, "warning: %s: not a spec file (%s); the importer passes over it", entry.Path, entry.Kind)
 	}
-	return set.Files, err
+	return set, err
 }
 
 // sayProblems writes one line of stderr for each problem: "<dir>/<file>:<line>: <node>: <detail>".

@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +127,7 @@ var hardTexts = []string{
 	"a\u202fb", "a \U0001F600 b", "#a}", "line one\nline two",
 	"a: b", "x #y", "- x", "? x", ": x", "|", ">", "'", `"`, "#", "@at", "`", " lead",
 	"yes", "no", "Off", "0x1F", "1_000", ".inf", "2026-11-16", "a\tb", "a\u2028b", "a\u2029b", "a\u0085b",
+	"=", "<<", "0x_", "1.2.3", "2026-11-16 10:00:00 +01:00",
 	"a\ufeffb", "a\u00a0", "a\x01b", "emoji \U0001F600", "line one\nline two\nline three",
 }
 
@@ -168,6 +170,50 @@ func TestPrintThenReadKeepsEveryText(t *testing.T) {
 			}
 			if nodeDigest(got) != nodeDigest(node) {
 				t.Errorf("Parse(%q) has another digest than the node it printed", document)
+			}
+		}
+	}
+}
+
+// nonStringPlain is the one rule of the printer for a text that another resolver types: it matches
+// each implicit type of YAML 1.1 (yaml.org/type and PyYAML's resolver) and of the core schema of
+// YAML 1.2, and no text that both read as a string. A text it matches prints double-quoted; a
+// text it does not match prints as yaml.v3 picks, plain for each row below.
+func TestNonStringPlainMatchesEachImplicitType(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		kind  string
+		texts []string
+		typed bool
+	}{
+		{"null", []string{"~", "null", "Null", "NULL"}, true},
+		{"bool", []string{"y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "true", "True", "TRUE", "false", "False", "FALSE", "on", "On", "ON", "off", "Off", "OFF"}, true},
+		{"int in base 2", []string{"0b1010", "-0b1_0", "+0b0"}, true},
+		{"int in base 8", []string{"017", "-0_17", "0o17", "0_"}, true},
+		{"int in base 10", []string{"0", "12", "-12", "+1_000", "012345678", "09"}, true},
+		{"int in base 16", []string{"0x1F", "-0xff_ff", "0x_"}, true},
+		{"int in base 60", []string{"190:20:30", "-1:30"}, true},
+		{"float", []string{"1.5", "-1.5", "1.", ".5", "+.5e3", "1e3", "1E-3", "1_000.5", "1.5_", "1.2.3", ".", "1.0e+3"}, true},
+		{"float in base 60", []string{"190:20:30.15", "1:30.5"}, true},
+		{"infinity and NaN", []string{".inf", "-.Inf", "+.INF", ".nan", ".NaN", ".NAN"}, true},
+		{"timestamp", []string{"2026-11-16", "2026-11-16T10:00:00", "2026-11-16t10:00:00Z", "2026-1-5 10:00:00", "2026-11-16 10:00:00 +01:00",
+			"2026-11-16 10:00:00 Z", "2026-11-16T10:00:00 +01:00", "2026-11-16T10:00:00.5-1", "2026-11-16\t10:00:00"}, true},
+		{"the merge key", []string{"<<"}, true},
+		{"the value key", []string{"="}, true},
+		{"a string", []string{"Legion", "a = b", "<<<", "==", "1a", "0x", "0b", "0bx", "1:60", "yesterday", "nothing", "inf", "nan", ".info",
+			"2026-11-16x", "2026-11-16 10:00", "v1.2.3", "1e", "e3", "1_000 words", "work unit"}, false},
+	} {
+		for _, text := range row.texts {
+			if got := nonStringPlain.MatchString(text); got != row.typed {
+				t.Errorf("nonStringPlain(%q), a %s: %t, want %t", text, row.kind, got, row.typed)
+			}
+			document, err := printNode(Term{ID: "typed", Name: "typed term", Definition: text})
+			if err != nil {
+				t.Fatalf("printNode(%q): %v", text, err)
+			}
+			plain, quoted := "  - "+text+"\n", "  - "+strconv.Quote(text)+"\n"
+			if row.typed && !strings.Contains(document, quoted) || !row.typed && !strings.Contains(document, plain) {
+				t.Errorf("%q, a %s, prints as %q", text, row.kind, document)
 			}
 		}
 	}

@@ -9,9 +9,15 @@ import (
 	"strings"
 )
 
-// Layout is a spec directory as print changes it: the documents of each file, in file order.
+// Layout is a spec directory as print changes it: the documents of each file, in file order, and
+// Uncounted, the reason for each file whose documents ReadLayout cannot say for certain (a file
+// that yaml.v3 reads as UTF-16, a file whose reading stopped at a fault of the YAML, or a file
+// whose lines the reader and yaml.v3 count in two ways). The texts of such a file, joined, are
+// still the file, but one text can hold more than one document, so print writes nothing while the
+// directory holds such a file.
 type Layout struct {
-	Files map[string][]Document
+	Files     map[string][]Document
+	Uncounted map[string]string
 }
 
 // Document is one YAML document of a file: its node (a Statement, Check, Component or Term; nil for
@@ -170,11 +176,11 @@ func (l Layout) placesOf(match func(node any) bool) []place {
 	return places
 }
 
-// line is the line of the file of p at which its document starts.
+// line is the line of the file of p at which its document starts, each line as yaml.v3 counts it.
 func (l Layout) line(p place) int {
 	line := 1
 	for _, d := range l.Files[p.file][:p.index] {
-		line += strings.Count(d.Text, "\n")
+		line += len(lineStarts([]byte(d.Text))) - 1
 	}
 	return line
 }

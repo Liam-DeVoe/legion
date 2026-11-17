@@ -10,8 +10,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
@@ -26,11 +28,16 @@ func (v *ids) Set(id string) error { *v = append(*v, id); return nil }
 // runPrint is "spec-check print --approved <approved.json> --id <id> [--id <id>...] --dir <dir>":
 // it writes the current approved document of each node named, and of each current check that
 // serves a statement named, into the spec files of dir, each node at its place by
-// specgraph.Layout.Place with the bound of one file, notes.MaxFileSize. It writes nothing, and
-// answers 2, when Place refuses a node or when the judgment of tree finds a problem in the files
-// that the run would leave (planPrint), with one line for each refusal on stderr; when the approved
-// spec does not hold an id or removed it; and for a file it cannot read or write or arguments it
-// does not take. Else it writes each file that changes, prints "wrote <id> to <dir>/<file>:<line>"
+// specgraph.Layout.Place with the bound of one file, notes.MaxFileSize. It holds the lock of dir
+// for the whole run (lockSpecDir), and waits at most printLockWait for another run that holds it.
+// It writes nothing, and answers 2, with one line for each refusal on stderr: when the approved
+// spec does not hold an id or removed it; when another run holds the lock after the wait; when
+// dir holds a file whose documents the reader cannot say for certain, Place refuses a node, or
+// the run would lose or change a node that it does not name, or would write a name that is no
+// spec file of dir, or when the judgment of tree finds a problem in the files that the run would
+// leave (planPrint); and for a file it cannot read or arguments it does not take. When it cannot
+// write a file, it answers 2 with the files as they were, as far as the file system allows
+// (writeFiles). Else it writes each file that changes, prints "wrote <id> to <dir>/<file>:<line>"
 // for each node of the run, and answers 0.
 //
 // The documents do not pass through runnerlog.Say: they go into the files byte for byte (R2: "A
@@ -49,15 +56,26 @@ func runPrint(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
-	return printApproved(stdout, stderr, path, a, named, *dirFlag, notes.MaxFileSize)
+	return printApproved(stdout, stderr, path, a, named, *dirFlag, printBounds{limit: notes.MaxFileSize, wait: printLockWait})
+}
+
+// printLockWait is how long print waits for another run of print that holds the lock of its
+// directory, before it refuses: a run takes a few seconds at most.
+const printLockWait = 10 * time.Second
+
+// printBounds are the bounds of one run of print: limit, the bound of one file, and wait, how long
+// it waits for the lock of its directory. print passes notes.MaxFileSize and printLockWait; the
+// tests of print pass smaller ones, so each case of the rule fits in a small directory and a test
+// of the lock does not wait ten seconds.
+type printBounds struct {
+	limit int64
+	wait  time.Duration
 }
 
 // printApproved is print once its arguments are read: it writes the current approved document of
 // each node named, from the approved spec a that it read from path, into the spec files of dirArg,
-// with limit as the bound of one file, and answers print's exit status. print passes
-// notes.MaxFileSize; the tests of print pass a smaller bound, so each case of the rule fits in a
-// small directory.
-func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, named []string, dirArg string, limit int64) int {
+// within the bounds b, and answers print's exit status.
+func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, named []string, dirArg string, b printBounds) int {
 	refused := false
 	for _, id := range named {
 		switch n, held := a.Nodes[id]; {
@@ -76,50 +94,83 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 	if !ok {
 		return 2
 	}
-	files, err := readFiles(stderr, dir)
-	switch {
-	case errors.Is(err, notes.ErrNoDirectory):
-		// Git keeps no empty directory, so print writes the first spec file of a repository into a
-		// directory that it makes.
-		files = map[string][]byte{}
-	case err != nil:
+	lock, err := lockSpecDir(dir, b.wait)
+	if err != nil {
+		say(stderr, "%s: %s", dir, err)
+		return 2
+	}
+	wrote := false
+	defer func() { lock.release(wrote) }()
+	set, err := readSet(stderr, dir)
+	if err != nil {
 		return cannotJudge(stderr, dir, err)
 	}
-
-	after, wrote, refusals := planPrint(dir, files, a, named, limit)
+	after, lines, refusals := planPrint(dir, set, a, named, b.limit)
 	if len(refusals) > 0 {
 		for _, line := range refusals {
 			say(stderr, "%s", line)
 		}
 		return 2
 	}
-	if err := writeFiles(dir, files, after); err != nil {
+	if err := writeFiles(osFileSystem, dir, set.Files, after); err != nil {
 		say(stderr, "%s: cannot be written: %s", dir, err)
 		return 2
 	}
-	for _, line := range wrote {
+	wrote = true
+	for _, line := range lines {
 		say(stdout, "%s", line)
 	}
 	return 0
 }
 
-// planPrint is one run of print over the files of dir: it places each node of the run in its order
-// (printRun) with Layout.Place and limit, then judges the result with judgeFiles. after is the
-// files that the run leaves (nil when Place refused a node); wrote is the line of each node it
-// placed; refusals is each line that refuses the run, empty for a run that print writes.
-func planPrint(dir string, files map[string][]byte, a specgraph.Approved, named []string, limit int64) (after map[string][]byte, wrote, refusals []string) {
+// planPrint is one run of print over the spec directory dir, which set read: it places each node
+// of the run in its order (printRun) with Layout.Place and limit, then judges the result. after is
+// the files that the run leaves (nil when it refuses the run before the judgment); wrote is the
+// line of each node it placed; refusals is each line that refuses the run, empty for a run that
+// print writes. It refuses, in this order: a directory that holds a file whose documents
+// ReadLayout cannot say for certain (Layout.Uncounted), each by name; a node that Place refuses;
+// then, together, each name of after that is no spec file of dir (a name that IsFile refuses, or
+// the name of an entry of another kind that set rejected), each node that the files held before
+// the run and that after does not hold as it was, apart from the nodes of the run, each node of
+// the run that after does not hold as the run writes it (keepsEachNode), and each problem that the
+// judgment of tree (judgeFiles) finds in after.
+func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, limit int64) (after map[string][]byte, wrote, refusals []string) {
 	current, _ := a.Current() // ReadApproved refused every document that would be a problem here
 	run := printRun(current, named)
-	layout, _ := specgraph.ReadLayout(files) // the judgment below names each problem of the files
+	layout, _ := specgraph.ReadLayout(set.Files) // the judgment below names each problem of the files
+	for _, name := range slices.Sorted(maps.Keys(layout.Uncounted)) {
+		refusals = append(refusals, fmt.Sprintf("print would write into %s, and the reader cannot say which documents %s holds: %s. Correct that file, then run print again",
+			dir, filepath.Join(dir, name), layout.Uncounted[name]))
+	}
+	if len(refusals) > 0 {
+		return nil, nil, refusals
+	}
+	before := heldNodes(layout)
 	for _, node := range run {
 		if _, err := layout.Place(node, limit); err != nil {
 			return nil, nil, []string{placeRefusal(dir, err)}
 		}
 	}
 	after = layout.Bytes()
+	rejected := map[string]notes.Kind{}
+	for _, entry := range set.Rejected {
+		rejected[entry.Path] = entry.Kind
+	}
+	for _, name := range slices.Sorted(maps.Keys(after)) {
+		path := filepath.Join(dir, name)
+		switch kind, held := rejected[path]; {
+		case !specgraph.IsFile(name, notes.KindFile):
+			refusals = append(refusals, fmt.Sprintf("print would write %s, which is no spec file of %s: a spec file is a *.yaml file directly in the directory", path, dir))
+		case held:
+			refusals = append(refusals, fmt.Sprintf("print would write %s, where %s holds a %s, not a spec file: print replaces a spec file only", path, dir, kind))
+		}
+	}
 	j := judgeFiles(dir, after, specgraph.Options{})
 	for _, err := range j.oversize {
 		refusals = append(refusals, "print would leave "+err.Error())
+	}
+	if len(j.oversize) == 0 {
+		refusals = append(refusals, keepsEachNode(dir, before, run, j.tree)...)
 	}
 	for _, p := range j.problems {
 		refusals = append(refusals, fmt.Sprintf("print would leave %s:%d: %s: %s", filepath.Join(dir, p.Pos.File), p.Pos.Line, p.Node, p.Detail))
@@ -145,6 +196,118 @@ func planPrint(dir string, files map[string][]byte, a specgraph.Approved, named 
 		wrote = append(wrote, fmt.Sprintf("wrote %s to %s:%d", id, filepath.Join(dir, at[id].File), at[id].Line))
 	}
 	return after, wrote, nil
+}
+
+// heldNodes is each node of each document of l, by the reader of yaml.v3: the nodes that the files
+// hold before a run of print.
+func heldNodes(l specgraph.Layout) []any {
+	var nodes []any
+	for _, name := range slices.Sorted(maps.Keys(l.Files)) {
+		for _, d := range l.Files[name] {
+			if d.Node != nil {
+				nodes = append(nodes, d.Node)
+			}
+		}
+	}
+	return nodes
+}
+
+// keepsEachNode is one line for each id whose nodes in after, the tree of the files that a run of
+// print would leave, are not the nodes that the files held before the run (before) with each node
+// of run in place of the nodes of its id: a node of the run that after does not hold as the run
+// writes it, a node that the files held and the run does not name that after does not hold as it
+// was, and a node that neither held. Nodes are the same when they are the same but for their Pos.
+func keepsEachNode(dir string, before, run []any, after specgraph.Tree) []string {
+	want := map[string][]any{}
+	for _, node := range before {
+		want[nodeID(node)] = append(want[nodeID(node)], node)
+	}
+	written := map[string]bool{}
+	for _, node := range run {
+		want[nodeID(node)] = []any{node}
+		written[nodeID(node)] = true
+	}
+	got := map[string][]any{}
+	for _, node := range treeNodes(after) {
+		got[nodeID(node)] = append(got[nodeID(node)], node)
+	}
+	ids := map[string]bool{}
+	for id := range want {
+		ids[id] = true
+	}
+	for id := range got {
+		ids[id] = true
+	}
+	same := func(a, b any) bool { return reflect.DeepEqual(withoutPos(a), withoutPos(b)) }
+	var lines []string
+	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		if slices.EqualFunc(want[id], got[id], same) {
+			continue
+		}
+		switch {
+		case written[id]:
+			lines = append(lines, fmt.Sprintf("print would not leave node %q as its approved document", id))
+		case len(want[id]) > 0:
+			pos := nodePos(want[id][0])
+			lines = append(lines, fmt.Sprintf("print would lose or change node %q of %s:%d, which the run does not name", id, filepath.Join(dir, pos.File), pos.Line))
+		default:
+			pos := nodePos(got[id][0])
+			lines = append(lines, fmt.Sprintf("print would leave node %q at %s:%d, which neither the files nor the run held", id, filepath.Join(dir, pos.File), pos.Line))
+		}
+	}
+	return lines
+}
+
+// treeNodes is each node of tree: its statements, checks, components and terms.
+func treeNodes(tree specgraph.Tree) []any {
+	nodes := make([]any, 0, len(tree.Statements)+len(tree.Checks)+len(tree.Components)+len(tree.Terms))
+	for _, n := range tree.Statements {
+		nodes = append(nodes, n)
+	}
+	for _, n := range tree.Checks {
+		nodes = append(nodes, n)
+	}
+	for _, n := range tree.Components {
+		nodes = append(nodes, n)
+	}
+	for _, n := range tree.Terms {
+		nodes = append(nodes, n)
+	}
+	return nodes
+}
+
+// nodePos is the position of node, a Statement, Check, Component or Term.
+func nodePos(node any) specgraph.Position {
+	switch n := node.(type) {
+	case specgraph.Statement:
+		return n.Pos
+	case specgraph.Check:
+		return n.Pos
+	case specgraph.Component:
+		return n.Pos
+	case specgraph.Term:
+		return n.Pos
+	}
+	return specgraph.Position{}
+}
+
+// withoutPos is node with no position, so two nodes compare by their data alone.
+func withoutPos(node any) any {
+	switch n := node.(type) {
+	case specgraph.Statement:
+		n.Pos = specgraph.Position{}
+		return n
+	case specgraph.Check:
+		n.Pos = specgraph.Position{}
+		return n
+	case specgraph.Component:
+		n.Pos = specgraph.Position{}
+		return n
+	case specgraph.Term:
+		n.Pos = specgraph.Position{}
+		return n
+	}
+	return node
 }
 
 // placeRefusal is the line that refuses a run of print for the refusal err of Place.
@@ -244,34 +407,87 @@ func nodeID(node any) string {
 	return ""
 }
 
-// writeFiles writes each file of after that differs from files, through a temporary file of dir
-// and a rename, so a reader never sees half a file; it makes dir when it does not exist.
-func writeFiles(dir string, files, after map[string][]byte) error {
+// fileSystem is each step of writeFiles that can fail on its own: print passes osFileSystem, and
+// a test passes one with a step that fails.
+type fileSystem struct {
+	createTemp func(dir, pattern string) (*os.File, error)
+	rename     func(oldpath, newpath string) error
+}
+
+// osFileSystem is the file system of the process.
+var osFileSystem = fileSystem{createTemp: os.CreateTemp, rename: os.Rename}
+
+// writeFiles writes each file of after that differs from files, the files that dir holds, so that
+// a run changes all of them or none, as far as the file system allows. First it writes, syncs and
+// closes a temporary file of dir with the new text of each file, and one with the old text of each
+// file that it replaces; then it renames each new text over its file, in name order. When a rename
+// fails, it first puts back each file that it already renamed: the old text over a file that dir
+// held, and no file for a new one. It removes each temporary file that it does not rename. Its
+// error is the step that failed, and names each file that it could not put back.
+func writeFiles(fsys fileSystem, dir string, files, after map[string][]byte) error {
+	var changed []string
 	for _, name := range slices.Sorted(maps.Keys(after)) {
-		if old, held := files[name]; held && bytes.Equal(old, after[name]) {
-			continue
+		if old, held := files[name]; !held || !bytes.Equal(old, after[name]) {
+			changed = append(changed, name)
 		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
+	}
+	var temps []string
+	defer func() {
+		for _, tmp := range temps {
+			_ = os.Remove(tmp) // a temporary file that a rename took is gone already
 		}
-		tmp, err := os.CreateTemp(dir, ".spec-check-print-*")
+	}()
+	write := func(content []byte) (string, error) {
+		tmp, err := fsys.createTemp(dir, ".spec-check-print-*")
 		if err != nil {
-			return err
+			return "", err
 		}
-		_, err = tmp.Write(after[name])
+		temps = append(temps, tmp.Name())
+		_, err = tmp.Write(content)
+		if err == nil {
+			err = tmp.Sync()
+		}
 		if closeErr := tmp.Close(); err == nil {
 			err = closeErr
 		}
 		if err == nil {
 			err = os.Chmod(tmp.Name(), 0o644)
 		}
-		if err == nil {
-			err = os.Rename(tmp.Name(), filepath.Join(dir, name))
-		}
+		return tmp.Name(), err
+	}
+	fresh, old := map[string]string{}, map[string]string{}
+	for _, name := range changed {
+		tmp, err := write(after[name])
 		if err != nil {
-			_ = os.Remove(tmp.Name())
 			return err
 		}
+		fresh[name] = tmp
+		if content, held := files[name]; held {
+			if old[name], err = write(content); err != nil {
+				return err
+			}
+		}
+	}
+	for i, name := range changed {
+		err := fsys.rename(fresh[name], filepath.Join(dir, name))
+		if err == nil {
+			continue
+		}
+		var kept []string
+		for _, done := range changed[:i] {
+			path := filepath.Join(dir, done)
+			putBack := os.Remove
+			if tmp, held := old[done]; held {
+				putBack = func(path string) error { return fsys.rename(tmp, path) }
+			}
+			if putBack(path) != nil {
+				kept = append(kept, path)
+			}
+		}
+		if len(kept) > 0 {
+			return fmt.Errorf("%w; print changed %s and could not put back the text it held", err, strings.Join(kept, ", "))
+		}
+		return err
 	}
 	return nil
 }

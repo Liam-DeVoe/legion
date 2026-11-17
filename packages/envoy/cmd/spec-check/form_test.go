@@ -27,11 +27,11 @@ func testForm(t *testing.T, binary string) {
 		name, text, line, counts string
 	}{
 		{"an alias", strings.Replace(term, "name: fault term\ndefinition:\n  - A fault term is a word of a fault.\n", "name: &n fault term\ndefinition:\n  - *n\n", 1),
-			"fault.yaml:4: fault: not-printed: line 4 is not as Print writes the node", "2 terms"},
+			"fault.yaml:4: fault: " + notPrinted(4, "name: &n fault term\n", "name: fault term\n", "another spelling"), "2 terms"},
 		{"a tag", strings.Replace(term, "name: fault term", "name: !!str fault term", 1),
-			"fault.yaml:4: fault: not-printed: line 4 is not as Print writes the node", "2 terms"},
+			"fault.yaml:4: fault: " + notPrinted(4, "name: !!str fault term\n", "name: fault term\n", "another spelling"), "2 terms"},
 		{"a comment", strings.Replace(term, "---\n", "---\n# The term of a fault.\n", 1),
-			"fault.yaml:2: fault: not-printed: line 2 is not as Print writes the node", "2 terms"},
+			"fault.yaml:2: fault: " + notPrinted(2, "# The term of a fault.\n", "type: term\n", "a comment"), "2 terms"},
 		{"a key written two times", strings.Replace(term, "name: fault term\n", "name: fault term\nname: fault term\n", 1),
 			`fault.yaml:5: -: bad-yaml: line 5: mapping key "name" already defined at line 4`, "1 term"},
 		{"a key that a term does not take", term + "surprise: true\n",
@@ -68,21 +68,23 @@ func testForm(t *testing.T, binary string) {
 		counts := ": 0 statements, 0 checks, 0 components, 0 interfaces, 1 term; the tree "
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{stdout: "spec-check: " + dir + counts + "is valid\n", stderr: "spec-check: " + dir + noList})
 		for _, change := range []struct {
-			name, text string
-			line       int
+			name, text      string
+			line            int
+			got, difference string
 		}{
-			{"a space at the end of a line", strings.Replace(string(quoted), "name: quoted term\n", "name: quoted term \n", 1), 4},
-			{"quotes around a plain value", strings.Replace(string(quoted), "name: quoted term\n", "name: \"quoted term\"\n", 1), 4},
-			{"a carriage return", strings.Replace(string(quoted), "type: term\n", "type: term\r\n", 1), 2},
-			{"a byte order mark", "\ufeff" + string(quoted), 1},
+			{"a space at the end of a line", strings.Replace(string(quoted), "name: quoted term\n", "name: quoted term \n", 1), 4, "name: quoted term \n", "a space at the end of the line"},
+			{"quotes around a plain value", strings.Replace(string(quoted), "name: quoted term\n", "name: \"quoted term\"\n", 1), 4, "name: \"quoted term\"\n", "other quotes"},
+			{"a carriage return", strings.Replace(string(quoted), "type: term\n", "type: term\r\n", 1), 2, "type: term\r\n", "a carriage return: print ends each line with a line feed only"},
+			{"a byte order mark", "\ufeff" + string(quoted), 1, "\ufeff---\n", "a byte order mark"},
 		} {
 			changed := t.TempDir()
 			writeFile(t, filepath.Join(changed, "terms.yaml"), []byte(change.text))
-			n := fmt.Sprint(change.line)
+			want := strings.SplitAfter(string(quoted), "\n")[change.line-1]
 			expect(t, runBinary(t, binary, "", "tree", "--dir", changed), result{
 				code:   1,
 				stdout: "spec-check: " + changed + counts + "is refused\n",
-				stderr: "spec-check: " + changed + noList + "spec-check: " + filepath.Join(changed, "terms.yaml") + ":" + n + ": quoted: not-printed: line " + n + " is not as Print writes the node\n",
+				stderr: "spec-check: " + changed + noList + "spec-check: " + filepath.Join(changed, "terms.yaml") + ":" + fmt.Sprint(change.line) + ": quoted: " +
+					notPrinted(change.line, change.got, want, change.difference) + "\n",
 			})
 		}
 	})
@@ -149,4 +151,10 @@ func writeApproved(t *testing.T, documents map[string]string) string {
 	path := filepath.Join(t.TempDir(), "approved.json")
 	writeJSONFile(t, path, file)
 	return path
+}
+
+// notPrinted is the detail of the not-printed problem at line n, whose text is got in the file and
+// want in the documents that print writes, and which differs in the kind that difference names.
+func notPrinted(n int, got, want, difference string) string {
+	return fmt.Sprintf("not-printed: line %d is %q, and print writes %q there (%s); spec-check print writes each node in that form", n, got, want, difference)
 }
