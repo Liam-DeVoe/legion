@@ -22,7 +22,6 @@ import {
   pageComposer,
   pageComposerAnswerControls,
   pageComposerControl,
-  pageFailedText,
   pageRowAct,
 } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -31,6 +30,7 @@ import {
   keepFocusOnPress,
   MentionComposer,
   type OutlineKind,
+  OutlineRefusal,
   OutlineTargetLine,
   sendOnEnter,
 } from "../conversation/MentionComposer";
@@ -50,6 +50,7 @@ import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { outlineAsksQuery, outlineCommentsQuery, outlineMessagesQuery } from "./outline-reads";
 import {
   type AnswerTarget,
   type Landing,
@@ -385,6 +386,7 @@ function WriteLine({
           : place.phone
             ? CONTROL_LABELS.issue_placeholder_phone
             : CONTROL_LABELS.issue_placeholder,
+        retry: CONTROL_LABELS.retry,
         send: CONTROL_LABELS.send,
         sending: ANSWER_LINES.sending,
         statementTwice: ANSWER_LINES.statement_twice,
@@ -416,26 +418,23 @@ function WriteLine({
 }
 
 /** A reply's target line (R3): "Replying to:", the entry's author, and the entry's first line,
- *  read from the entry's own record in the reads the outline is drawn from, so its tree costs no
- *  request of its own: only the read of the entry's kind is observed, and the outline keeps it
- *  fresh, so the line asks for it again on no mount. */
+ *  read from the entry's own record in the reads the outline is drawn from (`outline-reads.ts`),
+ *  so its tree costs no request of its own: only the read of the entry's kind is observed, and
+ *  the outline keeps it fresh, so the line asks for it again on no mount. */
 function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTarget }): ReactNode {
   const asks = useQuery({
+    ...outlineAsksQuery(issueKey),
     enabled: reply.parentKind === "ask",
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
     refetchOnMount: false,
   });
   const comments = useQuery({
+    ...outlineCommentsQuery(issueKey),
     enabled: reply.parentKind === "comment",
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
     refetchOnMount: false,
   });
   const messages = useQuery({
+    ...outlineMessagesQuery(issueKey),
     enabled: reply.parentKind === "message",
-    queryFn: () => api.listIssueMessages(issueKey),
-    queryKey: ["issue-messages", issueKey],
     refetchOnMount: false,
   });
   const tree =
@@ -476,10 +475,7 @@ function EditLine({
   writer: OutlineWriter;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const comments = useQuery({
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
-  });
+  const comments = useQuery(outlineCommentsQuery(issueKey));
   const tree = comments.data?.find((one) => one.id === editing.id)?.body_tree;
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   const mutationKey = useMemo(
@@ -504,6 +500,7 @@ function EditLine({
         placeholder: place.phone
           ? CONTROL_LABELS.edit_placeholder_phone
           : CONTROL_LABELS.edit_placeholder,
+        retry: CONTROL_LABELS.retry,
         send: CONTROL_LABELS.save,
         sending: ANSWER_LINES.saving_field,
         target: (
@@ -522,7 +519,7 @@ function EditLine({
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {
         const saved = await saveCommentEdit(id, body, carried, bounds);
-        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        await queryClient.invalidateQueries({ queryKey: outlineCommentsQuery(issueKey).queryKey });
         return saved;
       }}
     />
@@ -543,10 +540,7 @@ function AnswerLine({
   target: AnswerTarget;
   writer: OutlineWriter;
 }): ReactNode {
-  const asks = useQuery({
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
-  });
+  const asks = useQuery(outlineAsksQuery(issueKey));
   const ask = asks.data?.find((one) => one.id === target.askId);
   const missing = asks.isSuccess && ask === undefined;
   const clear = writer.clear;
@@ -622,7 +616,9 @@ function AnswerForm({
       if (!(error instanceof ApiError) || STALE_ASK[error.code ?? ""] !== true) return;
       void queryClient.invalidateQueries({ queryKey: ["issue", issueKey] });
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", target.askId] });
-      const asksRead = queryClient.invalidateQueries({ queryKey: ["asks", issueKey] });
+      const asksRead = queryClient.invalidateQueries({
+        queryKey: outlineAsksQuery(issueKey).queryKey,
+      });
       if (error.code === "NOT_ANSWERER") setEnded(answerFailure(error).message);
       if (error.code !== "ASK_ANSWER_CHANGED") return;
       // The answer moved under the change: the line takes the answer as it now stands from the
@@ -630,7 +626,7 @@ function AnswerForm({
       // the field, which the refusal's own words say it shows.
       void asksRead.then(() => {
         const answer = queryClient
-          .getQueryData<readonly AskWithTrees[]>(["asks", issueKey])
+          .getQueryData<readonly AskWithTrees[]>(outlineAsksQuery(issueKey).queryKey)
           ?.find((one) => one.id === target.askId)?.answer;
         if (answer === null || answer === undefined) return;
         setCurrent({ at: answer.at });
@@ -784,25 +780,12 @@ function AnswerForm({
           </div>
         </div>
         {failure === null ? null : (
-          // The refusal in the page's own colour, like the rest of the box, its
-          // Retry a 24 px target at every width (R2) that a press leaves the focus beside.
-          <div
-            className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
-            onMouseDown={keepFocusOnPress}
-            role="alert"
-          >
-            <p>{failure.message}</p>
-            {failure.retryable ? (
-              <button
-                className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
-                disabled={pending}
-                onClick={send}
-                type="button"
-              >
-                {CONTROL_LABELS.retry}
-              </button>
-            ) : null}
-          </div>
+          <OutlineRefusal
+            message={failure.message}
+            onRetry={failure.retryable ? send : undefined}
+            retryLabel={CONTROL_LABELS.retry}
+            retrying={pending}
+          />
         )}
       </fieldset>
     </form>

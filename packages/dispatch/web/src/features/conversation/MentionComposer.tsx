@@ -312,10 +312,10 @@ export interface OutlineKind {
  * ends the target. The host words every part of it, since the composer imports nothing of the
  * page's; what the composer says in answer to a send - a refusal, a delivery warning, the
  * picker - is its own, as on every surface that draws it, save the one refusal the host words
- * (`statementTwice`) and what it says of a file uploading into the draft (`uploading`,
- * `uploadedUnanswered`), and it is drawn in the page's colours. A new target keeps the words the
- * line holds, since the line is the page's one draft, and takes out of them the mentions the last
- * target's reply wrote there, where the reader left them as written.
+ * (`statementTwice`), the Retry its refusals offer (`retry`) and what it says of a file uploading
+ * into the draft (`uploading`, `uploadedUnanswered`), and it is drawn in the page's colours. A
+ * new target keeps the words the line holds, since the line is the page's one draft, and takes out
+ * of them the mentions the last target's reply wrote there, where the reader left them as written.
  */
 export interface OutlineLook {
   /** A statement of the issue's spec the line comments on, by the document, the statement's
@@ -333,6 +333,9 @@ export interface OutlineLook {
   readonly kinds: readonly OutlineKind[];
   /** What the empty line says. */
   readonly placeholder: string;
+  /** Retry's word, on the line's refusal of a send and of a file uploading into the draft alike
+   *  (`OutlineRefusal`). */
+  readonly retry: string;
   /** Send's word. */
   readonly send: string;
   /** What Send says while the send is out: the host's own busy word, as its other controls say
@@ -415,6 +418,45 @@ export function OutlineTargetLine({
       >
         <span aria-hidden="true">×</span>
       </button>
+    </div>
+  );
+}
+
+/** A refusal on a line of the issue page's box - of a send, of a file uploading into the draft, of
+ *  an answer - in the page's colour, as `QueryError` draws one on every other surface, and its
+ *  Retry, which `retryLabel` names, a 24 px target (R2), while a retry can get past the refusal
+ *  (`onRetry`): the composer's in that look (`OutlineLook.retry`) and the host's own answer
+ *  line's. A press anywhere on it leaves the focus where it is (`keepFocusOnPress`). */
+export function OutlineRefusal({
+  message,
+  onRetry,
+  retryLabel,
+  retrying,
+}: {
+  readonly message: string;
+  /** Omitted for a refusal a retry cannot get past; no Retry is drawn then. */
+  readonly onRetry?: () => void;
+  readonly retryLabel: string;
+  /** Holds Retry while the retried request is out. */
+  readonly retrying: boolean;
+}): ReactNode {
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
+      onMouseDown={keepFocusOnPress}
+      role="alert"
+    >
+      <p>{message}</p>
+      {onRetry === undefined ? null : (
+        <button
+          className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
+          disabled={retrying}
+          onClick={onRetry}
+          type="button"
+        >
+          {retryLabel}
+        </button>
+      )}
     </div>
   );
 }
@@ -1141,8 +1183,8 @@ export function MentionComposer({
   const retry = canSubmit && statementTwice === undefined ? send : undefined;
   // A file pasted or dropped into the draft, as its upload stands: on the issue page's box
   // `DraftUploadStatus`'s lines in the page's own words and colours (`OutlineLook`), a refused
-  // upload's Retry a 24 px target (R2) whose press leaves the focus where it is, as the box's
-  // refusal's does (`keepFocusOnPress`); `DraftUploadStatus` itself on every other surface.
+  // upload's drawn as the box's other refusals are (`OutlineRefusal`); `DraftUploadStatus` itself
+  // on every other surface.
   const uploadStatus =
     uploadOwner === undefined ? null : outlined ? (
       <>
@@ -1152,21 +1194,12 @@ export function MentionComposer({
           </p>
         ) : null}
         {upload.isError ? (
-          <div
-            className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
-            role="alert"
-          >
-            <p>{uploadErrorMessage(upload.error)}</p>
-            <button
-              className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
-              disabled={upload.isPending}
-              onClick={upload.retry}
-              onMouseDown={keepFocusOnPress}
-              type="button"
-            >
-              Retry
-            </button>
-          </div>
+          <OutlineRefusal
+            message={uploadErrorMessage(upload.error)}
+            onRetry={upload.retry}
+            retryLabel={outline.retry}
+            retrying={upload.isPending}
+          />
         ) : null}
         {upload.madeUnanswered === null ? null : (
           <p
@@ -1185,31 +1218,14 @@ export function MentionComposer({
     <>
       {uploadStatus}
       {refusal === undefined ? null : (
-        // A press here on the issue page's box leaves the focus where it is, as one on the line's
-        // own controls does (`keepFocusOnPress`).
-        // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only keeps a press on the buttons inside from moving the focus, and each of them is its own control.
-        <div
-          className="flex flex-wrap items-center gap-3"
-          onMouseDown={outlined ? keepFocusOnPress : undefined}
-        >
+        <div className="flex flex-wrap items-center gap-3">
           {outlined ? (
-            // `QueryError`'s line in the page's colour, its Retry a 24 px target (R2).
-            <div
-              className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
-              role="alert"
-            >
-              <p>{statementTwice ?? refusalMessage(refusal, anchor, anchorRefusal)}</p>
-              {retry === undefined ? null : (
-                <button
-                  className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
-                  disabled={sending}
-                  onClick={retry}
-                  type="button"
-                >
-                  Retry
-                </button>
-              )}
-            </div>
+            <OutlineRefusal
+              message={statementTwice ?? refusalMessage(refusal, anchor, anchorRefusal)}
+              onRetry={retry}
+              retryLabel={outline.retry}
+              retrying={sending}
+            />
           ) : (
             <QueryError
               message={refusalMessage(refusal, anchor, anchorRefusal)}
@@ -1228,6 +1244,9 @@ export function MentionComposer({
                   : `text-sm font-medium underline ${dangerText}`
               }
               onClick={discard}
+              // A press on the issue page's box leaves the focus where it is, as one on the
+              // refusal beside it does (`keepFocusOnPress`).
+              onMouseDown={outlined ? keepFocusOnPress : undefined}
               type="button"
             >
               Discard draft

@@ -41,7 +41,7 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
-import { MentionComposer } from "./MentionComposer";
+import { MentionComposer, type OutlineLook } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
@@ -123,6 +123,8 @@ interface ComposerOptions {
   onCancelReply?: () => void;
   onKindChange?: (kind: "ask" | "comment" | "suggestion") => string | undefined;
   onSent?: () => void;
+  /** Draws the composer as the issue page's box, in that host's words (`OutlineLook`). */
+  outline?: OutlineLook;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
 }
@@ -160,6 +162,7 @@ function renderComposer(options: ComposerOptions = {}) {
           onClose={() => {}}
           onKindChange={props.onKindChange}
           onSent={props.onSent ?? (() => {})}
+          outline={props.outline}
           owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
           replyTo={
             props.replyTo === null
@@ -3174,6 +3177,61 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
     realClock();
     view.unmount();
     uploadArtifact.mockRestore();
+  }
+});
+
+/** The issue page's look (`OutlineLook`) in a host's words, whose Retry says "Try again": a word
+ *  of the host's own, which the composer's own Retry never says. */
+const hostLook: OutlineLook = {
+  cancelReply: "Write on the issue",
+  end: () => {},
+  kinds: [],
+  placeholder: "Write a comment",
+  retry: "Try again",
+  send: "Post",
+  sending: "Posting…",
+  uploadedUnanswered: "The file was stored, and its reference was not added.",
+  uploading: "Uploading the file…",
+};
+
+// The issue page's box says each word its host gives it (`OutlineLook`), its Retry among them:
+// the Retry beside a refused upload and the one beside a refused send both say the host's word,
+// and neither says the composer's own.
+test("the issue page's box draws its host's Retry word beside a refused upload and a refused send", async () => {
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new ApiError(400, { code: "INVALID_INPUT", error: "The file is not allowed." })
+  );
+  const createComment = spyOn(api, "createComment").mockRejectedValue(commentRefused);
+  const user = userEvent.setup();
+  const { view } = renderComposer({ box: "issue-page-composer", outline: hostLook });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(field, { clipboardData: { files: [file] } });
+    const uploadRefused = (await screen.findByText("The file is not allowed.")).closest(
+      '[role="alert"]'
+    );
+    if (!(uploadRefused instanceof HTMLElement))
+      throw new Error("the upload's refusal is no alert");
+    expect(within(uploadRefused).getByRole("button", { name: "Try again" })).toBeTruthy();
+
+    await user.click(field);
+    await user.paste("Agreed");
+    await user.click(screen.getByRole("button", { name: "Post" }));
+    const sendRefused = (await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`)).closest(
+      '[role="alert"]'
+    );
+    if (!(sendRefused instanceof HTMLElement)) throw new Error("the send's refusal is no alert");
+    expect(within(sendRefused).getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    createComment.mockRestore();
   }
 });
 

@@ -7,6 +7,7 @@ import type { UserState } from "../../api/types";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
+import { outlineAsksQuery, outlineCommentsQuery, outlineMessagesQuery } from "./outline-reads";
 
 /**
  * The issue's read mark, and the only writer of it (`user_issue_state.last_read_seq`, which the
@@ -35,30 +36,18 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   });
   const headSeq = head.data?.[0]?.seq ?? 0;
   // The reads the outline draws the conversation from, under the keys and by the requests it
-  // makes them with (`useIssueTree.ts`). Until each holds an answer the outline is short of what
-  // it will draw - its empty line, or the documents' rows alone - and the end under it stands on
-  // screen with none of the conversation above it, so the dwell waits on them, as main's
-  // Conversation tab draws no end of the conversation before its reads answer. One whose first
-  // read failed holds none, and the issue is not marked read over rows never drawn. An answer
-  // held is enough: a refetch that fails keeps the rows the outline drew. The outline makes
-  // these reads and keeps them fresh, so the mark's mount asks
-  // for none of them again (`refetchOnMount: false`), and one the outline is already making is
-  // that same request, under the same key, not a second one.
-  const asks = useQuery({
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
-    refetchOnMount: false,
-  });
-  const comments = useQuery({
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
-    refetchOnMount: false,
-  });
-  const messages = useQuery({
-    queryFn: () => api.listIssueMessages(issueKey),
-    queryKey: ["issue-messages", issueKey],
-    refetchOnMount: false,
-  });
+  // makes them with (`useIssueTree.ts`), as `outline-reads.ts` holds them. Until each holds an
+  // answer the outline is short of what it will draw - its empty line, or the documents' rows
+  // alone - and the end under it stands on screen with none of the conversation above it, so the
+  // dwell waits on them, as main's Conversation tab draws no end of the conversation before its
+  // reads answer. One whose first read failed holds none, and the issue is not marked read over
+  // rows never drawn. An answer held is enough: a refetch that fails keeps the rows the outline
+  // drew. The outline makes these reads and keeps them fresh, so the mark's mount asks for none
+  // of them again (`refetchOnMount: false`), and one the outline is already making is that same
+  // request, under the same key, not a second one.
+  const asks = useQuery({ ...outlineAsksQuery(issueKey), refetchOnMount: false });
+  const comments = useQuery({ ...outlineCommentsQuery(issueKey), refetchOnMount: false });
+  const messages = useQuery({ ...outlineMessagesQuery(issueKey), refetchOnMount: false });
   const outlineHeld =
     asks.data !== undefined && comments.data !== undefined && messages.data !== undefined;
   const [readThrough, setReadThrough] = useState<{
