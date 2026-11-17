@@ -2724,9 +2724,6 @@ jobs:
               # Bun rows of envoy-client, pi-envoy and claude-envoy start their servers from it: an
               # edit of the fixture alone must start both sides.
               - 'packages/contracts/fixtures/session-grant.json'
-              # The same test lays the fixture out by the root biome.json's formatter width and
-              # indent, so a change to either must run it.
-              - 'biome.json'
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
