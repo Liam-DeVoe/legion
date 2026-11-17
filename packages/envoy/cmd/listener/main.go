@@ -1597,11 +1597,12 @@ func main() {
 
 	// During a rolling deploy the old task still holds the durable's push binding, and nats.Bind
 	// rejects a second one ("consumer is already bound"), so the bind is polled until the old task's
-	// delivery interest clears. It never deletes the consumer to take the binding: that resets the
-	// durable cursor and replays the full retention window to every subscriber. A durable refused
-	// here is not retried either. The bind is the only refusal when the check after the connect
-	// could not read the durable (logged at WARN above), and it also catches a durable made
-	// refusable since that check.
+	// delivery interest clears. It never deletes the consumer to take the binding: that drops the
+	// durable's cursor, and the durable the listener then creates starts at deliver policy new
+	// (startListenerSubscription), so it skips every message the old durable had not acknowledged.
+	// A durable refused here is not retried either. The bind is the only refusal when the check
+	// after the connect could not read the durable (logged at WARN above), and it also catches a
+	// durable made refusable since that check.
 	bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, durableBindInterval, durableBindDeadline)
 	// A start the bind ends shuts down in order: /v1 and the role lane already serve, and no
 	// background loop has started yet. shutdownListener exits, so nothing below runs on an error.

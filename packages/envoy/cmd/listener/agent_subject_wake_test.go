@@ -692,8 +692,8 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		unreadLines := func(t *testing.T, harness listenerDeliveryHarness, run unplaceableDeliveryRun, sessionID string) {
 			t.Helper()
 			lines := deliveryRecords(t, harness.logs.String(), "listener agent record unread")
-			if len(lines) != 1 || lines[0].Level != "WARN" || lines[0].SessionID != sessionID || lines[0].EventID != run.item.EventID {
-				t.Errorf("want one WARN that the record of %s was not read, naming event %s, got %+v", sessionID, run.item.EventID, lines)
+			if len(lines) != 1 || lines[0].Level != "WARN" || lines[0].SessionID != sessionID || lines[0].EventID != run.item.EventID || lines[0].Error == "" {
+				t.Errorf("want one WARN that the record of %s was not read, naming event %s and the read's error, got %+v", sessionID, run.item.EventID, lines)
 			}
 		}
 
@@ -758,6 +758,38 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 			count, _, seq := seen.seen()
 			if len(count) != 2 || count[0] != consumerMaxDeliver-1 || count[1] != consumerMaxDeliver {
 				t.Errorf("the handler saw deliveries %v, want %d and %d", count, consumerMaxDeliver-1, consumerMaxDeliver)
+			}
+			unreadLines(t, harness, run, sessionID)
+			if got := storedWakeCount(t, client); got != 1 {
+				t.Errorf("the stream holds %d wake reports after the last delivery, want one", got)
+			}
+			if reports := deliveryRecords(t, harness.logs.String(), "listener agent wake reported"); len(reports) != 1 || reports[0].EventID != run.item.EventID {
+				t.Errorf("want one wake line for event %s, got %+v", run.item.EventID, reports)
+			}
+			awaitDurableState(t, client, run.consumer, 0, seq)
+		})
+
+		// The handler first sees the message at the stream's last delivery: the test sends every
+		// earlier delivery back itself, as happens when the earlier deliveries were sent back for
+		// reports the stream did not store. So the first unanswered read is at the last delivery.
+		// It still logs its one WARN with the read's error, and then the wake is reported.
+		t.Run("the first unanswered read is at the stream's last delivery", func(t *testing.T) {
+			sessionID := "ses_l1_j_last_" + id.New()
+			_, client, harness := unreadRig(t, sessionID)
+			run, seen := startAloneDelivery(t, harness, sessionID, func(msg *natsgo.Msg, meta *natsgo.MsgMetadata) bool {
+				if meta.NumDelivered < consumerMaxDeliver {
+					if err := msg.Nak(); err != nil {
+						t.Errorf("send back an early delivery of %s: %v", sessionID, err)
+					}
+					return false
+				}
+				return true
+			}, nil)
+			seen.awaitSeen(t, 1, 45*time.Second)
+
+			count, _, seq := seen.seen()
+			if len(count) != 1 || count[0] != consumerMaxDeliver {
+				t.Errorf("the handler saw deliveries %v, want only the stream's last, %d", count, consumerMaxDeliver)
 			}
 			unreadLines(t, harness, run, sessionID)
 			if got := storedWakeCount(t, client); got != 1 {

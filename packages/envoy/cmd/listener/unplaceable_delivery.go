@@ -232,24 +232,28 @@ func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessa
 
 // unreadAgentDelivery decides a message whose session record could not be read: the read erred or
 // timed out (session.AgentRecordUnread), so this listener cannot tell a live session from a gone
-// one. Below the stream's last delivery (consumerMaxDeliver) the message takes a free slot when
-// there is one, is sent back for the agent wait whether or not it got one, and is decided again at
-// its next delivery. The first such answer for a message logs one WARN, and no later one does
-// (unplaceableDeferrals.firstUnread). At the last delivery the message is decided as one with no
-// record (reportNoRecordWake), so it never ends in silence; so is a core delivery, or a durable one
-// whose metadata does not parse, which has no next delivery to decide it.
+// one. It logs first and then decides. The first such answer for a message logs one WARN with the
+// read's error, and no later one does (unplaceableDeferrals.firstUnread), at the last delivery
+// too. A core delivery, or a durable one whose metadata does not parse, has no stream sequence to
+// mark, so it logs the WARN at once. Below the stream's last delivery (consumerMaxDeliver) the
+// message takes a free slot when there is one, is sent back for the agent wait whether or not it
+// got one, and is decided again at its next delivery. At the last delivery the message is decided
+// as one with no record (reportNoRecordWake); so is a core delivery, or a durable one whose
+// metadata does not parse, which has no next delivery to decide it. The wake comes only from a
+// last delivery this process settles: JetStream stops at max_deliver with no word, so a 20th
+// delivery the server counted but this process never settled (a crash, a kill, the bounded
+// shutdown while it runs) ends the message with no wake and no line.
 func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, readErr error) {
 	metadata := message.metadata
+	if metadata == nil || cfg.deferredUnplaceable.firstUnread(metadata.Sequence.Stream) {
+		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent record unread", sessionID, item.Topic, item.EventID, "record_unread",
+			slog.String("error", readErr.Error()))
+	}
 	if metadata == nil || metadata.NumDelivered >= consumerMaxDeliver {
 		reportNoRecordWake(cfg, message, item, sessionID)
 		return
 	}
-	seq := metadata.Sequence.Stream
-	cfg.deferredUnplaceable.take(seq)
-	if cfg.deferredUnplaceable.firstUnread(seq) {
-		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent record unread", sessionID, item.Topic, item.EventID, "record_unread",
-			slog.String("error", readErr.Error()))
-	}
+	cfg.deferredUnplaceable.take(metadata.Sequence.Stream)
 	sendAgentMessageBack(cfg, message, item, sessionID)
 }
 

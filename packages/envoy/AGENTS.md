@@ -4317,7 +4317,8 @@ A read-only broker token carries no project either, but none of the three checks
 
 - The listener refuses to bind its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
   It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a bind that cannot succeed.
-  Deleting the durable lets the next start recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).
+  A durable the listener creates (under a new machine id, or after its durable was deleted) starts at deliver policy `new` (`startListenerSubscription`), so it delivers only what the stream stores after the create and replays none of the 72 hours the stream retains.
+  Deleting the durable therefore skips every message stored before the next start recreates it, including any the old durable had not acknowledged.
   To keep its cursor instead, recreate it from its own config at one past its ack floor, while no listener runs for that machine:
 
   ```bash
@@ -4380,7 +4381,9 @@ A read-only broker token carries no project either, but none of the three checks
 - A read of the session record that did not answer is neither a record nor the lack of one (`unreadAgentDelivery`).
   Below the stream's last delivery the message is sent back for the agent wait and decided again at its next delivery.
   The listener logs WARN `listener agent record unread` with the event id, the session and the error once for each message, however many deliveries the failing read spans (`unplaceableDeferrals.firstUnread`).
-  At the last delivery the message is decided as one with no record, so the listener reports the wake, and the message never ends in silence.
+  It logs that WARN before it decides, so the first unanswered read logs it at the last delivery too, and so does a delivery with no metadata.
+  At the last delivery the message is decided as one with no record, so the listener reports the wake.
+  JetStream stops at `max_deliver` with no word, so a 20th delivery the server counted but this process never settled (a crash, a kill, the bounded shutdown while it runs) ends the message with no wake and no line.
   A message that waited behind an unanswered read and then reads no record reports at once, since its one wait is spent.
 
 - The set of waiting messages bounds how many wait at once to `unplaceableDeferralCap` (`consumerMaxAckPending / 4`, 64).
@@ -5407,6 +5410,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The relay then acknowledges the message and goes on to the next one, so that message does not hold back the session's later messages (`passTooLarge`).
   It logs one WARN `session relay acknowledged a message too large to relay; the session does not receive it` with `session_id`, `event_id` (read from the message's `event_id` field alone, and empty when that does not decode), `subject`, `stream_seq` and `size`.
   The WARN is written once per message and session in a listener process, also when a restart at the ack floor hands the message back, which the relay acknowledges again.
+  The listener keeps the passed messages in a set, so it knows which WARNs it wrote (`relayPassedSet`).
+  Each start of the session's relay drops the session's entries at or below the ack floor that start read, and those of another stream, so the set holds only the messages a restart can still hand back.
   No `delivery_failed` notice is published, so the session is not told.
   A pending `Envoy-Gap` goes on the next frame, and the passed message adds no gap of its own, since that header means messages lost to the stream's retention.
   An acknowledgement that cannot be sent restarts the relay at the ack floor.

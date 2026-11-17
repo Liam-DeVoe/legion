@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -176,7 +177,9 @@ type bodyLimitRow struct {
 // body: /v1/messages/send and publish, /v1/interests/subscribe and unsubscribe, /v1/roles/set, the
 // two Legion agent PUTs, and the GitHub, Slack and Ghost Wispr webhooks. The listener's other
 // routes read no body. A /v1 body is read to the limit whole, past its first JSON value too: a
-// small send followed by more than the limit of spaces is refused as a body past it.
+// small send followed by more than the limit of spaces is refused as a body past it. A body past
+// the limit is refused whatever it holds: one that is not JSON, sent with its Content-Length and
+// without one (chunked), is answered 413 as well, and not 400.
 func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	rig := newBodyLimitRig(t)
 	const (
@@ -397,37 +400,64 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 		},
 	}
 
+	// refused serves request, whose body is one byte past row's limit, and requires the route to
+	// answer 413 naming the limit, having written, published and logged nothing else.
+	refused := func(t *testing.T, row bodyLimitRow, request *http.Request) {
+		t.Helper()
+		before := rig.storedState(t)
+		logged := rig.logs.Len()
+		answer := rig.serve(request)
+		body := answer.Body.String()
+		if answer.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("%s with a body of %d bytes: status %d, body %.300s; want 413", row.path, row.limit+1, answer.Code, body)
+		}
+		refusal := body
+		if !row.webhook {
+			var answered apiError
+			if err := json.Unmarshal(answer.Body.Bytes(), &answered); err != nil {
+				t.Fatalf("%s: the refusal %.300s is not the route's JSON error: %v", row.path, body, err)
+			}
+			refusal = answered.Error
+		}
+		if names := fmt.Sprintf("%d bytes (%d MiB)", row.limit, row.limit>>20); !strings.Contains(refusal, names) {
+			t.Fatalf("%s: the refusal reads %q, want it to name the limit, %s", row.path, refusal, names)
+		}
+		if after := rig.storedState(t); !maps.Equal(before, after) {
+			t.Fatalf("%s refused the body and still wrote, published or made a consumer: the account's streams went from %v to %v", row.path, before, after)
+		}
+		if row.record != "" {
+			wantRecord(t, rig.logs.String()[logged:], row.record, map[string]any{
+				"outcome": "too_large", "status": float64(http.StatusRequestEntityTooLarge),
+			})
+		}
+		t.Logf("%s refused %d bytes: 413 %s", row.path, row.limit+1, strings.TrimSpace(refusal))
+	}
+	// notJSON is row's request one byte past its limit, with its method, path and headers, and a
+	// body of that size that is not JSON: it starts with x. chunked sends it with no
+	// Content-Length, so the route learns the body's size only by reading it.
+	notJSON := func(t *testing.T, row bodyLimitRow, chunked bool) *http.Request {
+		t.Helper()
+		request := row.build(t, row.limit+1)
+		body := strings.Repeat("x", row.limit+1)
+		request.Body = io.NopCloser(strings.NewReader(body))
+		request.ContentLength = int64(len(body))
+		if chunked {
+			request.ContentLength = -1
+			request.TransferEncoding = []string{"chunked"}
+		}
+		return request
+	}
+
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Run("one byte over the limit", func(t *testing.T) {
-				request := row.build(t, row.limit+1)
-				before := rig.storedState(t)
-				logged := rig.logs.Len()
-				answer := rig.serve(request)
-				body := answer.Body.String()
-				if answer.Code != http.StatusRequestEntityTooLarge {
-					t.Fatalf("%s with a body of %d bytes: status %d, body %.300s; want 413", row.path, row.limit+1, answer.Code, body)
-				}
-				refusal := body
-				if !row.webhook {
-					var answered apiError
-					if err := json.Unmarshal(answer.Body.Bytes(), &answered); err != nil {
-						t.Fatalf("%s: the refusal %.300s is not the route's JSON error: %v", row.path, body, err)
-					}
-					refusal = answered.Error
-				}
-				if names := fmt.Sprintf("%d bytes (%d MiB)", row.limit, row.limit>>20); !strings.Contains(refusal, names) {
-					t.Fatalf("%s: the refusal reads %q, want it to name the limit, %s", row.path, refusal, names)
-				}
-				if after := rig.storedState(t); !maps.Equal(before, after) {
-					t.Fatalf("%s refused the body and still wrote, published or made a consumer: the account's streams went from %v to %v", row.path, before, after)
-				}
-				if row.record != "" {
-					wantRecord(t, rig.logs.String()[logged:], row.record, map[string]any{
-						"outcome": "too_large", "status": float64(http.StatusRequestEntityTooLarge),
-					})
-				}
-				t.Logf("%s refused %d bytes: 413 %s", row.path, row.limit+1, strings.TrimSpace(refusal))
+				refused(t, row, row.build(t, row.limit+1))
+			})
+			t.Run("one byte over the limit, not JSON, with its Content-Length", func(t *testing.T) {
+				refused(t, row, notJSON(t, row, false))
+			})
+			t.Run("one byte over the limit, not JSON, chunked", func(t *testing.T) {
+				refused(t, row, notJSON(t, row, true))
 			})
 			t.Run("at the limit", func(t *testing.T) {
 				wantServed(t, rig, row, row.build(t, row.limit))
@@ -441,6 +471,10 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	t.Run("send: a small value followed by more than the limit", func(t *testing.T) {
 		small := marshalled(t, map[string]any{"target_session": sendTarget, "source": "agent", "message": "a send followed by spaces"})
 		request := v1Request(http.MethodPost, "/v1/messages/send", small+strings.Repeat(" ", v1BodyLimit))
+		// With no Content-Length the route reads the body to find its size, so the refusal is
+		// the read's past the first JSON value, not the refusal of a Content-Length past the limit.
+		request.ContentLength = -1
+		request.TransferEncoding = []string{"chunked"}
 		before := rig.storedState(t)
 		logged := rig.logs.Len()
 		answer := rig.serve(request)

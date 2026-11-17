@@ -2560,7 +2560,9 @@ func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
 // TestBoundDurableConsumerIsNotStolen pins the rolling-deploy contract: a
 // second listener attaching to a consumer that is still push-bound by a live
 // listener must be rejected, not delete the consumer to steal the binding —
-// stealing resets the durable cursor and replays the full retention window.
+// stealing drops the durable's cursor, and the durable created in its place
+// starts at deliver policy new, so it skips every message the old one had not
+// acknowledged.
 func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	first, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
@@ -2971,7 +2973,6 @@ func TestIsControlTopic(t *testing.T) {
 		want  bool
 	}{
 		{topic: "notifications.role.legion-controller", want: true},
-		{topic: contracts.LegacyAgentSubject("ses_control"), want: true},
 		{topic: "notifications.envoy.exceptions.notifications.role.legion-controller", want: false},
 		{topic: "notifications.github.sjawhar.legion.issue.42.comment", want: false},
 	}
@@ -3364,7 +3365,7 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 	}
 }
 
-// A control topic with no holder raises no exception. An agent subject nobody has reports the
+// A role or agent topic with no holder raises no exception. An agent subject nobody has reports the
 // session's wake, at once since the harness sets no agent wait, and a role nobody holds is kept
 // for the role's next holder.
 func TestListenerDeliveryHandler_NoHolderKeepsARoleAndWakesAnAgent(t *testing.T) {
@@ -3743,7 +3744,7 @@ func TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAg
 // The recipient's record is gone, so the delivery ends there.
 func TestListenerDeliveryHandler_FailedDeliveryOnNonControlTopic_NoException(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
-	// Use a non-control topic (not notifications.role.* or notifications.agent.*)
+	// Use a topic that is neither a control topic (notifications.role.*) nor an agent subject.
 	item := listenerTestEnvelope("notifications.github.owner.repo.issue.1", "dedupe-non-control")
 	// Register a subscriber for this topic, with no session record behind it.
 	if _, err := harness.registry.Upsert(store.Interest{

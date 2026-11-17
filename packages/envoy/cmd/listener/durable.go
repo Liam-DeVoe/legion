@@ -38,10 +38,13 @@ const (
 // config. Shared by the create and drift-correction paths so the policy has
 // exactly one definition: the drift correction applies it to a copy of the
 // durable's config and updates the durable when the copy differs. The policy
-// has no idle heartbeat: the create path starts from a zero config, so a
-// durable the listener creates has none. listenerDurableRefusal refuses an
-// existing durable whose heartbeat or ack policy differs, since NATS cannot
-// change either in place.
+// has no idle heartbeat: the create path sets none, so a durable the listener
+// creates has none. listenerDurableRefusal refuses an existing durable whose
+// heartbeat or ack policy differs, since NATS cannot change either in place.
+// The policy sets no deliver policy, start sequence or start time: the create
+// path sets deliver-new itself (startListenerSubscription), and NATS refuses a
+// change of deliver policy in place, so the drift correction leaves an
+// existing durable's start as it is and the durable keeps its cursor.
 func applyListenerConsumerPolicy(config *nats.ConsumerConfig, subjects []string) {
 	config.FilterSubject = ""
 	config.FilterSubjects = subjects
@@ -71,8 +74,8 @@ const durableRefusedLine = "subscribe refused, shutting down"
 //     one still waiting for its retry.
 //
 // Recreating the durable would drop its cursor, so the listener leaves it to an operator, and the
-// refusal names every such setting the durable carries and says how to recreate it without
-// replaying the stream.
+// refusal names every such setting the durable carries. It says what a delete costs, since the
+// listener recreates a deleted durable at deliver policy new, and how to recreate it at its cursor.
 func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 	var settings []string
 	if config.Heartbeat != 0 {
@@ -89,9 +92,9 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 		without = "those settings"
 	}
 	return fmt.Errorf("%w: durable consumer %s has %s, which the listener's consumer policy forbids and NATS cannot change in place; "+
-		"deleting it lets the listener recreate it at deliver policy all, which replays every retained message, "+
-		"so to keep its cursor recreate it from its own config without %s, at deliver policy by_start_sequence "+
-		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/AGENTS.md, Operational notes)",
+		"deleting it lets the listener recreate it at deliver policy new, which skips every message stored before the create, "+
+		"including any the old durable had not acked, so to keep its cursor recreate it from its own config without %s, "+
+		"at deliver policy by_start_sequence with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/AGENTS.md, Operational notes)",
 		errListenerDurableRefused, consumer, strings.Join(settings, " and "), without)
 }
 
@@ -138,9 +141,22 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		// shared NATS account a predictable subject would let any client
 		// hold interest on it — shadow-reading deliveries and making the
 		// consumer look push-bound so the listener could never attach.
+		//
+		// The durable starts at deliver policy new. A create happens only for a machine id with
+		// no durable, or for one whose durable was deleted, so every message stored before it is
+		// one this listener never held. Deliver-new needs no clock, where a start time would
+		// compare this listener's clock with the server's, and a create during a rebuild replays
+		// nothing either. What it gives up: a message stored between this process's start and the
+		// create is not seen by this new durable; the session's own consumer still delivers the
+		// message, and the other listeners' durables still decide its wake. On a self-health
+		// rebuild that recreates a deleted durable, a message stored between the deletion and the
+		// create is missed too, and where this listener holds the session's interest row the other
+		// listeners acknowledge it with no wake, so that wake is not reported; this is accepted,
+		// since the gap is one probe interval and the event is rare.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
 			DeliverSubject: nats.NewInbox(),
+			DeliverPolicy:  nats.DeliverNewPolicy,
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {

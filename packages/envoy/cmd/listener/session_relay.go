@@ -231,25 +231,73 @@ type sessionRelays struct {
 	// (publishFrame), so a session that reads its own frames learns nothing of another frame's.
 	frames map[string]*relayFrame
 
-	// passedMu guards passed: the stored messages each relay acknowledged without a frame
-	// because the frame was too large to relay (passTooLarge), by session, stream and sequence.
-	// The WARN for such a message is written once per listener process, also when a restart at
-	// the ack floor hands it back. The set grows by one entry per such message and session and is
-	// never pruned. Such messages are rare: only a stored message within the frame's few hundred
-	// header bytes of the server's max payload is one.
-	passedMu sync.Mutex
-	passed   map[relayPassed]struct{}
+	// passed is the stored messages each relay acknowledged without a frame because the frame was
+	// too large to relay (passTooLarge), which each get one WARN (relayPassedSet).
+	passed relayPassedSet
 }
 
-// relayPassed names a stored message a relay acknowledged without a frame, because the frame was
-// too large to relay (sessionRelays.passTooLarge): the session, the stream's identity and the
-// message's stream sequence. The session is part of the key because one stored message on a
-// followed topic reaches the consumer of each session that follows it, and each such session
-// gets its own WARN.
+// relayPassedSet is the stored messages the relays acknowledged without a frame, because the frame
+// was too large to relay (sessionRelays.passTooLarge), by session, then by stream and sequence.
+// The WARN for such a message is written once per listener process, also when a restart at the
+// ack floor hands it back: the relay acknowledges it out of order, so while an earlier frame is
+// unanswered it is above the floor, and a restart there delivers it again. The session is the
+// first key because one stored message on a followed topic reaches the consumer of each session
+// that follows it, and each such session gets its own WARN.
+//
+// Each start of a session's relay drops the entries its consumer can no longer hand back
+// (prune): those at or below the ack floor the start read, and those of another stream. So the
+// set holds, for each session, only the messages above the floor its relay last started from,
+// and the ones passed since. A session whose relay never starts here again keeps its few
+// entries. Such messages are rare: only a stored message within the frame's few hundred header
+// bytes of the server's max payload is one.
+type relayPassedSet struct {
+	mu        sync.Mutex
+	bySession map[string]map[relayPassed]struct{}
+}
+
+// relayPassed names, within one session's entries of relayPassedSet, a stored message a relay
+// acknowledged without a frame: the stream's identity and the message's stream sequence.
 type relayPassed struct {
-	sessionID string
-	streamID  string
-	seq       uint64
+	streamID string
+	seq      uint64
+}
+
+// first records that sessionID's relay passed the message at seq on the stream streamID, and
+// reports whether it was not recorded yet, which is when the caller writes the WARN.
+func (s *relayPassedSet) first(sessionID, streamID string, seq uint64) bool {
+	key := relayPassed{streamID: streamID, seq: seq}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passed, ok := s.bySession[sessionID]
+	if !ok {
+		if s.bySession == nil {
+			s.bySession = map[string]map[relayPassed]struct{}{}
+		}
+		passed = map[relayPassed]struct{}{}
+		s.bySession[sessionID] = passed
+	}
+	if _, logged := passed[key]; logged {
+		return false
+	}
+	passed[key] = struct{}{}
+	return true
+}
+
+// prune drops sessionID's entries that its consumer, started at start, can no longer hand back:
+// those of another stream than start.StreamID, and those at or below start.AckFloor, which the
+// consumer has every message acknowledged through.
+func (s *relayPassedSet) prune(sessionID string, start bus.SessionConsumerStart) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passed := s.bySession[sessionID]
+	for key := range passed {
+		if key.streamID != start.StreamID || key.seq <= start.AckFloor {
+			delete(passed, key)
+		}
+	}
+	if len(passed) == 0 {
+		delete(s.bySession, sessionID)
+	}
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -517,7 +565,6 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		relays:      map[string]*relayRun{},
 		restarts:    make(chan struct{}, relayRestartLimit),
 		frames:      map[string]*relayFrame{},
-		passed:      map[relayPassed]struct{}{},
 	}
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
@@ -1049,6 +1096,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		return relayRetry
 	}
 	streamID, gap := start.StreamID, start.Gap
+	// The start read the consumer's ack floor, so the passed messages the consumer cannot hand
+	// back any more leave the set here (relayPassedSet.prune).
+	m.passed.prune(sessionID, start)
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1152,12 +1202,7 @@ func (m *sessionRelays) passTooLarge(run *relayRun, msg bus.SessionMessage, stre
 			slog.String("error", err.Error()))
 		return false
 	}
-	key := relayPassed{sessionID: run.sessionID, streamID: streamID, seq: msg.StreamSeq}
-	m.passedMu.Lock()
-	_, logged := m.passed[key]
-	m.passed[key] = struct{}{}
-	m.passedMu.Unlock()
-	if logged {
+	if !m.passed.first(run.sessionID, streamID, msg.StreamSeq) {
 		return true
 	}
 	var stored struct {

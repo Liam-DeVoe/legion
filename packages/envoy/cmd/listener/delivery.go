@@ -208,22 +208,25 @@ func (message deliveryMessage) finalizeAfter(delay time.Duration) {
 // once, for the paths that bound themselves by its delivery count and for the stream sequence that
 // says which session consumers hold it. A message no session needs from the durable
 // (durableNeedsDelivery) is acknowledged before it is decoded, each session that takes it another
-// way counted as a skipped delivery, as the delivery paths count it. Such a message gives back
-// the slot it took when this listener held it back for the agent wait, as agentSubjectDelivery
-// does: a session that registered during the wait is acknowledged here, and its slot must not
-// stay taken until it expires.
+// way counted as a skipped delivery, as the delivery paths count it.
+//
+// Right after the metadata is read, every delivery gives back the slot its message took when this
+// listener held it back for the agent wait, before any path decides the message or takes a slot:
+// the delivery itself is what freed the slot, not what this delivery decides to do with the
+// message. So a session that registered during the wait, whose message is acknowledged here, does
+// not leave its slot taken until it expires. The release is keyed on the message, so a delivery
+// this listener never held back - a first one, or a redelivery an expired AckWait produced -
+// gives nothing back.
 func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) nats.MsgHandler {
 	handler := listenerDeliveryHandler(cfg)
 	return func(msg *nats.Msg) {
 		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg}
 		if metadata, err := msg.Metadata(); err == nil {
 			message.metadata = metadata
+			cfg.deferredUnplaceable.release(metadata.Sequence.Stream)
 		}
 		needed, skipped := durableNeedsDelivery(cfg, msg.Subject, message.storedSeq())
 		if !needed {
-			if message.metadata != nil {
-				cfg.deferredUnplaceable.release(message.metadata.Sequence.Stream)
-			}
 			for range skipped {
 				cfg.messagesDelivered.Inc([2]string{"delivery_status", "skipped"})
 			}
@@ -254,7 +257,7 @@ type deliveryExceptionPayload struct {
 }
 
 func isControlTopic(topic string) bool {
-	return strings.HasPrefix(topic, contracts.RoleTopicPrefix) || strings.HasPrefix(topic, contracts.AgentTopicPrefix)
+	return strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }
 
 func isExceptionsTopic(topic string) bool {
@@ -714,14 +717,6 @@ const deliverySessionReadTimeout = 2 * time.Second
 // answer sends the message back for the wait (unreadAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	sessionID := agentSubjectSession(item.Topic)
-	// A message this listener held back for the agent wait has left that wait by the time it is
-	// delivered again, so its slot goes back before any branch below takes one: the delivery
-	// itself is what freed it, not what this attempt decides to do with the message. The release
-	// is keyed on the message, so a delivery this listener never held back - a first one, or a
-	// redelivery an expired AckWait produced - gives nothing back.
-	if message.metadata != nil {
-		cfg.deferredUnplaceable.release(message.metadata.Sequence.Stream)
-	}
 	if cfg.dedupeCache.Seen(item.DedupeKey, sessionID) {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,

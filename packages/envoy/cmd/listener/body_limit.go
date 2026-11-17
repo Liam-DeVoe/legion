@@ -3,9 +3,10 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/webhook"
 )
 
 // apiBodyLimit bounds the body of every /v1 route that reads one: 4 MiB, twice the largest request
@@ -20,27 +21,36 @@ import (
 // most legionagents.MaxBatch entries of bounded fields, under 2 MiB.
 const apiBodyLimit = 4 << 20
 
-// apiBodyTooLarge is the error a /v1 route answers, with 413, to a body past apiBodyLimit.
-var apiBodyTooLarge = fmt.Sprintf("body too large: the limit is %d bytes (%d MiB)", apiBodyLimit, apiBodyLimit>>20)
+// apiBodyTooLarge is the error a /v1 route answers, with 413, to a body past apiBodyLimit: the
+// webhook routes' text (webhook.BodyTooLarge), so every route names its limit in the same words.
+var apiBodyTooLarge = webhook.BodyTooLarge(apiBodyLimit)
 
-// readAPIBody decodes the JSON body of a /v1 request into into. It reads the body through
-// http.MaxBytesReader, so it reads and parses no more than apiBodyLimit bytes of it. The decode
+// readAPIBody decodes the JSON body of a /v1 request into into. A body past apiBodyLimit is
+// answered 413 naming the limit, whatever it holds. A request whose Content-Length is past the
+// limit is refused before any of its body is read. Any other body is read through
+// http.MaxBytesReader, so no more than apiBodyLimit bytes of it are read and parsed. The decode
 // stops after the first JSON value, so the rest of the body is then read through the same limit
-// and dropped: a small value followed by more than the limit is refused as a body past it. When
-// the body does not decode, it returns the refusal the route answers: 413 naming the limit for a
-// body past it, and 400 "invalid json" for any other. The status is 0 when the body decoded.
+// and dropped: a small value followed by more than the limit is refused as a body past it. The
+// decode also stops at the first syntax error, before the limit is reached, so a body that does
+// not decode is drained through the same limit too: one that runs past the limit is a body past
+// it, and any other is answered 400 "invalid json". The status is 0 when the body decoded.
 func readAPIBody(w http.ResponseWriter, r *http.Request, into any) (status int, message string) {
+	if r.ContentLength > apiBodyLimit {
+		return http.StatusRequestEntityTooLarge, apiBodyTooLarge
+	}
 	body := http.MaxBytesReader(w, r.Body, apiBodyLimit)
 	err := json.NewDecoder(body).Decode(into)
 	if err == nil {
 		_, err = io.Copy(io.Discard, body)
 	}
 	var tooLarge *http.MaxBytesError
-	switch {
-	case errors.As(err, &tooLarge):
+	if err != nil && !errors.As(err, &tooLarge) {
+		if _, drained := io.Copy(io.Discard, body); !errors.As(drained, &tooLarge) {
+			return http.StatusBadRequest, "invalid json"
+		}
+	}
+	if tooLarge != nil {
 		return http.StatusRequestEntityTooLarge, apiBodyTooLarge
-	case err != nil:
-		return http.StatusBadRequest, "invalid json"
 	}
 	return 0, ""
 }
