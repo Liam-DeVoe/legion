@@ -176,9 +176,16 @@ type nodeVisibility struct {
 	scope nodeScope
 }
 
-// artifactStoreAddress is the ref_key of the artifact whose uuid expr names.
+// artifactStoreAddress is the ref_key of the artifact whose uuid expr names, as text: an edge's
+// from side, which holds an artifact's uuid in a text column beside other kinds' ids.
 func artifactStoreAddress(expr string) string {
 	return `(select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = ` + expr + `)`
+}
+
+// artifactRefKeyOf is the ref_key of the artifact whose id uuidExpr, a uuid, names: one probe of
+// the artifacts primary key, which artifactStoreAddress's text comparison cannot make.
+func artifactRefKeyOf(uuidExpr string) string {
+	return `(select ref_key_of.ref_key from artifacts ref_key_of where ref_key_of.id = ` + uuidExpr + `)`
 }
 
 // VisibilityMarker opens every predicate the registry renders and names the kinds that

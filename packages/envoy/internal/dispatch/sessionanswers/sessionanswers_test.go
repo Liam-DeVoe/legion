@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -35,8 +37,8 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 			`, messageID, state); err != nil {
 				t.Fatalf("seed the %s delivery: %v", state, err)
 			}
-			// Read as the server's own viewer, which sees every project and every party.
-			items, err := List(ctx, database.Pool, []byte(`{"all": true, "open": true, "sees": [], "private": false}`),
+			// Read as the server's own reader, which sees every project and every party.
+			items, err := List(ctx, database.Pool, refs.VisibilityArg(model.ServerReader),
 				"reader-"+state, time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatalf("list what reached the session: %v", err)

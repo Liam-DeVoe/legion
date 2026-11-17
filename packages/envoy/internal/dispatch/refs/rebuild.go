@@ -222,7 +222,7 @@ func sourceText(ctx context.Context, q Queryer, who *model.Actor, kind, id strin
 		}
 		query = `select markdown, created_at from artifact_versions
 			where artifact_id = ` + key + `::uuid and markdown is not null` +
-			args.andVisible(who, "artifact", `(select read_document.ref_key from artifacts read_document where read_document.id = `+key+`::uuid)`) + `
+			args.andVisible(who, "artifact", artifactRefKeyOf(key+`::uuid`)) + `
 			order by number desc limit 1`
 	case "ask":
 		query = `select question, coalesce(edited_at, created_at) from asks where id = ` + key + `::uuid`
