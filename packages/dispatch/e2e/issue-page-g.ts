@@ -1211,3 +1211,34 @@ export async function seedRows(): Promise<RowSeed> {
     waitingLong: waitingLong.id,
   };
 }
+
+/** How many long rows `seedLongRows` writes: whole, at 1440 px, more than ten screens of them. */
+export const LONG_ROWS = 60;
+
+/** What `seedLongRows` wrote: the issue, and its long rows by node id, top to bottom. */
+export interface LongRowsSeed {
+  readonly key: string;
+  readonly rows: readonly string[];
+}
+
+/**
+ * One issue whose conversation is the reader's comment and, under it, `LONG_ROWS` replies of the
+ * planner's of 160 short words each, which a row cuts at six lines at either width and draws
+ * whole shorter than a phone's screen. Drawn whole they make a page many screens tall, so a jump
+ * to its middle lands on rows no batch measured.
+ */
+export async function seedLongRows(): Promise<LongRowsSeed> {
+  await createProject({ key: PROJECT, name: "Rows" });
+  const { key } = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A conversation of long rows",
+  });
+  const head = await createComment(key, { body: "Each reply under this one is long." });
+  const body = longWords("w", 160);
+  const rows: string[] = [];
+  for (let at = 0; at < LONG_ROWS; at += 1) {
+    rows.push((await createComment(key, { body, reply_to: head.id }, asPlanner)).id);
+  }
+  return { key, rows };
+}

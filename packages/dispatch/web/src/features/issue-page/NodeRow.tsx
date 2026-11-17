@@ -30,7 +30,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -1329,15 +1329,7 @@ export function useClamp(
       setClamp(undefined);
       return;
     }
-    return watchClamp(element, (next) =>
-      setClamp((held) =>
-        held?.height === next?.height &&
-        held?.hidden === next?.hidden &&
-        held?.pictures === next?.pictures
-          ? held
-          : next
-      )
-    );
+    return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
   return cuttable ? clamp : undefined;
 }
