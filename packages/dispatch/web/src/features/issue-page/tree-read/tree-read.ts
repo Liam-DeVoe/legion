@@ -3,7 +3,6 @@ import {
   type Query,
   type QueryClient,
   type QueryFilters,
-  type QueryStatus,
   queryOptions,
   useQuery,
 } from "@tanstack/react-query";
@@ -18,6 +17,7 @@ import {
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
+import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 
 /**
@@ -95,22 +95,12 @@ async function readTree(
 }
 
 /**
- * Window focus reads a query again only while its last answer failed, so a read that failed
- * recovers on the open page while a healthy one stays quiet. It is a copy of the private
- * `refetchFailedOnFocus` of `features/refs/reference-target.ts`, until that file exports it and
- * this one imports it from there.
- */
-export const refetchFailedOnFocus = (query: {
-  readonly state: { readonly status: QueryStatus };
-}) => (query.state.status === "error" ? "always" : false);
-
-/**
  * How the page's reads are kept fresh: by the events that can change them, never by age, so a
  * slot the stage mounts again past the app's 30 s `staleTime` sends no read; only a read whose
- * last answer failed is read again on focus. The tree read and its views take it, and so does
- * every read of `useIssueTree` that an event refreshes. It is a copy of `EVENT_FRESH`, which a
- * later commit of the code this branch is built on adds to `useIssueTree.ts`; the two become one
- * export once that commit is under this branch.
+ * last answer failed is read again on focus (`refetchFailedOnFocus`), so a read that failed
+ * recovers on the open page while a healthy one stays quiet. The tree read and its views take
+ * it, and so does every read of `useIssueTree` that an event refreshes, which names it
+ * `EVENT_FRESH`.
  */
 export const REFRESHED_BY_EVENTS = {
   refetchOnWindowFocus: refetchFailedOnFocus,
@@ -154,11 +144,13 @@ export interface TreeRead {
    *  on `blocksRead` would blank, since that failure turns it false. Both are false before the
    *  first answer and after a first read that fails. */
   readonly blocksHeld: boolean;
-  /** Whether the read answered every page. Until then a typed block - the spec's summary among
-   *  them, which the head waits on before it says a spec has none (`IssueThreeThings.tsx`) - may
-   *  be missing because it has not arrived rather than because the issue holds none, and a read
-   *  that failed has not answered either: the page cannot say what a read it could not make
-   *  holds. */
+  /** Whether the read answered every page with success. A read that fails, a first one or a
+   *  refetch, turns it false, even where an answer is still held. It is what a view reads that
+   *  must tell "not read yet" from "holds none": until it is true a typed block - the spec's
+   *  summary among them, which the head waits on before it says a spec has none
+   *  (`IssueThreeThings.tsx`) - may be missing because it has not arrived rather than because
+   *  the issue holds none. A view that draws from the blocks it holds reads `blocksHeld`
+   *  instead. */
   readonly blocksRead: boolean;
   /** The typed blocks of the document that plays `role` (`blocksOfRole`), so a view reads its
    *  blocks here and costs no request of its own; the same value for a role until the answer or

@@ -30,7 +30,6 @@ import {
   type Draft,
   decisionState,
   markKeptAndUnsure,
-  namedCommit,
   plainWords,
   type TreeContext,
 } from "../tree-drafts";
@@ -88,15 +87,16 @@ export interface KeptReads {
   readonly checks: ReadonlyMap<string, CheckBlock>;
   /** Each child of the issue read, by its key. */
   readonly children: ReadonlyMap<string, IssueChild>;
-  /** The one commit the page names for the issue's results (`namedCommit`), which every check
-   *  is read as standing at (`checkStanding`). */
-  readonly commit: string | undefined;
   /** Each decision of the decisions read. */
   readonly decisions: ReadonlyMap<string, Decision>;
   /** Each requirement of the coverage read: the statements, with their counts and gaps. */
   readonly requirements: ReadonlyMap<string, RequirementCoverage>;
   /** Each result of the results read, by its own id. */
   readonly results: ReadonlyMap<string, CheckResult>;
+  /** The artifact id of the issue's Verification document (`roleDocument`): a check block of it
+   *  is a check, which draws a state, and one of any other document is a block and nothing more,
+   *  since the results read never answers for it. */
+  readonly verification: string | undefined;
 }
 
 /** What a step and a mark read: the words and the names `buildIssueTree` hands in, the page's
@@ -385,8 +385,8 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
   return [...rooted, ...answer.nodes.filter((node) => !reachesIssue(node))];
 }
 
-/** A requirement: a statement of the issue, with the counts and the gaps the coverage read holds
- *  for it. */
+/** A requirement, with the counts and the gaps the coverage read holds for it, and a statement of
+ *  the issue where it is one (`isStatementNode`). */
 function draftRequirement(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -395,6 +395,7 @@ function draftRequirement(
   if (node.supertag !== "requirement") return undefined;
   const draft = draftOf(node, "requirement", context);
   const coverage = context.kept.requirements.get(draft.id);
+  if (isStatementNode(node, context)) draft.statement = true;
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
     draft.gaps = (coverage.gaps ?? []).flatMap((line): GapKind[] => {
@@ -407,12 +408,15 @@ function draftRequirement(
 
 /**
  * A check or a plan task of this issue: under the parent the read answers, and again under each
- * other requirement of this issue its `serves` tuples name, transcluded there as the outline
+ * other statement of this issue its `serves` tuples name, transcluded there as the outline
  * places it (root R4); its `needs` tuples are chips, one per task needed (`needsChips`). It
- * carries the outline's two gaps of the chain: a `serves` naming a node that is no requirement,
- * and a plan task naming nothing it serves and nothing it attempts. A check stands as the results
- * read answers it, at the commit the page names, and draws that read's facts; a check that read
- * does not hold has no result.
+ * carries the outline's two gaps of the chain: a `serves` naming a node that is no statement - a
+ * node of another kind, or a `requirement` block of a document other than the spec, which is a
+ * requirement and no statement, so the gap's words say what both are - and a plan task naming
+ * nothing it serves and nothing it attempts. A check stands as the server reads the commit each
+ * of its results ran at (`checkStanding`), and draws the results read's facts; a check of the
+ * Verification document that read does not hold has no result, and a check block of any other
+ * document draws no state.
  */
 function draftServing(
   node: TreeAnswerNode,
@@ -431,10 +435,10 @@ function draftServing(
     return target === undefined || isForeign(target, context.key) ? [] : [target];
   });
   const requirements = served.flatMap((target) =>
-    target.supertag === "requirement" ? [context.treeIdOf(target.id)] : []
+    isStatementNode(target, context) ? [context.treeIdOf(target.id)] : []
   );
   draft.parents = [...new Set([...context.placeOf(node), ...requirements])];
-  if (served.some((target) => target.supertag !== "requirement")) {
+  if (served.some((target) => !isStatementNode(target, context))) {
     draft.gaps.push("serves_not_requirement");
   }
   if (
@@ -447,11 +451,29 @@ function draftServing(
   draft.chips = needsChips(node, context);
   if (node.supertag === "check") {
     const check = context.kept.checks.get(draft.id);
-    draft.state =
-      check === undefined ? "no-result" : checkStanding(check, context.kept.commit).state;
-    if (check !== undefined) draft.facts = checkFacts(check);
+    if (check !== undefined) {
+      draft.state = checkStanding(check).state;
+      draft.facts = checkFacts(check);
+    } else if (
+      context.kept.verification !== undefined &&
+      node.document?.artifact_id === context.kept.verification
+    ) {
+      draft.state = "no-result";
+    }
   }
   return draft;
+}
+
+/** Whether `node` is a statement: a `requirement` block of the issue's spec, the document the
+ *  issue read names (`TreeContext.specSlug`), whose blocks the coverage read's rows are too
+ *  (`KeptReads.requirements`). A `requirement` block of any other document is a block and
+ *  nothing more: nothing stands under it. */
+function isStatementNode(node: TreeAnswerNode, context: TreeDraftContext): boolean {
+  return (
+    node.supertag === "requirement" &&
+    context.specSlug !== "" &&
+    context.treeIdOfNode(node) === blockNodeId(context.specSlug, node.id)
+  );
 }
 
 /** A result of a check of this issue: who recorded it and when, and what it recorded, from the
@@ -810,7 +832,6 @@ function keptReads(
       return slug === undefined ? undefined : blockNodeId(slug, check.block_id);
     }),
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
-    commit: namedCommit(checks),
     decisions: indexBy(decisions, (decision) => {
       const node = nodes.get(decision.ref);
       return node === undefined ? undefined : idOf(node);
@@ -822,6 +843,7 @@ function keptReads(
       checks.flatMap((check) => check.results ?? []),
       (result) => result.id
     ),
+    verification: roleDocument(reads.issue, "verification")?.id,
   };
 }
 

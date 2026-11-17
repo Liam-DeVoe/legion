@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
 import type { IssueTreeAnswer } from "../web/src/api/client";
 import type { IssueDecisions } from "../web/src/api/types";
@@ -695,6 +695,61 @@ const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
 /** The path of issue `key`'s tree read. */
 function treePath(key: string): string {
   return `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+}
+
+/** Matches every request of issue `key`'s tree read, with or without a query: the whole tree, a
+ *  view of it (`?view=`) and each next page (`?cursor=`). One function per call, so a row that
+ *  routes a hold through it unroutes the same one. */
+export function treeReadRoute(key: string): (url: URL) => boolean {
+  const path = treePath(key);
+  return (url) => url.pathname === path;
+}
+
+/** What `refuseTreeRead` hands its row, to count its refusals and to end them. */
+export interface RefusedTreeRead {
+  /** Takes the refusal off, so the tree read reaches the server again. */
+  lift(): Promise<void>;
+  /** How many requests of the tree read have been refused so far, the page's own retries
+   *  included. */
+  refusals(): number;
+  /** Settles once `count` requests of the tree read have been refused in all, and not before. */
+  refused(count: number): Promise<void>;
+}
+
+/**
+ * Refuses issue `key`'s tree read (`treeReadRoute`), with a 500 in the server's error shape, from
+ * the next request the page sends until `lift`, as many times as the page asks it: what a row
+ * reads of a view whose documents' blocks the tree read answers when that read fails. A refusal
+ * is counted once its answer has been sent, so a row that waits on `refused(n)` reads a page that
+ * has had its nth refusal.
+ */
+export async function refuseTreeRead(page: Page, key: string): Promise<RefusedTreeRead> {
+  const route = treeReadRoute(key);
+  let refusals = 0;
+  // Each wait a row asked for, by the count it waits on: the refusal that reaches a wait's count
+  // is the one that settles it. The package compiles against ES2022, whose library names no type
+  // for what `Promise.withResolvers` returns, so the two parts used are named here.
+  const waiting = new Map<
+    number,
+    { readonly promise: Promise<void>; readonly resolve: () => void }
+  >();
+  const refuse = async (request: Route) => {
+    await request.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+    refusals += 1;
+    waiting.get(refusals)?.resolve();
+    waiting.delete(refusals);
+  };
+  await page.route(route, refuse);
+  return {
+    lift: () => page.unroute(route, refuse),
+    refusals: () => refusals,
+    refused: (count) => {
+      if (refusals >= count) return Promise.resolve();
+      const wait = waiting.get(count) ?? Promise.withResolvers<void>();
+      waiting.set(count, wait);
+      return wait.promise;
+    },
+  };
 }
 
 /** What the page received of the tree route, for one view or none. */

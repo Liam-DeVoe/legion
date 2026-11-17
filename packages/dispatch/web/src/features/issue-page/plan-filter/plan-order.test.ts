@@ -4,10 +4,10 @@ import type { Artifact } from "../../../api/types";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS, type NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { type PlanEntry, planChart, planDocumentIds, planOrder, writtenOrder } from "./plan-order";
+import { type PlanEntry, planChart, planOrder, writtenOrder } from "./plan-order";
 
 /**
- * The plan's order, read off the edges today's model holds (dispatch://INFRA-1196 R26).
+ * The plan's order, read off the edges today's model holds.
  *
  * The nodes are built as `issue-tree.ts` builds them from the plan document's blocks: a task's
  * id is `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`), and its `needs` are its chips,
@@ -70,8 +70,8 @@ function blockOf(id: string): string {
 }
 
 test("a task stands after every task in its needs, and the plan's own order decides the rest", () => {
-  // Written in the document as t3, t1, t2: t3 needs t2, t2 needs t1, and t4 needs nothing, so
-  // the chain is drawn as a chain and t4 keeps the place the plan gave it.
+  // Written as the chain's last task, a free task, then the chain's first two: the chain is
+  // drawn as a chain, and the free task keeps the place the plan gave it.
   const entries = planOrder([task("t3", ["t2"]), task("t4"), task("t1"), task("t2", ["t1"])]);
   expect(drawn(entries)).toEqual(["t4", "t1", "t2", "t3"]);
 });
@@ -103,8 +103,8 @@ test("a task that needs itself is a cycle of one, and no step", () => {
 });
 
 test("what a cycle holds up keeps its place after the cycle, and what it waits on stands before", () => {
-  // t1 is needed by the cycle, and t4 waits on it: the cycle is one place in the order like any
-  // other, so t1 stands before it and t4 after.
+  // The first task is needed by the cycle, and the fourth waits on it: the cycle is one place in
+  // the order like any other, so the first task stands before it and the fourth after.
   const entries = planOrder([
     task("t4", ["t2"]),
     task("t2", ["t1", "t3"]),
@@ -143,24 +143,38 @@ test("a node that is no plan task keeps its place and holds nothing up", () => {
   expect(drawn(entries)).toEqual(["r1", "t1", "t2"]);
 });
 
-// The tester's F19: the filter's view hands the tasks over grouped by the statement each one
-// serves, which is the spec's order, and the plan's own order is the one its document writes
-// (dispatch://INFRA-3938 R2).
+// The filter's view hands the tasks over grouped by the statement each one serves, which is the
+// spec's order, and the plan's own order is the one its document writes.
 test("tasks given grouped by statement come back in the order the plan writes them", () => {
   const artifacts = new Map<string, Artifact>([
     [PLAN, { id: "artifact-plan", slug: PLAN } as Artifact],
     ["notes-md", { id: "artifact-notes", slug: "notes-md" } as Artifact],
   ]);
-  // A task of a document whose blocks read is out: the page holds no place for it.
+  // A task of a document whose blocks read has not answered, which `written` leaves out: the
+  // page holds no place for it.
   const unread: TreeNode = { ...task("n1"), id: blockNodeId("notes-md", "n1") };
   const given = [task("t3", ["t1"]), unread, task("t1"), task("t2"), task("t1")];
-  const written = new Map([["artifact-plan", ["t1", "t2", "t3"]]]);
+  const written: ReadonlyMap<string, readonly string[]> = new Map([
+    ["artifact-plan", ["t1", "t2", "t3"]],
+  ]);
   expect(writtenOrder(given, artifacts, written).map((one) => blockOf(one.id))).toEqual([
     "t1",
     "t1",
     "t2",
     "t3",
     "n1",
+  ]);
+  // Both documents read: they stand in the order `written` holds them, the notes first.
+  const both: ReadonlyMap<string, readonly string[]> = new Map([
+    ["artifact-notes", ["n1"]],
+    ["artifact-plan", ["t1", "t2", "t3"]],
+  ]);
+  expect(writtenOrder(given, artifacts, both).map((one) => blockOf(one.id))).toEqual([
+    "n1",
+    "t1",
+    "t1",
+    "t2",
+    "t3",
   ]);
   // With no document read, every task keeps the place it was given.
   expect(writtenOrder(given, artifacts, new Map()).map((one) => blockOf(one.id))).toEqual([
@@ -176,9 +190,9 @@ test("a plan with no tasks draws nothing", () => {
   expect(planOrder([])).toEqual([]);
 });
 
-// R26's chart of time: "one bar per task, starting after every task it needs has ended ... a
-// task with no size is a short bar marked No size". Today's model holds no size, so each bar is
-// one unit long.
+// The chart of time: one bar per task, starting after every task it needs has ended, and a task
+// with no size a short bar marked No size. Today's model holds no size, so each bar is one unit
+// long.
 test("a bar starts where every task it needs has ended", () => {
   const chart = planChart(
     planOrder([task("t1"), task("t2", ["t1"]), task("t3", ["t1"]), task("t4", ["t2", "t3"])])
@@ -196,7 +210,7 @@ test("a bar starts where every task it needs has ended", () => {
   expect(
     chart.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : []))
   ).toEqual([[], ["t1"], ["t1"], ["t2", "t3"]]);
-  // A pinned and an unpinned pointer to one task (`…#b-t1@v1`, `…#b-t1`) name one need: the
+  // A pinned and an unpinned pointer to one task (`…#b-<id>@v1`, `…#b-<id>`) name one need: the
   // server refuses a pointer named twice by its raw value alone (`pmdoc/schema.go`), and the
   // chart names each need, and draws its curve, once.
   const twice: TreeNode = {
@@ -227,30 +241,4 @@ test("a cycle is one row of the chart at its place, and what waits on it starts 
 
 test("a plan with no tasks is a chart with no rows", () => {
   expect(planChart([])).toEqual({ end: 1, rows: [] });
-});
-
-// The documents the view waits on before it draws (`slots/view-plan.tsx`): the spec and the
-// plan as the issue read names them, which is how the tree chooses the documents it reads
-// (`useIssueTree.ts`'s `treeDocumentIds`), and never by an artifact's own `role`
-// (dispatch://INFRA-3938 R1 and R2).
-test("the view waits on the spec and the plan the issue names, each once", () => {
-  const spec = { id: "artifact-spec", kind: "doc", primary: true, slug: "spec-md" } as Artifact;
-  // A plan.md row with no role, which the server still names as the issue's plan
-  // (`api/artifacts.go`'s `documentPlays`).
-  const plan = { id: "artifact-plan", kind: "doc", primary: false, slug: PLAN } as Artifact;
-  // The issue read over `artifacts`, naming `planId` as its plan, `""` for none.
-  const issue = (artifacts: Artifact[], planId: string) => ({
-    artifacts,
-    decisions_artifact_id: "",
-    plan_artifact_id: planId,
-    primary_artifact_id: spec.id,
-    verification_artifact_id: "",
-  });
-  expect(planDocumentIds(issue([spec, plan], plan.id))).toEqual([spec.id, plan.id]);
-  // One document that plays both parts is waited on once.
-  expect(planDocumentIds(issue([spec, plan], spec.id))).toEqual([spec.id]);
-  // An issue that names no plan waits on the spec alone, and on no document in the plan's role
-  // that it does not name.
-  const roled = { ...plan, role: "plan" } as Artifact;
-  expect(planDocumentIds(issue([spec, roled], ""))).toEqual([spec.id]);
 });

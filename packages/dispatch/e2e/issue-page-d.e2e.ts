@@ -28,6 +28,7 @@ import {
   presetChooser,
   presetCount,
   presetMenuItem,
+  presetRow,
   presetToggle,
   presetToggles,
   presetToolbar,
@@ -357,7 +358,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
-    // The header's own "Open navigation" (part P) is the frame's; one outside the header is
+    // The header's own "Open navigation" is the frame's; one outside the header is
     // today's compact bar's.
     const openNavigation = { exact: true, name: "Open navigation" };
     await expect(
@@ -722,7 +723,8 @@ test("the five controls are toggles with an address each, one line at every widt
 // 72 of INFRA-1196's parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
 // 760px)`, which is under 760 px alone, so the row's classes are `max-[761px]:`; with
 // `max-[760px]:` the row has no sticky box at 760 px, and this row fails on "the view row has no
-// sticky box at 760 px".
+// sticky box at 760 px", and with the one control's `max-[760px]:flex-1` it fails on "the one
+// control does not fill the row at 760 px".
 test("at 760 px the header scrolls away and the view row stays at the top of a scrolled page", async ({
   browser,
 }) => {
@@ -749,6 +751,11 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
     expect(band, "the view row has no sticky box at 760 px").not.toBeNull();
     expect(band?.top, "the view row's sticky box is not at the top of the screen").toBe("0px");
     expect(band?.height ?? 0, "the band that stays is 0 px tall at 760 px").toBeGreaterThan(0);
+    // The one control fills the row beside Outline at 760 px, as it does below.
+    expect(
+      await presetRow(page).evaluate((control) => getComputedStyle(control).flexGrow),
+      "the one control does not fill the row at 760 px"
+    ).toBe("1");
 
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect
@@ -817,17 +824,174 @@ test("the page's scroll padding at the top is the height of what stays above the
   });
 });
 
-// From an address that names a node (`#b-`), a pointer press on Spec and then on Decisions moves
-// to each view's address, one history entry each (decision 93 of INFRA-1196's parts). There, a
-// press whose mousedown took the focus out of the outline closed the body of the outline's row,
-// the page grew shorter under the pointer, and the press ended elsewhere and did nothing. The
-// outline is a later part's; this row holds what each press must do.
-test("from an address that names a node, a press on Spec and then Decisions moves to each view's address, one history entry each", async ({
+/** `window.scrollY` two frames from now, so a scroll that a focus started is read. */
+async function scrollYInTwoFrames(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<number>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.scrollY)));
+    return promise;
+  });
+}
+
+// A focus that enters the view row while it stays at the top of the screen leaves a scrolled page
+// where it is (decision 113 of INFRA-1196's parts, review 5930786767): each control in the row
+// takes a top scroll margin of minus the row's height. The row stands in the band the page's
+// `scroll-padding-top` keeps clear, so without that margin the browser scrolls the page up to
+// bring a focused control below the band, and the row does not move: this row then fails on
+// "Escape in the view menu moved the page".
+test("at 390 px a focus that enters the view row leaves a scrolled page where it is: Escape in the view menu, Tab and the Outline sheet's Close", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, `/issues/${key}`);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY), {
+        message: "the page did not scroll at 390 px",
+      })
+      .toBeGreaterThan(0);
+    const from = await scrollYInTwoFrames(page);
+    // What makes a focus there scroll the page: the one control stands in the band the padding
+    // keeps clear.
+    const padding = await page.evaluate(
+      () => getComputedStyle(document.documentElement).scrollPaddingTop
+    );
+    const chooser = await boxOf(presetChooser(page), "the one control");
+    expect(
+      chooser.y,
+      `the one control does not stand in the ${padding} the scroll padding keeps clear`
+    ).toBeLessThan(Number.parseFloat(padding));
+    const stays = async (what: string) =>
+      expect(await scrollYInTwoFrames(page), `${what} moved the page`).toBe(from);
+    // The control is pressed where it is drawn, as a reader's pointer presses it: a locator's
+    // click first scrolls its target into view, a scroll of the test's and not of the page's.
+    const pressChooser = () =>
+      page.mouse.click(chooser.x + chooser.width / 2, chooser.y + chooser.height / 2);
+
+    await pressChooser();
+    await expect(presetMenuItem(page, "conversation")).toBeFocused();
+    await stays("opening the view menu");
+    await page.keyboard.press("Escape");
+    await expect(openMenu(page)).toHaveCount(0);
+    await expect(presetChooser(page), "Escape left the focus off the one control").toBeFocused();
+    await stays("Escape in the view menu");
+
+    await page.keyboard.press("Tab");
+    await expect(outlineControl(page), "Tab did not move on to Outline").toBeFocused();
+    await stays("Tab into Outline");
+    await page.keyboard.press("Shift+Tab");
+    await expect(presetChooser(page), "Shift+Tab did not move back").toBeFocused();
+    await stays("Shift+Tab into the one control");
+
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Enter");
+    await expect(outlineSheet(page)).toHaveCount(1);
+    await outlineSheet(page).getByRole("button", { exact: true, name: "Close" }).click();
+    await expect(outlineSheet(page)).toHaveCount(0);
+    await expect(outlineControl(page), "the sheet left the focus off Outline").toBeFocused();
+    await stays("closing the Outline sheet");
+
+    // Each control the row holds, the menu's items among them, takes the margin.
+    await pressChooser();
+    await expect(openMenu(page)).toHaveCount(1);
+    const margins = await filterRow(page).evaluate((row) =>
+      [...row.querySelectorAll("button, a[href], input, select, [tabindex]")].map(
+        (control) => getComputedStyle(control).scrollMarginTop
+      )
+    );
+    expect(margins.length, "the view row holds no control").toBeGreaterThan(0);
+    expect(
+      new Set(margins),
+      "a control of the view row takes no top scroll margin of minus the padding"
+    ).toEqual(new Set([`-${padding}`]));
+    await stays("opening the view menu again");
+  });
+});
+
+/** How many rows the cost row draws beside the view row: as many as a long outline holds. */
+const MANY_ROWS = 5000;
+
+/** The most elements whose style one added row may recalculate: the row and its neighbours. */
+const RECALCULATED_FOR_ONE_ROW = 100;
+
+// A change the new page makes recalculates the style of what it changed, not of the whole page
+// (decision 176 of INFRA-1196's parts): adding one row to a page of `MANY_ROWS` rows recalculates
+// the style of that row alone. The view row's scroll margin once read `html:has([data-issue-page])
+// [data-filter-row] *`. A selector whose subject is universal under an `html:has()` ancestor made
+// each element added with an attribute recalculate every element, so part G's rows drew four
+// times slower. The reading is Chrome's own count of the elements a style recalculation visits
+// (`UpdateLayoutTree`'s `elementCount`), not a time. On a reduced page of 5000 rows in Chrome 158,
+// one added row recalculated 10012 elements with that rule, and 3 (1440 px) or 5 (390 px)
+// without it. So with it this row fails on "adding one row recalculated the style of".
+test("adding one row to a page of many rows recalculates the style of that row alone, not of the whole page", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
+      const elements = await issuePage(page).evaluate((root, many) => {
+        const list = document.createElement("ol");
+        list.id = "e2e-many-rows";
+        for (let at = 0; at < many; at += 1) {
+          const row = document.createElement("li");
+          row.textContent = `row ${at}`;
+          list.append(row);
+        }
+        root.append(list);
+        getComputedStyle(list.lastElementChild ?? list).color;
+        return document.getElementsByTagName("*").length;
+      }, MANY_ROWS);
+      await browser.startTracing(page, { categories: ["devtools.timeline"] });
+      await page.evaluate(() => {
+        const row = document.createElement("li");
+        row.setAttribute("data-added", "");
+        document.getElementById("e2e-many-rows")?.append(row);
+        getComputedStyle(row).color;
+      });
+      const trace = JSON.parse((await browser.stopTracing()).toString()) as {
+        traceEvents: { args?: { elementCount?: number }; name: string }[];
+      };
+      const recalculations = trace.traceEvents.filter((event) => event.name === "UpdateLayoutTree");
+      expect(recalculations.length, "the trace read no style recalculation").toBeGreaterThan(0);
+      const recalculated = recalculations.reduce(
+        (sum, event) => sum + (event.args?.elementCount ?? 0),
+        0
+      );
+      expect(
+        recalculated,
+        `adding one row recalculated the style of ${recalculated} elements of the page's ${elements} at ${width} px`
+      ).toBeLessThan(RECALCULATED_FOR_ONE_ROW);
+    }
+  });
+});
+
+// From an address that names a node (`#b-`), a pointer press on Spec, then on Decisions, then on
+// Verification's count moves to each view's address, one history entry each, and leaves the
+// focus where it was (decision 93 of INFRA-1196's parts). There, a press whose mousedown took the
+// focus out of the outline closed the body of the outline's row, the page grew shorter under the
+// pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here the
+// page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
+// its button's `<label>`, whose own activation focuses the button at the click: with it, this
+// row fails on "a press on Verification's count took the focus".
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on the
+// address's row, then three presses each waited on until the view's address moves.
+test("from an address that names a node, a press on Spec, on Decisions and on Verification's count moves to each view's address, one history entry each, and leaves the focus where it was", async ({
   browser,
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}#b-r1`);
     await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
+    // With the outline the page opens with the focus on the row the address names, and takes it
+    // back from what holds the outline until the reader acts, so the opening is
+    // waited out and the reader acts first - a Shift, which no key of the page binds - or the
+    // page would take the focus from `main` below.
+    await expect(page.locator("[data-node-row]:focus"), "the page focused no row").toHaveCount(1);
+    await page.keyboard.press("Shift");
+    const holder = page.getByRole("main");
+    await holder.focus();
+    await expect(holder, "the page's main took no focus").toBeFocused();
     const entries = () => page.evaluate(() => window.history.length);
     const before = await entries();
     await presetToggle(page, "spec").click();
@@ -835,11 +999,49 @@ test("from an address that names a node, a press on Spec and then Decisions move
       addressOf(key, "spec")
     );
     expect(await entries(), "a press on Spec added no history entry").toBe(before + 1);
+    await expect(holder, "a press on Spec took the focus").toBeFocused();
     await presetToggle(page, "decisions").click();
     await expect(page, "a press on Decisions did not move to Decisions' address").toHaveURL(
       addressOf(key, "decisions")
     );
     expect(await entries(), "a press on Decisions added no history entry").toBe(before + 2);
+    await expect(holder, "a press on Decisions took the focus").toBeFocused();
+    await presetCount(page, "verification").click();
+    await expect(page, "a press on Verification's count did not move to its address").toHaveURL(
+      addressOf(key, "verification")
+    );
+    expect(await entries(), "a press on Verification's count added no history entry").toBe(
+      before + 3
+    );
+    await expect(holder, "a press on Verification's count took the focus").toBeFocused();
+  });
+});
+
+// On the phone, Details is a modal dialog, so a press on its text keeps the focus inside it, and
+// the sheet's own `Shift+M`, which acts only while the focus is inside, still closes it (decision
+// 168 of INFRA-1196's parts). With no focusable box in the sheet, the press moves the focus to
+// the body, and this row fails on "a press on Details' text took the focus out of the sheet".
+test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift+M then closes it", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, `/issues/${key}`);
+    await focusNothing(page);
+    await page.keyboard.press("Shift+M");
+    const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
+    await expect(phoneDetails, "Shift+M did not open the phone's Details").toBeVisible();
+    await expect(detailsClose(page)).toBeFocused();
+    await phoneDetails.getByRole("heading", { exact: true, name: "Details" }).click();
+    expect(
+      await phoneDetails.evaluate((sheet) => sheet.contains(document.activeElement)),
+      "a press on Details' text took the focus out of the sheet"
+    ).toBe(true);
+    await page.keyboard.press("Shift+M");
+    await expect(
+      phoneDetails,
+      "Shift+M after a press on Details' text did not close the sheet"
+    ).toBeHidden();
   });
 });
 
