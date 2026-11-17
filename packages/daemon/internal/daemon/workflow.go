@@ -1180,7 +1180,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
-		w.repositories, supervision.plan.tools, w.log)
+		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
 		_, pull, err := w.readPullRequest(ctx, pr)
 		return pull, err

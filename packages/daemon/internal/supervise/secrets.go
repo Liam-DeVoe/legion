@@ -243,11 +243,12 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 // (its startRenewer), so a revocation that fails here keeps the enrollment recorded and handed to
 // no connection, and the next observation tries it again (review round 14 of #4220). The claim
 // then has no enrollment, so the next decision asks the hold again before any new one and waits
-// for the shim's next hello. The same process is not enrolled again: its shim runs one renewer, and
-// the revoked enrollment's ended at the broker's refusal, so a claim given its session back is
-// enrolled again at its next launch (review round 14 of #4220). A
-// broker that refuses the revocation for good is not asked again, since it would refuse again:
-// the enrollment is recorded no longer, and the refusal is logged at Error naming it.
+// for the shim's next hello. Once the claim holds its session, that hello enrolls the same process
+// again and hands it the new enrollment, but its shim runs one renewer, which ended at the broker's
+// refusal of the revoked enrollment, so the new one lapses at its lease; the claim's next launch
+// enrolls with a renewer (review round 15 of #4220). A broker that refuses the revocation for good
+// is not asked again, since it would refuse again: the enrollment is recorded no longer, the
+// refusal is logged at Error naming it, and the process renews it until it stops.
 func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
 	e := *m.claim.Enrollment
 	revoking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
@@ -256,10 +257,10 @@ func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
 	var permanent PermanentError
 	switch {
 	case err == nil:
-		m.log.Error("supervise: agent-secrets: revoked the enrollment of a claim that does not hold its session; once the claim holds it, its next launch is enrolled again",
+		m.log.Warn("supervise: agent-secrets: revoked the enrollment of a claim that does not hold its session; once the claim holds it, the shim's next hello enrolls the process again, and its next launch enrolls it with a renewer",
 			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused)
 	case errors.As(err, &permanent) && permanent.Permanent():
-		m.log.Error("supervise: agent-secrets: the broker refused to revoke the enrollment of a claim that does not hold its session; it is recorded no longer, and its lease ends it once its pod stops renewing",
+		m.log.Error("supervise: agent-secrets: the broker refused to revoke the enrollment of a claim that does not hold its session; it is recorded no longer, and the process renews it until it stops",
 			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused, "revocation", err)
 	default:
 		m.log.Warn("supervise: agent-secrets: the revocation of the enrollment of a claim that does not hold its session failed; trying again at the next observation",

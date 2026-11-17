@@ -50,19 +50,28 @@ import (
 // the boot goes on. The claim is then contained but not stopped: its hold refuses every relaunch,
 // resume and new enrollment of it before anything starts; the enrollment its process holds is
 // revoked once the broker confirms the revocation, the claim keeping it recorded, handed to no
-// connection, and asking again at each observation until then (revokeUnheld); and the daemon
-// publishes nothing to its Envoy role or the controller topic, and sends that process no task and
-// no compaction (holdRecorded, ensureEnrolled, outbox.publish, sendPending, compactStart). The
-// process runs on under the session until it is stopped, and the Envoy listener does not yet
-// withhold the role its session claimed: the daemon could free the role, but the process claims a
-// free role again at its next heartbeat. Until the process stops, a message another session sends
-// to that role still reaches it; the process's life bounds that, since each boot tries the
-// suspension again, an operator's suspend (`legion claims suspend`, once its runtime answers) or a
-// stop of its pod or pane by hand ends it, and the listener frees the role one session TTL after
-// the process stops registering. It takes no forget while it is live, so the operator stops it
-// before the steps above, which need a daemon that serves (review rounds 11 to 14 of #4220). A
-// statement that makes such a claim the holder of its session writes no claim, and the
-// publication of an issue's role holders
+// connection, and asking again at each observation until then, and recorded no longer, logged at
+// Error, where the broker refuses the revocation for good, while the process renews it until it
+// stops (revokeUnheld); and the daemon publishes nothing to its Envoy role, whatever the claim's
+// state, or to the controller topic, and sends that process no task and no compaction
+// (holdRecorded, ensureEnrolled, outbox.publish, sendPending, compactStart). The process runs on
+// under the session until it is stopped, and the Envoy listener does not yet withhold the role its
+// session claimed: the daemon could free the role, but the process claims a free role again at its
+// next heartbeat. So a message another session sends to that role reaches the session's
+// subscriber until the session ends. Once no process registers the session id, the listener reads
+// it unresponsive five minutes after its last registration and frees the role at the role reaper's
+// first pass after the session is gone: the gone horizon, an hour, or, when the daemon's probe finds
+// the process gone and stops its registration, once the role claim's last renewal is five minutes
+// old. That holds only while no other live process registers the same session id: where the
+// name is held for another claim whose live process runs under the same id, as after a rollback,
+// the role stays with that session while it lives, and the role's messages, and the daemon's own
+// notices once the contained claim is given a new session and resumed, reach that process. Until
+// the listener withholds the role, the operator leaves the contained claim suspended until the
+// other session has ended, or stops the rightful holder's process too. The contained claim takes
+// no forget while it is live, so the operator stops it (`legion claims suspend`, once its runtime
+// answers, or a stop of its pod or pane by hand) before the steps above, which need a daemon that
+// serves (review rounds 11 to 15 of #4220). A statement that makes such a claim the holder of its
+// session writes no claim, and the publication of an issue's role holders
 // follows claim writes, so Dispatch is shown that claim as its role's holder at the next boot, or
 // once the claim is suspended and resumed. A boot whose budget runs out on the suspensions still
 // fails, since every later step would too. A store that refuses
@@ -141,7 +150,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained but not stopped: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation, and the daemon publishes nothing to its role and sends it no task and no compaction, but the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained but not stopped: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction, but the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}

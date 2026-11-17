@@ -143,9 +143,13 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
-	// unheldWarned is, by claim, the key of the row publish last wrote its refusal's Warn line for
-	// (a claim.Token to a dedupe key), so a row held at every attempt of its backoff writes one.
+	// unheldWarned is every row publish has written its refusal's Warn line for (an unheldRow), so
+	// a row held at every attempt of its backoff writes one; a row published since is deleted, and
+	// a row that finishes undelivered leaves its one entry.
 	unheldWarned sync.Map
+	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
+	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
+	controllerLaunched bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -181,13 +185,15 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+// newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
+// which decides whether the launched controller claim holds the controller topic back (heldTopic).
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
-		handlers: handlers, gatedSteps: gatedSteps,
+		handlers: handlers, gatedSteps: gatedSteps, controllerLaunched: controllerLaunched,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
@@ -226,8 +232,10 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
 // newOutbox is given, so every executor, and every test that builds an outbox, publishes through
-// it. A topic of no claim this daemon supervises, the operator's own controller among them, and
-// every other topic, is published as made.
+// it. A claim's role topics are held whatever its state: a retired or failed claim's unheld
+// session may still be a live process the daemon no longer manages, and the Envoy listener does
+// not yet withhold the role from it, so the daemon withholds its own messages. A topic of no claim
+// this daemon supervises, and every other topic, is published as made.
 func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
 	if token, held := r.heldTopic(topic); held && r.supervisor != nil {
 		if m, ok := r.supervisor.Machine(token); ok {
@@ -236,10 +244,10 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 				if !errors.As(err, &refusal) {
 					return fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)
 				}
-				if last, seen := r.unheldWarned.Load(token); !seen || last != dedupeKey {
-					// One line per row and claim, as holdRecorded writes one per refusal
-					// (warnRefusal): a held row asks again at each attempt of its backoff.
-					r.unheldWarned.Store(token, dedupeKey)
+				// One line per row and claim, as holdRecorded writes one per refusal (warnRefusal):
+				// a held row asks again at each attempt of its backoff, and several rows of one
+				// claim take turns. A row published since is forgotten.
+				if _, seen := r.unheldWarned.LoadOrStore(unheldRow{token, dedupeKey}, true); !seen {
 					log := r.log
 					if log == nil {
 						log = slog.Default()
@@ -249,18 +257,30 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 				}
 				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to it: %w", notify.ErrNoHolder, token, err)
 			}
+			r.unheldWarned.Delete(unheldRow{token, dedupeKey})
 		}
 	}
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
 }
 
+// unheldRow is a row publish held for a claim that records a session it does not hold
+// (outbox.unheldWarned).
+type unheldRow struct {
+	claim claim.Token
+	key   string
+}
+
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
-// topic names, or the project's controller for its controller topic.
+// topic names, or, under `controller: daemon` alone, the project's controller claim for its
+// controller topic. Under `controller: operator` the controller topic is the operator's own
+// controller's, so no claim the daemon launched holds it back, a launched controller an earlier
+// boot retired included (stopLaunchedController); under `controller: daemon` the launched
+// controller claim is the deployment's controller, since one runs per project.
 func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
 	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
 		return claim.Token(role), true
 	}
-	if r.project != "" && topic == notify.ControllerTopic(r.project) {
+	if r.controllerLaunched && r.project != "" && topic == notify.ControllerTopic(r.project) {
 		return claim.ControllerToken(r.project), true
 	}
 	return "", false
@@ -1789,7 +1809,14 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	if err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
+	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO then
+		// DEBUG rather than an Error at every attempt, and the row runs again on its backoff, so
+		// an operator's settle of the controller claim's name lets the next attempt through.
+		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
+	}
+	if err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
 	}
 	return nil
