@@ -19,8 +19,9 @@ var (
 
 // Two more shapes of a symbol, lowerCamel and packageSymbol. A plain word or a product name of one
 // of these shapes, such as mmHg, ownCloud or works.Then, is refused as code too. A word with a
-// capital at the start of each part, such as ReadSet, and a bare package word, such as pmdoc, are
-// no sign, since product names such as GitHub and JetStream, and plain words, have those shapes.
+// capital at the start of each part, such as ReadSet, unless it has the form of a Go test's name,
+// and a bare package word, such as pmdoc, are no sign, since product names such as GitHub and
+// JetStream, and plain words, have those shapes.
 var (
 	// lowerCamel is a name in lower camel case, such as readSet: a small letter and one or more
 	// small letters or digits, then a capital letter and a small letter. A brand or a unit with one
@@ -38,13 +39,13 @@ var productNames = []string{"GitHub", "PostgreSQL", "OpenAI", "JavaScript", "Typ
 
 // CodeNames is each name of code that text holds, in the order found: first each span in
 // backticks, backticks included, then each word of the rest with a file ending, a slash between two
-// letters, an ending "()", or an underscore between two letters or digits, or that has the form of
-// a name in lower camel case (lowerCamel) or of a package and its symbol (packageSymbol), and
-// else each name in the word that has the form of a Go test's name (goTestName). The quotes and
-// brackets of every script around a word, punctuation after it and a possessive "'s" are not part
-// of it, and a product name that productNames lists, such as Node.js, is no code. Any other word
-// of one of these shapes is, a plain word or a product name such as I/O, Three.js or TestFlight
-// included.
+// ASCII letters, an ending "()", or an underscore between two ASCII letters or digits, or that has
+// the form of a name in lower camel case (lowerCamel) or of a package and its symbol
+// (packageSymbol), and else each name in the word that has the form of a Go test's name
+// (goTestName). The quotes and brackets of every script around a word, punctuation after it and a
+// possessive "'s" are not part of it, and a product name that productNames lists, such as Node.js,
+// is no code. Any other word of one of these shapes is, a plain word or a product name such as
+// I/O, Three.js or TestFlight included.
 func CodeNames(text string) []string {
 	found := backtickSpan.FindAllString(text, -1)
 	for _, token := range strings.Fields(backtickSpan.ReplaceAllString(text, " ")) {
@@ -98,9 +99,9 @@ var slug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // ("s3", "r12"). A word such as "oauth2" or "ipv6" does not.
 var positionWord = regexp.MustCompile(`^(?:[0-9]+|[a-z][0-9]+)$`)
 
-// IsID reports whether s is a valid id of a node: lower-case words of letters and digits joined by
-// single hyphens, with no word that states a position, since an id never changes and a position
-// does.
+// IsID reports whether s is a valid id of a node: words of lower-case ASCII letters and digits
+// joined by single hyphens, with no word that states a position, since an id never changes and a
+// position does.
 func IsID(s string) bool {
 	if !slug.MatchString(s) {
 		return false

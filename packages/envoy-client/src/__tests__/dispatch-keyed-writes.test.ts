@@ -6,8 +6,9 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
+  IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
-import { bearerCredential } from "../bearer";
+import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
@@ -18,6 +19,7 @@ import {
   DispatchWriteUnsettledError,
   forgetKeyedLayerMemory,
   KEYED_LAYER_MEMORY_MS,
+  writeOutcomeUnknown,
 } from "../dispatch-http";
 
 // Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
@@ -460,6 +462,49 @@ describe("DispatchClient's writes", () => {
     expect(error).toEqual(expect.objectContaining({ code: "INTERNAL", status: 500 }));
     expect(sent).toHaveLength(2);
     expect(probes).toHaveLength(1);
+  });
+
+  // Writes that fail together share one /healthz probe, so the probe runs under its own bound and
+  // under no write's signal: the write that started it is cancelled while it runs, and the write
+  // that joined it still reads its answer and asks again. Both writes fail in transport first; the
+  // probe answers only once the first write has left. A macrotask turn lets the second write join
+  // the probe, since each step of its failure is a microtask.
+  test("a write's own end ends its wait on a shared /healthz probe, and never the probe", async () => {
+    const { promise: probing, resolve: probed } = Promise.withResolvers<void>();
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    let posts = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/healthz")) {
+        probed();
+        const { promise: aborted, reject } = Promise.withResolvers<never>();
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        await Promise.race([held, aborted]);
+        return json({ status: "ok", idempotency_keys: true });
+      }
+      posts += 1;
+      if (posts <= 2) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+      const key = (init?.headers as Record<string, string>)["Idempotency-Key"] ?? "";
+      return json(posted, 201, { "Idempotency-Key": key });
+    }) as typeof fetch;
+    const cancel = new AbortController();
+    const first = failure(
+      client(fetchImpl, pacing().retry, cancel.signal).comment("DSP-1", comment)
+    );
+    await probing;
+    const second = client(fetchImpl, pacing().retry)
+      .comment("DSP-1", comment)
+      .then(
+        () => "posted",
+        (error: Error) => `${error.name}: ${error.message}`
+      );
+    const { promise: turned, resolve: turn } = Promise.withResolvers<void>();
+    setImmediate(turn);
+    await turned;
+    cancel.abort();
+    await first;
+    release();
+    expect({ second: await second, posts }).toEqual({ second: "posted", posts: 3 });
   });
 
   test("ask again after a gateway's 408 and Dispatch's own 5xx", async () => {
@@ -1250,4 +1295,227 @@ describe("DispatchClient's uploads on a real connection", () => {
     expect(first.key).toMatch(IDEMPOTENCY_KEY_PATTERN);
     for (const write of writes) expect(write.key).toBe(first.key as string);
   }, 30_000);
+});
+
+// What one write call knows is a fact of the whole call, not of one series of attempts: its one
+// key, which the no-route retries of a rolling release and the re-send after a dead token carry
+// again, and whether an attempt of it may have reached a handler. An answer that stores nothing
+// and proves nothing of an earlier attempt (no route, the token check, a dead token) cannot turn
+// a call that may have stored into one that did not: only the keyed layer's verdict on the call's
+// key, which echoes it, says what the write did.
+describe("a DispatchClient write as one call", () => {
+  beforeEach(forgetKeyedLayerMemory);
+
+  const result = { commit: "0".repeat(40), check: "p-1", verdict: "pass" } as const;
+  /** The router's answer of a build without the route, which runs before the keyed layer. */
+  const noRoute = () =>
+    refusal(404, "NOT_FOUND", "no route for POST /api/v1/projects/ACME/results", {
+      hint: "GET /api/v1 lists every route",
+    });
+  const keysOf = (sent: readonly Sent[]) =>
+    new Set(sent.map((request) => request.headers["Idempotency-Key"]));
+  /** A credential that counts its presentations and the times a server called its token dead. */
+  const counted = (fails: (presentation: number) => boolean = () => false) => {
+    const seen = { presentations: 0, stale: 0 };
+    const credential: RequestCredential = {
+      scheme: "Bearer",
+      headers: () => {
+        seen.presentations += 1;
+        if (fails(seen.presentations)) throw new Error("the secrets broker could not answer");
+        return { Authorization: "Bearer secret" };
+      },
+      stale: () => {
+        seen.stale += 1;
+      },
+      secret: () => "secret",
+    };
+    return { credential, seen };
+  };
+  const make = (
+    fetchImpl: typeof fetch,
+    retry: DispatchWriteRetry,
+    options: { readonly credential?: RequestCredential; readonly deadline?: AbortSignal } = {}
+  ) =>
+    new DispatchClient(
+      "http://dispatch.test",
+      options.credential ?? bearerCredential("secret"),
+      fetchImpl,
+      {
+        writeRetry: retry,
+        sleep: async () => {},
+        ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+      }
+    );
+
+  // The red team's sequence of the review of 462bc83094 (its F4): a gateway's 502 that may have
+  // reached the new build, then no-route answers of the old one. Before, each no-route retry made
+  // a key of its own and forgot the 502, and the call ended as a plain NOT_FOUND refusal.
+  test("a 502 that may have stored, then a rolling release's no-route answers, ends as unknown under one key", async () => {
+    const { fetchImpl, sent } = scripted(
+      [page(502, "Bad Gateway"), noRoute(), noRoute(), noRoute(), noRoute()],
+      { echo: false }
+    );
+    const error = await failure(
+      make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+      keys: keysOf(sent).size,
+    }).toEqual({ unsettled: true, unknown: true, posts: 5, keys: 1 });
+  });
+
+  // The re-send after Dispatch said the token was not live carries the same key, and the 502 before
+  // it still counts: a second dead-token answer proves nothing of the first attempt.
+  test("a 502 that may have stored, then dead-token answers and the re-send, ends as unknown under one key", async () => {
+    const dead = () =>
+      refusal(401, "BROKER_TOKEN_NOT_ACTIVE", "the broker does not hold this token as live");
+    const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), dead(), dead()], {
+      echo: false,
+    });
+    const { credential, seen } = counted();
+    const error = await failure(
+      make(fetchImpl, pacing().retry, { credential }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+      keys: keysOf(sent).size,
+      stale: seen.stale,
+    }).toEqual({ unsettled: true, unknown: true, posts: 3, keys: 1, stale: 1 });
+  });
+
+  // The control: the keyed layer's own verdict on the call's key, a refusal that echoes it, proves
+  // what the write did after the 502, and the call ends with that refusal.
+  test("a 502, then the keyed layer's own refusal of the key, ends with that refusal", async () => {
+    const { fetchImpl, sent } = scripted(
+      [
+        page(502, "Bad Gateway"),
+        refusal(409, "CHECK_NOT_THIS_JOBS", "check p-1 names another job"),
+      ],
+      { echo: true }
+    );
+    const error = await failure(
+      make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      refused: error instanceof DispatchServiceError && error.code === "CHECK_NOT_THIS_JOBS",
+      unknown: writeOutcomeUnknown(error),
+      keys: keysOf(sent).size,
+    }).toEqual({ refused: true, unknown: false, keys: 1 });
+  });
+
+  // An echoed 401 and an echoed 422 KEY_REUSED name the key back, and the keyed layer keeps
+  // neither as the key's outcome: it releases the key on a 401, which can come after the handler
+  // committed, and KEY_REUSED says only that this request was not run. After a 502 that may have
+  // stored, each ends the call as unknown, and not as a refusal that says nothing was stored.
+  for (const [name, answer] of [
+    ["an echoed 401", () => refusal(401, "UNAUTHENTICATED", "the session lapsed in the write")],
+    [
+      "an echoed 422 KEY_REUSED",
+      () => refusal(422, IDEMPOTENCY_KEY_REUSED, "this key was sent with another request"),
+    ],
+  ] as const) {
+    test(`a 502 that may have stored, then ${name}, ends as unknown under one key`, async () => {
+      const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), answer()], { echo: true });
+      const error = await failure(
+        make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+      );
+      expect({
+        unsettled: error instanceof DispatchWriteUnsettledError,
+        unknown: writeOutcomeUnknown(error),
+        posts: sent.length,
+        keys: keysOf(sent).size,
+      }).toEqual({ unsettled: true, unknown: true, posts: 2, keys: 1 });
+    });
+  }
+
+  // An echoed 401 is a handler's answer, which can come after the handler committed, so on its own
+  // it ends the call as unknown. The control: Dispatch's check of the token answers its 401 before
+  // the keyed layer, with no key back, and that refusal says nothing was stored.
+  test("an echoed 401 ends the call as unknown, and the token check's 401 as a refusal", async () => {
+    const outcome = async (echo: boolean) => {
+      const { fetchImpl } = scripted(
+        [refusal(401, "UNAUTHENTICATED", "the session lapsed in the write")],
+        { echo }
+      );
+      const error = await failure(
+        make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+      );
+      return error instanceof DispatchServiceError ? error.code : writeOutcomeUnknown(error);
+    };
+    expect({ echoed: await outcome(true), unechoed: await outcome(false) }).toEqual({
+      echoed: true,
+      unechoed: "UNAUTHENTICATED",
+    });
+  });
+
+  // The deadline ends a pause the client took after a rate limit, and the pause still returns, as
+  // a late timer's does: no next attempt goes out, and the deadline's timeout is thrown as it is,
+  // since no attempt of the write may have reached a handler.
+  test("an attempt the deadline ends before it is sent sends nothing and reaches nothing", async () => {
+    const deadline = new AbortController();
+    const { fetchImpl, sent } = scripted([
+      refusal(429, "RATE_LIMITED", "too many writes", { "Retry-After": "1" }),
+    ]);
+    const retry: DispatchWriteRetry = {
+      ...pacing().retry,
+      pause: async () => {
+        deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+      },
+    };
+    const error = await failure(
+      make(fetchImpl, retry, { deadline: deadline.signal }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      timeout: error.name === "TimeoutError",
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      posts: sent.length,
+    }).toEqual({ timeout: true, unsettled: false, posts: 1 });
+  });
+
+  // Dispatch's check of the token answered 503 before any handler ran, and the deadline ended the
+  // pause before the next attempt: the write ends with that answer, which says why nothing was
+  // stored, and not with the bare timeout.
+  test("a pause the deadline ends after the token check's 503 ends with that 503", async () => {
+    const deadline = new AbortController();
+    const { fetchImpl, sent } = scripted(
+      [refusal(503, "BROKER_UNAVAILABLE", "the secrets broker cannot be reached")],
+      { echo: false }
+    );
+    const retry: DispatchWriteRetry = {
+      ...pacing().retry,
+      pause: (_ms, signal) => {
+        deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+        return Promise.reject(signal.reason);
+      },
+    };
+    const error = await failure(
+      make(fetchImpl, retry, { deadline: deadline.signal }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      code: error instanceof DispatchServiceError ? error.code : error.name,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+    }).toEqual({ code: "BROKER_UNAVAILABLE", unknown: false, posts: 1 });
+  });
+
+  // A presentation of the credential that fails inside the write loop never left the process, so
+  // it reaches nothing, and the write does not end as one whose outcome is unknown.
+  test("a credential that fails inside the write loop reaches nothing", async () => {
+    const { fetchImpl, sent } = scripted([
+      refusal(429, "RATE_LIMITED", "too many writes", { "Retry-After": "1" }),
+    ]);
+    const { credential } = counted((presentation) => presentation > 1);
+    const error = await failure(
+      make(fetchImpl, pacing().retry, { credential }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      message: error.message,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+    }).toEqual({ message: "the secrets broker could not answer", unknown: false, posts: 1 });
+  });
 });

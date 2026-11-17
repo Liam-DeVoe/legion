@@ -19,8 +19,9 @@ type Options struct {
 // Validate finds each fault of the tree that a program can find, sorted by file, line, node and
 // rule:
 //
-//   - an id: doubled-id (one id on two nodes of any kind), bad-id (not lower-case words joined by
-//     hyphens, or a word that states a position), retired-id (an id the approved spec removed);
+//   - an id: doubled-id (one id on two nodes of any kind), bad-id (not words of lower-case ASCII
+//     letters and digits joined by single hyphens, or a word that states a position), retired-id
+//     (an id the approved spec removed);
 //   - a statement: no-text, bad-kind, no-parent, missing-target (a serves or about relation to a
 //     node the files do not hold as a statement, or as a component or interface), no-about (a
 //     structure statement about no component), leaf-without-check, supported-without-check (a
@@ -139,7 +140,7 @@ func (v *validator) ids() {
 			v.problem(h.pos, "-", "bad-id: the block has no id")
 			continue
 		case !IsID(h.id):
-			v.problem(h.pos, h.id, fmt.Sprintf("bad-id: %q is lower-case words joined by hyphens, with no word that states a position", h.id))
+			v.problem(h.pos, h.id, fmt.Sprintf("bad-id: %q is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position", h.id))
 		}
 		if v.retired[h.id] {
 			v.problem(h.pos, h.id, "retired-id: the approved spec removed this id")

@@ -21,9 +21,16 @@ import {
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
 import { forgetBrokerClients } from "../broker-credential";
-import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
+import {
+  cliRefusals,
+  DISPATCH_TOKEN_CHECK_WAIT_MS,
+  fitOutput,
+  type ResultBound,
+  runDispatchCli,
+} from "../dispatch-cli";
+import { ownIdentityDispatch } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
+import { DispatchClient, forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -1831,18 +1838,23 @@ describe("dispatch result --project, as a CI job writes it", () => {
   const runnerAsked: { authorization: string | null; audience: string | null }[] = [];
   const trades: { form: URLSearchParams; proof: string }[] = [];
   const written: Seen[] = [];
-  let brokerAnswer: () => Response;
-  let dispatchAnswer: () => Response;
+  let brokerAnswer: () => Response | Promise<Response>;
+  /** What the runner's token endpoint waits on before it answers: settled at once by default, and
+   *  held by a test of a runner that answers only after the command's bound: false fails the
+   *  request with a 503. */
+  let runnerHold: Promise<boolean> = Promise.resolve(true);
+  let dispatchAnswer: () => Response | Promise<Response>;
   const stored = storedSpecResult(43, "pass", "", 1);
 
   const runner = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: (request) => {
+    fetch: async (request) => {
       runnerAsked.push({
         authorization: request.headers.get("Authorization"),
         audience: new URL(request.url).searchParams.get("audience"),
       });
+      if (!(await runnerHold)) return new Response("unavailable", { status: 503 });
       return Response.json({ count: 1, value: OIDC_TOKEN });
     },
   });
@@ -1879,6 +1891,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     runnerAsked.length = 0;
     trades.length = 0;
     written.length = 0;
+    runnerHold = Promise.resolve(true);
     forgetBrokerClients();
     brokerAnswer = () =>
       Response.json(
@@ -1936,11 +1949,12 @@ describe("dispatch result --project, as a CI job writes it", () => {
     return { code, stdout, stderr };
   }
 
-  /** The command in this process, under exactly `env`. */
+  /** The command in this process, under exactly `env`, with its one bound `bound` where a test
+   *  shortens it: every wait runs on the real clock, as in a job. */
   async function runJob(
     argv: readonly string[],
     env: Record<string, string | undefined>,
-    pause?: (ms: number) => Promise<void>
+    bound?: ResultBound
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     let stdout = "";
     let stderr = "";
@@ -1953,9 +1967,20 @@ describe("dispatch result --project, as a CI job writes it", () => {
       },
       readText: (path) => readFileSync(path, "utf-8"),
       cwd: stateDir,
-      ...(pause === undefined ? {} : { pause }),
+      ...(bound === undefined ? {} : { resultBound: bound }),
     });
     return { code, stdout, stderr };
+  }
+
+  /** `runJob` with how long it took, in milliseconds of the real clock. */
+  async function timedJob(
+    argv: readonly string[],
+    env: Record<string, string | undefined>,
+    bound: ResultBound
+  ): Promise<{ code: number; stdout: string; stderr: string; ms: number }> {
+    const started = performance.now();
+    const ran = await runJob(argv, env, bound);
+    return { ...ran, ms: performance.now() - started };
   }
 
   /** One part of a compact JWS, as JSON. */
@@ -2187,57 +2212,117 @@ describe("dispatch result --project, as a CI job writes it", () => {
       { status: 429, headers: { "Retry-After": retryAfter } }
     );
 
+  /** A bound of the command short enough for a test, run on the real clock as in a job: no
+   *  round starts later than `reserveMs` before `totalMs`. */
+  const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
+
+  // Dispatch answers 201 only after it stored the result, so a body lost after that status line is
+  // a landing whose answer was lost: the job prints landed_without_answer, which its reporter reads
+  // as stored, and exits 0, whether the body is cut, stalls until the bound (B4 of the review of
+  // 2f29345b8d, its two rows) or comes whole and is not the JSON it says it is. The stand-in
+  // Dispatch is a raw socket, so the status line and the first bytes of the body surely reach the
+  // job before the connection closes or goes silent. The stall is ended by the command's own
+  // bound, a real timer as in the bound rows below, since that bound is what the row tests.
+  const bodyStart = '{"id":"00000000-0000-4000-8000-';
+  for (const [name, length, close] of [
+    ["is cut", 400, true],
+    ["stalls past the bound", 400, false],
+    ["is not the JSON it says it is", bodyStart.length, false],
+  ] as const) {
+    test(`a 201 whose body ${name} prints landed_without_answer and exits 0`, async () => {
+      let posts = 0;
+      const lost = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: {
+          data(socket, request) {
+            if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
+            posts += 1;
+            socket.write(
+              "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
+                `Content-Length: ${length}\r\n\r\n${bodyStart}`
+            );
+            if (close) socket.end();
+          },
+        },
+      });
+      try {
+        const ran = await timedJob(
+          record,
+          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${lost.port}` },
+          shortBound(1_000, 200)
+        );
+        expect({
+          code: ran.code,
+          stdout: ran.stdout,
+          stderr: ran.stderr,
+          posts,
+          withinTheBound: ran.ms < 1_500,
+        }).toEqual({
+          code: 0,
+          stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
+          stderr: "",
+          posts: 1,
+          withinTheBound: true,
+        });
+      } finally {
+        lost.stop(true);
+      }
+    }, 30_000);
+  }
+
   // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
   // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
-  // result is stored once.
+  // result is stored once. Each wait is a real second.
   test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
     const answer = brokerAnswer;
     brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());
-    const waits: number[] = [];
-    const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
-      waits.push(ms);
-    });
-    expect({ code, stderr, trades: trades.length, waits }).toEqual({
+    const { code, stdout, stderr, ms } = await timedJob(
+      record,
+      jobEnvironment(),
+      shortBound(5_000, 1_000)
+    );
+    expect({ code, stderr, trades: trades.length, waited: ms >= 2_000 }).toEqual({
       code: 0,
       stderr: "",
       trades: 3,
-      waits: [1000, 1000],
+      waited: true,
     });
     expect(JSON.parse(stdout)).toEqual(stored);
     expect(written.map((seen) => [seen.method, seen.path])).toEqual([
       ["POST", "/api/v1/projects/ACME/results"],
     ]);
-  });
+  }, 15_000);
 
-  // A limit that never lets the trade through ends inside the bound of 60 s of waits, with one line
-  // that says so, and no write_outcome_unknown: nothing reached Dispatch. A Retry-After past the
-  // bound ends at once.
-  test("a trade the broker's rate limit refuses for ever ends inside 60 s of waits with one line", async () => {
+  // A limit that never lets the trade through ends at the command's one bound, with one line that
+  // says so, and no write_outcome_unknown: nothing reached Dispatch. A Retry-After past the bound
+  // ends at once.
+  test("a trade the broker's rate limit refuses for ever ends at the command's one bound with one line", async () => {
     for (const [retryAfter, wanted] of [
-      ["1", 60],
-      ["61", 0],
+      ["1", 3],
+      ["61", 1],
     ] as const) {
       trades.length = 0;
       forgetBrokerClients();
       brokerAnswer = () => rateLimited(retryAfter);
-      const waits: number[] = [];
-      const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
-        waits.push(ms);
-      });
-      expect({ code, stderr, waits: waits.length, trades: trades.length }).toEqual({
+      const { code, stdout, stderr, ms } = await timedJob(
+        record,
+        jobEnvironment(),
+        shortBound(3_000, 500)
+      );
+      expect({ code, stderr, trades: trades.length, withinTheBound: ms < 3_000 }).toEqual({
         code: 1,
         stderr: "",
-        waits: wanted,
-        trades: wanted + 1,
+        trades: wanted,
+        withinTheBound: true,
       });
-      expect(waits.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(60_000);
       expect(stdout.split("\n")).toEqual([
-        `the secrets broker's rate limit refused the trade after ${wanted} s of waits, and this command waits at most 60 s: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later`,
+        "the secrets broker's rate limit refused the trade, and the 3 s this command may take leave no time to ask again: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later",
         "",
       ]);
       expect(written).toEqual([]);
     }
-  });
+  }, 15_000);
 
   /** The results writes Dispatch got so far, the one it answers now included. */
   const posts = (): number => written.filter((seen) => seen.method === "POST").length;
@@ -2301,57 +2386,285 @@ describe("dispatch result --project, as a CI job writes it", () => {
       trades.length = 0;
       forgetBrokerClients();
       setUp(2);
-      const waits: number[] = [];
-      const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
-        waits.push(ms);
-      });
+      const { code, stdout, stderr, ms } = await timedJob(
+        record,
+        jobEnvironment(),
+        shortBound(5_000, 1_000)
+      );
       expect(
-        { code, stderr, waits, stored: code === 0 ? JSON.parse(stdout) : stdout },
+        { code, stderr, waited: ms >= 2_000, stored: code === 0 ? JSON.parse(stdout) : stdout },
         name
-      ).toEqual({
-        code: 0,
-        stderr: "",
-        waits: [1000, 1000],
-        stored,
-      });
+      ).toEqual({ code: 0, stderr: "", waited: true, stored });
       expect(posts(), name).toBe(name.startsWith("the broker") ? 1 : 3);
     }
+  }, 30_000);
+
+  /** The one line a call turned away for its whole bound of `seconds` ends with: which turned
+   *  it away, then that answer's own words. */
+  const turnedAwayLines = (seconds: number): Record<string, string> => ({
+    "Dispatch's 429 of its token check": `Dispatch's check of the job's token turned the write away, and the ${seconds} s this command may take leave no time to ask again: BROKER_TOKEN_RATE_LIMITED: too many access tokens checked from this address; try again in 200ms`,
+    "Dispatch's 503 for a broker that answered nothing": `Dispatch's check of the job's token turned the write away, and the ${seconds} s this command may take leave no time to ask again: BROKER_UNAVAILABLE: the secrets broker cannot be reached; try again in a minute`,
+    "the broker's 503 of the trade": `the secrets broker could not answer the trade, and the ${seconds} s this command may take leave no time to ask again: trade this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) at `,
   });
 
-  // Turned away for ever, the call ends inside the bound of 60 s of waits, with one line that says
-  // which turned it away, and no write_outcome_unknown: no write ran.
-  test("a call Dispatch's token check or the broker turns away for ever ends inside 60 s of waits with one line", async () => {
+  // Turned away for ever, the call ends at its one bound with one line that says which turned it
+  // away, and no write_outcome_unknown: no write ran. The broker's 503 is the control: it never
+  // reaches Dispatch, so its line named the cause before the one bound as well.
+  test("a call Dispatch's token check or the broker turns away for ever ends at the one bound with one line", async () => {
     const defaults = { brokerAnswer, dispatchAnswer };
-    const lines: Record<string, string> = {
-      "Dispatch's 429 of its token check":
-        "Dispatch's check of the job's token turned the write away after 60 s of waits, and this command waits at most 60 s: BROKER_TOKEN_RATE_LIMITED: too many access tokens checked from this address; try again in 200ms",
-      "Dispatch's 503 for a broker that answered nothing":
-        "Dispatch's check of the job's token turned the write away after 60 s of waits, and this command waits at most 60 s: BROKER_UNAVAILABLE: the secrets broker cannot be reached; try again in a minute",
-      "the broker's 503 of the trade":
-        "the secrets broker could not answer the trade after 60 s of waits, and this command waits at most 60 s: trade this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) at ",
-    };
+    const lines = turnedAwayLines(3);
     for (const [name, setUp] of turnedAway) {
       ({ brokerAnswer, dispatchAnswer } = defaults);
       written.length = 0;
       trades.length = 0;
       forgetBrokerClients();
       setUp(Number.POSITIVE_INFINITY);
-      const waits: number[] = [];
-      const { code, stdout, stderr } = await runJob(record, jobEnvironment(), async (ms) => {
-        waits.push(ms);
+      const { code, stdout, stderr, ms } = await timedJob(
+        record,
+        jobEnvironment(),
+        shortBound(3_000, 500)
+      );
+      expect(
+        { code, stderr, lines: stdout.split("\n").length, withinTheBound: ms < 3_000 },
+        name
+      ).toEqual({
+        code: 1,
+        stderr: "",
+        lines: 2,
+        withinTheBound: true,
       });
-      expect({ code, stderr, waits: waits.length, lines: stdout.split("\n").length }, name).toEqual(
+      expect(stdout, name).toStartWith(lines[name] ?? "");
+    }
+  }, 30_000);
+
+  // The case of the fresh acceptance of f60429ff0d (its D-A): a Dispatch whose /healthz says it
+  // runs the keyed layer, so the write client also asks again under the key inside each call,
+  // while Dispatch's check of the token turns every attempt away. The client's deadline and the
+  // command's waits are one bound on one clock: the call ends inside it with the refusal that
+  // names the last code, and no write_outcome_unknown, since no handler ever ran. Before the one
+  // bound the client's own 60 s deadline, counted apart from the command's waits, ended the call
+  // first, and an attempt it ended before it was sent read as one that may have stored.
+  for (const [name, answer, code] of [
+    ["503 BROKER_UNAVAILABLE", tokenNotChecked.unavailable, "BROKER_UNAVAILABLE"],
+    ["429 BROKER_TOKEN_RATE_LIMITED", tokenNotChecked.limited, "BROKER_TOKEN_RATE_LIMITED"],
+  ] as const) {
+    test(`Dispatch's token check turning every write away with ${name}, against the keyed layer, ends at the one bound naming ${code}`, async () => {
+      dispatchAnswer = () =>
+        written.at(-1)?.path === "/healthz"
+          ? Response.json({ status: "degraded", idempotency_keys: true })
+          : answer();
+      const ran = await timedJob(record, jobEnvironment(), shortBound(8_000, 1_000));
+      expect(
         {
+          code: ran.code,
+          stderr: ran.stderr,
+          lines: ran.stdout.split("\n").length,
+          namesTheCause: ran.stdout.startsWith(
+            "Dispatch's check of the job's token turned the write away"
+          ),
+          namesTheCode: ran.stdout.includes(`: ${code}: `),
+          outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
+          askedAgainUnderTheKey: posts() > 2,
+          withinTheBound: ran.ms < 8_000,
+        },
+        ran.stdout
+      ).toEqual({
+        code: 1,
+        stderr: "",
+        lines: 2,
+        namesTheCause: true,
+        namesTheCode: true,
+        outcomeUnknown: false,
+        askedAgainUnderTheKey: true,
+        withinTheBound: true,
+      });
+    }, 90_000);
+  }
+
+  // The client's deadline is the command's bound: a Dispatch that never answers ends the call at
+  // the bound, as a write whose outcome is unknown, since the attempt the bound cut was sent.
+  test("a Dispatch that never answers ends the call at the one bound as an outcome unknown", async () => {
+    const { promise: never } = Promise.withResolvers<Response>();
+    dispatchAnswer = () => never;
+    const ran = await timedJob(record, jobEnvironment(), shortBound(3_000, 500));
+    expect({
+      code: ran.code,
+      stdout: ran.stdout,
+      stderr: ran.stderr,
+      atTheBound: ran.ms >= 3_000 && ran.ms < 4_500,
+    }).toEqual({
+      code: 1,
+      stdout: `${JSON.stringify({ write_outcome_unknown: "TimeoutError" })}\n`,
+      stderr: "",
+      atTheBound: true,
+    });
+  }, 90_000);
+
+  // The one bound reaches the trade too: the call waits on the runner's token request and the
+  // broker's exchange under the same signal as the write, so a runner or a broker that takes the
+  // request and never answers it ends the call at the bound, with a line that names which of the
+  // two it was and says nothing was written, and Dispatch is sent nothing. The answer is held on a
+  // promise the test settles only once the call has ended; the bound itself is a real timer, since
+  // it is what the rows test (a stopped clock is how the fault of D-A hid), so the call waits the
+  // 400 ms of its bound. The trade runs on under its own bound after the call ended, so the held
+  // runner fails it once it is let go, and it sends a later row's broker nothing. The immediate
+  // case is the control: with nothing held, the same bound stores the result.
+  for (const [name, hold, lead] of [
+    [
+      "the runner's token request",
+      (held: Promise<void>) => {
+        runnerHold = held.then(() => false);
+      },
+      "this command's 0.4 s ended while it read the job's own token for the secrets broker, and nothing was written: ",
+    ],
+    [
+      "the broker's exchange",
+      (held: Promise<void>) => {
+        const answer = brokerAnswer;
+        brokerAnswer = async () => {
+          await held;
+          return answer();
+        };
+      },
+      "this command's 0.4 s ended while the secrets broker traded the job's token, and nothing was written: ",
+    ],
+  ] as const) {
+    test(`${name} that never answers ends the call at the bound, naming it`, async () => {
+      const { promise: held, resolve: release } = Promise.withResolvers<void>();
+      hold(held);
+      try {
+        const ran = await timedJob(record, jobEnvironment(), shortBound(400, 50));
+        expect(
+          {
+            code: ran.code,
+            stderr: ran.stderr,
+            lines: ran.stdout.split("\n").length,
+            namesTheTrade: ran.stdout.startsWith(lead),
+            outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
+            sentToDispatch: written.length,
+            withinTheBound: ran.ms < 800,
+          },
+          ran.stdout
+        ).toEqual({
           code: 1,
           stderr: "",
-          waits: 60,
           lines: 2,
-        }
-      );
-      expect(stdout, name).toStartWith(lines[name] ?? "");
-      expect(stdout, name).not.toContain("write_outcome_unknown");
-    }
+          namesTheTrade: true,
+          outcomeUnknown: false,
+          sentToDispatch: 0,
+          withinTheBound: true,
+        });
+      } finally {
+        release();
+      }
+    }, 30_000);
+  }
+
+  test("the immediate trade, the control, stores the result inside the same bound", async () => {
+    const ran = await timedJob(record, jobEnvironment(), shortBound(400, 50));
+    expect({ code: ran.code, stderr: ran.stderr, withinTheBound: ran.ms < 400 }).toEqual({
+      code: 0,
+      stderr: "",
+      withinTheBound: true,
+    });
+    expect(JSON.parse(ran.stdout)).toEqual(stored);
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/projects/ACME/results"],
+    ]);
+  }, 30_000);
+
+  // The reserve of the one bound is set from the wait of Dispatch's check of a token on the broker,
+  // which the command copies: the copy is held to Go's own constant, so a change of that wait
+  // changes the reserve with it.
+  test("the reserve's copy of Dispatch's token-check wait is Go's introspectTimeout", () => {
+    const go = readFileSync(
+      join(import.meta.dir, "..", "..", "..", "envoy", "internal", "brokertoken", "introspect.go"),
+      "utf8"
+    );
+    const seconds = /^const introspectTimeout = (\d+) \* time\.Second$/m.exec(go)?.[1];
+    expect(seconds === undefined ? undefined : Number(seconds) * 1_000).toBe(
+      DISPATCH_TOKEN_CHECK_WAIT_MS
+    );
   });
+
+  // The same at the real bound of 60 s, the case of the reviewer's B1 and the tester's D-C at
+  // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
+  // call ends at its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s bound
+  // ends the first trade, which got no answer, and the call trades again inside its bound, so it
+  // is the call's bound that ends the second. It waits the whole real bound, since what it tests
+  // is that bound.
+  test("a broker that never answers the trade ends the call at the real 60 s bound", async () => {
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    const answer = brokerAnswer;
+    brokerAnswer = async () => {
+      await held;
+      return answer();
+    };
+    try {
+      const started = performance.now();
+      const ran = await runJob(record, jobEnvironment());
+      const ms = performance.now() - started;
+      expect(
+        {
+          code: ran.code,
+          namesTheTrade: ran.stdout.startsWith(
+            "this command's 60 s ended while the secrets broker traded the job's token, and nothing was written: "
+          ),
+          sentToDispatch: written.length,
+          trades: trades.length,
+          atTheBound: ms >= 59_000 && ms < 63_000,
+        },
+        `${Math.round(ms)} ms: ${ran.stdout}`
+      ).toEqual({ code: 1, namesTheTrade: true, sentToDispatch: 0, trades: 2, atTheBound: true });
+    } finally {
+      release();
+    }
+  }, 90_000);
+
+  // Two Dispatch clients that share the job's broker credential share its one trade, and the end
+  // of one is no end of the other: client A starts the trade and is cancelled while it runs, and
+  // client B, which joined it with no signal of its own, gets its answer from it (B3 of the review
+  // of 2f29345b8d, its probe as a row). A asks first, so its credential starts the trade, and B's
+  // joins it before the trade reaches the broker, which answers only once A has left.
+  test("one client's cancellation during a shared trade ends that client alone", async () => {
+    const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    const answer = brokerAnswer;
+    brokerAnswer = async () => {
+      arrive();
+      await held;
+      return answer();
+    };
+    dispatchAnswer = () => Response.json({ results: [] });
+    const resolution = ownIdentityDispatch(jobEnvironment());
+    if (!resolution.enabled) throw new Error(resolution.error ?? resolution.notice);
+    const cancel = new AbortController();
+    const a = new DispatchClient(resolution.url, resolution.credential, fetch, {
+      signal: cancel.signal,
+    });
+    const b = new DispatchClient(resolution.url, resolution.credential, fetch);
+    try {
+      const first = a.specCheckResults("ACME", SPEC_COMMIT).then(
+        () => "answered",
+        (error: Error) => error.name
+      );
+      const second = b.specCheckResults("ACME", SPEC_COMMIT).then(
+        () => "answered",
+        (error: Error) => `${error.name}: ${error.message}`
+      );
+      await arrived;
+      cancel.abort();
+      const left = await first;
+      release();
+      expect({ a: left, b: await second, trades: trades.length }).toEqual({
+        a: "AbortError",
+        b: "answered",
+        trades: 1,
+      });
+    } finally {
+      release();
+    }
+  }, 30_000);
 
   // A job's log is read by its runner, which ends a line at \n and at \r, and reads a workflow
   // command from a line that starts with "::" once its leading white space is trimmed and from a
@@ -2521,6 +2834,33 @@ describe("dispatch result --project, as a CI job writes it", () => {
         (value) => {
           dispatchAnswer = () => Response.json({ code: value, error: "internal" }, { status: 500 });
           return runJob(record, jobEnvironment());
+        },
+      ],
+      [
+        // `dispatch results --project` runs as a session, so its output may be read in a job's
+        // log too: a listed result's leg, in its line and as --json.
+        "a listed result's leg, in the listing and as --json",
+        "text",
+        async (value) => {
+          dispatchAnswer = () =>
+            Response.json({ results: [storedSpecResult(44, "fail", value, 1)] });
+          const session = {
+            PATH: process.env.PATH,
+            HOME: stateDir,
+            DISPATCH_STATE_DIR: stateDir,
+            DISPATCH_URL: dispatchUrl,
+            DISPATCH_HOST: "omp",
+            DISPATCH_SESSION_ID: "ses-results-listing",
+            DISPATCH_TOKEN: "dispatch-session-token-of-the-listing",
+          };
+          const listing = ["results", "--project", "ACME", "--commit", SPEC_COMMIT];
+          const text = await runJob(listing, session);
+          const json = await runJob([...listing, "--json"], session);
+          return {
+            code: text.code || json.code,
+            stdout: `${text.stdout}${json.stdout}`,
+            stderr: `${text.stderr}${json.stderr}`,
+          };
         },
       ],
     ];

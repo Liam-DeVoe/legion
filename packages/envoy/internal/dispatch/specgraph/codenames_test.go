@@ -7,9 +7,11 @@ import (
 
 // CodeNames finds each sign of code in a text (level_check.py's code_signs and the level format's
 // "How the checker finds code", and the name of a Go test): a span in backticks, a word with a
-// file ending, a word with a slash between two letters, a word that ends with "()", a word with an
-// underscore between letters or digits, and a word that has the form of a Go test's name. A plain
-// product name and ordinary prose name no code.
+// file ending, a word with a slash between two ASCII letters, a word that ends with "()", a word
+// with an underscore between two ASCII letters or digits, a word in lower camel case or of a
+// package and its symbol, and a word that has the form of a Go test's name. It reads a word by its
+// shape alone, so it finds a plain word or a product name of such a shape too; only the product
+// names that productNames lists are excepted.
 func TestCodeNames(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -35,13 +37,15 @@ func TestCodeNames(t *testing.T) {
 		{text: "runs TestARestartLosesNoMessage, then TestB.", want: []string{"TestARestartLosesNoMessage", "TestB"}},
 		{text: "the TestARestart_LosesNoClaim test", want: []string{"TestARestart_LosesNoClaim"}},
 		{text: "Test results. Tests of the daemon, a Testament and Test's end", want: nil},
-		// R4: a symbol with an underscore, in lower camel case, or as a package and its symbol.
+		// R4: a symbol with an underscore, in lower camel case, as a package and its symbol, or
+		// with "()".
 		{text: "the read_set value", want: []string{"read_set"}},
 		{text: "readSet gives each message an owner, as isValid says", want: []string{"readSet", "isValid"}},
 		{text: "pmdoc.ReadSet gives each message an owner, and so does notes.ReadSet's set.", want: []string{"pmdoc.ReadSet", "notes.ReadSet"}},
 		{text: "ReadSet() gives each message an owner", want: []string{"ReadSet()"}},
-		// The reviewer's, not the program's: a word with a capital at the start of each part and a
-		// bare package word have the shape of a product name and a plain word.
+		// The reviewer's, not the program's: a word with a capital at the start of each part, unless
+		// it has the form of a Go test's name, and a bare package word have the shape of a product
+		// name and a plain word.
 		{text: "ReadSet and the pmdoc package, GitHub and JetStream", want: nil},
 		{text: "e.g. one message, i.e. the first, at 9 a.m. on example.com", want: nil},
 		{text: "gRPC on macOS, iOS, tvOS and the iPhone, at 5 kHz and 64 kB, through eBPF, vCPU and jQuery", want: nil},
@@ -51,6 +55,12 @@ func TestCodeNames(t *testing.T) {
 		{text: "TestF\u2026 and TestG\u2014then", want: []string{"TestF", "TestG"}},
 		{text: "the \u201creadSet\u201d and \u201epmdoc.ReadSet\u201c names", want: []string{"readSet", "pmdoc.ReadSet"}},
 		{text: "\u201cTest\u201d results of \u201cGitHub\u201d", want: nil},
+		// The examples that doc.go, the action's README and packages/envoy/AGENTS.md give: each
+		// word of the first row has a shape of code and is refused, and each of the second has none
+		// or is a product name of productNames.
+		{text: "I/O and/or client/server https://example.com/docs mmHg ownCloud works.Then Three.js TestFlight https://bun.sh",
+			want: []string{"I/O", "and/or", "client/server", "https://example.com/docs", "mmHg", "ownCloud", "works.Then", "Three.js", "TestFlight", "https://bun.sh"}},
+		{text: "mmHg-based, véloCity, https://example.com/2024, https://10.0.0.1/api, https://example.com/été and Node.js", want: nil},
 		{text: "", want: nil},
 	} {
 		if got := CodeNames(row.text); !slices.Equal(got, row.want) {
@@ -59,8 +69,8 @@ func TestCodeNames(t *testing.T) {
 	}
 }
 
-// An id is lower-case words of letters and digits joined by single hyphens, with no word that is
-// digits alone or one letter and digits, which state a position.
+// An id is words of lower-case ASCII letters and digits joined by single hyphens, with no word that
+// is digits alone or one letter and digits, which state a position.
 func TestIsID(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {

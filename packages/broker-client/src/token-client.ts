@@ -40,6 +40,7 @@ import {
   EXCHANGE_CLIENT_ID,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
   SUBJECT_TOKEN_TYPE_GOOGLE,
@@ -81,6 +82,11 @@ const INVALID_DPOP_PROOF = "invalid_dpop_proof";
 /** What the broker answers a proof it wants a nonce in (RFC 9449 Section 8), which `#send`
  *  already retries once with the nonce the answer carried. */
 const USE_DPOP_NONCE = "use_dpop_nonce";
+
+/** The bound of one exchange, which runs under no caller's signal (`BrokerTokenClient.token`): the
+ *  Go client's bound of one call to the broker (`callTimeout`,
+ *  packages/envoy/internal/brokerclient/environment.go). */
+const EXCHANGE_BACKSTOP_MS = 30_000;
 
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
@@ -147,13 +153,16 @@ function retryAfterWait(value: string | null, now: number): number | null {
 
 /**
  * A trade that ended with no refusal of the broker's: no answer, a 5xx, or an answer that is not
- * this grant's. `status` is the HTTP status of the answer, 0 for none. A 5xx says the broker
- * could not answer now, and a trade stores nothing, so a caller may trade again.
+ * this grant's. `status` is the HTTP status of the answer, 0 for none. `timedOut` says the
+ * trade's own bound (`EXCHANGE_BACKSTOP_MS`) ended it: the broker took the trade and did not
+ * answer in time. A 5xx and such a silence say the broker could not answer now, and a trade
+ * stores nothing, so a caller may trade again.
  */
 export class BrokerTradeFailedError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly timedOut: boolean,
     options?: ErrorOptions
   ) {
     super(message, options);
@@ -195,6 +204,34 @@ export function isFinalRefusal(error: unknown): boolean {
   );
 }
 
+/** The part of a trade under way: the read of the identity it trades, or the exchange itself. */
+export type TradePart = "identity" | "exchange";
+
+/** The signal reasons a caller's wait on a trade ended at, each with the part of the trade that
+ *  was under way then (`tradeWaitEnded`). */
+const TRADE_WAITS_ENDED = new WeakMap<object, TradePart>();
+
+/**
+ * The part of a trade that was under way when `error`, the reason of a caller's own signal, ended
+ * that caller's wait on the trade, or undefined for any other error. The reason is thrown as it
+ * is, its class and name the signal's own (a caller reads an `AbortError` or a `TimeoutError` by
+ * name), and only marked here. The trade itself goes on for the callers that still wait on it.
+ */
+export function tradeWaitEnded(error: unknown): TradePart | undefined {
+  return typeof error === "object" && error !== null ? TRADE_WAITS_ENDED.get(error) : undefined;
+}
+
+/** `promise`, or the reason of `signal` once it aborts first: a caller's wait on the shared trade
+ *  ends at its own signal, and the trade goes on. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  const { promise: ended, reject } = Promise.withResolvers<never>();
+  const abort = (): void => reject(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  return Promise.race([promise, ended]).finally(() => signal.removeEventListener("abort", abort));
+}
+
 /** One client: the broker it trades at, the identity it trades, and the key it proves. */
 export interface BrokerTokenClientOptions {
   /** The broker's base URL, with or without a trailing slash. */
@@ -210,6 +247,14 @@ export interface BrokerTokenClientOptions {
   /** The session name the minted token carries, which an entry that fixes one refuses to be
    *  told and an entry that fixes none requires. */
   readonly session?: string | undefined;
+  /**
+   * The projects the minted token names ({@link FORM_PROJECTS}), sorted and each once, as
+   * `tradeProjects` reads them from `AGENT_SECRETS_PROJECTS` (./environment.ts). Only a trade
+   * that acts as its person passes them — a person's sign-in — and the broker names only projects
+   * that person may see. A machine trading for itself passes none: its entry decides its project,
+   * and the broker refuses one it is told. Empty or absent sends no parameter at all.
+   */
+  readonly projects?: readonly string[] | undefined;
   /**
    * Whether this trade wants the launcher credential its identity holds minted or moved onto
    * the key it proved ({@link FORM_LAUNCHER_CREDENTIAL}); true by default, as an absent
@@ -232,6 +277,8 @@ export interface BrokerTokenClientOptions {
   readonly launcherCredential?: boolean | undefined;
   /** Overrides {@link DEFAULT_RENEW_BEFORE_MS}. Only a test shortens it. */
   readonly renewBeforeMs?: number | undefined;
+  /** Overrides `EXCHANGE_BACKSTOP_MS`, the bound of one exchange. Only a test shortens it. */
+  readonly exchangeBackstopMs?: number | undefined;
   /** `Date.now` unless a test replaces it. */
   readonly now?: (() => number) | undefined;
   /** The fetch every call goes through; the global one by default. The DPoP proof is signed
@@ -284,8 +331,10 @@ export class BrokerTokenClient {
   readonly #subject: TokenSource;
   readonly #actor: TokenSource | undefined;
   readonly #session: string;
+  readonly #projects: readonly string[];
   readonly #launcherCredential: boolean;
   readonly #renewBeforeMs: number;
+  readonly #backstopMs: number;
   readonly #now: () => number;
   readonly #fetch: typeof fetch;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
@@ -293,6 +342,9 @@ export class BrokerTokenClient {
   #held: BrokerToken | null = null;
   /** The trade under way, so two callers that need a token at once make one trade. */
   #trading: Promise<BrokerToken> | null = null;
+  /** The part of the trade under way, which a caller whose own signal ends its wait is told
+   *  (`tradeWaitEnded`). */
+  #part: TradePart = "identity";
 
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
@@ -302,8 +354,10 @@ export class BrokerTokenClient {
     this.#subject = options.subject;
     this.#actor = options.actor;
     this.#session = options.session ?? "";
+    this.#projects = [...(options.projects ?? [])];
     this.#launcherCredential = options.launcherCredential ?? true;
     this.#renewBeforeMs = options.renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS;
+    this.#backstopMs = options.exchangeBackstopMs ?? EXCHANGE_BACKSTOP_MS;
     this.#now = options.now ?? Date.now;
     this.#fetch = options.fetch ?? fetch;
   }
@@ -328,17 +382,38 @@ export class BrokerTokenClient {
    * this moment's proof. A final refusal ({@link isFinalRefusal}), and a failure with nothing
    * live left, drop the token in hand and throw, so no caller writes with no identity or with one
    * the broker or the issuer has ended.
+   *
+   * Callers that need a token at once share one trade, which runs under its own bound
+   * (`EXCHANGE_BACKSTOP_MS`, and each identity source's own) and under no caller's signal:
+   * `signal` ends this caller's wait alone, with the signal's reason, marked with the part of the
+   * trade then under way (`tradeWaitEnded`), and the trade goes on for every other caller.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
     if (held !== null && this.#now() < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (this.#trading !== null) return await this.#trading;
-    const trading = this.#renew(signal);
-    this.#trading = trading;
+    let trading = this.#trading;
+    if (trading === null) {
+      trading = this.#renew();
+      this.#trading = trading;
+      // Cleared once it settles, whoever still waits on it. The handler also keeps a trade that
+      // every caller left from failing as an unhandled rejection.
+      const settled = (): void => {
+        this.#trading = null;
+      };
+      trading.then(settled, settled);
+    }
     try {
-      return await trading;
-    } finally {
-      this.#trading = null;
+      return await untilAborted(trading, signal);
+    } catch (error) {
+      if (
+        signal?.aborted &&
+        error === signal.reason &&
+        typeof error === "object" &&
+        error !== null
+      ) {
+        TRADE_WAITS_ENDED.set(error, this.#part);
+      }
+      throw error;
     }
   }
 
@@ -353,9 +428,9 @@ export class BrokerTokenClient {
   }
 
   /** One trade, with what the client does about a failure of it. */
-  async #renew(signal: AbortSignal | undefined): Promise<BrokerToken> {
+  async #renew(): Promise<BrokerToken> {
     try {
-      const token = await this.#trade(signal);
+      const token = await this.#trade();
       this.#held = token;
       return token;
     } catch (error) {
@@ -378,13 +453,17 @@ export class BrokerTokenClient {
    * fetch it is given, so one signer serves the token endpoint and every later request this
    * process makes with the token it got.
    */
-  async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
-    const subject = await this.#subject.read(signal);
+  async #trade(): Promise<BrokerToken> {
+    this.#part = "identity";
+    const subject = await this.#subject.read();
     const form: Record<string, string> = {
       subject_token: subject.token,
       subject_token_type: subject.tokenType,
     };
     if (this.#session !== "") form[FORM_SESSION] = this.#session;
+    // Sent only when there is a list: a trade naming none reads exactly as one written before the
+    // parameter existed.
+    if (this.#projects.length > 0) form[FORM_PROJECTS] = this.#projects.join(" ");
     if (!this.#launcherCredential) {
       // Sent only to decline: an absent parameter asks, so a broker that has never heard of this
       // parameter answers a client that does ask exactly as it always has.
@@ -393,7 +472,7 @@ export class BrokerTokenClient {
     if (this.#actor !== undefined) {
       let actor: SubjectToken;
       try {
-        actor = await this.#actor.read(signal);
+        actor = await this.#actor.read();
       } catch (error) {
         throw new Error(`read the machine this person signed in on: ${messageOf(error)}`, {
           cause: error,
@@ -416,12 +495,17 @@ export class BrokerTokenClient {
     // The broker is wherever the deployment put it, which in a cluster and on a dev stack is an
     // http origin; the client posts where it is told, as the Go client does.
     allowInsecureRequests(config);
-    config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
+    // The exchange runs under its own bound and under no caller's signal, since callers share it
+    // (`token`): each of its requests carries that bound, the retry with a nonce included
+    // (`#send`), and so does the read of each answer.
+    const bound = AbortSignal.timeout(this.#backstopMs);
+    config[customFetch] = (url, options) => this.#send(url, options, bound, raw);
+    this.#part = "exchange";
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
     } catch (error) {
-      throw this.#refusal(endpoint, error);
+      throw this.#refusal(endpoint, error, bound.aborted);
     }
     return this.#read(endpoint, answered, raw.body);
   }
@@ -429,11 +513,12 @@ export class BrokerTokenClient {
   /**
    * What a failed trade is. An OAuth error the broker answered with a 4xx is a refusal of the
    * identity, which no retry can cure; everything else — a broker that did not answer, a 5xx, an
-   * answer that is not this grant's — is an error a renewal may ask about again. A status the
-   * library reports without naming it is named here, since "the broker answered HTTP 503" is what
-   * tells a reader to look at the broker rather than at this process.
+   * answer that is not this grant's — is an error a renewal may ask about again, `timedOut` where
+   * the exchange's own bound ended it. A status the library reports without naming it is named
+   * here, since "the broker answered HTTP 503" is what tells a reader to look at the broker rather
+   * than at this process.
    */
-  #refusal(endpoint: string, error: unknown): Error {
+  #refusal(endpoint: string, error: unknown, timedOut: boolean): Error {
     if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
       return new BrokerRefusedError(
         error.status,
@@ -449,22 +534,22 @@ export class BrokerTokenClient {
     return new BrokerTradeFailedError(
       `trade ${this.#subject.describe()} at ${endpoint}: ${said}`,
       status,
-      {
-        cause: error,
-      }
+      timedOut,
+      { cause: error }
     );
   }
 
   /**
    * One request through the caller's fetch with a DPoP proof of this client's key, retried once
-   * when the broker answers `use_dpop_nonce` with a nonce to carry (RFC 9449 Section 8). The
-   * answer's own body is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749
-   * makes it case-insensitive) while the corpus names the spelling the broker wrote.
+   * when the broker answers `use_dpop_nonce` with a nonce to carry (RFC 9449 Section 8), each
+   * under the exchange's `bound`. The answer's own body is kept in `raw`, since `openid-client`
+   * lowercases `token_type` (RFC 6749 makes it case-insensitive) while the corpus names the
+   * spelling the broker wrote.
    */
   async #send(
     url: string,
     options: CustomFetchOptions,
-    signal: AbortSignal | undefined,
+    bound: AbortSignal,
     raw: { body: unknown }
   ): Promise<Response> {
     const send = async (): Promise<Response> => {
@@ -473,7 +558,7 @@ export class BrokerTokenClient {
         "DPoP",
         await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
       );
-      return await this.#fetch(url, requestInit(options, signal, headers));
+      return await this.#fetch(url, requestInit(options, bound, headers));
     };
     let answer = await send();
     const given = answer.headers.get("DPoP-Nonce") ?? "";

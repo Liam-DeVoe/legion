@@ -1,5 +1,10 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { BrokerRefusedError, BrokerTradeFailedError } from "@legion/broker-client/token-client";
+import {
+  BrokerRefusedError,
+  BrokerTradeFailedError,
+  tradeWaitEnded,
+} from "@legion/broker-client/token-client";
+import { sleep } from "@legion/contracts";
 import {
   askgateState,
   bytesDigest,
@@ -23,6 +28,8 @@ import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-confi
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
 import {
+  DISPATCH_TOOL_DEADLINE_MS,
+  DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -61,8 +68,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
-  /** How the command waits `ms` before it asks again, a timer by default. */
-  readonly pause?: (ms: number) => Promise<void>;
+  /** The one bound of a CI job's `dispatch result --project` (`RESULT_BOUND` by default), which a
+   *  test shortens to run it on the real clock. */
+  readonly resultBound?: ResultBound;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -73,10 +81,44 @@ const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
 
-/** The most `ownIdentityResult` waits in all for the broker and for Dispatch's check of the job's
- *  token to let its call through (`notNow`): a job's step of many checks still ends, and the wait
- *  of one call stays far below a job's timeout. */
-const NOT_NOW_WAIT_MS = 60_000;
+/**
+ * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
+ * ends `totalMs` after it starts: one timeout, made where the call starts, is the signal every
+ * await of it runs under — its wait on the broker's trade and on the runner's token request the
+ * trade makes, each write with the asks the write client makes again under its key, and each wait
+ * after an answer that says "not now" (`notNow`) — since the write client takes that signal as
+ * its deadline and hands it to the credential. The trade itself runs under its own bound, which a
+ * second caller of the credential may share (`BrokerTokenClient.token`), so the signal ends the
+ * call's wait on it and not the trade. No round starts, and the write client asks nothing again,
+ * in its last `reserveMs`, the time a last attempt has to be answered before the bound ends it. A
+ * job's step of many checks still ends, and the wait of one call stays far below a job's timeout.
+ */
+export interface ResultBound {
+  readonly totalMs: number;
+  readonly reserveMs: number;
+}
+
+/** How long Dispatch's check of a broker token waits for the broker before it answers
+ *  `503 BROKER_UNAVAILABLE`, with no handler run: `introspectTimeout`,
+ *  packages/envoy/internal/brokertoken/introspect.go, which a test holds this copy to. */
+export const DISPATCH_TOKEN_CHECK_WAIT_MS = 5_000;
+
+/** The time a last attempt's answer gets beyond the slowest answer Dispatch gives before a
+ *  handler runs: the round trip, and Dispatch's own work before the check. */
+const RESERVE_MARGIN_MS = 2_000;
+
+/**
+ * 60 s in all, the write client's own deadline (DISPATCH_TOOL_DEADLINE_MS). The reserve must be
+ * greater than the slowest answer Dispatch gives before any handler runs, its check of the token
+ * waiting on the broker (`DISPATCH_TOKEN_CHECK_WAIT_MS`): a last ask sent at the edge of a
+ * reserve no longer than that wait can be answered "not checked" only after the bound, which then
+ * ends it as an attempt that may have reached a handler, though none ran. So it is that wait and
+ * a margin, 7 s.
+ */
+const RESULT_BOUND: ResultBound = {
+  totalMs: DISPATCH_TOOL_DEADLINE_MS,
+  reserveMs: DISPATCH_TOKEN_CHECK_WAIT_MS + RESERVE_MARGIN_MS,
+};
 
 /** The wait `ownIdentityResult` takes where an answer that says "not now" names none. */
 const NOT_NOW_STEP_MS = 1_000;
@@ -84,11 +126,11 @@ const NOT_NOW_STEP_MS = 1_000;
 /**
  * Why a call of `ownIdentityResult` was turned away before anything was stored, so it may be sent
  * again, and how long to wait first; undefined for every other failure. Three answers say so:
- * the broker's rate limit (its 429), the broker that could not answer the trade (a 5xx; a trade
- * stores nothing), and Dispatch's check of the job's token, which answered before any handler ran
- * (`tokenNotChecked`: its 429 of a spent bucket, its 503 for a broker that answered nothing). An
- * answer of the write itself is never one: a refusal is final, and a write that may have stored
- * is `writeOutcomeUnknown`'s.
+ * the broker's rate limit (its 429), the broker that could not answer the trade (a 5xx, or no
+ * answer before the trade's own bound ended it; a trade stores nothing), and Dispatch's check of
+ * the job's token, which answered before any handler ran (`tokenNotChecked`: its 429 of a spent
+ * bucket, its 503 for a broker that answered nothing). An answer of the write itself is never
+ * one: a refusal is final, and a write that may have stored is `writeOutcomeUnknown`'s.
  */
 function notNow(error: unknown): { readonly why: string; readonly waitMs: number } | undefined {
   if (error instanceof BrokerRefusedError && error.status === 429) {
@@ -97,7 +139,7 @@ function notNow(error: unknown): { readonly why: string; readonly waitMs: number
       waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
     };
   }
-  if (error instanceof BrokerTradeFailedError && error.status >= 500) {
+  if (error instanceof BrokerTradeFailedError && (error.status >= 500 || error.timedOut)) {
     return { why: "the secrets broker could not answer the trade", waitMs: NOT_NOW_STEP_MS };
   }
   if (tokenNotChecked(error)) {
@@ -109,11 +151,24 @@ function notNow(error: unknown): { readonly why: string; readonly waitMs: number
   return undefined;
 }
 
-/** Waits `ms` on a timer: how `ownIdentityResult` waits where its io names no pause. */
-function timerPause(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
+/**
+ * What the call was waiting on when its bound ended it before any write went out, or undefined
+ * where that is not so: the trade, which runs under its own bound and goes on, while the bound
+ * ends the call's wait on it, marked with the part then under way (`tradeWaitEnded`), the read of
+ * the job's own token or the broker's exchange. The credential is asked before each attempt goes
+ * out, and the write client gives such an error back as it is only where no attempt of the call
+ * may have reached Dispatch (`#ended`, `#settle`), and every earlier round stored nothing, so
+ * nothing was written.
+ */
+function tradeCut(error: unknown): string | undefined {
+  switch (tradeWaitEnded(error)) {
+    case "identity":
+      return "it read the job's own token for the secrets broker";
+    case "exchange":
+      return "the secrets broker traded the job's token";
+    default:
+      return undefined;
+  }
 }
 
 const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
@@ -258,9 +313,11 @@ function isJobResult(argv: readonly string[]): boolean {
  * and exits 0: the result is stored, and a results token reads nothing back. A write that may
  * have reached Dispatch while no answer says whether it stored the result (`writeOutcomeUnknown`)
  * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
- * result may be stored, and a second run is safe, since Dispatch keeps each result. No token
- * reaches what it prints: the broker's and Dispatch's words name none, and the runner's endpoint
- * is named by its variable.
+ * result may be stored, and a second run is safe, since Dispatch keeps each result. A call the
+ * broker or Dispatch's check of its token turns away before anything is stored (`notNow`) is
+ * asked again inside the call's one bound (`ResultBound`), and ends with the last such answer,
+ * its code named, and exit 1. No token reaches what it prints: the broker's and Dispatch's words
+ * name none, and the runner's endpoint is named by its variable.
  *
  * What it prints goes into a GitHub Actions runner's log, which reads workflow commands from it,
  * so each text it did not write (an argument, a variable, an answer of the broker or of Dispatch)
@@ -268,7 +325,7 @@ function isJobResult(argv: readonly string[]): boolean {
  * refusal of its identity as `printable` text, Dispatch's refusal as a `printableLine`, and the
  * dry run, the stored result and the outcome line as `printableJson`. No value starts a line of
  * its own, and no line is a workflow command. The landed line holds no such text: its code is one
- * of the client's two constants.
+ * of the client's three constants.
  */
 async function ownIdentityResult(
   parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
@@ -303,9 +360,22 @@ async function ownIdentityResult(
       parsed.tool
     );
   }
-  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch);
-  const pause = io.pause ?? timerPause;
-  let waited = 0;
+  // One bound, one signal (`ResultBound`): the timeout made here is the write client's deadline,
+  // which it hands to the credential for each request, so the call's wait on the trade ends at it,
+  // and every wait below ends at it too. The client's asks again under the key stop `reserveMs`
+  // before it, and the rounds below are read on the same monotonic clock the client keeps its asks
+  // on.
+  const bound = io.resultBound ?? RESULT_BOUND;
+  const ended = AbortSignal.timeout(bound.totalMs);
+  const lastRound = performance.now() + bound.totalMs - bound.reserveMs;
+  const client = new DispatchClient(resolution.url, resolution.credential, io.fetchImpl ?? fetch, {
+    deadline: ended,
+    writeRetry: {
+      ...DISPATCH_WRITE_RETRY,
+      withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
+      inFlightWithinMs: bound.totalMs - bound.reserveMs,
+    },
+  });
   for (;;) {
     try {
       print(printableJson((await specCheckResultCommand(client, checked.args)).text));
@@ -317,6 +387,8 @@ async function ownIdentityResult(
         print(JSON.stringify({ landed_without_answer: error.code }));
         return OK;
       }
+      // Only an attempt that may have reached a handler leaves the outcome unknown; an answer of
+      // Dispatch's token check came before any handler ran (`tokenNotChecked`), and is below.
       if (writeOutcomeUnknown(error)) {
         return refuse(
           printableJson(JSON.stringify({ write_outcome_unknown: outcomeCode(error) })),
@@ -324,20 +396,36 @@ async function ownIdentityResult(
           parsed.tool
         );
       }
+      // The bound ended the call in the trade, before any write went out: the line names which
+      // part of the trade, and that nothing was written.
+      const cut = ended.aborted ? tradeCut(error) : undefined;
+      if (cut !== undefined) {
+        return refuse(
+          printableLine(
+            `this command's ${bound.totalMs / 1_000} s ended while ${cut}, and nothing was written: ${messageFor(error)}`
+          ),
+          REFUSED,
+          parsed.tool
+        );
+      }
       // One job writes a result for each of its checks, so it meets the broker's and Dispatch's
       // limits of one address with no fault of its own: a call turned away before anything was
-      // stored is sent again after the answer's wait, while the waits stay within
-      // NOT_NOW_WAIT_MS.
+      // stored is sent again after the answer's wait, while the next round starts before the
+      // bound's last `reserveMs`. Past that, it ends with the last answer, which names its code.
       const turnedAway = notNow(error);
       if (turnedAway !== undefined) {
-        if (waited + turnedAway.waitMs <= NOT_NOW_WAIT_MS) {
-          waited += turnedAway.waitMs;
-          await pause(turnedAway.waitMs);
+        if (
+          performance.now() + turnedAway.waitMs <= lastRound &&
+          (await sleep(turnedAway.waitMs, ended).then(
+            () => true,
+            () => false
+          ))
+        ) {
           continue;
         }
         return refuse(
           printableLine(
-            `${turnedAway.why} after ${waited / 1_000} s of waits, and this command waits at most ${NOT_NOW_WAIT_MS / 1_000} s: ${messageFor(error)}`
+            `${turnedAway.why}, and the ${bound.totalMs / 1_000} s this command may take leave no time to ask again: ${messageFor(error)}`
           ),
           REFUSED,
           parsed.tool
@@ -367,7 +455,7 @@ function outcomeCode(error: unknown): string {
  * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
  * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
  * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
- * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696).
+ * writes to `CLAUDE_ENV_FILE` (Claude Code issue 46696).
  *
  * The envoy.json it reads is the one its session's plugin chose: with `DISPATCH_HOST` set, the file
  * `ENVOY_CONFIG_FILE` names (each plugin sets the two together), else its host's own rule

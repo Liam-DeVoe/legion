@@ -296,7 +296,8 @@ export function brokerCredential(
     async headers(
       method: string,
       url: string,
-      acting?: string
+      acting?: string,
+      signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
       const { entry, made } = await clientFor(env, own(acting));
       const { client } = made;
@@ -307,7 +308,7 @@ export function brokerCredential(
       }
       let token: BrokerToken;
       try {
-        token = await client.token();
+        token = await client.token(signal);
       } catch (error) {
         if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
         throw error;

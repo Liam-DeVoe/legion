@@ -27,6 +27,7 @@ import {
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
+import { printable, printableJson } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
@@ -874,17 +875,19 @@ export async function specCheckResultCommand(
 
 /** One stored result of a check of the spec files, as `dispatch results --project` lists it:
  *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
- *  the commit. */
+ *  the commit. Each of them is a CI job's or the stored statement's text, so it prints by the rule
+ *  of a runner's log (`printable`, runner-log.ts): a listing read in a job's log starts no line of
+ *  its own and names no workflow command. */
 function specCheckResultLine(result: SpecCheckResult): string {
   const { predicate, subject } = result.attestation;
-  const leg = predicate.leg === "" ? "no leg" : `leg ${predicate.leg}`;
+  const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
   const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
-  return `- #${result.seq} ${predicate.check}: ${predicate.verdict}. Job ${predicate.job}, ${leg}, run ${predicate.run.run_id} attempt ${predicate.run.attempt}, commit ${commit}.`;
+  return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
 }
 
 /** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
  *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
- *  results as JSON with `json`. */
+ *  results as JSON with `json`, each by the rule of a runner's log (runner-log.ts). */
 async function specCheckResultsCommand(
   client: DispatchClient,
   args: Record<string, unknown>
@@ -893,14 +896,14 @@ async function specCheckResultsCommand(
   const commit = stringArg(args, "commit");
   const check = optionalString(args, "check");
   const results = (await client.specCheckResults(project, commit, check)).results ?? [];
-  const what = check === undefined ? project : `check ${check} of ${project}`;
+  const what = check === undefined ? project : `check ${printable(check)} of ${project}`;
   const text =
     optionalBoolean(args, "json") === true
-      ? JSON.stringify(results, null, 2)
+      ? printableJson(JSON.stringify(results, null, 2))
       : results.length === 0
-        ? `No result of ${what} is stored at ${commit}.`
+        ? `No result of ${what} is stored at ${printable(commit)}.`
         : [
-            `Results of ${what} at ${commit}, newest first:`,
+            `Results of ${what} at ${printable(commit)}, newest first:`,
             ...results.map(specCheckResultLine),
           ].join("\n");
   return { text, details: { project, commit, results: results.length } };

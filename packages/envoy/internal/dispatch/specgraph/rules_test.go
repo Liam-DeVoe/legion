@@ -70,7 +70,7 @@ var plantedFaults = []struct {
 	{dir: "go-selector-two-words-missing", want: Problem{Position{"spec.md", 5}, "a-restart-keeps-the-claim", "bad-selector", `bad-selector: a go selector is "<import path> <TopLevelTestName>"`}},
 	{dir: "check-serves-two-statements", want: Problem{Position{"spec.md", 21}, "each-restart-keeps-the-claim", "check-serves", "check-serves: a check serves exactly one statement of the files"}},
 	{dir: "statement-without-kind", want: Problem{Position{"spec.md", 1}, "a-claim-survives-a-restart", "bad-kind", `bad-kind: "" is not behavior, structure or property`}},
-	{dir: "bad-id", want: Problem{Position{"spec.md", 1}, "step-3", "bad-id", `bad-id: "step-3" is lower-case words joined by hyphens, with no word that states a position`}},
+	{dir: "bad-id", want: Problem{Position{"spec.md", 1}, "step-3", "bad-id", `bad-id: "step-3" is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position`}},
 }
 
 // Each planted fault fails the checker, which names its node, its rule and the line of its block,
@@ -157,6 +157,11 @@ func TestTheOtherRules(t *testing.T) {
 			name: "a statement with no text",
 			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.Text = "" })}, Checks: []Check{check(nil)}},
 			want: Problem{pos(1), "a-claim-survives-a-restart", "no-text", "no-text: a statement has a text"},
+		},
+		{
+			name: "an id with a letter outside ASCII",
+			tree: Tree{Statements: []Statement{leaf(func(s *Statement) { s.ID = "boîte" })}, Checks: []Check{check(func(c *Check) { c.Serves = "boîte" })}},
+			want: Problem{pos(1), "boîte", "bad-id", `bad-id: "boîte" is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position`},
 		},
 		{
 			name: "a statement that names a symbol with an underscore",
