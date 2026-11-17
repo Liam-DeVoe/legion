@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -42,34 +41,8 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	if err := queue("step_record"); !refusedByTheCheck(err) {
 		t.Fatalf("queueing a step_record row before the migration = %v, want the kind constraint to refuse it (23514): it is the row the migration exists for", err)
 	}
-	type pending struct {
-		id          int64
-		kind, issue string
-		payload     string
-		attempts    int
-		nextAt      time.Time
-		lastError   string
-	}
-	readPending := func() []pending {
-		t.Helper()
-		rows, err := store.Pool().Query(ctx, `select id, kind, issue, payload::text, attempts, next_at, last_error from outbox order by id`)
-		if err != nil {
-			t.Fatalf("read the outbox: %v", err)
-		}
-		defer rows.Close()
-		var all []pending
-		for rows.Next() {
-			var row pending
-			if err := rows.Scan(&row.id, &row.kind, &row.issue, &row.payload, &row.attempts, &row.nextAt, &row.lastError); err != nil {
-				t.Fatalf("scan the outbox: %v", err)
-			}
-			all = append(all, row)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("read the outbox: %v", err)
-		}
-		return all
-	}
+	// The pending rows, whole: each field the release before wrote, as text.
+	const pendingRows = `select row(id, kind, issue, payload, attempts, next_at, last_error)::text from outbox order by id`
 	for i, kind := range []string{"role_holders_publish", "merge_queue_removal", "merge_queue_read", "update_ask", "supervise", "dispatch_status"} {
 		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 			values ($1, $2, jsonb_build_object('pending', $1::text), $3, now() + make_interval(mins => $3), $4)`,
@@ -77,14 +50,14 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 			t.Fatalf("queue a pending %s row under the release before: %v", kind, err)
 		}
 	}
-	before := readPending()
+	before := rowsAsText(t, store, pendingRows)
 	if len(before) != 6 {
 		t.Fatalf("the outbox holds %d rows before the migration, want the six pending rows of the release before", len(before))
 	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the step record's kind: %v", err)
 	}
-	if after := readPending(); !reflect.DeepEqual(after, before) {
+	if after := rowsAsText(t, store, pendingRows); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the pending rows after the migration = %+v, want the release before's rows whole: %+v", after, before)
 	}
 	for _, kind := range []string{

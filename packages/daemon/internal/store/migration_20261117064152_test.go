@@ -30,6 +30,21 @@ func stepRecordsWayBack(t *testing.T) string {
 	return block
 }
 
+// rowsAsText is each row query answers on store, as text, in the query's order: what a test holds
+// a table to before and after a statement that must leave it as it was.
+func rowsAsText(t *testing.T, store *Store, query string) []string {
+	t.Helper()
+	rows, err := store.Pool().Query(t.Context(), query)
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	all, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return all
+}
+
 // rollBackStore is a store migrated to this release, on which a test seeds issues and their
 // step_starts rows as this release leaves them, runs the way back, makes the earlier release's
 // writes by hand, and rolls forward.
@@ -571,26 +586,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	read := func(query string) []string {
-		t.Helper()
-		rows, err := store.Pool().Query(ctx, query)
-		if err != nil {
-			t.Fatalf("%s: %v", query, err)
-		}
-		defer rows.Close()
-		var all []string
-		for rows.Next() {
-			var row string
-			if err := rows.Scan(&row); err != nil {
-				t.Fatalf("%s: %v", query, err)
-			}
-			all = append(all, row)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("%s: %v", query, err)
-		}
-		return all
-	}
+	read := func(query string) []string { return rowsAsText(t, store, query) }
 	const (
 		outbox   = `select row(id, kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)::text from outbox order by id`
 		starts   = `select row(s.*)::text from step_starts s order by issue, kind, place`
