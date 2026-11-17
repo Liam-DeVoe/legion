@@ -773,8 +773,12 @@ its hour has ended. A listener of an earlier release names no `kept_until` and a
 key as the first copy for 72 hours, so such an answer clears the key, and the next attempt mints
 a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
 architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
-a kept answer reports that no owner was told. A kept notice that no session takes in its hour
-comes back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy
+a kept answer reports that no owner was told. A publish of that notice that fails for a reason no
+rule decides — a 5xx, a 408 or 429, a timeout, a connection that failed — is sent again in the
+background under the same idempotency key, a second later and then after a wait that doubles up to
+a minute, until the listener stores it, keeps it, or refuses it with any other 4xx; the ladder
+does not wait for it. A kept notice that no session takes in its hour comes back to this worker's
+session as a dead letter, an Envoy card that names it, unless Envoy
 drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
 longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
 bounded at 5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled

@@ -369,7 +369,7 @@ test("a run whose evidence and owner's notice were not written does not reach th
     appendEntry: () => {
       throw new Error("this session's transcript is closed");
     },
-    log: { debug: () => {}, warn: () => {} },
+    log: { debug: () => {}, info: () => {}, warn: () => {} },
   });
   const rig = ladder(exits, {
     tellOverdue: teller.tellOverdue,

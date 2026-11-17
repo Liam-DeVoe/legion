@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 import type { LegionState } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
+import { EnvoyApiError, type PublishResult } from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import {
   architectLive,
@@ -550,6 +551,58 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
   return { kind: "topic", topic: roleTopic(token) };
 }
 
+/** The teller's log: the detector's two levels, and `info` for the one piece of good news here,
+ * a notice that told its owner only on a re-send. */
+export interface StallTellerLog extends StallWatchdogLog {
+  readonly info: (message: string, context?: Record<string, unknown>) => void;
+}
+
+/** The wait before a notice whose publish failed is first sent again, and the longest any wait
+ * grows to: each failed attempt doubles the wait before the next, so a listener back within a
+ * second is asked again a second later, and one that stays down is asked once a minute. */
+const RESEND_FIRST_WAIT_MS = 1_000;
+const RESEND_LONGEST_WAIT_MS = 60_000;
+
+/** The wait after failed attempt `attempt` (1 is the first publish) before the next one. */
+function resendWaitMs(attempt: number): number {
+  return Math.min(RESEND_FIRST_WAIT_MS * 2 ** (attempt - 1), RESEND_LONGEST_WAIT_MS);
+}
+
+/** The re-send's wait in production: a timer that holds no process open. The re-sends go on for
+ * as long as the listener keeps failing, and a process with nothing else left to do is ending,
+ * which takes this process's copy of the notice with it however long it waited. */
+function unheldSleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms).unref();
+  return promise;
+}
+
+/**
+ * Whether a publish's failure is decided, so that sending the same notice again gets the same
+ * answer: a 4xx is the listener's own refusal of it — 400 or 413 for the request, 403 for the
+ * capability or the grant, 404 for a role whose keep failed. 408 and 429 are the two 4xx answers
+ * that say "later" rather than "no" (the listener answers 429, with a `Retry-After`, when the
+ * broker token checks from this address run over: `refuseBrokerToken` in
+ * `packages/envoy/cmd/listener/apiauth.go`), so they are not decided. Nor is anything else: a 5xx,
+ * 504 `delivery_failed` and 503 among them, a timeout, a connection that failed, a 2xx whose body
+ * did not parse, a credential that could not be minted. The status is read from the Envoy
+ * client's `EnvoyApiError`, which is what its `publish` throws for every answer that is not a
+ * 2xx, never from an error's text: anything else thrown is no answer of the listener's at all.
+ */
+function refusedForGood(error: unknown): boolean {
+  if (!(error instanceof EnvoyApiError)) return false;
+  const { status } = error.details;
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/** What one attempt of a notice came to: the listener `stored` it or `kept` it, `refused` it for
+ * good (`refusedForGood`), or the attempt `failed` for a reason no rule decides. */
+type NoticeAttempt = "stored" | "kept" | "refused" | "failed";
+
+/** One publish of a notice: the same topic, message, payload and idempotency key every attempt,
+ * answered with the part of the listener's answer this teller reads. */
+type NoticeSend = () => Promise<Pick<PublishResult, "kept" | "keptUntil">>;
+
 export interface StallTellerDeps {
   readonly now: () => number;
   /** This session's Legion identity (`classifySession`), which decides who is told. */
@@ -566,9 +619,12 @@ export interface StallTellerDeps {
   readonly publisher: () => EnvoyPublish | undefined;
   /** Writes one record to the session's transcript (`pi.appendEntry`). */
   readonly appendEntry: (customType: string, data: unknown) => void;
-  readonly log: StallWatchdogLog;
+  readonly log: StallTellerLog;
   /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
   readonly recordBoundMs?: number;
+  /** Waits `ms` before a notice whose publish failed is sent again; `unheldSleep` when it is left
+   * out. A test hands a wait it ends itself, so it runs every re-send without a clock. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -578,18 +634,36 @@ export interface StallTellerDeps {
  * **One message per stuck call.** The detector tells a call's owner once, before the first step,
  * and a sweep that finds the same call still open carries it a step further without telling
  * anyone again; this teller holds that answer by call id as well, so a second telling of the same
- * call publishes nothing whatever reaches it. A publish the listener refuses, a publish it keeps
- * for the owner's role while no live session holds it, and a session with Envoy off, leave a
- * line in the log and `ownerTold` false: the ladder goes on, because an owner that cannot be
- * reached is no reason to leave a worker stuck.
+ * call publishes nothing whatever reaches it, and starts no second run of the re-sends below.
+ *
+ * **A publish no rule decides is sent again until the listener stores it.** A 5xx, a timeout or a
+ * connection that failed (`refusedForGood` names what is decided) leaves the owner untold, and
+ * nothing that reads this teller's answer will send the notice later: the ladder goes on whatever
+ * it is told. So the teller sends the same notice again — the same topic, message, payload and
+ * idempotency key — a second later, then after a wait that doubles each time up to a minute, until
+ * an attempt is stored or kept or the listener refuses it for good. The one key keeps that one
+ * message however many attempts reach the listener. The ladder does not wait on the re-sends: its
+ * answer is the first attempt's, `ownerTold` false, and the attempt that tells the owner logs that
+ * it told it late. The re-sends live in this process, so the ladder's last step, which ends the
+ * process, ends them too.
+ *
+ * **What a rule decides is not sent again.** A publish the listener refuses (a 4xx, but for 408
+ * and 429), a publish it keeps for the owner's role while no live session holds it — kept, so not
+ * lost — and a session with Envoy off or with nobody to tell, each leave a line in the log and
+ * `ownerTold` false: the ladder goes on, because an owner that cannot be reached is no reason to
+ * leave a worker stuck.
  *
  * **The ladder stopping short is a second thing, and it is told too.** `tellStopped` is the exit
  * cap, an unreadable counter file and unwritten evidence — the cases where the worker will not
  * take the step that would free it — so the owner hears about each of them once, and the "one
- * message per stuck call" rule above is about the overdue notice that opens the ladder.
+ * message per stuck call" rule above is about the overdue notice that opens the ladder. A stop's
+ * notice is sent again on the same terms as the overdue one, and a stop already told starts no
+ * second run of its re-sends.
  */
 export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
-  /** What each call's telling achieved, so a second telling of the same call repeats nothing. */
+  const sleep = deps.sleep ?? unheldSleep;
+  /** What each call's telling achieved by its first attempt, which is the answer the ladder gets,
+   * so a second telling of the same call repeats nothing and starts no second run of re-sends. */
   const told = new Map<string, StallTold>();
   /** The stops already told, by call and reason. */
   const stopsTold = new Set<string>();
@@ -626,7 +700,64 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     }
   };
 
-  /** One publish, and what it achieved. Nothing here throws: the ladder runs either way. */
+  /** One attempt of a notice, logged, and what it came to. Nothing here throws. */
+  const attemptNotice = async (
+    send: NoticeSend,
+    attempt: number,
+    where: Record<string, unknown>
+  ): Promise<NoticeAttempt> => {
+    try {
+      const answer = await send();
+      // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
+      // role: the listener kept the notice on the role's kept lane for the next session that holds
+      // it live within the hour. That has told no owner yet, so the worker records no owner as
+      // told; and the notice is not lost, so it is not sent again. The phase reminder's notice
+      // reads a kept answer as no owner told the same way.
+      if (answer.kept === true) {
+        deps.log.warn("legion: the listener kept the stall notice; no owner has taken it", {
+          ...where,
+          attempt,
+        });
+        return "kept";
+      }
+      if (attempt > 1) {
+        deps.log.info("legion: the owner was told late about this session's stuck tool call", {
+          ...where,
+          attempt,
+        });
+      }
+      return "stored";
+    } catch (error) {
+      if (refusedForGood(error)) {
+        deps.log.warn("legion: the owner was not told about this session's stuck tool call", {
+          ...where,
+          attempt,
+          error: messageFor(error),
+        });
+        return "refused";
+      }
+      deps.log.warn("legion: the stall notice was not stored, so it is sent again", {
+        ...where,
+        attempt,
+        againInMs: resendWaitMs(attempt),
+        error: messageFor(error),
+      });
+      return "failed";
+    }
+  };
+
+  /** The re-sends of a notice whose first attempt failed for a reason no rule decides, each after
+   * the wait `resendWaitMs` names, until one is stored or kept or refused for good. */
+  const resend = async (send: NoticeSend, where: Record<string, unknown>): Promise<void> => {
+    for (let attempt = 2; ; attempt += 1) {
+      await sleep(resendWaitMs(attempt - 1));
+      if ((await attemptNotice(send, attempt, where)) !== "failed") return;
+    }
+  };
+
+  /** One notice to its owner, and whether its first attempt told the owner: the answer the ladder
+   * gets. Nothing here throws, and nothing here waits past that first attempt: a failure no rule
+   * decides starts the re-sends and is answered at once. */
   const publishNotice = async (
     notice: StallNotice,
     input: { readonly message: string; readonly payload: string; readonly key: string },
@@ -648,8 +779,11 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       });
       return false;
     }
-    try {
-      const answer = await publish({
+    const where = { ...context, topic: notice.topic };
+    // Every attempt is this one publish, under one idempotency key: an attempt the listener stored
+    // but whose answer was lost is answered as a repeat on the next, never stored twice.
+    const send = () =>
+      publish({
         topic: notice.topic,
         message: input.message,
         // The listener refuses an object here: the facts travel as a JSON string.
@@ -657,27 +791,18 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         idempotencyKey: input.key,
         sourceSessionID: claim.sessionID,
       });
-      // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
-      // role: the listener kept the notice on the role's kept lane for the next session that holds
-      // it live within the hour. That has told no owner yet, and this notice is sent once and never
-      // again, so the worker records no owner as told. The phase reminder's notice reads a kept
-      // answer the same way.
-      if (answer.kept === true) {
-        deps.log.warn("legion: the listener kept the stall notice; no owner has taken it", {
-          ...context,
-          topic: notice.topic,
+    const first = await attemptNotice(send, 1, where);
+    if (first === "failed") {
+      // Never awaited: the ladder has its answer. A wait or a log line that throws ends the
+      // re-sends with a line of their own, never an unhandled rejection.
+      resend(send, where).catch((error: unknown) => {
+        deps.log.warn("legion: the stall notice's re-sends stopped", {
+          ...where,
+          error: messageFor(error),
         });
-        return false;
-      }
-      return true;
-    } catch (error) {
-      deps.log.warn("legion: the owner was not told about this session's stuck tool call", {
-        ...context,
-        topic: notice.topic,
-        error: messageFor(error),
       });
-      return false;
     }
+    return first === "stored";
   };
 
   const noticeFor = async (): Promise<StallNotice> => {

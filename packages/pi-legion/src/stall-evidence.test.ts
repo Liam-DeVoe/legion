@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
-import type { PublishInput, PublishResult } from "@legion/envoy-client/transport";
+import {
+  EnvoyApiError,
+  type PublishInput,
+  type PublishResult,
+} from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
@@ -261,13 +265,29 @@ test("an argument far longer than the bound is cut to it rather than written who
 // The telling: who hears, and how often.
 // ---------------------------------------------------------------------------------------------
 
+/** One wait the re-sends asked for: how long, and the end the test gives it, since no clock does. */
+interface ResendWait {
+  readonly ms: number;
+  readonly end: () => void;
+}
+
+interface LogLine {
+  readonly message: string;
+  readonly context?: Record<string, unknown>;
+}
+
 interface TellerRig {
   readonly teller: StallWatchdogTeller;
   readonly entries: StallWatchRecord[];
   readonly published: PublishInput[];
-  readonly warnings: { readonly message: string; readonly context?: Record<string, unknown> }[];
-  /** What the listener answers; a string makes the publish throw that message. */
-  publishAnswer: Pick<PublishResult, "kept" | "keptUntil"> | string;
+  readonly warnings: LogLine[];
+  readonly infos: LogLine[];
+  /** What the listener answers once `failures` is spent. */
+  publishAnswer: Pick<PublishResult, "kept" | "keptUntil">;
+  /** What the next publishes throw, one each, in order, before the listener answers. */
+  readonly failures: Error[];
+  /** Every wait the re-sends asked for, in order. */
+  readonly waits: ResendWait[];
   /** Whether Envoy is on for this session. */
   envoy: boolean;
   /** Whether `pi.appendEntry` takes the record. */
@@ -288,14 +308,18 @@ function tellerRig(
     entries: [],
     published: [],
     warnings: [],
+    infos: [],
     publishAnswer: {},
+    failures: [],
+    waits: [],
     envoy: true,
     transcriptWritable: true,
     state: daemonState("working"),
   };
   const publish: EnvoyPublish = async (input) => {
     state.published.push(input);
-    if (typeof state.publishAnswer === "string") throw new Error(state.publishAnswer);
+    const failure = state.failures.shift();
+    if (failure !== undefined) throw failure;
     return state.publishAnswer;
   };
   const teller = createStallTeller({
@@ -321,9 +345,15 @@ function tellerRig(
     },
     log: {
       debug: () => {},
+      info: (message, context) => state.infos.push({ message, ...(context ? { context } : {}) }),
       warn: (message, context) => state.warnings.push({ message, ...(context ? { context } : {}) }),
     },
     recordBoundMs: 200,
+    sleep: (ms) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      state.waits.push({ ms, end: resolve });
+      return promise;
+    },
   });
   return Object.assign(state, { teller });
 }
@@ -339,6 +369,37 @@ function daemonState(architect: string | undefined): LegionState {
       },
     },
   } as unknown as LegionState;
+}
+
+/** The listener's answer `status`, thrown as the Envoy client's `publish` throws every answer that
+ * is not a 2xx. */
+function listenerAnswered(
+  status: number,
+  body: { readonly error: string; readonly reason?: string }
+): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://127.0.0.1:4000/v1/messages/publish",
+    status,
+    responseBody: JSON.stringify(body),
+  });
+}
+
+/** What Bun's `fetch` throws when the listener's port refuses the connection. */
+const UNREACHABLE = "Unable to connect. Is the computer able to access the url?";
+/** The listener's 503 when the secrets broker it checks a token with does not answer. */
+const BROKER_DOWN = "the secrets broker cannot be reached; try again in a minute";
+
+/** One turn of the event loop, which waits on no duration: nothing the re-sends do waits on a
+ * clock but the rig's own waits, so every promise they chain settles inside it, and they are at
+ * their next wait or done when this returns. It is a turn rather than an awaited event because a
+ * case here asserts that nothing more happened — no second publish, no further wait — and the
+ * absence of an event has no event to await; `legion.test.ts` waits the same way for the same
+ * reason. */
+async function settled(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  await promise;
 }
 
 test("a phase worker's session tells the issue's own live architect, with the evidence", async () => {
@@ -462,7 +523,9 @@ test("a session never publishes to the role its own session holds", async () => 
 
 test("a refused publish and a session with Envoy off leave a line in the log", async () => {
   const refused = tellerRig();
-  refused.publishAnswer = 'listener returned 404 Not Found: {"reason":"unclaimed"}';
+  refused.failures.push(
+    listenerAnswered(404, { error: "no session holds the role", reason: "unclaimed" })
+  );
   expect(await refused.teller.tellOverdue(evidenceOf())).toEqual({
     evidenceWritten: true,
     ownerTold: false,
@@ -526,6 +589,185 @@ test("each step and each stop is recorded, and a stop is told once", async () =>
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.message).toContain("cannot recover from on its own");
   expect(rig.published[0]?.idempotencyKey).toBe("legion-stall-stopped:toolu_stuck");
+});
+
+// ---------------------------------------------------------------------------------------------
+// The re-sends: a publish no rule decides is sent again until the listener stores it.
+// ---------------------------------------------------------------------------------------------
+
+test("a publish no rule decides is sent again under its one key until the listener stores it", async () => {
+  const rig = tellerRig();
+  rig.failures.push(
+    listenerAnswered(504, {
+      error: "no forward the stream stored for the holder",
+      reason: "delivery_failed",
+    }),
+    new DOMException("The operation timed out.", "TimeoutError")
+  );
+  // The ladder has its answer from the first attempt, with nobody told yet, and waits for none of
+  // what follows.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  expect(rig.published).toHaveLength(1);
+  await settled();
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000]);
+
+  rig.waits[0]?.end();
+  await settled();
+  expect(rig.published).toHaveLength(2);
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000, 2_000]);
+
+  rig.waits[1]?.end();
+  await settled();
+  // The third attempt is stored, and the re-sends end with it: no further wait is asked for.
+  expect(rig.published).toHaveLength(3);
+  expect(rig.waits).toHaveLength(2);
+  // One notice, three times: the same topic, message, payload and idempotency key.
+  expect(rig.published[1]).toEqual(rig.published[0] as PublishInput);
+  expect(rig.published[2]).toEqual(rig.published[0] as PublishInput);
+  expect(rig.published[0]?.idempotencyKey).toBe("legion-stall:toolu_stuck");
+  // Each failed attempt is a warning with its number and its error; the attempt that told the
+  // owner says that it told it late.
+  const failed = rig.warnings.filter(
+    (line) => line.message === "legion: the stall notice was not stored, so it is sent again"
+  );
+  expect(failed.map((line) => line.context?.attempt)).toEqual([1, 2]);
+  expect(failed[0]?.context?.error).toContain("no forward the stream stored for the holder");
+  expect(failed[1]?.context?.error).toContain("timed out");
+  expect(rig.infos).toEqual([
+    {
+      message: "legion: the owner was told late about this session's stuck tool call",
+      context: expect.objectContaining({
+        attempt: 3,
+        toolCallId: "toolu_stuck",
+        topic: "notifications.role.legion-legion-infra-1274-architect",
+      }),
+    },
+  ]);
+});
+
+test("a 4xx refusal is final, and only a failure no rule decides is sent again", async () => {
+  // A 4xx is the listener's own word on this notice, and the same notice under the same key would
+  // get the same word.
+  for (const body of [
+    { status: 400, error: "payload must be a JSON string" },
+    { status: 403, error: "this session's capability does not reach that topic" },
+    { status: 404, error: "no session holds the role", reason: "unclaimed" },
+    { status: 413, error: "the message is larger than the listener takes" },
+  ]) {
+    const rig = tellerRig();
+    rig.failures.push(listenerAnswered(body.status, body));
+    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+      evidenceWritten: true,
+      ownerTold: false,
+    });
+    await settled();
+    expect(rig.published).toHaveLength(1);
+    expect(rig.waits).toEqual([]);
+    expect(rig.warnings).toContainEqual({
+      message: "legion: the owner was not told about this session's stuck tool call",
+      context: expect.objectContaining({ attempt: 1, error: expect.stringContaining(body.error) }),
+    });
+  }
+
+  // Everything else is sent again: a 5xx, the two 4xx answers that say "later" rather than "no",
+  // a timeout, a connection that failed — and an error whose text names a 404, because the status
+  // is read from the client's error type, never from an error's words.
+  for (const failure of [
+    listenerAnswered(500, { error: "internal error" }),
+    listenerAnswered(503, { error: BROKER_DOWN }),
+    listenerAnswered(504, { error: "no forward the stream stored", reason: "delivery_failed" }),
+    listenerAnswered(408, { error: "request timeout" }),
+    listenerAnswered(429, { error: "too many access tokens checked from this address" }),
+    new DOMException("The operation timed out.", "TimeoutError"),
+    new Error(UNREACHABLE),
+    new Error('listener returned 404 Not Found: {"reason":"unclaimed"}'),
+  ]) {
+    const rig = tellerRig();
+    rig.failures.push(failure);
+    await rig.teller.tellOverdue(evidenceOf());
+    await settled();
+    expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000]);
+    rig.waits[0]?.end();
+    await settled();
+    expect(rig.published).toHaveLength(2);
+    expect(rig.waits).toHaveLength(1);
+  }
+});
+
+test("a second telling of a call whose notice is being sent again starts no second run", async () => {
+  const rig = tellerRig();
+  rig.failures.push(
+    ...Array.from({ length: 8 }, () => listenerAnswered(503, { error: BROKER_DOWN }))
+  );
+  await rig.teller.tellOverdue(evidenceOf());
+  await settled();
+  expect(rig.waits).toHaveLength(1);
+
+  // Told again while the first re-send waits: the first answer, and nothing published, written or
+  // waited for on its account.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  await settled();
+  expect(rig.published).toHaveLength(1);
+  expect(rig.waits).toHaveLength(1);
+  expect(rig.entries.filter((entry) => entry.kind === "evidence")).toHaveLength(1);
+
+  // The one run goes on, each wait twice the last up to a minute, until the listener stores it.
+  for (let wait = 0; wait < 8; wait += 1) {
+    rig.waits[wait]?.end();
+    await settled();
+  }
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([
+    1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000,
+  ]);
+  expect(rig.published).toHaveLength(9);
+  expect(rig.published.map((notice) => notice.idempotencyKey)).toEqual(
+    Array.from({ length: 9 }, () => "legion-stall:toolu_stuck")
+  );
+  expect(rig.infos).toHaveLength(1);
+
+  // And a telling after the late one publishes nothing either.
+  await rig.teller.tellOverdue(evidenceOf());
+  await settled();
+  expect(rig.published).toHaveLength(9);
+  expect(rig.waits).toHaveLength(8);
+});
+
+test("a stop's notice is sent again the same way, and a stop already told starts no second run", async () => {
+  const rig = tellerRig();
+  rig.failures.push(new Error(UNREACHABLE), new Error(UNREACHABLE));
+  await rig.teller.tellStopped(callOf(), "the exit cap was reached");
+  await settled();
+  expect(rig.published).toHaveLength(1);
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000]);
+
+  // The same stop again, while the first one's re-send waits: written again, told no second time.
+  await rig.teller.tellStopped(callOf(), "the exit cap was reached");
+  await settled();
+  expect(rig.entries.filter((entry) => entry.kind === "stopped")).toHaveLength(2);
+  expect(rig.published).toHaveLength(1);
+  expect(rig.waits).toHaveLength(1);
+
+  rig.waits[0]?.end();
+  await settled();
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000, 2_000]);
+  rig.waits[1]?.end();
+  await settled();
+  expect(rig.published).toHaveLength(3);
+  expect(rig.waits).toHaveLength(2);
+  expect(rig.published[2]).toEqual(rig.published[0] as PublishInput);
+  expect(rig.published[0]?.idempotencyKey).toBe("legion-stall-stopped:toolu_stuck");
+  expect(rig.infos).toEqual([
+    {
+      message: "legion: the owner was told late about this session's stuck tool call",
+      context: expect.objectContaining({ attempt: 3, reason: "the exit cap was reached" }),
+    },
+  ]);
 });
 
 // ---------------------------------------------------------------------------------------------
