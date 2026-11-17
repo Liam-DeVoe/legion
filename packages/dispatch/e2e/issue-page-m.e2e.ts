@@ -1356,6 +1356,113 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
   }
 });
 
+// The reader's place in the history (`IssueHistory.tsx`'s `ViewportAnchor`) when a turn above it
+// shrinks by more than the history holds below Details' view. A turn is cut to six lines only
+// once it shows in Details' view (`clamp-measurer.ts`), so a long turn the reader jumped past is
+// still drawn whole above them. When it shows and is cut, the browser itself first pulls the
+// scroll back to the history's new end, by the room that was below the view, and the place
+// keeper takes that scroll for one of the reader's own: it keeps the moved place and puts nothing
+// back, so the entries the reader is on move up by that room. Found by the tester on a running
+// build of 23d42292 with a copy of a large real issue, on the third and last press of Load older
+// made as the focus reached it: a turn above was cut from 5,184 px to 190 px after the page
+// landed, the browser moved the scroll 3,143 px to the new end, the place keeper kept that, and
+// the focused time link went from 853 px to 455 px above Details' view at 1440 px, in three runs
+// of four.
+test("the reader's place in the history holds when a turn above it is cut by more than the history holds below the view", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A long turn above the reader" });
+  // Oldest first: thirty short turns, one long turn, twelve short turns. The history lists them
+  // newest first, so the long turn stands below the first screen with thirty turns under it.
+  for (let index = 0; index < 30; index += 1) {
+    await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession);
+  }
+  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
+  await createMessage(
+    issue.key,
+    { body: Array.from({ length: 40 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
+    attentionSession
+  );
+  for (let index = 0; index < 12; index += 1) {
+    await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
+  }
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const long = historyEntries(page).filter({ hasText: "Part 39:" });
+    await expect(long).toHaveCount(1);
+    // The focus jumps to an older turn well under the long turn, which never shows on the way,
+    // so it stays whole above the reader.
+    const target = historyEntries(page).filter({ hasText: "Older turn 17" });
+    await target.locator("[data-history-time]").focus();
+    await nextFrames(page);
+    const view = await historyViewport(page);
+    const whole = await long.boundingBox();
+    expect(
+      (whole?.height ?? 0) > 3_000 && (whole?.y ?? 0) + (whole?.height ?? 0) < view.top,
+      "the long turn is cut already or shows in Details' view, so the row proves nothing"
+    ).toBe(true);
+    // The reader scrolls up until the long turn's foot shows, with the pointer on the history.
+    // Their place once the scroll is done is the older turn nearest the middle of the view then:
+    // it is chosen, and its top read, before the scroll, since the cut follows the scroll within a
+    // frame. The scroll moves it down by exactly that distance.
+    const reveal = Math.round(view.top - ((whole?.y ?? 0) + (whole?.height ?? 0))) + 60;
+    const place = await page.evaluate(
+      ({ top, bottom }) => {
+        const middle = (top + bottom) / 2;
+        let best: { distance: number; id: string; top: number } | undefined;
+        for (const item of document.querySelectorAll<HTMLElement>(
+          '[data-testid="issue-history"] [data-history-entry]'
+        )) {
+          if (!(item.textContent ?? "").includes("Older turn")) continue;
+          const box = item.getBoundingClientRect();
+          if (box.top < top || box.bottom > bottom) continue;
+          const distance = Math.abs((box.top + box.bottom) / 2 - middle);
+          if (best === undefined || distance < best.distance) {
+            best = { distance, id: item.getAttribute("data-history-entry") ?? "", top: box.top };
+          }
+        }
+        return best;
+      },
+      { bottom: view.bottom - reveal, top: view.top - reveal }
+    );
+    expect(place, "no older turn will show whole in Details' view after the scroll").toBeTruthy();
+    const below = await page.evaluate(() => {
+      const history = document.querySelector('[data-testid="issue-history"]');
+      let box = history?.parentElement ?? null;
+      while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
+        box = box.parentElement;
+      }
+      return box === null ? 0 : box.scrollHeight - box.clientHeight - box.scrollTop;
+    });
+    const panel = await historyPanel(page).boundingBox();
+    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
+    await page.mouse.wheel(0, -reveal);
+    await expect
+      .poll(async () => (await long.boundingBox())?.height ?? 0, {
+        message: "the long turn was not cut once it showed",
+      })
+      .toBeLessThan(400);
+    await page.waitForTimeout(1_000);
+    await nextFrames(page);
+    const expected = Math.round((place?.top ?? 0) + reveal);
+    const after = Math.round(
+      (await historyPanel(page).locator(`[data-history-entry="${place?.id}"]`).boundingBox())?.y ??
+        0
+    );
+    expect(
+      Math.abs(after - expected),
+      `the entry the reader is on stood at ${expected} px once the scroll showed the long turn, and at ${after} px once that turn was cut, with ${Math.round(below + reveal)} px of the history below the view (Details' view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
+    ).toBeLessThanOrEqual(1);
+  } finally {
+    await context.close();
+  }
+});
+
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
