@@ -8,11 +8,13 @@
 -- spec, Verification and plan documents under the issue rather than under the document
 -- (refs.IndexBlocks). A block a build before this child indexed holds none of those, so every
 -- document stored before it owes its block index once more. A pass of the graph backfill
--- (graphcensus.Backfill, the drain in census_blocks.go) marks each stored document owed -
--- document_block_versions.version set null, as rebuild-refs marks it - and the block-index
--- reconciliation indexes each, which writes those facts and moves no block's changed_version and
--- no document_block_texts row. The backfill runs at every boot, so this row is what keeps the
--- drain to one: a run that finds it done marks nothing.
+-- (graphcensus.Backfill, the drain in census_blocks.go) marks each stored document owed with this
+-- release's own mark, document_block_versions.store_owed_at (20261116221539), which a release
+-- before this one neither reads nor clears, and not the null version rebuild-refs sets, which such
+-- a release drains as its own debt while it states none of those facts. The block-index
+-- reconciliation indexes each, which writes those facts, clears the mark and moves no block's
+-- changed_version and no document_block_texts row. The backfill runs at every boot, so this row
+-- is what keeps the drain to one: a run that finds it done marks nothing.
 --
 -- The drain marks the documents in batches, each its own transaction under the documents' owner
 -- rows, so a version write waits for one batch and not for every document. The cursor is the

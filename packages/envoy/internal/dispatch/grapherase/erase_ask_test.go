@@ -64,8 +64,10 @@ func seedMarkedAsk(t *testing.T, database *store.Store) string {
 // followed_by into the session that follows it among them - and the node, and leaves nothing that
 // names ask:<id>. The session is a node the erase never deletes, and stays with the tuples out of
 // it, named by the ask.follower_added that recorded the follow. The asks row is a projection like
-// a comment's row: while the ask stands, the erase of alice, who asked it, refuses, naming the ask,
-// and once the ask is erased she is, and the census reads zero.
+// a comment's row: while the ask stands, the erase of alice, who asked it, refuses, naming the ask.
+// Once the ask is erased the census reads zero, holding alice to her node by the record of that
+// erase, which names her as the ask's writer (Erasure.Writers); then she is erased, and the census
+// reads zero again, a record written before her own erase holding her to nothing.
 func TestTheEraseRemovesAMarkedAskAndItsFollowerRows(t *testing.T) {
 	database := storetest.Open(t)
 	ask := seedMarkedAsk(t, database)
@@ -102,6 +104,7 @@ func TestTheEraseRemovesAMarkedAskAndItsFollowerRows(t *testing.T) {
 		t.Errorf("the erase left the session %+v, want its node and the tuples out of it standing and the %d tuple(s) of the ask into it gone from %+v",
 			after, intoSession, session)
 	}
+	requireCensusZero(t, database, "after the ask's erase")
 	requireErased(t, database, graphstore.KindPerson, "alice")
 	requireCensusZero(t, database, "after the erases")
 }

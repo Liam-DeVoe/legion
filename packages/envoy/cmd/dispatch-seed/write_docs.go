@@ -132,7 +132,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// a pointer, and a decision, a reading or an ask is what the typed-node pass reads, and every
 	// document this tool writes is plain markdown with no typed block in it, so the lists the
 	// server builds from a document's block tree are empty here.
-	moved, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, refs.TypedFacts{})
+	moved, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}

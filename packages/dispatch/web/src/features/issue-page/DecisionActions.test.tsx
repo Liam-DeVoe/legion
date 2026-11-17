@@ -7,8 +7,19 @@ import type { ReactNode } from "react";
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, DecisionKeep } from "../../api/types";
+import {
+  borderDefault,
+  dangerText,
+  pageFailedText,
+  pageLineBorder,
+  pageMutedText,
+  pageWordsText,
+  textMutedOnCanvas,
+  textSecondaryOnCanvas,
+} from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
+import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import {
   issueTreeKey,
@@ -102,14 +113,18 @@ function heldReads(nodes: readonly TreeAnswerNode[]): QueryClient {
   return client;
 }
 
-/** The node at `REFERENCE` among the tree's `nodes`, drawn in a row of `rowDocument`. */
+/** The node at `REFERENCE` among the tree's `nodes`, drawn in a row of `rowDocument`; inside the
+ *  page's `NoTooltips` where `page` says so, as the issue page draws them. */
 function renderActions(
   nodes: readonly TreeAnswerNode[] = [ONE],
-  rowDocument: Artifact = document_
+  rowDocument: Artifact = document_,
+  { page = false }: { page?: boolean } = {}
 ): { client: QueryClient; unmount: () => void } {
   const client = heldReads(nodes);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={client}>
+      {page ? <NoTooltips>{children}</NoTooltips> : children}
+    </QueryClientProvider>
   );
   const view = render(
     <DecisionActions document={rowDocument} isClosed={false} nodeReference={REFERENCE} />,
@@ -272,6 +287,85 @@ test("a refused send shows the plain words and keeps the draft", async () => {
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+/** The colours of the Change form's lines on each surface: `main`'s on today's page, and the new
+ *  page's own pairs inside `NoTooltips`. */
+const TONES = {
+  main: {
+    failed: dangerText,
+    muted: textMutedOnCanvas,
+    rule: borderDefault,
+    words: textSecondaryOnCanvas,
+  },
+  page: {
+    failed: pageFailedText,
+    muted: pageMutedText,
+    rule: pageLineBorder,
+    words: pageWordsText,
+  },
+} as const;
+
+/** Which of `TONES` each line of the Change form draws. */
+const LINE_TONES = {
+  cancel: ["rule", "muted"],
+  name: ["muted"],
+  quote: ["rule", "words"],
+  refusal: ["failed"],
+  send: ["rule", "muted"],
+} as const;
+
+/** Whether `element` carries every class each of `classes` names. */
+function wears(element: Element, ...classes: readonly string[]): boolean {
+  return classes.every((one) =>
+    one.split(/\s+/u).every((token) => element.classList.contains(token))
+  );
+}
+
+// Inside `NoTooltips`, the new page, the Change form's lines draw the page's own colour pairs,
+// the ones `theme/classes.ts` names; on today's page they keep `main`'s: the quote's rule and
+// words, the field's name, a refusal, and Send and Cancel.
+test("the Change form draws the page's colours inside NoTooltips and main's outside it", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "QUOTE_NOT_FOUND", error: "the quote is not in the document" })
+  );
+  try {
+    for (const surface of ["page", "main"] as const) {
+      const own = TONES[surface];
+      const other = TONES[surface === "page" ? "main" : "page"];
+      const user = userEvent.setup();
+      const { unmount } = renderActions([ONE], document_, { page: surface === "page" });
+      try {
+        await user.click(
+          await screen.findByRole("button", { name: CONTROL_LABELS.change_decision })
+        );
+        await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+        await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+        const lines = {
+          cancel: screen.getByRole("button", { name: CONTROL_LABELS.cancel }),
+          name: screen.getByText(CONTROL_LABELS.your_change),
+          quote: screen.getByTestId("decision-quote"),
+          refusal: await screen.findByRole("alert"),
+          send: screen.getByRole("button", { name: CONTROL_LABELS.send_change }),
+        };
+        for (const [line, element] of Object.entries(lines)) {
+          const tones = LINE_TONES[line as keyof typeof LINE_TONES];
+          expect(
+            wears(element, ...tones.map((tone) => own[tone])),
+            `on the ${surface} surface the form's ${line} lacks its colours`
+          ).toBe(true);
+          expect(
+            tones.some((tone) => wears(element, other[tone])),
+            `on the ${surface} surface the form's ${line} draws the other surface's colours`
+          ).toBe(false);
+        }
+      } finally {
+        unmount();
+      }
+    }
+  } finally {
+    createComment.mockRestore();
+  }
 });
 
 /** The quote the Change form offers for the one decision `fields` describe, which waits for

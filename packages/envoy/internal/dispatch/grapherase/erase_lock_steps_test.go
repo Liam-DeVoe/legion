@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -322,6 +324,51 @@ func blockHeld(t *testing.T, database *store.Store, artifact, blockID, address s
 		t.Fatalf("read what the store holds of block %s: %v", address, err)
 	}
 	return held
+}
+
+// TestTheEraseTakesARunsRowsAfterItsNode holds the erase of a run of the command bar to its lock
+// steps (dispatch://INFRA-1950's plan, T15): a run stands under no owner row, so the erase takes
+// none - issue CORE-1's row, held for the whole run, is never queued behind - and starts at the
+// run's interaction node row, `for update`, then takes the run's going_requests row and then its
+// going_events rows, `for update` (lockProjectionRows, runTables), before it reads under its locks
+// or writes anything. A frame of this build takes the node row first too (api's
+// appendGoingEvent), and an older pod's delete takes the run's row before its frames. Each row is
+// held in a transaction of its own while the real Erase runs (followTheErase), which lets go of
+// each hold the run queues behind and reads where it waits and the tables it holds a lock on. The
+// run then reads the run gone whole.
+func TestTheEraseTakesARunsRowsAfterItsNode(t *testing.T) {
+	database := storetest.Open(t)
+	seedAgreeingStore(t, database)
+	run := seedRun(t, database, model.Actor{Kind: "user", ID: "alice"})
+
+	core := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Kind: "issue", ID: "CORE-1",
+		Statement: ownerLockStatement,
+	}, `select 1 from issues where key = $1 for update`, "CORE-1")
+	node := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the run's interaction node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindInteraction, ID: run,
+		Statement: "select supertag from graph_nodes where kind = $1 and id = $2 for update",
+		Unlocked:  append([]string{"going_requests", "going_events"}, untouchedBeforeTheNode...),
+	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, graphstore.KindInteraction, run)
+	request := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the run's going_requests row", Step: lockstep.StepProjection, Taken: true, Names: node,
+		Statement: "select 1 from going_requests where id = $1::uuid order by id for update",
+		Unlocked:  append([]string{"going_events"}, untouchedBeforeTheNode...),
+	}, `select 1 from going_requests where id = $1::uuid for update`, run)
+	frame := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the run's first going_events row", Step: lockstep.StepProjection, Taken: true, Names: node,
+		Statement: "select 1 from going_events where request_id = $1::uuid order by request_id, sequence for update",
+		Unlocked:  untouchedBeforeTheNode,
+	}, `select 1 from going_events where request_id = $1::uuid and sequence = 1 for update`, run)
+
+	erasure := followTheErase(t, database, graphstore.KindInteraction, run, []*lockstep.Hold{core, node, request, frame})
+	if !erasure.Applied {
+		t.Fatalf("the erase of the run removed nothing: blockers %v", erasure.Blockers)
+	}
+	if requests, events, nodes, tuples := runRows(t, database, run); requests+events+nodes+tuples != 0 {
+		t.Errorf("after the erase the run holds %d going_requests rows, %d going_events rows, %d nodes and %d tuples, want none: the run the test followed is not one that committed",
+			requests, events, nodes, tuples)
+	}
 }
 
 // TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode holds the erase of a block to

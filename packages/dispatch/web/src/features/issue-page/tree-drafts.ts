@@ -1,8 +1,7 @@
-import { primarySpec } from "../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type {
   Actor,
   Artifact,
-  ArtifactWithTrees,
   Ask,
   CheckBlock,
   CheckResult,
@@ -20,7 +19,6 @@ import {
   shortForm,
 } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
-import { wordsOf } from "../refs/tree-fragment";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
@@ -54,9 +52,8 @@ import {
  * words beside them, the draft keeps it with the record the words are, which is what the row
  * draws (`TreeNode.tree`).
  *
- * The tree is the issue's conversation and what it revealed (dispatch://INFRA-1196 R1, R3): a
- * document, an artifact and a handoff are nodes of the issue and not of its conversation, so
- * nothing here drafts one.
+ * The tree is the issue's conversation and what it revealed: a document, an artifact and a
+ * handoff are nodes of the issue and not of its conversation, so nothing here drafts one.
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -74,7 +71,8 @@ export interface Draft {
   answer?: NodeAnswer;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`tree-read/tree-nodes.ts`);
-   *  absent on every other draft, a `requirement` no coverage row holds among them. */
+   *  absent on every other draft, a statement of the spec drawn before that read answers among
+   *  them. */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -100,7 +98,14 @@ export interface Draft {
   replaced: boolean;
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
   source?: TextSource;
+  /** How it stands, for a type the model gives a state (`TreeNode.state`); absent on a check
+   *  block of any document but the issue's Verification document (`tree-read/tree-nodes.ts`'
+   *  `draftServing`). */
   state?: NodeState;
+  /** Whether this requirement is a statement (`TreeNode.statement`): a `requirement` block of the
+   *  issue's spec or a requirement the coverage read holds (`tree-read/tree-nodes.ts`'
+   *  `draftRequirement`). Absent on every other draft. */
+  statement?: true;
   text: string;
   /** The server's reading of `text`, where the draft's read sends one (`TreeNode.tree`). */
   tree?: DisplayTree;
@@ -128,7 +133,7 @@ export interface TreeContext {
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
   readonly nodeIdOf: (reference: string) => string | undefined;
-  /** The slug of the issue's spec, `""` for an issue with none. */
+  /** The slug of the issue's spec (`primarySpec`), `""` for an issue with none. */
   readonly specSlug: string;
   /** The slug of one document of the issue, by its artifact id. */
   readonly slugOf: (artifactId: string) => string | undefined;
@@ -141,19 +146,49 @@ export interface TreeContext {
 }
 
 /**
+ * How `issue` addresses a node: the node a `dispatch://` reference names, as the tree's node ids
+ * write it - the spec, a document, a block of either, an ask, a comment, a message, the issue
+ * itself - and undefined for a reference to another issue or to anything else. It reads only the
+ * issue's key and its spec's slug (`primarySpec`), so a caller that needs a node id and no chip
+ * calls it without building a whole `treeContext`, and `treeContext` addresses nodes by it too,
+ * so the two never differ.
+ */
+export function nodeIdOf(
+  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">
+): (reference: string) => string | undefined {
+  const key = issue.key;
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  return (reference: string): string | undefined => {
+    const route = parseNodeReference(reference);
+    if (route === undefined || !("key" in route) || route.key !== key) return undefined;
+    const block = "block" in route ? route.block : undefined;
+    if (route.kind === "spec") {
+      return block === undefined ? specSlug : blockNodeId(specSlug, block.id);
+    }
+    if (route.kind === "artifact") {
+      return block === undefined ? route.slug : blockNodeId(route.slug, block.id);
+    }
+    if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
+      return route.id;
+    }
+    return route.kind === "issue" ? key : undefined;
+  };
+}
+
+/**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
  * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
  * `targetNames` give R1's rule over the words of the reading's first block (`chipLine`, which
  * is `drawnLine(firstLineOf(…))` of what `lineWords` reads), which this module cannot import,
- * since `issue-tree.ts` imports it, and a caller that reads no chip's name gives none, which
- * names a block by the whole reading's words (`wordsOf`).
+ * since `issue-tree.ts` imports it. Every caller hands one in, so no chip names a block by
+ * anything but the line its caller chose: a default would name it by its whole reading.
  *
  * A chip names its target by the words a reader reads it by, and never by markup:
  *
  * - **A target nothing answers to now** by nothing, `""`, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers
  *   `ambiguous` as well, and its chip carries `ambiguous` so it can draw the reference as
- *   written rather than as a target deleted (dispatch://INFRA-1196 decision 62).
+ *   written rather than as a target deleted.
  * - **A block** - the reference names one, or the read answers that its target is one - by
  *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
  *   answered and sent no reading, or one that holds no words, a block of this issue whose
@@ -172,13 +207,13 @@ export interface TreeContext {
  */
 export function treeContext(
   reads: IssueTreeReads,
-  lineOf: (reading: DisplayTree) => string = wordsOf
+  lineOf: (reading: DisplayTree) => string
 ): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
   const documents = artifactsBySlug(reads.issue);
-  const spec = specOf(reads.issue);
+  const spec = primarySpec(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
   // The kind of each typed block of this issue the tree read answers, by its node id, which is
@@ -190,21 +225,7 @@ export function treeContext(
       kinds.set(blockNodeId(node.document.slug, node.id), node.supertag as NodeType);
     }
   }
-  const nodeIdOf = (reference: string): string | undefined => {
-    const route = parseNodeReference(reference);
-    if (route === undefined || !("key" in route) || route.key !== key) return undefined;
-    const block = "block" in route ? route.block : undefined;
-    if (route.kind === "spec") {
-      return block === undefined ? specSlug : blockNodeId(specSlug, block.id);
-    }
-    if (route.kind === "artifact") {
-      return block === undefined ? route.slug : blockNodeId(route.slug, block.id);
-    }
-    if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
-      return route.id;
-    }
-    return route.kind === "issue" ? key : undefined;
-  };
+  const nodeIdOfReference = nodeIdOf(reads.issue);
   const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
@@ -212,7 +233,7 @@ export function treeContext(
       const reading = target?.text_tree;
       const line = reading === undefined ? "" : lineOf(reading);
       if (line !== "" || target === undefined) return line;
-      const kind = kinds.get(nodeIdOf(reference) ?? "");
+      const kind = kinds.get(nodeIdOfReference(reference) ?? "");
       return kind === undefined ? "" : NODE_TYPE_NAMES[kind];
     }
     // Another issue's document is named by no role of this issue's.
@@ -253,24 +274,12 @@ export function treeContext(
       return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
-    nodeIdOf,
+    nodeIdOf: nodeIdOfReference,
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
     treeOf: (reference: string) => names.get(reference)?.text_tree,
     viewer: reads.viewer,
   };
-}
-
-/**
- * The issue's spec: the document the issue read names by its id (`primarySpec`), the one whose
- * blocks the tree read answers as the spec's (`tree-read/tree-nodes.ts`' `blocksOfRole`), so a
- * reference to the spec resolves against the document whose blocks are drawn. The document's own
- * flag answers only where the issue names no spec (`""`), as `documentWord` reads it.
- */
-function specOf(issue: IssueDetails): Artifact | undefined {
-  return issue.primary_artifact_id === ""
-    ? issue.artifacts?.find((artifact) => artifact.primary)
-    : primarySpec(issue);
 }
 
 /**
@@ -280,27 +289,20 @@ function specOf(issue: IssueDetails): Artifact | undefined {
  * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
  * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
  *
- * Which document plays which part is the issue read's answer, the id it names for each
- * (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
- * `decisions_artifact_id`), the same ids the tree reads the documents' blocks by
- * (`useIssueTree.ts`): the artifact's own `role` is absent on a document a rolling deploy left
- * with none, which the server still finds by its slug. The document's own flag and role answer
- * only where the issue names no id for that part: no spec (`""`), and a Dispatch older than
- * document roles (absent).
+ * Which document plays which part is the issue read's answer and nothing else: the id it names
+ * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
+ * `decisions_artifact_id`), read by `primarySpec` and `roleDocument`, the rule the tree read's
+ * blocks of each part are read by (`tree-read/tree-nodes.ts`' `blocksOfRole`). Where the issue
+ * names no id for a part - none (`""`), or a Dispatch older than that part (absent) - no
+ * document plays it, and a document flagged `primary` or carrying that part's `role` is named by
+ * the page's word for a document: a chip naming "Spec" or "Decisions" opens a document whose
+ * blocks the tree reads as that part.
  */
-function documentWord(
-  issue: IssueDetails,
-  document: Pick<ArtifactWithTrees, "id" | "primary" | "role"> | undefined
-): string {
+function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
-  const spec = issue.primary_artifact_id;
-  if (spec === "" ? document.primary : document.id === spec) return PRESET_NAMES.spec;
-  for (const [role, id] of [
-    ["plan", issue.plan_artifact_id],
-    ["verification", issue.verification_artifact_id],
-    ["decisions", issue.decisions_artifact_id],
-  ] as const) {
-    if (id === undefined ? document.role === role : document.id === id) return PRESET_NAMES[role];
+  if (document.id === primarySpec(issue)?.id) return PRESET_NAMES.spec;
+  for (const role of ["plan", "verification", "decisions"] as const) {
+    if (document.id === roleDocument(issue, role)?.id) return PRESET_NAMES[role];
   }
   return NODE_TYPE_NAMES.document;
 }
@@ -491,8 +493,8 @@ function putBack(text: string, hold: Hold): string {
  * so nested marks (`***x***`) go too. The escaped characters are put back, and white space
  * collapses to single spaces.
  *
- * Then a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`,
- * decision 95): every place that reads a stored text to plain words draws it on one line - a
+ * Then a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`):
+ * every place that reads a stored text to plain words draws it on one line - a
  * node's line where the node has no reading (`lineWords`), and the name of a chip naming an
  * ask, a comment or a message (`treeContext`) - and no one-line view draws a raw address (R22).
  * A link already reads as its words, so `[the spec](dispatch://…)` reads `the spec`. Last, the
@@ -512,8 +514,8 @@ export function plainWords(markdown: string): string {
 /** The words of a stored markdown text as `plainWords` reads them, with no address written
  *  short: its marks, markers, links, images, escapes and code spans read as they read there, an
  *  author's own private-use character as written, and a bare address and an autolink's URL stay
- *  as written (dispatch://INFRA-1196 decision 140). A caller that names each reference itself
- *  reads these, since a short form leaves it no address to name. */
+ *  as written. A caller that names each reference itself reads these, since a short form leaves
+ *  it no address to name. */
 export function plainWordsRaw(markdown: string): string {
   return plainWordsWith(markdown, (words) => words);
 }
@@ -556,11 +558,10 @@ function plainWordsWith(markdown: string, shorten: (words: string) => string): s
 /**
  * `words` with each bare `dispatch://` address in them written as its target's short form, as a
  * link to it draws it (`shortForm`): `dispatch://CORE-2` reads `CORE-2`, and
- * `dispatch://INFRA-1196/spec#b-r1` reads `INFRA-1196 spec block`. It is for the words a place
- * that draws one line for a node cuts that line from, since no one-line view draws a raw address
- * (dispatch://INFRA-1196 R22, decision 95): the server's reading keeps a bare address in a node's
- * words as a plain text run, which is no link, and a stored text holds it as written, so both
- * meet it.
+ * `dispatch://ACME-1196/spec#b-r1` reads `ACME-1196 spec block`. It is for the words a place
+ * that draws one line for a node cuts that line from, since no one-line view draws a raw
+ * address: the server's reading keeps a bare address in a node's words as a plain text run,
+ * which is no link, and a stored text holds it as written, so both meet it.
  *
  * An address is found as the page finds a reference in text (`referenceSpans`), and only the
  * address itself is written short: what `trimReference` cuts off its end stays where it stood, so
@@ -667,11 +668,14 @@ export function askState(ask: Ask): AskState | undefined {
 }
 
 /**
- * How a check stands, in the states `NODE_STATE_WORDS.check` names. Whether it passed is the
- * server's own answer over every result of the check (`pass_stands`, main's e98fc56ef8): a pass
- * recorded before a later fail still stands, while a retracted pass, a pass recorded against an
- * older wording of the check and a pass at a commit the check no longer compares with stand for
- * nothing. The other states read what no pass standing is:
+ * How a check stands where no result of it stands at its basis, in the states
+ * `NODE_STATE_WORDS.check` names: `checkStanding`'s answer for such a check, and for a check with
+ * no result or no `pass_stands` at all, and read by nothing else, so no place of the page reads
+ * a check other than `checkStanding` does. Whether it passed is the server's own answer over
+ * every result of the check (`pass_stands`, main's e98fc56ef8): a pass recorded before a later
+ * fail still stands, while a retracted pass, a pass recorded against an older wording of the
+ * check and a pass at a commit the check no longer compares with stand for nothing. The other
+ * states read what no pass standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -686,7 +690,8 @@ export function askState(ask: Ask): AskState | undefined {
  * - **`older`,** a newest result that stands and no longer speaks for the work as it stands,
  *   whatever it found, because its commit is not one the check compared with or the check's
  *   own words have moved under it.
- * - **`failed`,** a newest result that stands, at the work the check compares with.
+ * - **`failed`,** a newest result that stands and failed at a commit Dispatch could not place:
+ *   a fail at the work the check compares with is `checkStanding`'s own answer, before this.
  * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
  *   commit it cannot place.
  *
@@ -694,22 +699,21 @@ export function askState(ask: Ask): AskState | undefined {
  * `passStandsOf` skips it), so `older` and `failed` are read from the newest result that still
  * stands and never from a withdrawn one: a pass taken back at the compared commit over an older
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
- * whatever commit the withdrawn pass ran at.
+ * whatever commit the withdrawn pass ran at. The newest is read by the time each result was
+ * recorded (`newestFirst`) and never by the order the read sent them in, as `checkStanding` and
+ * the Verification filter's body read it, so the three name one result whatever that order is.
  *
- * It is how a check stands against the basis the check itself carries, and the page draws it as
- * `checkStanding` turns it over at the one commit the page names for the issue's results, so
- * one check reads one state wherever it is drawn, each told apart by a word and a shape (R15,
- * R21). `e2e/issue-layout-seed-support.ts` waits on seeded checks by this function, so a seed
- * waits for the states the page draws rather than for a copy of this rule.
+ * It is how a check stands against the basis the check itself carries, which is the server's
+ * own reading (`pass_stands`, `commit_stands`), where no result over the check's words now is at
+ * that basis, so one check reads one state wherever it is drawn, each told apart by a word and a
+ * shape (R15, R21).
  */
-export function checkState(check: CheckStateReads): CheckState {
-  const results = check.results ?? [];
-  if (results.length === 0) return "no-result";
+function checkState(check: CheckStateReads): CheckState {
+  if ((check.results ?? []).length === 0) return "no-result";
   if (check.pass_stands === undefined) return "unreadable";
   if (check.pass_stands.answer === "yes") return "passed";
   if (check.pass_stands.answer === "unknown") return "unmarked";
-  // The results arrive newest first, so this is the newest one a retraction left standing.
-  const standing = results.find((result) => result.retracted === undefined);
+  const standing = newestFirst(standingResults(check))[0];
   if (standing === undefined) return "retracted";
   if (standing.check_words_moved === true) return "older";
   return standing.commit_stands?.answer === "other_commit" ? "older" : "failed";
@@ -723,85 +727,74 @@ export type CheckStateReads = Pick<CheckBlock, "results"> & {
   readonly pass_stands?: CheckBlock["pass_stands"];
 };
 
-/**
- * The one commit the page names for the issue's results: the commit of the newest result
- * recorded against any check of the issue that still stands and names one. A result nobody
- * withdrew is the evidence the page reads, so a withdrawn result names no commit here, and a
- * result recorded with no commit at all names none either.
- *
- * It is the Verification filter's commit (R17, `verification-filter/statement-state.ts`, which
- * exports it), read here because the tree reads every check's state at it (`checkStanding`),
- * and this module cannot import that one, which imports this.
- */
-export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
-  const named = checks.flatMap((check) =>
-    standingResults(check).filter((result) => result.commit_sha !== "")
-  );
-  return newestFirst(named)[0]?.commit_sha;
-}
-
-/** How one check stands at the commit the page names for the issue's results. */
+/** How one check stands, as the server reads the commit each of its results ran at. */
 export interface CheckStanding {
   /** How it stands, in the states `NODE_STATE_WORDS.check` names. */
   readonly state: CheckState;
-  /** The result that state stands on: the fail at the named commit; else, for a check that
-   *  passed, the newest pass that still stands, since a pass recorded before a later fail is
-   *  what the server's `pass_stands` answered over; and for every other check the newest result
-   *  that stands at all. Absent where none stands. */
+  /** The result that state stands on: the newest result over the check's words now at its
+   *  basis, a pass or a fail, where one is there; else the newest result that stands at all,
+   *  and none for a check the server says passed with no pass at its basis in the read. Absent
+   *  where none stands. */
   readonly stands?: CheckResult;
 }
 
 /**
- * How a check stands at `commit`, the one commit the page names for the issue's results
- * (`namedCommit`): the page's one reading of a check's state (R10, R17). The tree's check node
- * holds it (`tree-read/tree-nodes.ts`' `draftServing`), so the outline's row, the fold's frontier
+ * How a check stands: the page's one reading of a check's state (R10, R17), and the only one -
+ * `checkState` is its own fallback and nothing else reads it. The tree's check node holds it
+ * (`tree-read/tree-nodes.ts`' `draftServing`), so the outline's row, the fold's frontier
  * (`tree-fold.ts`) and the Verification filter's failing count (`presets.ts`'s `filterSignals`)
  * read it, and so does the Verification filter's body (`statement-state.ts`'s `checkReading`):
  * one check never reads Passed on its row and Failed in the filter.
  *
- * It is `checkState`'s answer with two turns, because R17 reads every result of the issue
- * against the one commit the page names and `checkState` compares a result with the basis its
- * own check carries:
+ * Each result is read against the commit the server names for its own check - the basis the
+ * check compares with, which the result's `commit_stands` answers (`at_basis`, `other_commit`,
+ * `unknown`) - as the server's `standingCommit` and `passStandsOf` read it
+ * (`results_comparison.go`), and never against one commit the page names for every check: two
+ * checks of one issue compare with different commits, a `before_merge` check with the pull
+ * request's head and an `after_merge` one with the branch it merged into, so a pass at its own
+ * check's basis reads Passed whatever newer result another check holds at another commit, as its
+ * own fact reads "Up to date" (`check-facts.ts`'s `resultFacts`). A result stands for something
+ * at the basis only where nobody withdrew it and its check's words have not moved since it was
+ * recorded.
  *
- * - **A fail at the named commit is a fail.** Where the newest result that stands and ran at
- *   that commit failed, the check reads Failed there, whatever older pass the server still
- *   counts as standing (`pass_stands` says yes for any pass at a basis, later fails or not), so
- *   its statement is Not met and not Unknown behind an "Out of date". A fail recorded against
- *   words the check no longer has turns nothing over: it stands for nothing, as `checkState`
- *   and the server's `standingCommit` (`results_comparison.go`) read it, since it is evidence
- *   about a check that no longer reads that way.
- * - **A pass or a fail at another commit is out of date.** Otherwise a pass or a fail whose
- *   result was recorded against another commit reads "Out of date", because that result no
- *   longer speaks for the work the rest of the page is read against, and R17 says such a result
- *   makes its statement Unknown. A result that names no commit at all turns nothing over: the
- *   page has no ground to call it older, and it is no evidence at the named commit either.
- *
- * Where no commit is named - no result that stands names one - it is `checkState`'s answer.
+ * **The latest evidence at the basis decides.** A check with no result reads No result, and one
+ * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
+ * where a result stands for something at the basis, the newest of them is the check's state: a
+ * fail there is Failed, whatever older pass the server still counts as standing (`pass_stands`
+ * says yes for any pass at a basis, later fails or not), and a pass there is Passed. A newer
+ * result at another commit, or at one Dispatch could not place, says nothing about the basis,
+ * so it neither hides a fail there nor turns a pass there over; and a result recorded against
+ * words the check no longer has stands for nothing, since it is evidence about a check that no
+ * longer reads that way. The results read sends no verdict but `pass` and `fail`
+ * (`api/results.go` refuses any other). Where nothing stands at the basis, it is `checkState`'s
+ * answer: Out of date for a newest result at another commit or over moved words, Retracted,
+ * Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
  */
-export function checkStanding(check: CheckStateReads, commit: string | undefined): CheckStanding {
+export function checkStanding(check: CheckStateReads): CheckStanding {
   const standing = newestFirst(standingResults(check));
+  // The newest result that stands for something at the commit the server names for the check:
+  // over the check's words now and at its basis (`standingCommit`). A check with no result has
+  // none, and one with no `pass_stands` is read before it.
   const here =
-    commit === undefined ? undefined : standing.find((result) => result.commit_sha === commit);
-  const failedHere = here?.verdict === "fail" && here.check_words_moved !== true;
-  const state = failedHere ? "failed" : checkState(check);
-  const stands = failedHere
-    ? here
-    : state === "passed"
-      ? standing.find(({ verdict }) => verdict === "pass")
-      : standing[0];
-  const elsewhere =
-    commit !== undefined &&
-    stands !== undefined &&
-    stands.commit_sha !== "" &&
-    stands.commit_sha !== commit;
-  return {
-    state: elsewhere && (state === "passed" || state === "failed") ? "older" : state,
-    ...(stands === undefined ? {} : { stands }),
-  };
+    check.pass_stands === undefined
+      ? undefined
+      : standing.find(
+          (result) =>
+            result.check_words_moved !== true && result.commit_stands?.answer === "at_basis"
+        );
+  if (here !== undefined) {
+    return { stands: here, state: here.verdict === "pass" ? "passed" : "failed" };
+  }
+  const state = checkState(check);
+  // No pass is at the basis in the read, so a check the server says passed stands on none of
+  // its results here.
+  const stands = state === "passed" ? undefined : standing[0];
+  return { state, ...(stands === undefined ? {} : { stands }) };
 }
 
-/** Every result of `check` nobody withdrew, which is every result that stands as evidence. */
-function standingResults(check: CheckStateReads): readonly CheckResult[] {
+/** Every result of `check` nobody withdrew, which is every result that stands as evidence: the
+ *  server's `passStandsOf` skips a withdrawn one, and so does every reading of the page. */
+export function standingResults(check: CheckStateReads): readonly CheckResult[] {
   return (check.results ?? []).filter((result) => result.retracted === undefined);
 }
 

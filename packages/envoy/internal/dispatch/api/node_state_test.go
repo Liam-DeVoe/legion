@@ -182,8 +182,12 @@ const threeRequirements = ":::requirement{#r1}\nThe cache holds every read for a
 // settles it, and r3 overtaken. Each node reads the state she wrote; the proposed read answers r1
 // alone; the coverage read and the approval request's answer raise no gap for r1 and both for r2.
 // She settles r1, and with no restart the same reads answer it settled, out of the proposed read
-// and with both gaps. Last, a new version of the spec changes r3's text, and r3 still reads
-// overtaken, since the index pass keeps every node state that is not gone.
+// and with both gaps. Then a check of the Verification document and a task of the plan that serve
+// r2 are written and marked proposed: each is a question still open and serves nothing yet, so r2
+// keeps both gaps and counts 0 of each, and the approval request's answer still names its missing
+// check. She settles the check and the task, and r2 raises neither gap and counts 1 of each. Last,
+// a new version of the spec changes r3's text, and r3 still reads overtaken, since the index pass
+// keeps every node state that is not gone.
 func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PRP", "Proposed requirements", threeRequirements)
@@ -277,6 +281,32 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 		if !slices.Contains(answer.Coverage, noCheckGap(blockID)) {
 			t.Errorf("after the settle the approval request's answer %q lacks %q", answer.Coverage, noCheckGap(blockID))
 		}
+	}
+
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", checkServing("k2", r2))
+	planned := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", planTaskServing("t2", r2))
+	check := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+verification.Artifact.Slug, "k2")
+	task := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+planned.Artifact.Slug, "t2")
+	// requireServed holds the coverage read of r2 to served checks, served plan tasks and gaps.
+	requireServed := func(when string, served int, gaps []string) {
+		t.Helper()
+		got := requirementOf(t, readCoverage(t, handler, issue.Key), "r2")
+		if got.Checks != served || got.PlanTasks != served || !slices.Equal(got.Gaps, gaps) {
+			t.Errorf("%s the coverage read answers r2 with %d checks, %d plan tasks and the gaps %q, want %d of each and %q",
+				when, got.Checks, got.PlanTasks, got.Gaps, served, gaps)
+		}
+	}
+	write(check, graphstore.StateProposed)
+	write(task, graphstore.StateProposed)
+	requireServed("with its check and its plan task proposed,", 0, []string{noCheckReason, noPlanTaskReason})
+	if answer := requestSpecApproval(t, handler, issue.PrimaryArtifactID); !slices.Contains(answer.Coverage, noCheckGap("r2")) {
+		t.Errorf("with r2's check proposed the approval request's answer %q lacks %q", answer.Coverage, noCheckGap("r2"))
+	}
+	settle(check)
+	settle(task)
+	requireServed("with its check and its plan task settled,", 1, []string{})
+	if answer := requestSpecApproval(t, handler, issue.PrimaryArtifactID); slices.Contains(answer.Coverage, noCheckGap("r2")) {
+		t.Errorf("with r2's check settled the approval request's answer %q still names %q", answer.Coverage, noCheckGap("r2"))
 	}
 
 	edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
@@ -467,6 +497,113 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 			seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
 	}
 	requireNodeState(t, rig.handler, hidden.Address, "alice", graphstore.StateProposed)
+}
+
+// TestAStateWriteKeepsTheCauseOfTheBlockItMoves holds the state route to moving a block's state
+// and nothing else of its row (graphstore.Node.KeepsCause). The requirement's row keeps the event
+// that caused it across proposed, live and proposed again, and each move is one state tuple at no
+// event, written by her, three in all, since no repeat key drops a tuple at the sentinel. A new
+// version of the spec that rewrites another block then leaves the requirement's cause as it was:
+// its row was never at the sentinel, which that version's index pass moves its own event onto.
+func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
+	rig := newReasoningRig(t)
+	ctx := context.Background()
+	cause := func() int64 {
+		t.Helper()
+		var event int64
+		if err := rig.database.Pool.QueryRow(ctx, `select source_event from graph_nodes where kind = $1 and id = $2`,
+			refs.BlockNodeKind, rig.requirementNode).Scan(&event); err != nil {
+			t.Fatalf("read the cause of the requirement's row: %v", err)
+		}
+		return event
+	}
+	caused := cause()
+	if caused == graphstore.NoEvent {
+		t.Fatalf("the requirement's row is at the sentinel before any write of its state, so a cause kept reads as one lost")
+	}
+
+	moves := []string{graphstore.StateProposed, graphstore.StateLive, graphstore.StateProposed}
+	for _, state := range moves {
+		rig.writeState(rig.requirement, state, "alice")
+		if got := cause(); got != caused {
+			t.Fatalf("after the write of %s the requirement's row is caused by event %d, want %d, the event that caused it", state, got, caused)
+		}
+	}
+	history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, rig.requirementNode, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the requirement's state tuples: %v", err)
+	}
+	if len(history) != 1+len(moves) {
+		t.Fatalf("the requirement holds %d state tuples %+v, want the one its first write stated and one for each of %v", len(history), history, moves)
+	}
+	for index, state := range moves {
+		if tuple := history[1+index]; tuple.ToID != state || tuple.SourceEvent != graphstore.NoEvent || tuple.Who.ID != "alice" {
+			t.Errorf("state tuple %d of the requirement is %+v, want %s written by alice at no event", 1+index, tuple, state)
+		}
+	}
+
+	var specID string
+	if err := rig.database.Pool.QueryRow(ctx, `select id::text from artifacts where issue_key = $1 and is_primary`, rig.issue).Scan(&specID); err != nil {
+		t.Fatalf("read the spec's id: %v", err)
+	}
+	edited := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/artifacts/"+specID+"/edits", map[string]any{
+		"ops":     []map[string]string{{"op": "replace", "find": "An opening paragraph.", "with": "A rewritten opening paragraph."}},
+		"summary": "Rewrite the opening paragraph",
+	}, "alice")
+	if edited.Code != http.StatusOK {
+		t.Fatalf("rewrite the opening paragraph: status=%d body=%s", edited.Code, edited.Body.String())
+	}
+	var indexed bool
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select exists (select 1 from document_blocks where artifact_id = $1::uuid and excerpt like '%rewritten opening%')
+	`, specID).Scan(&indexed); err != nil || !indexed {
+		t.Fatalf("the block index holds no block of the rewritten paragraph (%v), so no index pass of the new version ran", err)
+	}
+	if got := cause(); got != caused {
+		t.Fatalf("after a version that rewrote another block the requirement's row is caused by event %d, want %d", got, caused)
+	}
+	requireNodeState(t, rig.handler, rig.requirement, "alice", graphstore.StateProposed)
+}
+
+// TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue: the store keeps no node of a block
+// of an ask, a comment or a message, so the state route refuses proposed, overtaken and live on a
+// comment's block with 409 NODE_STATE_NOT_WRITABLE saying that, naming the block, and stores no
+// tuple and no row; the block still reads live, and the settle refuses it as a node that is not
+// proposed.
+func TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue(t *testing.T) {
+	rig := newReasoningRig(t)
+	ctx := context.Background()
+	comment := createThreadComment(t, rig.handler, rig.issue, map[string]any{"body": "The first remark.\n\nThe second remark."}, "alice")
+	node := "comment/" + comment.ID + "#b1"
+	block := "dispatch://" + rig.issue + "/comment/" + comment.ID + "#b-b1"
+	stored := func() (rows, tuples int) {
+		t.Helper()
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select (select count(*) from graph_nodes where id = $1), (select count(*) from graph_tuples where from_id = $1)
+		`, node).Scan(&rows, &tuples); err != nil {
+			t.Fatalf("count the rows and the tuples of the comment's block: %v", err)
+		}
+		return rows, tuples
+	}
+	rows, tuples := stored()
+	if rows != 0 {
+		t.Fatalf("the store holds %d rows of the comment's block %s, so the route has a node to write and this refusal is no longer true", rows, node)
+	}
+
+	for _, state := range []string{graphstore.StateProposed, graphstore.StateOvertaken, graphstore.StateLive} {
+		refusal := requireRefused(t, state+" on the comment's block", writeStateAs(t, rig.handler, rig.issue, block, state, "alice"),
+			http.StatusConflict, codeStateNotWritable, "the store keeps no node of a block of an ask, a comment or a message")
+		if !strings.Contains(refusal.Error, block) || !strings.Contains(refusal.Error, "takes no "+state) {
+			t.Errorf("the refusal of %s on the comment's block names neither it nor the value: %q", state, refusal.Error)
+		}
+	}
+	if afterRows, afterTuples := stored(); afterRows != rows || afterTuples != tuples {
+		t.Fatalf("the refused writes moved the comment's block from %d rows and %d tuples to %d and %d", rows, tuples, afterRows, afterTuples)
+	}
+	requireNodeState(t, rig.handler, block, "alice", graphstore.StateLive)
+	requireRefused(t, "the settle of the comment's block",
+		dispatchRequest(t, rig.handler, http.MethodPost, statePath(rig.issue, block, "settle"), nil, "alice"),
+		http.StatusConflict, codeNotProposed, "the block "+block+" is live, and only a proposed node is settled")
 }
 
 // TestTheProposedReadTakesTheProposedIndex holds the proposed read (issueProposedQuery) to the

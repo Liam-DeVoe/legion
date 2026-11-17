@@ -134,8 +134,19 @@ func blockHolds(alias, fromKind, table, column string) string {
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
 // numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
 // block has no row, so the edges at it drop out of every list until a version holds its id again.
+// A document's blocks are its own rows, or, for a document of an issue room and for the room's tree
+// artifact, the rows of the room's tree whose issue_room_blocks row names the document
+// (BlockDocumentSQL), read by the tree's key; a converted document's own rows are none of them.
 func documentBlockIDs(param string) string {
-	return `(select d.node_id from document_blocks d join artifacts a on a.id = d.artifact_id where a.ref_key = ` + param + `)`
+	return `(select d.node_id from artifacts a join document_blocks d on d.artifact_id = a.id
+		where a.ref_key = ` + param + ` and a.kind <> 'tree'
+		  and not exists (select 1 from document_rooms moved where moved.artifact_id = a.id)
+		union all
+		select d.node_id from artifacts a
+		join issue_room_blocks r on r.tree_artifact_id = coalesce(
+			(select moved.room from document_rooms moved where moved.artifact_id = a.id), a.id) and r.document_id = a.id
+		join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
+		where a.ref_key = ` + param + `)`
 }
 
 // itemBlockIDs is the node id of every current block of the item of kind whose uuid is the
@@ -444,13 +455,18 @@ func foldsAnswers(query Query) bool {
 // Artifacts are addressed by ref_key on the to side of an edge and by uuid on the from side;
 // found is false when no such node exists, and false too for a node reserved for an author who
 // is not who - a read of such an address answers, byte for byte, what an address nobody holds
-// answers (visibility.go).
+// answers (visibility.go). A node whose own address answers its whole text (resolvedNode's
+// wholeText: a run's words) carries it as its Text, from the same read and so behind the same
+// predicate; an edge at it shows only the head of that text (excerptOf).
 func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRefKey bool) (model.GraphNode, bool, error) {
 	nodes, err := resolveNodes(ctx, q, who, byRefKey, []edgeRow{{otherKind: kind, otherID: id}})
 	if err != nil {
 		return model.GraphNode{}, false, err
 	}
 	node, found := nodes[[2]string{kind, id}]
+	if node.wholeText {
+		node.GraphNode.Text = node.text
+	}
 	return node.GraphNode, found, nil
 }
 
@@ -527,11 +543,15 @@ func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Targ
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
-// excerpt, already cut.
+// excerpt, already cut. wholeText says a read of the node's own address answers that text whole
+// as the node's Text (Node), which an interaction's loader says of a run's words
+// (dispatch://INFRA-1950/spec#b-r-interaction): an edge at the run cuts them at excerptRunes, and
+// the run's own address answers every word of them.
 type resolvedNode struct {
 	model.GraphNode
-	text   string
-	refKey string
+	text      string
+	refKey    string
+	wholeText bool
 }
 
 // name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
@@ -648,6 +668,13 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
 // whose conversation owns it, else (a project document) to no node.
+//
+// The address of a retired document of an issue (artifacts.retired_at, docs.RetireDocument),
+// `dispatch://KEY/artifact/<slug>` read by its ref_key, resolves to the issue KEY, whose node it
+// answers in the document's place (dispatch://INFRA-1150 R8, R11): the document plays no part in
+// its issue any more, and a citation of it stays valid and reaches what took its place, the issue
+// and its reads. The document read by its uuid is the document still, so its versions, its blocks
+// and its own edges stay readable.
 func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	predicate := `a.id::text = any($1)`
 	if byRefKey {
@@ -655,7 +682,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 	}
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at, latest.authors, latest.created_at, `+storedNode("artifact", "a.ref_key")+`
+		       a.created_by, a.created_at, latest.authors, latest.created_at, a.retired_at is not null, `+storedNode("artifact", "a.ref_key")+`
 		from artifacts a
 		left join lateral (
 			select v.authors, v.created_at from artifact_versions v
@@ -666,20 +693,29 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		return fmt.Errorf("load artifact nodes: %w", err)
 	}
 	defer rows.Close()
+	// retiredIssues is the issue each retired document's address resolves to, by that address.
+	var retiredIssues map[string]string
 	for rows.Next() {
 		var id, refKey, project, slug, name, kind string
 		var issueKey, session *string
-		var primary bool
+		var primary, retired bool
 		var createdBy, authors []byte
 		var createdAt time.Time
 		var versionAt *time.Time
 		var stored []string
-		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &stored); err != nil {
+		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &retired, &stored); err != nil {
 			return fmt.Errorf("scan artifact node: %w", err)
 		}
 		lookup := id
 		if byRefKey {
 			lookup = refKey
+		}
+		if byRefKey && retired && issueKey != nil {
+			if retiredIssues == nil {
+				retiredIssues = make(map[string]string)
+			}
+			retiredIssues[lookup] = *issueKey
+			continue
 		}
 		node := model.GraphNode{Kind: "artifact", ID: id, IssueKey: issueKey, Project: project, Ref: ArtifactRef(issueKey, project, session, slug, kind, primary)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, authors, versionAt, storedActors); err != nil {
@@ -696,7 +732,31 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		}
 		nodes[[2]string{"artifact", lookup}] = resolvedNode{GraphNode: node, text: name, refKey: refKey}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if len(retiredIssues) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(retiredIssues))
+	for _, key := range retiredIssues {
+		if !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	// The issue is read as the issue loader reads it, for who: an issue they may not see answers
+	// what an address nobody holds answers, as its own address would.
+	issues := make(map[[2]string]resolvedNode, len(keys))
+	if err := loadIssueNodes(ctx, q, who, "issue", false, keys, issues); err != nil {
+		return err
+	}
+	for lookup, key := range retiredIssues {
+		if issue, found := issues[[2]string{"issue", key}]; found {
+			nodes[[2]string{"artifact", lookup}] = issue
+		}
+	}
+	return nil
 }
 
 // loadBlockNodes resolves block nodes, addressed '<document ref_key>#<block id>', from the
@@ -704,14 +764,19 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // has no row and resolves to nothing, so every edge at it is omitted until a version holds its
 // id again. A block is made by the authors of the version that first held it, when Dispatch knows
 // that version (blockFirstVersion); its last change is its changed version, by that version's
-// authors. It belongs to its document at its changed version.
+// authors. It belongs to its document at its changed version. A block of an issue room, whose row
+// is keyed by the issue's tree artifact, belongs to its own document (BlockDocumentSQL): that
+// document is its parent, names its reference and holds its changed version, while its node's
+// address stays the tree's.
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
 		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+storedNode("block", "d.node_id")+`
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
+		from document_blocks d
+		cross join lateral (select `+BlockDocumentSQL("d")+` as id) owner
+		join artifacts a on a.id = owner.id
+		left join artifact_versions changed on changed.artifact_id = owner.id and changed.number = d.changed_version
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
 		where `+held+` and `+VisibleKind("block", "d.node_id", "$2"), args...)
 	if err != nil {

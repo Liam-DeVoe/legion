@@ -389,7 +389,7 @@ interface Placement {
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
  *  is edited (`TreeNode.transcluded`), with the parent it hangs under there. The issue itself is
  *  no parent a row names: the page is the issue. */
-function placements(root: TreeNode): ReadonlyMap<string, Placement> {
+export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
     if (!placed.has(node.id)) {
@@ -433,7 +433,7 @@ function idsOf(view: TreeNode): ReadonlySet<string> {
 }
 
 /** The ask a node is, by the ask's own id; undefined for every other node. */
-function askIdOf(node: TreeNode): string | undefined {
+export function askIdOf(node: TreeNode): string | undefined {
   if (node.type !== "ask" || node.reference === undefined) return undefined;
   const route = parseNodeReference(node.reference);
   return route?.kind === "ask" ? route.id : undefined;
@@ -456,7 +456,7 @@ function pathOf(node: TreeNode): { readonly path?: string } {
  * the decision node made of that ask does. The ask's own row is that decision, in the person's
  * words.
  */
-function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
+export function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
   return row.kind === "person" && (row.asks ?? []).some((ask) => answered.has(ask));
 }
 

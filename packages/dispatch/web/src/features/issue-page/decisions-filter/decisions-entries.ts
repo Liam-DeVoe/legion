@@ -4,6 +4,7 @@ import { useCallback, useMemo } from "react";
 import { api } from "../../../api/client";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
+import { wordsOf } from "../../refs/tree-fragment";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decisionNodeChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
@@ -15,8 +16,8 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
 /**
  * The one seam between the page's reads and the Decisions view: it
  * turns the decisions view, the tree read and the issue's asks into the view's
- * parts, so no other file of the view names a read. The part that draws the model's own entries
- * (`entries`) replaces this module and leaves the view as it is.
+ * parts, so no other file of the view names a read. Once the server's decisions model gives the
+ * view its entries, that model's read replaces this module and leaves the view as it is.
  *
  * The decisions are the decision nodes of the decisions view (`?view=decisions`), which holds
  * the issue's decisions wherever they are written. The page holds that view on the issue's node
@@ -51,15 +52,16 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * `ViewReadProvider`): the tree read, the decisions view and the issue's asks, each watched and
  * never sent, so the view adds no request of its own.
  *
- * The view draws four parts (dispatch://INFRA-1196 R2). A decision another person made is no
- * part of its own: it stands under the reader's decisions, with that person's name on its row,
- * so G's `others` is put in `yours`, newest first, and `others` is left empty.
+ * The view draws four parts. A decision another person made is no part of its own: it stands
+ * under the reader's decisions, with that person's name on its row, so the model's `others` is
+ * put in `yours`, newest first, and `others` is left empty.
  */
 
 /** The Decisions view's parts, and how the reads they come from stand. */
 export interface DecisionsEntries extends DecisionsParts {
   /** Whether the view knows what the issue holds: the tree read, which its rows come from, and
-   *  the asks have both answered. Until then it cannot say there are none. */
+   *  the asks have both answered. Until then it cannot say there are none, and `q` and `w` with
+   *  nowhere to go say nothing (`useTreeKeymap.ts`' `readsHeld`). */
   readonly known: boolean;
   /** Whether the view has no rows to draw because the tree read, which they come from, failed
    *  with no answer held, or is still out and the decisions view read failed with no answer
@@ -115,8 +117,9 @@ export function useDecisionsEntries({
   );
   const changes = useMemo(() => changesOf(tree, decisions ?? []), [decisions, tree]);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
+  // a line, so the line rule it is handed is the reading's words, as the parts' tests hand it.
+  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
   const parts = useMemo(() => {
     const model = decisionsParts({
       asks,

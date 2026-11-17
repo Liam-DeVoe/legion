@@ -638,9 +638,13 @@ func defaultAttributes(typ BlockTypeSchema) Attrs {
 // default, and false when it has none or when this build may not create the attribute yet. A
 // block an earlier build wrote, before the attribute existed, reads with that default (readElement,
 // renderTypedAttributes), as the browser editor reads it. An attribute this build cannot create is
-// left out, so that no write of this build adds it.
+// left out, so that no write of this build adds it. A server attribute has no written default
+// either: the server writes it into a block or nobody does, and a block it is not written into -
+// an ask's `state` once the fleet keeps an answer on the ask's node alone (docs'
+// rollWindowAskAttributes) - is read, taken at an agent's boundary (StripServerOwnedAttrs) and
+// rendered without it.
 func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
-	if attr.Default == nil || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
+	if attr.Default == nil || attr.Server || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
 		return nil, false
 	}
 	return cloneSchemaValue(attr.Default), true

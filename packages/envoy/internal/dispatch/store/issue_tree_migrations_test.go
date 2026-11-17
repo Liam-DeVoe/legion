@@ -48,12 +48,13 @@ var keepsItsShape = []string{
 }
 
 // createdNew are the tables this child creates: document_rooms and version_renders (R19),
-// issue_trees, which holds each issue's one tree, node_search, the search rows of a node (T15),
-// and issue_tree_block_drain, the one-row record of how far the block drain got (T6). Each is
-// created new, by a create table of its own that is the first statement of the set to name it,
-// and no statement of the set fills it from a stored row. A table no migration of the set names
-// is no finding.
-var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "node_search", "issue_tree_block_drain"}
+// issue_trees, which holds each issue's one tree, issue_room_blocks, the projection of an issue
+// room's block's in_document (D16), node_search, the search rows of a node (T15), and
+// issue_tree_block_drain, the one-row record of how far the block drain got (T6). Each is created
+// new, by a create table of its own that is the first statement of the set to name it, and no
+// statement of the set fills it from a stored row. A table no migration of the set names is no
+// finding.
+var createdNew = []string{"document_rooms", "version_renders", "issue_trees", "issue_room_blocks", "node_search", "issue_tree_block_drain"}
 
 // The statement forms the test reads, each over a statement as pgmigrate.Statements gives it: its
 // words one space apart, and a DO block's body read as statements, so a form is found anywhere in

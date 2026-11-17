@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
@@ -8,7 +8,13 @@ import { api } from "../../../api/client";
 import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
-import { issueTreeKey, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
+import {
+  issueTreeKey,
+  issueTreeQuery,
+  type TreeAnswer,
+  viewKey,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   answeredAsk,
@@ -58,13 +64,14 @@ function heldClient(
   return client;
 }
 
-/** The seam's parts over `client` for the issue whose tree holds `children`, with `decisions`
- *  the decisions view held on its root (undefined for a view that holds no answer). */
-async function partsOver(
+/** The seam mounted over `client` for the issue whose tree holds `children`, with `decisions`
+ *  the decisions view held on its root (undefined for a view that holds no answer), until the
+ *  case unmounts it. */
+async function mountOver(
   client: QueryClient,
   children: readonly TreeNode[],
   decisions: TreeAnswer | undefined
-): Promise<DecisionsParts> {
+) {
   const issue = issueDetails();
   const whole = issueTree(children);
   const root: TreeNode = decisions === undefined ? whole : { ...whole, views: { decisions } };
@@ -77,6 +84,17 @@ async function partsOver(
   });
   // A read the mount started has had its turn before the parts are read.
   await act(() => Promise.resolve());
+  return hook;
+}
+
+/** The seam's parts over `client` for the issue whose tree holds `children`, with `decisions`
+ *  the decisions view held on its root (undefined for a view that holds no answer), read once. */
+async function partsOver(
+  client: QueryClient,
+  children: readonly TreeNode[],
+  decisions: TreeAnswer | undefined
+): Promise<DecisionsParts> {
+  const hook = await mountOver(client, children, decisions);
   const parts = hook.result.current;
   hook.unmount();
   return parts;
@@ -234,7 +252,13 @@ test("the seam gives four parts from today's reads and makes no request", async 
 
 // A decisions view that holds no decision gives no decision and no error, and the view draws
 // the questions alone; so does a view that has not answered yet over a tree read that holds no
-// decision node, which is the read the page's tree is built from.
+// decision node, which is the read the page's tree is built from. Such a read holds its answer
+// all the same (`known`). While any one of the seam's reads has not answered, the questions are
+// drawn all the same. The view knows what the issue holds once the tree read and the asks have
+// answered, which say which questions and decisions there are; the decisions view only stands
+// over the tree read's decisions and the comments say nothing of an entry, so the view knows
+// while those are out. Either of the first two refused before it first answers is the seam's to
+// name, with a retry of its own, so the body can say so without naming a read.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   for (const [read, decisions] of [
@@ -255,6 +279,104 @@ test("an empty decisions member gives the questions alone and no error", async (
       },
       read,
     });
+  }
+
+  // Each read in turn is left out of the cache, and a fetch of it would never settle; its answer
+  // comes into the cache later, as a read that answers puts it there. `knownWhileOut` is whether
+  // the view knows what the issue holds while that read is out. The seam watches each read and
+  // sends none of its own, so the fetch is never started.
+  const held = { asks: [], comments: [], tree: treeAnswer([]) };
+  const cold = [
+    { answer: held.tree, key: issueTreeKey(KEY), knownWhileOut: false, read: "getIssueTree" },
+    { answer: held.asks, key: ["asks", KEY], knownWhileOut: false, read: "listIssueAsks" },
+    {
+      answer: held.tree,
+      key: viewKey(KEY, "decisions"),
+      knownWhileOut: true,
+      read: "getIssueTree",
+    },
+    { answer: held.comments, key: ["comments", KEY], knownWhileOut: true, read: "listComments" },
+  ] as const;
+  for (const { answer, key, knownWhileOut, read } of cold) {
+    const started = spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise);
+    try {
+      const client = heldClient(held.asks, held.comments, held.tree);
+      client.removeQueries({ exact: true, queryKey: key });
+      const hook = await mountOver(client, children, undefined);
+      const reading = () => ({
+        known: hook.result.current.known,
+        open_questions: idsOf(hook.result.current).open_questions,
+        out: key,
+      });
+      expect(reading()).toEqual({ known: knownWhileOut, open_questions: ["q-open"], out: key });
+      expect(started).not.toHaveBeenCalled();
+      await act(async () => client.setQueryData(key, answer));
+      expect(reading()).toEqual({ known: true, open_questions: ["q-open"], out: key });
+      hook.unmount();
+    } finally {
+      started.mockRestore();
+    }
+  }
+
+  // Each of the two reads the view's failed-read lines name is refused in turn before it first
+  // answers, with the other read in the cache: the tree read, which the view's rows come from,
+  // and the asks. The page's own read refuses it, since the seam sends none. The refused read
+  // holds no answer, so the seam says it failed (`failed`, `asksFailed`) and the view does not
+  // know what the issue holds; its retry asks that read again, which is refused again, and asks
+  // the other read nothing.
+  const refused = [
+    {
+      failed: "failed",
+      key: issueTreeKey(KEY),
+      other: "listIssueAsks",
+      read: (client: QueryClient) => client.prefetchQuery(issueTreeQuery(KEY)),
+      request: "getIssueTree",
+      retry: "retry",
+    },
+    {
+      failed: "asksFailed",
+      key: ["asks", KEY],
+      other: "getIssueTree",
+      read: (client: QueryClient) =>
+        client.prefetchQuery({
+          queryFn: () => api.listIssueAsks(KEY, "all"),
+          queryKey: ["asks", KEY],
+        }),
+      request: "listIssueAsks",
+      retry: "asksRetry",
+    },
+  ] as const;
+  for (const { failed, key, other, read, request, retry } of refused) {
+    const asked = spyOn(api, request).mockRejectedValue(new Error("refused"));
+    const notAsked = spyOn(api, other);
+    try {
+      const client = heldClient(held.asks, held.comments, held.tree);
+      client.removeQueries({ exact: true, queryKey: key });
+      await read(client);
+      const hook = await mountOver(client, children, undefined);
+      const reading = () => ({
+        asksFailed: hook.result.current.asksFailed,
+        failed: hook.result.current.failed,
+        known: hook.result.current.known,
+        read: request,
+      });
+      const unreadable = {
+        asksFailed: failed === "asksFailed",
+        failed: failed === "failed",
+        known: false,
+        read: request,
+      };
+      await waitFor(() => expect(reading()).toEqual(unreadable));
+      expect(asked).toHaveBeenCalledTimes(1);
+      await act(async () => hook.result.current[retry]());
+      await waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(reading()).toEqual(unreadable));
+      expect(notAsked).not.toHaveBeenCalled();
+      hook.unmount();
+    } finally {
+      asked.mockRestore();
+      notAsked.mockRestore();
+    }
   }
 });
 

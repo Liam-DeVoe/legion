@@ -315,10 +315,11 @@ func TestRetypeBlockKeepsTheBlockIdentityAndParagraphBody(t *testing.T) {
 	if ask.Type != "ask" {
 		t.Fatalf("retyped type = %q, want ask", ask.Type)
 	}
+	// A server attribute has no written default: the retyped ask holds no state until the server
+	// writes one (writtenDefault).
 	if got := ask.Attrs; !attrsEqual(got, Attrs{
 		BlockIDAttr: "question-id",
 		"multiple":  true,
-		"state":     "open",
 		"urgency":   "high",
 	}) {
 		t.Fatalf("retyped attrs = %#v", got)

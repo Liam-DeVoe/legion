@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { DecisionLink, DisplayTree } from "../../../api/types";
+import { wordsOf } from "../../refs/tree-fragment";
 import { inReviewList } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
@@ -46,8 +47,9 @@ import {
  * it a tree built by hand and reads what it answers.
  */
 
-/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
-const nodeIdOf = treeContext({ issue: issueDetails() }).nodeIdOf;
+/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). The line
+ *  a block is named by is the whole reading's words (`wordsOf`), which nothing below reads. */
+const nodeIdOf = treeContext({ issue: issueDetails() }, wordsOf).nodeIdOf;
 
 /** The parts of the tree that holds `children`, with the decision nodes of `made` and the
  *  comments the tree read hangs under them (`comments`), which are the Changes a person asked of

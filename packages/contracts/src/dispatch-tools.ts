@@ -2590,9 +2590,11 @@ export const dispatchToolSpecs = [
       "takes a lens, a finding, a risk or a constraint out of every read; a block of a document " +
       "is removed by editing its document. A state the node cannot take is refused with 409 " +
       "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
-      "block of a document, an issue, a document, an ask, a comment or a message, and any state " +
-      "on a gone node. Settle a proposal with dispatch settle. The result names the node's " +
-      `state before and after. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+      "block of a document, an issue, a document, an ask, a comment or a message, any state " +
+      "on a gone node, and any state on a block of an ask, a comment or a message, which the " +
+      "store keeps no node of and every read answers live. Settle a proposal with dispatch " +
+      "settle. The result names the node's state before and after. " +
+      `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node whose state to write: ${NODE_UNDER_ISSUE}.`),
@@ -2631,6 +2633,69 @@ export const dispatchToolSpecs = [
       `dispatch state. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_premortem_convert",
+    example: {
+      issue: "DSP-1",
+      artifact: "premortem-md",
+      prevented_by: [
+        {
+          risk: 0,
+          checks: ["dispatch://DSP-1/artifact/verification-md#b-k1"],
+          reason: "k1 fails a slice that ships nothing a user sees.",
+        },
+        { risk: 1, checks: [], reason: "No check covers a second indexer yet." },
+      ],
+      preview: true,
+    },
+    description:
+      "Convert a pre-mortem document of an issue into nodes, once: one lens of kind pre-mortem " +
+      "under the issue, whose verdict is the document's verdict followed by its two closing " +
+      'sections, "What a world-class implementation looks like" and "The smallest first slice ' +
+      'that proves the model", word for word, and under it one risk for risk 0 and each ' +
+      "numbered risk, each with its heading, its early warning and its prevention and a " +
+      "prevented_by pointer to each check its entry names. The document is then retired, and " +
+      "its address answers the lens. prevented_by holds one entry for each risk the document " +
+      "holds: its number as the document numbers it, the dispatch:// addresses of the check " +
+      "blocks that prevent it, of any issue ([] for none), and why. An entry for a number the " +
+      "document does not hold, a number twice, a risk with no entry, an address that names no " +
+      "check block you may see, a blank reason, and an entry of any other shape are refused " +
+      "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
+      "and nothing is written. preview answers what the conversion would write and writes " +
+      "nothing; run it first. A document converted already is answered as such, naming its " +
+      "lens, and nothing is written. The result names the lens's dispatch://lens/<uuid> " +
+      `address and each risk's dispatch://risk/<uuid> address. ${REASONING_WRITE_RULE} ` +
+      ISSUE_REFERENCE,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      artifact: z
+        .string({ min: 1 })
+        .describe("The slug of the issue's pre-mortem document, such as graph-premortem-md."),
+      prevented_by: z
+        .array(
+          z.object({
+            risk: z
+              .number({ int: true, min: 0 })
+              .describe("The risk's number as the document numbers it: 0 for risk 0."),
+            checks: z
+              .array(z.string({ min: 1 }))
+              .describe(
+                "The dispatch:// addresses of the check blocks that prevent the risk, such as dispatch://KEY-1/artifact/verification-md#b-<id>; [] for none."
+              ),
+            reason: z
+              .string({ min: 1 })
+              .describe("Why those checks prevent the risk, or why none does."),
+          }),
+          { min: 1 }
+        )
+        .describe("One entry { risk, checks, reason } for each risk the document holds."),
+      preview: z
+        .boolean()
+        .describe("true answers what the conversion would write and writes nothing.")
+        .optional(),
     }),
     strict: true,
   },

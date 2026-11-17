@@ -61,15 +61,15 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 	})
 
 	t.Run("the approval carry", func(t *testing.T) {
+		// A person's answer writes no version (R3), so the carry that answers an open approval
+		// request here is the restore's: the agent's undo of its edit holds the approved text.
 		handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
-		issue := createInteractionIssue(t, handler, "TEST", "The carry's answer on the node", "Context\n")
+		issue := createInteractionIssue(t, handler, "TEST", "The carry's answer on the node", "A spec\n")
 		reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-		blocks := insertDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, waveAsk, 2, map[string]string{"wave": "How many regions take the first wave?"})
+		reviseDocument(t, handler, issue.PrimaryArtifactID, "A spec", "A revised spec", 2)
 		request := requestApproval(t, handler, issue.PrimaryArtifactID)
-		answerDecisionBlock(t, handler, blocks["wave"], "alice", []string{"Two"}, "", nil)
-		waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
-		requireCarriedReview(t, handler, issue.PrimaryArtifactID, 3, 1, &request.ID)
-		requireTheAnswerOnTheNode(t, database, "the answer of a decision block", blocks["wave"], "ask.answered")
+		reviseDocument(t, handler, issue.PrimaryArtifactID, "A revised spec", "A spec", 3)
+		requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
 		requireTheAnswerOnTheNode(t, database, "the approval carry's answer", request.ID, "ask.answered")
 	})
 

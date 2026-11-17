@@ -1,9 +1,9 @@
 import type { Page } from "@playwright/test";
 
 /**
- * How a row reads the typeface the new issue page draws in: part B's
- * `e2e/issue-page-look.e2e.ts` and part J's `e2e/issue-page-j.e2e.ts` both read it. It is a file
- * of its own, holding no test, because Playwright refuses a test file that imports another one.
+ * How a row reads the typeface the new issue page draws in: `e2e/issue-page-look.e2e.ts` and
+ * `e2e/issue-page-j.e2e.ts` both read it. It is a file of its own, holding no test, because
+ * Playwright refuses a test file that imports another one.
  */
 
 /** The family `web/src/styles.css` declares for the typeface the app ships and the new issue
