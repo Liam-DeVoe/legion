@@ -10,6 +10,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickFromMenu } from "../../__tests__/menu-picks";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api } from "../../api/client";
@@ -2314,9 +2315,10 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
 
     const row = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-b row missing");
-    await user.selectOptions(
+    await pickFromMenu(
+      user,
       within(row).getByLabelText("Snooze CORE-2: Which format?"),
-      "tomorrow"
+      "Tomorrow"
     );
 
     // Folded by default: the row leaves the list, and the band's count says where it went.
@@ -2439,7 +2441,7 @@ test("a snooze still saving says Snoozing…, not Un-snoozing…, in the band it
   const { unmount } = renderInbox();
   try {
     await screen.findByText("Which format?");
-    await user.selectOptions(screen.getByLabelText("Snooze CORE-1: Which format?"), "tomorrow");
+    await pickFromMenu(user, screen.getByLabelText("Snooze CORE-1: Which format?"), "Tomorrow");
 
     // The optimistic update has already put the row in Later, which is right - it is where the
     // snooze is going - but the label must say what the reader did, not where the row landed.
@@ -2480,7 +2482,7 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
   const { unmount } = renderInbox("/?group=waiting-on");
   try {
     await screen.findByText("Which format?");
-    await user.selectOptions(screen.getByLabelText("Snooze CORE-1: Which format?"), "tomorrow");
+    await pickFromMenu(user, screen.getByLabelText("Snooze CORE-1: Which format?"), "Tomorrow");
 
     // The row comes back to the band it was in, and the reason comes with it - the control is
     // kept mounted through the fold, so the refusal is not thrown away with the row.
@@ -3257,15 +3259,18 @@ test("the keys act on the selected row and the pane: Enter, 1-9, x, h and Escape
     await user.keyboard("{Escape}");
     expect(shortRow("ask-a")).toHaveFocus();
 
-    // `h` with nothing checked is the pane head's Snooze, which the short row no longer carries.
+    // `h` with nothing checked opens the pane head's Snooze menu, which the short row no longer
+    // carries, on its first choice; Escape closes it, writes nothing, and puts the focus back on
+    // the row `h` was pressed on.
     await user.keyboard("h");
-    expect(document.activeElement?.matches("[data-inbox-snooze]")).toBe(true);
-    expect(pane.contains(document.activeElement)).toBe(true);
+    const snoozeMenu = screen.getByRole("menu", { name: /^Snooze CORE-1/ });
+    expect(within(snoozeMenu).getByRole("menuitem", { name: "Later today" })).toHaveFocus();
+    expect(pane.querySelector("[data-inbox-snooze]")).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(shortRow("ask-a")).toHaveFocus();
 
     // `x` checks the selected row, which is what the bulk bar then counts.
-    // `h` left the focus on the pane's `<select>`, where a letter is the control's own
-    // type-ahead rather than a shortcut, so the reader is back on the row before pressing it.
-    shortRow("ask-a").focus();
     await user.keyboard("x");
     await screen.findByText("1 selected");
     expect((within(shortRow("ask-a")).getByRole("checkbox") as HTMLInputElement).checked).toBe(
@@ -3277,6 +3282,61 @@ test("the keys act on the selected row and the pane: Enter, 1-9, x, h and Escape
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+test("p opens the priority menu of an ask of an issue, and is not offered on a document's ask", async () => {
+  const user = userEvent.setup();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 2 });
+  const rows = [first, artifactAsk("alice")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...narrowIssueOf(first, "alice"),
+    priority: 0,
+  });
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox();
+  const offered = () =>
+    appKeymap.describe().find((entry) => entry.scope === "inbox" && entry.id === "priority")
+      ?.enabled;
+  const rowOf = (id: string) => {
+    const row = document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`);
+    if (row === null) throw new Error(`no row ${id}`);
+    return row;
+  };
+
+  try {
+    await screen.findByText("Which approach?");
+    const issueRow = rowOf("ask-a");
+    act(() => issueRow.focus());
+    expect(offered()).toBe(true);
+    await user.keyboard("p");
+    const menu = screen.getByRole("menu", { name: "Priority of CORE-1" });
+    const checked = within(menu).getByRole("menuitemradio", { name: "P2" });
+    expect(checked).toHaveAttribute("aria-checked", "true");
+    expect(checked).toHaveFocus();
+    await user.keyboard("{ArrowUp}{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(issueRow).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("p");
+    await user.keyboard("0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    // A question on a project document has no issue, so no priority to open.
+    act(() => rowOf("ask-1").focus());
+    expect(offered()).toBe(false);
+    await user.keyboard("p");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    patchIssue.mockRestore();
   }
 });
 
@@ -3993,16 +4053,17 @@ test("a snooze under h drops the record: Escape lands on the question the column
     await user.keyboard("l");
     expect(scroller()).toHaveFocus();
 
-    // `h` hands the focus to the column's own Snooze, which is a move inside the column and
-    // keeps the record. The deferral is what ends it, and both of the drops that keep the
-    // record's question true cover that between them: the row folds into Later for a commit with
-    // nothing shown at all, where the column goes and `holdPane` drops first, and the question
-    // the column is handed next is the change the layout effect reads. This row pins where
-    // Escape goes, which the two of them agree on; it does not tell them apart.
+    // `h` opens the column's own Snooze menu, and `2` picks Tomorrow in it. The menu stands over
+    // the page, but it opens from the column and hands the focus back into it, so it keeps the
+    // record. The deferral is what ends it, and both of the drops that keep the record's
+    // question true cover that between them: the row folds into Later for a commit with nothing
+    // shown at all, where the column goes and `holdPane` drops first, and the question the
+    // column is handed next is the change the layout effect reads. This row pins where Escape
+    // goes, which the two of them agree on; it does not tell them apart.
     await user.keyboard("h");
-    const snooze = document.activeElement;
-    expect(snooze?.matches("[data-inbox-snooze]")).toBe(true);
-    await user.selectOptions(snooze as HTMLSelectElement, "tomorrow");
+    expect(screen.getByRole("menu", { name: /^Snooze CORE-2/ })).toBeInTheDocument();
+    await user.keyboard("2");
+    expect(snoozeAsk).toHaveBeenCalledTimes(1);
 
     // The deferred question folds into Later and the column takes the next one.
     await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
@@ -4152,15 +4213,20 @@ test("the focus moving inside the column keeps the record: Escape still returns 
     await user.keyboard("l");
     expect(scroller()).toHaveFocus();
 
-    // `h` moves the focus to the column's own Snooze: the scroller's blur names a target inside
-    // the wrapper, the reader has not left the column, and the question it shows has not
-    // changed - so the record stands and Escape is still their way back to the row they came
-    // from. This is the keep branch of the blur rule, the drop above it being the one the
-    // search box and a row take.
+    // `h` opens the column's own Snooze menu: it stands over the page, portalled out of the
+    // column, but it opens from a control inside the column, and the focus moving into it and
+    // through its choices names targets the column counts as its own. Escape closes it and hands
+    // the focus back to the scroller, the question it shows has not changed - so the record
+    // stands and a second Escape is still their way back to the row they came from. This is the
+    // keep branch of the blur rule, the drop above it being the one the search box and a row
+    // take.
     await user.keyboard("h");
-    const snooze = document.activeElement;
-    expect(snooze?.matches("[data-inbox-snooze]")).toBe(true);
-    expect(screen.getByTestId("inbox-pane").contains(snooze)).toBe(true);
+    const menu = screen.getByRole("menu", { name: /^Snooze CORE-2/ });
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard("{ArrowDown}");
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard("{Escape}");
+    expect(scroller()).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(shortRow("ask-a")).toHaveFocus();
     expect(selectedIds()).toEqual(["ask-b"]);
@@ -4844,21 +4910,25 @@ test("a bulk snooze of the selected row keeps the list and the picker the reader
     await user.keyboard("j");
     await user.keyboard("x");
     await screen.findByText("2 selected");
+    // With the focus on nothing, the menu hands it back to its own trigger as it closes.
     await user.keyboard("h");
     const list = screen.getByTestId("inbox-list");
-    const picker = screen.getByLabelText("Snooze selected asks");
-    expect(picker).toHaveFocus();
+    const picker = screen.getByRole("button", { name: "Snooze selected asks" });
+    const menu = screen.getByRole("menu", { name: "Snooze selected asks" });
+    // The bar snoozes only, so its menu offers no Un-snooze.
+    expect(within(menu).queryByRole("menuitem", { name: "Un-snooze" })).not.toBeInTheDocument();
 
-    await user.selectOptions(picker, "tomorrow");
+    await user.keyboard("2");
     // Every marked row folds into Later at once, so the selection - the row the column was
     // showing among them - has nothing to fall to and the column goes.
     await waitFor(() => expect(rowIds()).toEqual([]));
     expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
-    // The list and the picker are the same nodes: the column left, the list stayed, and the
-    // keyboard is still in the bar it was in.
+    // The list and the trigger are the same nodes: the column left, the list stayed, and the
+    // keyboard is still in the bar it was in, on a trigger held while its write is out.
     expect(screen.getByTestId("inbox-list")).toBe(list);
-    expect(screen.getByLabelText("Snooze selected asks")).toBe(picker);
+    expect(screen.getByRole("button", { name: "Snooze selected asks" })).toBe(picker);
     expect(picker).toHaveFocus();
+    expect(picker).toHaveAttribute("aria-disabled", "true");
 
     await act(async () => {
       landing.resolve();
@@ -4891,9 +4961,10 @@ test("a snooze the column's head writes keeps that column on its row, in flight 
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.selectOptions(
+    await pickFromMenu(
+      user,
       within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+      "Tomorrow"
     );
     // The optimistic snooze has folded the row into Later, and the row is listed inside that
     // fold while its write is out - which is what keeps the column, and the control that
@@ -4947,9 +5018,10 @@ test("a row the reader defers hands the selection to the next one, and the last 
   try {
     const pane = await screen.findByTestId("inbox-pane");
     expect(address()).toBe("/?item=ask-a");
-    await user.selectOptions(
+    await pickFromMenu(
+      user,
       within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+      "Tomorrow"
     );
 
     // A row the reader defers is a row they have dealt with: the next one takes its place and
@@ -4957,9 +5029,10 @@ test("a row the reader defers hands the selection to the next one, and the last 
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
     expect(address()).toBe("/?item=ask-b");
 
-    await user.selectOptions(
+    await pickFromMenu(
+      user,
       within(screen.getByTestId("inbox-pane")).getByLabelText("Snooze CORE-2: Which format?"),
-      "tomorrow"
+      "Tomorrow"
     );
 
     // With the last row deferred the address names none at all: a reload reads it, and one

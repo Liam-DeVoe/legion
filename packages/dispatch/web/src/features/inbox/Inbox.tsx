@@ -14,6 +14,7 @@ import { Link } from "react-router-dom";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
+import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { ControlRow } from "../../components/ControlRow";
 import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
@@ -47,7 +48,7 @@ import {
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -65,7 +66,7 @@ import {
   NO_FILTER_VALUE,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
+import { type KeymapScope, PANEL_ATTRIBUTE, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -124,7 +125,7 @@ import {
   sectionTitles,
   UNASSIGNED_FILTER_VALUE,
 } from "./sections";
-import { SNOOZE_PRESETS } from "./snooze";
+import { snoozeChoices, snoozeOf } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
@@ -221,7 +222,7 @@ function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
   return null;
 }
 
-/** The bulk bar's snooze picker: `h` hands it focus and Escape takes it back to the list. */
+/** The bulk bar's Snooze menu: `b` and `h` press it while rows are marked. */
 const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
@@ -240,6 +241,21 @@ function focusedRow(): HTMLElement | null {
 
 function rowAround(node: Element | null): HTMLElement | null {
   return closestMatching(node, ROW_SELECTOR);
+}
+
+/** Whether `node` is in the reading column `column`: inside it, or inside a panel a control of
+ *  it opened - the head's Snooze and priority menus, a card's hand-on list - which stands over
+ *  the page, portalled out of the column, and hands the focus back into it as it closes. Such a
+ *  panel is the one a control of the column names as what it opened (`aria-controls`). */
+function inColumn(column: HTMLElement | null, node: EventTarget | null): boolean {
+  if (column === null || !(node instanceof Element)) return false;
+  if (column.contains(node)) return true;
+  const panel = node.closest(`[${PANEL_ATTRIBUTE}]`);
+  return (
+    panel !== null &&
+    panel.id !== "" &&
+    column.querySelector(`[aria-controls="${CSS.escape(panel.id)}"]`) !== null
+  );
 }
 
 /** Everything inside a short row that answers a click itself: its links, its checkbox, and
@@ -1102,7 +1118,9 @@ export function Inbox({
    *      one is handed the selection - and that is also the only drop for the Inbox falling
    *      below the column's width, where the selection stands and the column goes.
    *  (b) The reader's focus has not left the column. The document's `focusin` below drops the
-   *      record wherever the focus lands outside the wrapper, which is every route out at once:
+   *      record wherever the focus lands outside the column (`inColumn`: its wrapper, and a menu
+   *      or a list a control of it opened, which hands the focus back into it as it closes),
+   *      which is every route out at once:
    *      `f` to the search box, Escape to the row, a Tab onto a row's checkbox, a click into
    *      the list, the row a step out of the column focuses on its way, the dialog a picture
    *      opens full size. `forgetPaneReturn`, the wrapper's `onBlur`, covers the one exit that
@@ -1159,9 +1177,9 @@ export function Inbox({
     if (node === null) paneReturn.current = null;
   }, []);
   // Fact (b), stated as itself: wherever the focus lands, the record stands only while that
-  // place is inside the column. A focus the column itself takes - the head's Snooze under `h`,
-  // a link in the drawn document, the scroller `l` focuses as it writes the record - lands
-  // inside the wrapper and changes nothing, so the key's own `focusin` cannot undo it, and
+  // place is inside the column. A focus the column itself takes - the head's Snooze menu under
+  // `h`, a link in the drawn document, the scroller `l` focuses as it writes the record - lands
+  // in the column and changes nothing, so the key's own `focusin` cannot undo it, and
   // Escape's `run` reads the record before it focuses the row, so the drop that press makes
   // takes nothing it still needs.
   //
@@ -1174,7 +1192,7 @@ export function Inbox({
   useEffect(() => {
     const dropWhereFocusLands = () => {
       // `focusin` fires once the focus has landed, so the document already names where.
-      if (paneRef.current?.contains(document.activeElement) !== true) paneReturn.current = null;
+      if (!inColumn(paneRef.current, document.activeElement)) paneReturn.current = null;
     };
     document.addEventListener("focusin", dropWhereFocusLands);
     return () => document.removeEventListener("focusin", dropWhereFocusLands);
@@ -1190,7 +1208,7 @@ export function Inbox({
    *  on a node are this handler's too, an event before the listener above reads them, so what
    *  needs it is only the focus that lands nowhere. */
   const forgetPaneReturn = (event: FocusEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.contains(event.relatedTarget ?? document.activeElement)) {
+    if (!inColumn(event.currentTarget, event.relatedTarget ?? document.activeElement)) {
       paneReturn.current = null;
     }
   };
@@ -1270,9 +1288,6 @@ export function Inbox({
     answerHand()?.querySelector<HTMLElement>(selector) ?? null;
   // The bar is reached through its own ref, which holds wherever the header draws it.
   const bulkPicker = () => bulkBarRef.current?.querySelector<HTMLElement>(BULK_PICKER_SELECTOR);
-  // Which row `h` was pressed on, so Escape from the bulk picker - which sits above the bands and
-  // has no row to fall back through - is one level out rather than a dead end.
-  const pickerOrigin = useRef<string | null>(null);
   useKeymapScope(keymapScope);
   useKeymap(keymapScope, [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
@@ -1417,16 +1432,17 @@ export function Inbox({
     },
     {
       // One action for both: with rows marked it is the whole selection, otherwise the row in
-      // hand.
+      // hand. The key presses the menu's trigger, which opens it with the focus on its first
+      // choice and hands the focus back here as it closes (`ChoiceMenu`).
       action: "inbox.snooze",
       run: () => {
         if (selectedAsks.length === 0) {
           // The short row carries no Snooze of its own: the reading column's head does, for the
           // row it is showing.
-          inHand("[data-inbox-snooze]")?.focus();
+          inHand("[data-inbox-snooze]")?.click();
           return;
         }
-        bulkPicker()?.focus();
+        bulkPicker()?.click();
       },
       // The selection's key works from wherever marking leaves the reader - a row, the checkbox
       // they just ticked, the bar - but not from inside an ask they are answering: an option
@@ -1439,13 +1455,13 @@ export function Inbox({
         (inHand("[data-inbox-snooze]") !== null && (!paneShown || outsideAskCard())),
     },
     {
-      action: "inbox.back-from-bulk",
-      run: () => {
-        // With every marked row gone there is no row to return to, so the bar itself is the
-        // level out: it holds the count and the way to clear it.
-        (originRow(pickerOrigin.current) ?? rows()[0] ?? bulkBarRef.current)?.focus();
-      },
-      when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
+      // The priority of the issue the item in hand is about. A question or an approval request
+      // of an issue draws the control, and a document's ask and a thread draw none, so on those
+      // the key opens nothing and the `?` help shows it not available. Not from inside an ask
+      // the reader is answering, the rule Snooze holds to.
+      action: "inbox.priority",
+      run: () => inHand("[data-priority-menu]")?.click(),
+      when: () => inHand("[data-priority-menu]") !== null && (!paneShown || outsideAskCard()),
     },
     {
       // Escape is one level out, and the selection is the outermost thing a row press made:
@@ -1472,10 +1488,10 @@ export function Inbox({
     {
       // Escape is one level out, and out of the box is the list: the row the column is showing
       // on the page, and the first row in the drawer, where nothing is selected. It is offered
-      // only while the focus is in the box, so the three Escapes above are untouched - `back`
-      // and `back-from-bulk` both answer false there, and `clear-selection` is not `inEditable`
-      // at all - and the drawer's own Close waits its turn, the Inbox's registration being the
-      // first of the scope to match (`keymap.ts`'s `resolve`).
+      // only while the focus is in the box, so the two Escapes above are untouched - `back`
+      // answers false there, and `clear-selection` is not `inEditable` at all - and the drawer's
+      // own Close waits its turn, the Inbox's registration being the first of the scope to match
+      // (`keymap.ts`'s `resolve`).
       action: "inbox.leave-search",
       run: () => (paneSelection.selectedRow() ?? rows()[0])?.focus(),
       when: () => searchRef.current !== null && document.activeElement === searchRef.current,
@@ -1878,44 +1894,28 @@ export function Inbox({
       }
       state={barState}
     >
-      {/* The picker stays while its own write is out: the optimistic fold takes every marked ask
-          off this view, and a picker unmounted under the reader's hand drops their focus. */}
+      {/* The menu stays while its own write is out: the optimistic fold takes every marked ask
+          off this view, and a trigger unmounted under the reader's hand drops their focus. One
+          pick at a time: a second while the first is in the air re-sends every id, and its
+          answer can settle after the live one's and overwrite what the reader was told. It is
+          held (`aria-disabled`) rather than disabled because the browser takes focus off a
+          control that disables itself under it - dropping the reader on the document
+          mid-write, with no Escape to leave and no way back to the bar. It snoozes only, so it
+          offers no Un-snooze. */}
       {selectedAsks.length === 0 && bulkSnoozing === 0 ? null : (
-        <span className={badgeSelectWrapper}>
-          <span
-            aria-hidden="true"
-            className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}
-          >
-            Snooze
-          </span>
-          {/* One pick at a time: a second while the first is in the air re-sends every id, and
-              its answer can settle after the live one's and overwrite what the reader was told.
-              It is `aria-disabled` rather than `disabled` because the browser takes focus off a
-              control that disables itself under it - dropping the reader on the document
-              mid-write, with no Escape to leave and no way back to the bar. */}
-          <select
-            aria-disabled={bulkSnoozing !== 0}
-            aria-label="Snooze selected asks"
-            className={badgeSelectOverlay}
-            data-inbox-bulk-snooze=""
-            onChange={(event) => {
-              if (bulkSnoozing !== 0) return;
-              const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
-              if (preset !== undefined) snoozePick(preset.until(new Date()));
-            }}
-            onFocus={(event) => {
-              pickerOrigin.current = rowAround(event.relatedTarget)?.dataset.inboxRow ?? null;
-            }}
-            value=""
-          >
-            <option value="">Snooze…</option>
-            {SNOOZE_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-        </span>
+        <ChoiceMenu
+          choices={snoozeChoices(false)}
+          held={bulkSnoozing !== 0}
+          label="Snooze selected asks"
+          marks={{ "data-inbox-bulk-snooze": "" }}
+          onChoose={(choice) => {
+            const until = snoozeOf(choice, new Date());
+            if (until !== null) snoozePick(until);
+          }}
+          triggerClassName={badgeMenuTrigger}
+        >
+          <span className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>Snooze</span>
+        </ChoiceMenu>
       )}
       {selectedThreads.length === 0 ? null : (
         <button

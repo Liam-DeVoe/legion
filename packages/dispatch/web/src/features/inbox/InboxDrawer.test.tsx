@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { pickFromMenu } from "../../__tests__/menu-picks";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -140,9 +141,10 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
 
     const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-a row missing");
-    await user.selectOptions(
+    await pickFromMenu(
+      user,
       within(row).getByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+      "Tomorrow"
     );
 
     await waitFor(() =>

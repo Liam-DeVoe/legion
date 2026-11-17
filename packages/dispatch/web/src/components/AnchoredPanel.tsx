@@ -58,15 +58,34 @@ const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
  *  ignores it. */
 export type PanelDismissal = "escape" | "gone" | "press" | "tab";
 
+/** Where the focus was when a key opened a panel from its anchor, by anchor: written by
+ *  `noteOpenedFrom`, read by Escape in the panel that opens, and forgotten as that panel closes. */
+const openedFrom = new WeakMap<HTMLElement, HTMLElement>();
+
+/**
+ * Notes, for the panel `anchor` is about to open, the element that has the focus now, so that
+ * Escape in that panel hands the focus back there rather than to the anchor: a key that presses
+ * a panel's trigger from a row leaves the reader on that row when they back out, where a press
+ * on the trigger itself leaves them on the trigger. Called by the key's binding just before it
+ * presses the anchor; the note holds until the panel that opens closes, however it closes.
+ */
+export function noteOpenedFrom(anchor: HTMLElement): void {
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && focused !== document.body) openedFrom.set(anchor, focused);
+  else openedFrom.delete(anchor);
+}
+
 /**
  * The one panel that hangs off a control: portalled to the body so no ancestor can clip it,
  * placed under its anchor - over it where the window has no room under it, and cut to the room
  * on the roomier side where it has room on neither, so it never covers its anchor - and kept
  * there while the page resizes or scrolls, and dismissed by the same rules everywhere — a
  * pointer press outside it or its anchor, Escape, or Tab or Shift+Tab past its last or first
- * control, the last three of which also return focus to the anchor. Opening moves focus to the
- * panel's first control that takes it, by the rule its edges and every dialog's trap follow
- * (`focusableIn`), else to the panel itself, unless the host opens it without (`focusOnOpen`).
+ * control, the last three of which also return focus to the anchor (or to where the host says,
+ * `returnFocus`, or for Escape to where a key opened it from, `noteOpenedFrom`). Opening moves
+ * focus to the panel's first control that takes it, by the rule its edges and every dialog's
+ * trap follow (`focusableIn`), else to the panel itself, unless the host opens it without
+ * (`focusOnOpen`).
  *
  * Tab never leaves the panel for whatever the body holds after it: portalled there, the panel is
  * outside the dialog it was opened in, whose own Tab cycle never sees it, so the focus would go
@@ -99,6 +118,7 @@ export function AnchoredPanel({
   id,
   label,
   onDismiss,
+  returnFocus,
   role,
 }: {
   align?: "left" | "right";
@@ -112,7 +132,11 @@ export function AnchoredPanel({
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
   onDismiss: (how: PanelDismissal) => void;
-  role?: "dialog";
+  /** Where Escape and Tab out of the panel put the focus, read as they do: the anchor where
+   *  this answers null or is not given. A menu answers the element that had the focus before
+   *  it opened (`ChoiceMenu`). */
+  returnFocus?: () => HTMLElement | null;
+  role?: "dialog" | "menu";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; maxHeight?: number; top: number }>({
@@ -121,6 +145,8 @@ export function AnchoredPanel({
   });
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
+  const back = useRef(returnFocus);
+  back.current = returnFocus;
   const takesFocus = useRef(focusOnOpen);
   // Whether the focus was last on the panel or one of its own controls: what tells an edge the
   // reader reached by Tab out of the panel from one they reached by Tab into it.
@@ -233,6 +259,9 @@ export function AnchoredPanel({
 
   useEffect(() => {
     const panel = panelRef.current;
+    // The anchor this panel opened from, for the note a key made of where it was pressed from,
+    // which this panel's closing forgets, so a later press on the anchor itself finds none.
+    const anchor = anchorRef.current;
     if (takesFocus.current && panel !== null && !panel.contains(document.activeElement))
       (focusableIn(panel)[0] ?? panel).focus();
     inside.current = panel?.contains(document.activeElement) === true;
@@ -249,9 +278,9 @@ export function AnchoredPanel({
       }
       if (open === null) return;
       // From the panel, by Tab past its last control or Shift+Tab past its first, the reader is
-      // leaving it: it closes, and they are back on the anchor.
+      // leaving it: it closes, and they are back on the anchor, or where the host says.
       if (inside.current) {
-        anchorRef.current?.focus();
+        (back.current?.() ?? anchorRef.current)?.focus();
         dismiss.current("tab");
         return;
       }
@@ -292,7 +321,8 @@ export function AnchoredPanel({
       if (!mine) return;
       event.preventDefault();
       event.stopPropagation();
-      anchorRef.current?.focus();
+      const noted = anchor === null ? undefined : openedFrom.get(anchor);
+      (back.current?.() ?? (noted?.isConnected ? noted : anchorRef.current))?.focus();
       dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);
@@ -302,6 +332,7 @@ export function AnchoredPanel({
       document.removeEventListener("focusin", followFocus, true);
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", dismissOnEscape, true);
+      if (anchor !== null) openedFrom.delete(anchor);
     };
   }, [anchorRef, inner]);
 

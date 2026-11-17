@@ -12,6 +12,7 @@ import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtim
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { choicesOf } from "../../__tests__/menu-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -2157,10 +2158,13 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     expect(pin.querySelector("path")?.getAttribute("fill")).toBe("none");
 
     const stateActions = screen.getByTestId("issue-state-actions");
-    expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Status" })).toHaveAttribute(
+      "aria-haspopup",
+      "menu"
+    );
     expect(
-      within(stateActions).getByRole("combobox", { name: "Priority of CORE-1" })
-    ).not.toBeNull();
+      within(stateActions).getByRole("button", { name: "Priority of CORE-1" })
+    ).toHaveAttribute("aria-haspopup", "menu");
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Close issue" })).not.toBeNull();
@@ -2387,8 +2391,8 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
   const view = renderIssuePage();
 
   try {
-    const openStatus = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    expect([...openStatus.options].map((option) => option.value)).not.toContain("done");
+    const openStatus = await screen.findByRole("button", { name: "Status" });
+    expect(await choicesOf(user, openStatus)).not.toContain("Done");
 
     await user.click(screen.getByRole("button", { name: "Close issue" }));
     await waitFor(() =>
@@ -2404,9 +2408,9 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     });
 
     expect(await screen.findByText("This issue is closed.")).toBeTruthy();
-    const closedStatus = screen.getByLabelText("Status") as HTMLSelectElement;
-    expect(closedStatus.disabled).toBe(true);
-    expect(closedStatus.value).toBe("done");
+    const closedStatus = screen.getByRole("button", { name: "Status" });
+    expect(closedStatus).toBeDisabled();
+    expect(closedStatus).toHaveTextContent("Done");
 
     await user.click(screen.getByRole("button", { name: "Reopen issue" }));
     await waitFor(() =>
@@ -2423,7 +2427,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(screen.queryByText("This issue is closed.")).not.toBeInTheDocument()
     );
-    expect(((await screen.findByLabelText("Status")) as HTMLSelectElement).value).toBe("backlog");
+    expect(await screen.findByRole("button", { name: "Status" })).toHaveTextContent("Backlog");
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -2443,22 +2447,24 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    expect(status.value).toBe("todo");
-    expect(
-      [...status.options].map((option) => ({ text: option.text, value: option.value }))
-    ).toEqual([
-      { text: "Triage", value: "triage" },
-      { text: "Icebox", value: "icebox" },
-      { text: "Backlog", value: "backlog" },
-      { text: "Todo", value: "todo" },
-      { text: "In progress", value: "in_progress" },
-      { text: "Testing", value: "testing" },
-      { text: "Needs review", value: "needs_review" },
-      { text: "Retro", value: "retro" },
+    const status = await screen.findByRole("button", { name: "Status" });
+    expect(status).toHaveTextContent("Todo");
+    expect(await choicesOf(user, status)).toEqual([
+      "Triage",
+      "Icebox",
+      "Backlog",
+      "Todo",
+      "In progress",
+      "Testing",
+      "Needs review",
+      "Retro",
     ]);
-
-    await user.selectOptions(status, "in_progress");
+    await user.click(status);
+    expect(screen.getByRole("menuitemradio", { name: "Todo" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+    await user.click(screen.getByRole("menuitemradio", { name: "In progress" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );

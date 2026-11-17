@@ -94,6 +94,8 @@ const CARD_SELECTOR = "[data-board-card]";
  *  agent), so "the first link" is not the issue's. */
 const ISSUE_LINK = "[data-issue-link]";
 const COLUMN_SELECTOR = "[data-board-column]";
+/** A card's priority menu, where the card draws it enabled: `p` presses it. */
+const CARD_PRIORITY = "[data-priority-menu]:not(:disabled)";
 
 /** The focus ring every board focus target draws: cards, columns and rails alike. */
 const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
@@ -664,9 +666,12 @@ export function IssueBoard({
       when: () => document.activeElement?.matches(CARD_SELECTOR) === true,
     },
     {
+      // A card in Done draws its priority disabled, so the key is offered on the cards whose
+      // menu would open.
       action: "board.priority",
-      run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
-      when: focusedCard,
+      run: () =>
+        cardAround(document.activeElement)?.querySelector<HTMLElement>(CARD_PRIORITY)?.click(),
+      when: () => cardAround(document.activeElement)?.querySelector(CARD_PRIORITY) != null,
     },
     { action: "board.copy-ref", run: () => copyFocusedCard("reference"), when: focusedCard },
     { action: "board.copy-key", run: () => copyFocusedCard("key"), when: focusedCard },

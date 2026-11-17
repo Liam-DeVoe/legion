@@ -154,7 +154,10 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
     // The column header names the status; the card does not repeat it.
     expect(within(card).queryByText("Triage")).not.toBeInTheDocument();
     expect(within(card).getByRole("link", { name: /CORE-1/ })).toBeDefined();
-    expect(within(card).getByRole("combobox", { name: "Priority of CORE-1" })).toBeDefined();
+    expect(within(card).getByRole("button", { name: "Priority of CORE-1" })).toHaveAttribute(
+      "aria-haspopup",
+      "menu"
+    );
   } finally {
     cleanup();
   }
@@ -668,7 +671,7 @@ test("j/k/h/l rove real focus over cards, columns and rails", async () => {
   }
 });
 
-test("Enter and o open the focused card once, p focuses its priority select, Escape returns to the card and then out", async () => {
+test("Enter and o open the focused card once, p opens its priority menu, Escape returns to the card and then out", async () => {
   const user = userEvent.setup();
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -680,12 +683,13 @@ test("Enter and o open the focused card once, p focuses its priority select, Esc
     act(() => alpha.focus());
 
     await user.keyboard("p");
-    const select = within(alpha).getByRole("combobox", { name: "Priority of CORE-1" });
-    expect(select).toHaveFocus();
-    // Single letters never fire on an editable target.
+    const menu = screen.getByRole("menu", { name: "Priority of CORE-1" });
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
+    // The menu's keys are its own: a single letter there moves no card.
     await user.keyboard("j");
-    expect(select).toHaveFocus();
+    expect(menu).toContainElement(document.activeElement as HTMLElement);
     await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "Priority of CORE-1" })).not.toBeInTheDocument();
     expect(alpha).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(document.body).toHaveFocus();

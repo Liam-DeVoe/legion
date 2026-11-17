@@ -7,7 +7,7 @@ import { useRef, useState } from "react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
-import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
+import { AnchoredPanel, noteOpenedFrom, type PanelDismissal } from "./AnchoredPanel";
 import { DisplayMenu } from "./DisplayMenu";
 import { MultiSelect } from "./MultiSelect";
 
@@ -204,6 +204,101 @@ test("a panel tells its host what dismissed it: Escape, Tab past its end, a pres
     act(() => outside.click());
     expect(dismissals).toEqual(["escape", "tab", "press", "gone"]);
     expect(screen.queryByRole("dialog", { name: "Panel" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A panel opened from its anchor, with a row beside the anchor that a host may name as where the
+ *  focus goes back to (`returnFocus`), or that a key may note as where it opened the panel from
+ *  (`noteOpenedFrom`). */
+function ReturningPanel({ toRow }: { toRow: boolean }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const row = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <button ref={row} type="button">
+        Row
+      </button>
+      <button onClick={() => setOpen((was) => !was)} ref={anchor} type="button">
+        Open
+      </button>
+      {open ? (
+        <AnchoredPanel
+          anchorRef={anchor}
+          className=""
+          label="Panel"
+          onDismiss={() => setOpen(false)}
+          returnFocus={toRow ? () => row.current : undefined}
+          role="menu"
+        >
+          <button type="button">Inside</button>
+        </AnchoredPanel>
+      ) : null}
+    </>
+  );
+}
+
+test("Escape and Tab out of a panel put the focus where its host says, else on its anchor", async () => {
+  const user = userEvent.setup();
+  const view = render(<ReturningPanel toRow />);
+  try {
+    const open = screen.getByRole("button", { name: "Open" });
+    const row = screen.getByRole("button", { name: "Row" });
+    await user.click(open);
+    expect(screen.getByRole("menu", { name: "Panel" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inside" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "Panel" })).toBeNull();
+    expect(row).toHaveFocus();
+    await user.click(open);
+    await user.tab();
+    expect(screen.queryByRole("menu", { name: "Panel" })).toBeNull();
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+  const anchored = render(<ReturningPanel toRow={false} />);
+  try {
+    const open = screen.getByRole("button", { name: "Open" });
+    await user.click(open);
+    await user.keyboard("{Escape}");
+    expect(open).toHaveFocus();
+  } finally {
+    anchored.unmount();
+  }
+});
+
+test("Escape goes back to where a key noted it opened the panel from, and the note goes with the panel", async () => {
+  const user = userEvent.setup();
+  const view = render(<ReturningPanel toRow={false} />);
+  try {
+    const open = screen.getByRole("button", { name: "Open" });
+    const row = screen.getByRole("button", { name: "Row" });
+    // A key's binding on the row: it notes the row, then presses the anchor.
+    act(() => row.focus());
+    act(() => {
+      noteOpenedFrom(open);
+      open.click();
+    });
+    expect(screen.getByRole("button", { name: "Inside" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(row).toHaveFocus();
+
+    // Tab is the page's own order, so it leaves the reader on the anchor whatever was noted.
+    act(() => {
+      noteOpenedFrom(open);
+      open.click();
+    });
+    await user.tab();
+    expect(open).toHaveFocus();
+
+    // That panel's closing forgot the note: a press on the anchor itself is one from the anchor.
+    act(() => row.focus());
+    await user.click(open);
+    await user.keyboard("{Escape}");
+    expect(open).toHaveFocus();
   } finally {
     view.unmount();
   }

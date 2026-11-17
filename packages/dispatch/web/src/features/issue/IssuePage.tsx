@@ -104,20 +104,22 @@ function ItemLandingFailure({
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
-const STATUS_SELECT = 'select[aria-label="Status"]';
+const PRIORITY_MENU = "[data-priority-menu]";
+const STATUS_MENU = "[data-status-menu]";
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
 /** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
- *  so a shortcut is listed exactly while its control would take a click. */
+ *  issue, a save in flight, which holds a menu's trigger with `aria-disabled`): the one fact both
+ *  the key's `run` and the `when` that offers it read, so a shortcut is listed exactly while its
+ *  control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
     return null;
   }
   const disabled =
-    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
+    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled) ||
+    node.getAttribute("aria-disabled") === "true";
   return disabled ? null : node;
 }
 
@@ -264,18 +266,20 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   useKeymap("issue", [
     {
       action: "issue.status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      run: () => usableControl(STATUS_MENU)?.click(),
+      when: () => usableControl(STATUS_MENU) !== null,
     },
     {
       action: "issue.priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      run: () => usableControl(PRIORITY_MENU)?.click(),
+      when: () => usableControl(PRIORITY_MENU) !== null,
     },
     {
+      // While the menu is open the focus is in it, whose keys are its own, so a digit there is
+      // the menu's pick and never this second write.
       action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => usableControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
     },
     {
       action: "issue.labels",
@@ -293,18 +297,6 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       action: "issue.pin",
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
-    },
-    {
-      // `s` and `p` put focus in a native select, where every single-key binding is suspended
-      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
-      // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
-      action: "issue.back",
-      run: () => (document.activeElement as HTMLElement | null)?.blur(),
-      when: () => {
-        const active = document.activeElement;
-        return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
-      },
     },
     ...tabChords.map(({ action, tab }) => ({
       action,

@@ -1,19 +1,20 @@
 import { type ReactNode, useEffect } from "react";
+import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
-import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
+import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
 import { useAskSnooze } from "./useAskSnooze";
 
 /**
- * The per-row defer control. On an ordinary row it is the "Snooze" badge with the same
- * invisible native `<select>` the priority and assignee pickers use, so the menu is one tap on
- * a phone and one keyboard interaction on a desktop; the picks are `snooze.ts`'s presets and
- * the moment is computed when the reader picks, not when the page rendered. On a row already
- * inside its window it is the return time and the one button that ends the snooze early -
- * nothing else does, which is the point: an agent answering a deferred ask leaves it deferred.
+ * The per-row defer control: the "Snooze" badge, whose press opens the Snooze menu
+ * (`ChoiceMenu`) of `snooze.ts`'s presets, the moment computed when the reader picks, not when
+ * the page rendered. The Inbox's `b` and `h` press it (`data-inbox-snooze`). On a row already
+ * inside its window it also shows the return time and the one button that ends the snooze early,
+ * and its menu offers Un-snooze too - nothing else ends it, which is the point: an agent
+ * answering a deferred ask leaves it deferred.
  *
  * A snooze folds its row out of the list, which would unmount this control and take its
  * `Snoozing…` and its refusal with it - so, exactly as `AssignToMe` does for the optimistic
@@ -69,9 +70,13 @@ export function SnoozeControl({
       ? "Un-snoozing…"
       : "Snoozing…";
 
-  if (snoozedUntil !== null) {
-    return (
-      <>
+  // One tree for both states, the menu at the same place in it: a snooze picked from the trigger
+  // hands the focus back to the trigger, then makes the row a snoozed one, and a trigger drawn
+  // anew there would take that focus off the page with the one it replaced. On a snoozed row the
+  // in-flight label is the Un-snooze button's, beside the return time the write is saving.
+  return (
+    <>
+      {snoozedUntil === null ? null : (
         <span className={`text-xs ${textMutedOnCanvas}`} data-inbox-snoozed-until={snoozedUntil}>
           {isIndefinite(snoozedUntil) ? (
             "Snoozed until you clear it"
@@ -81,6 +86,8 @@ export function SnoozeControl({
             </>
           )}
         </span>
+      )}
+      {snoozedUntil === null ? null : (
         <button
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
@@ -89,35 +96,18 @@ export function SnoozeControl({
         >
           {pendingLabel ?? "Un-snooze"}
         </button>
-        {failure}
-      </>
-    );
-  }
-
-  return (
-    <>
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>
-          {pendingLabel ?? "Snooze"}
+      )}
+      <ChoiceMenu
+        choices={snoozeChoices(snoozedUntil !== null)}
+        label={`Snooze ${label}`}
+        marks={{ "data-inbox-snooze": "" }}
+        onChoose={(choice) => write.submit(snoozeOf(choice, new Date()))}
+        triggerClassName={badgeMenuTrigger}
+      >
+        <span className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>
+          {snoozedUntil === null ? (pendingLabel ?? "Snooze") : "Snooze"}
         </span>
-        <select
-          aria-label={`Snooze ${label}`}
-          className={badgeSelectOverlay}
-          data-inbox-snooze=""
-          onChange={(event) => {
-            const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
-            if (preset !== undefined) write.submit(preset.until(new Date()));
-          }}
-          value=""
-        >
-          <option value="">Snooze…</option>
-          {SNOOZE_PRESETS.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.label}
-            </option>
-          ))}
-        </select>
-      </span>
+      </ChoiceMenu>
       {failure}
     </>
   );

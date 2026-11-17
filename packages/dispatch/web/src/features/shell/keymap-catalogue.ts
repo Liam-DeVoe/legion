@@ -379,16 +379,6 @@ export const KEYMAP_CATALOGUE = {
     inEditable: true,
     surface: "inbox",
   },
-  "inbox.back-from-bulk": {
-    scope: "inbox",
-    id: "back-from-bulk",
-    label: "Back to the list from the bulk snooze picker",
-    keys: [],
-    fixedKeys: ["Escape"],
-    palette: false,
-    inEditable: true,
-    surface: "inbox",
-  },
   "inbox.clear-selection": {
     scope: "inbox",
     id: "clear-selection",
@@ -628,7 +618,7 @@ export const KEYMAP_CATALOGUE = {
   "issue.status": {
     scope: "issue",
     id: "status",
-    label: "Focus the status",
+    label: "Open the status menu",
     keys: ["s"],
     palette: true,
     surface: "issue",
@@ -636,7 +626,7 @@ export const KEYMAP_CATALOGUE = {
   "issue.priority": {
     scope: "issue",
     id: "priority",
-    label: "Focus the priority",
+    label: "Open the priority menu",
     keys: ["p"],
     palette: true,
     surface: "issue",
@@ -672,16 +662,6 @@ export const KEYMAP_CATALOGUE = {
     label: "Pin or unpin the issue",
     keys: ["Shift+P"],
     palette: true,
-    surface: "issue",
-  },
-  "issue.back": {
-    scope: "issue",
-    id: "back",
-    label: "Back out of the focused header control",
-    keys: [],
-    fixedKeys: ["Escape"],
-    palette: false,
-    inEditable: true,
     surface: "issue",
   },
   "issue.tab-spec": {
@@ -1104,7 +1084,7 @@ export const KEYMAP_CATALOGUE = {
   "board.priority": {
     scope: "board",
     id: "priority",
-    label: "Focus the card's priority",
+    label: "Open the card's priority menu",
     keys: ["p"],
     palette: true,
     surface: "board",

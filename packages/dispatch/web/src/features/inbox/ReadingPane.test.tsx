@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pickFromMenu } from "../../__tests__/menu-picks";
 import { ApiError, api } from "../../api/client";
 import type {
   Anchor,
@@ -1003,9 +1004,10 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
   const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
   try {
-    await user.selectOptions(
+    await pickFromMenu(
+      user,
       await screen.findByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+      "Tomorrow"
     );
     // The optimistic snooze folds the row into Later and the column follows the list, so a
     // head that kept its write to itself would be unmounted with the row it wrote about.
@@ -1072,7 +1074,7 @@ test("a project document's head names the project and the document, and opens it
   try {
     expect(await screen.findByText("CORE · Design notes")).toBeDefined();
     // Neither applies to a project document: it has no priority and nobody is assigned to it.
-    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Priority of/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     runtime.sync();

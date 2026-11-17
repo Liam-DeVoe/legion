@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { choiceOf, choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
@@ -156,16 +157,23 @@ function renderControl() {
   return { queryClient, unmount: view.unmount, user };
 }
 
-function select(): HTMLSelectElement {
-  return screen.getByRole("combobox", { name: "Priority of CORE-1" }) as HTMLSelectElement;
+function trigger(): HTMLElement {
+  return screen.getByRole("button", { name: "Priority of CORE-1" });
 }
 
-test("PriorityControl shows the issue's priority and offers Unset and P0-P3", () => {
-  const { unmount } = renderControl();
+test("PriorityControl shows the issue's priority and offers Unset and P0-P3, the current one checked", async () => {
+  const { unmount, user } = renderControl();
   try {
-    expect(screen.getByText("P1", { selector: "span" })).toBeTruthy();
-    expect(select().value).toBe("1");
-    expect([...select().options].map((option) => option.value)).toEqual(["", "0", "1", "2", "3"]);
+    expect(trigger()).toHaveTextContent("P1");
+    expect(trigger()).toHaveAttribute("data-priority-menu");
+    expect(await choicesOf(user, trigger())).toEqual(["Unset", "P0", "P1", "P2", "P3"]);
+    await user.click(trigger());
+    expect(choiceOf(trigger(), "P1")).toHaveAttribute("aria-checked", "true");
+    expect(choiceOf(trigger(), "P1")).toHaveFocus();
+    expect(choiceOf(trigger(), "Unset")).toHaveAttribute("aria-checked", "false");
+    // Unset has no digit; P0 to P3 write on 0 to 3.
+    expect(choiceOf(trigger(), "Unset")).not.toHaveAttribute("aria-keyshortcuts");
+    expect(choiceOf(trigger(), "P3")).toHaveAttribute("aria-keyshortcuts", "3");
   } finally {
     unmount();
   }
@@ -176,17 +184,15 @@ test("PriorityControl saves the picked priority, shows it before the server answ
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    select().focus();
-    await user.selectOptions(select(), "2");
+    await pickFromMenu(user, trigger(), "P2");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
-    expect(select().value).toBe("2");
-    expect(screen.getByText("P2", { selector: "span" })).toBeTruthy();
+    expect(trigger()).toHaveTextContent("P2");
     // A disabled control drops focus and leaves the tab order for the length of the save, so
-    // the picker stays enabled while the request is in flight.
-    expect(select().disabled).toBe(false);
-    expect(select()).toHaveFocus();
+    // the trigger stays enabled while the request is in flight.
+    expect(trigger()).not.toBeDisabled();
+    expect(trigger()).toHaveFocus();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 2 },
       otherSummary,
@@ -200,7 +206,26 @@ test("PriorityControl saves the picked priority, shows it before the server answ
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2)
     );
-    expect(select()).toHaveFocus();
+    expect(trigger()).toHaveFocus();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+test("PriorityControl writes a priority on its digit, and nothing for the one it already holds", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 3 });
+  const { unmount, user } = renderControl();
+  try {
+    await user.click(trigger());
+    await user.keyboard("{Enter}");
+    expect(patchIssue).not.toHaveBeenCalled();
+    await user.click(trigger());
+    await user.keyboard("3");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 3 }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -211,12 +236,11 @@ test("PriorityControl sends null for Unset and shows the muted tag", async () =>
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: null });
   const { unmount, user } = renderControl();
   try {
-    await user.selectOptions(select(), "");
+    await pickFromMenu(user, trigger(), "Unset");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: null }, keyedAttempt)
     );
-    expect(select().value).toBe("");
-    expect(screen.getByText("Priority", { selector: "span" })).toBeTruthy();
+    expect(trigger()).toHaveTextContent("Priority");
     expect(screen.queryByText("P1", { selector: "span" })).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -229,15 +253,15 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    await user.selectOptions(select(), "0");
-    await waitFor(() => expect(select().value).toBe("0"));
+    await pickFromMenu(user, trigger(), "P0");
+    await waitFor(() => expect(trigger()).toHaveTextContent("P0"));
 
     act(() => {
       save.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
-    expect(select().value).toBe("1");
-    expect(select().disabled).toBe(false);
+    expect(trigger()).toHaveTextContent("P1");
+    expect(trigger()).not.toBeDisabled();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
 
@@ -246,7 +270,7 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt);
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(select().value).toBe("0");
+    expect(trigger()).toHaveTextContent("P0");
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -261,16 +285,15 @@ test("PriorityControl saves a pick made during the first save once that save set
     .mockImplementationOnce(() => second.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    await user.selectOptions(select(), "0");
+    await pickFromMenu(user, trigger(), "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    await user.selectOptions(select(), "3");
-    await user.selectOptions(select(), "2");
+    await pickFromMenu(user, trigger(), "P3");
+    await pickFromMenu(user, trigger(), "P2");
     // One request at a time: the later picks wait for the first answer, but the badge already
     // shows the newest one and never snaps back to the value still being saved.
-    expect(select().value).toBe("2");
-    expect(screen.getByText("P2", { selector: "span" })).toBeTruthy();
+    expect(trigger()).toHaveTextContent("P2");
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -279,7 +302,7 @@ test("PriorityControl saves a pick made during the first save once that save set
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt);
-    expect(select().value).toBe("2");
+    expect(trigger()).toHaveTextContent("P2");
 
     await act(async () => {
       second.resolve({ ...issue, priority: 2 });
@@ -303,12 +326,12 @@ test("a queued pick that fails rolls back to the priority the server last confir
     .mockImplementationOnce(() => second.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    await user.selectOptions(select(), "0");
+    await pickFromMenu(user, trigger(), "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    await user.selectOptions(select(), "2");
-    expect(select().value).toBe("2");
+    await pickFromMenu(user, trigger(), "P2");
+    expect(trigger()).toHaveTextContent("P2");
 
     await act(async () => {
       first.resolve({ ...issue, priority: 0 });
@@ -321,7 +344,7 @@ test("a queued pick that fails rolls back to the priority the server last confir
       second.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
-    expect(select().value).toBe("0");
+    expect(trigger()).toHaveTextContent("P0");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 0 },
       otherSummary,
@@ -333,7 +356,7 @@ test("a queued pick that fails rolls back to the priority the server last confir
   }
 });
 
-test("PriorityControl keeps mouse, pointer and touch presses on the select out of a draggable parent", () => {
+test("PriorityControl keeps mouse, pointer and touch presses on its trigger out of a draggable parent", () => {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -353,9 +376,9 @@ test("PriorityControl keeps mouse, pointer and touch presses on the select out o
   try {
     // Bare mouse, pointer and touch presses: user-event sends a whole press sequence and cannot
     // deliver one of these events on its own.
-    fireEvent.mouseDown(select());
-    fireEvent.pointerDown(select());
-    fireEvent.touchStart(select());
+    fireEvent.mouseDown(trigger());
+    fireEvent.pointerDown(trigger());
+    fireEvent.touchStart(trigger());
     expect(reached).toEqual([]);
   } finally {
     view.unmount();

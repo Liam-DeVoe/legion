@@ -40,8 +40,8 @@ export interface InboxSelection {
   /** Whether the reader pressed **Select all**, which takes in every row the narrowing matches,
    *  the ones a fold or a page is holding back included. The bar says so instead of counting. */
   readonly allRows: boolean;
-  /** The bar's own element, which the keymap reaches through this: Escape from the bulk picker
-   *  focuses the bar itself when a press has left no row to return to. */
+  /** The bar's own element, which the keymap reaches through this: `b` and `h` press the bar's
+   *  Snooze menu while rows are marked. */
   readonly barRef: RefObject<HTMLElement | null>;
   /** Whether the bar shows: a mark is on the page, a pick is in the air, or a refusal is
    *  standing. Escape with no row focused is the keyboard's Clear and is offered on exactly this,

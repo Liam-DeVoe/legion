@@ -200,7 +200,10 @@ test("rows keep parent links, unread marks, asks, progress and route reach, with
     "Nobody holds it right now"
   );
   expect(within(row).getByTitle("Unread")).toBeDefined();
-  expect(within(row).getByRole("combobox", { name: "Priority of CORE-1" })).toBeDefined();
+  expect(within(row).getByRole("button", { name: "Priority of CORE-1" })).toHaveAttribute(
+    "aria-haspopup",
+    "menu"
+  );
 });
 
 test("j and k focus table issues and o and Enter open the issue rather than its parent", async () => {

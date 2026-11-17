@@ -239,7 +239,7 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   // A thread row takes the mark `x` makes, as an ask does.
   await user.click(screen.getAllByLabelText("Select Root")[0] as HTMLElement);
   await screen.findByText("1 selected");
-  expect(screen.queryByLabelText("Snooze selected asks")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Snooze selected asks" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Dismiss selected threads" })).toBeTruthy();
 
   const asksMark = [...document.querySelectorAll<HTMLElement>('input[type="checkbox"]')].find(
@@ -247,7 +247,10 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   );
   await user.click(asksMark as HTMLElement);
   await screen.findByText("2 selected");
-  expect(screen.getByLabelText("Snooze selected asks")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Snooze selected asks" })).toHaveAttribute(
+    "aria-haspopup",
+    "menu"
+  );
 
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
   await waitFor(() => expect(rowIds()).not.toContain("reply:c1"));

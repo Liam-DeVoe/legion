@@ -304,8 +304,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
     return TEXT_INPUT_TYPES[target.type] === true;
   }
   const tag = target.tagName;
-  // A `<select>` stays editable: its own keys type-ahead and step through the options, and the
-  // Inbox's `h` hands it focus on purpose.
+  // A `<select>` stays editable: its own keys type-ahead and step through the options.
   return tag === "TEXTAREA" || tag === "SELECT";
 }
 

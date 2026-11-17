@@ -21,6 +21,7 @@ import {
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { focusOnMount } from "../../components/focus-place";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
@@ -60,7 +61,7 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
@@ -461,27 +462,27 @@ export function IssueHeader({
           className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+          {/* Disabled on a closed issue, whose way back is Reopen; held while a write is out,
+              so the focus a status pick hands back to it stays there. */}
+          <ChoiceMenu
+            checked={pendingStatus ?? issue.status}
+            choices={selectableStatuses.map((status) => ({
+              label: statusLabel(status),
+              value: status,
+            }))}
+            disabled={isClosed}
+            held={updateIssue.isPending}
+            label="Status"
+            marks={{ "data-status-menu": "" }}
+            onChoose={drafts.requestStatusSubmit}
+            triggerClassName={`flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 sm:px-3 md:min-h-8 xl:px-2 ${focusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <span
               aria-hidden="true"
               className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
             />
-            <select
-              aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
-              value={pendingStatus ?? issue.status}
-            >
-              {selectableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
+            {statusText(pendingStatus ?? issue.status)}
+          </ChoiceMenu>
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
