@@ -390,6 +390,58 @@ describe("the dispatch command surface", () => {
     }
   });
 
+  // A commit is an identifier too: a CI job's step writes `--commit "$SHA"`, and an empty one would
+  // reach Dispatch only for its refusal, after the job's trade at the secrets broker. Each command
+  // that takes one refuses it empty, naming the flag that gave it.
+  test("an empty --commit is refused, naming the flag that gave it, on each command that takes one", () => {
+    const emptyFile = {
+      readText: (path: string): string => {
+        if (path === "empty.txt") return "";
+        throw new Error(`unexpected read ${path}`);
+      },
+    };
+    for (const [argv, flag] of [
+      [
+        ["result", "--issue", "DSP-1", "--check", "c1", "--verdict", "pass", "--commit", ""],
+        "--commit",
+      ],
+      [
+        ["result", "--project", "ACME", "--check", "p-1", "--verdict", "pass", "--commit="],
+        "--commit",
+      ],
+      [
+        [
+          "result",
+          "--issue",
+          "DSP-1",
+          "--check",
+          "c1",
+          "--verdict",
+          "pass",
+          "--commit-file",
+          "empty.txt",
+        ],
+        "--commit-file",
+      ],
+      [["results", "--project", "ACME", "--commit", ""], "--commit"],
+    ] as const) {
+      expect(parseCommand(argv, emptyFile), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [
+          `${flag} is empty, so the call names no commit: a variable that gives it may be empty or unset`,
+        ],
+      });
+    }
+    // The control: the same calls with a commit are calls.
+    const commit = "a".repeat(40);
+    for (const argv of [
+      ["result", "--issue", "DSP-1", "--check", "c1", "--verdict", "pass", "--commit", commit],
+      ["results", "--project", "ACME", "--commit", commit],
+    ]) {
+      expect(parseCommand(argv, emptyFile), argv.join(" ")).toMatchObject({ kind: "call" });
+    }
+  });
+
   test("a second bare issue key is refused", () => {
     expect(parseCommand(["read", "ACME-12", "ACME-13"], noFiles)).toEqual({
       kind: "refused",

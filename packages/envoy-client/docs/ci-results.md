@@ -36,8 +36,8 @@ origin it points at (its scheme and host, never its path or query), and exits 1.
 reached Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`)
 prints `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET` or
 `HTTP_200`, and exits 1: the result may be stored, and a second run is safe, because Dispatch keeps
-each result. An empty `--project` or `--check`, as an empty variable of the step gives it, is
-refused before any request with exit 2, naming the flag. A call
+each result. An empty `--project`, `--check` or `--commit`, as an empty variable of the step gives
+it, is refused before any request with exit 2, naming the flag. A call
 that the broker's rate limit (429), a broker that cannot answer the trade (a 5xx, or no answer
 within the trade's own 30 s) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
@@ -69,8 +69,9 @@ own or names a workflow command. A refusal that starts with `::` has that first 
 `dispatch result --issue <KEY> --check <id> --verdict pass|fail --commit <sha> [--observed …]`
 under `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` is the same job's result of the check of an
 issue's Verification document that the check's `ci_check` gives to it: the same identity, cut,
-waits, outcome lines and printing rule, and `--issue`, `--check`, `--verdict`, `--commit` and
-`--observed` alone (`dispatch-commands/ci-job-result.ts`).
+waits, outcome lines and printing rule, an empty `--issue`, `--check` or `--commit` refused the
+same way, and `--issue`, `--check`, `--verdict`, `--commit` and `--observed` alone
+(`dispatch-commands/ci-job-result.ts`).
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
 results, one line each, newest first, or the stored results as JSON with `--json`.
 `dispatch results --issue <KEY>` prints every string of Dispatch's answer by the same rule

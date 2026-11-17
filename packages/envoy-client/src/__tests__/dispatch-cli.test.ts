@@ -3629,7 +3629,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
   });
 
   test("with the job's identity, --issue posts {check, commit, verdict, observed} to the issue's results route and nothing else", async () => {
-    dispatchAnswer = () => Response.json(recordedOnIssue, { status: 201 });
+    dispatchAnswer = () => storedAnswer(recordedOnIssue);
     // A person's bearer and a session in the job's environment are not what the job writes with.
     const env = { ...jobEnvironment(), ...omp, DISPATCH_TOKEN: "a-person-bearer" };
     const withObserved = await runJob([...issueRecord, "--observed", "ok"], env);
@@ -3756,7 +3756,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
   });
 
   test("with the job's identity, --issue sends what a result keeps of observed: its start and its end around the note", async () => {
-    dispatchAnswer = () => Response.json(recordedOnIssue, { status: 201 });
+    dispatchAnswer = () => storedAnswer(recordedOnIssue);
     const first = "=== RUN   TestX\n";
     const last = "--- FAIL: TestX (0.01s)\n";
     const log = join(stateDir, "observed-issue-failing.txt");
@@ -3776,8 +3776,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // A 2xx answer that is not Dispatch's - it names no key back and gives no row of the issue route
   // (`WRITE_ROWS.recordCIJobResult`) - came from a server that answers in Dispatch's place, which
   // may have passed the write on first: the job prints write_outcome_unknown and exits 1, as for a
-  // write that heard nothing, never landed_without_answer. The control is the row above it:
-  // Dispatch's own answer prints as the stored result.
+  // write that heard nothing, never landed_without_answer. The control is the first row of the
+  // table below: Dispatch's own answer prints as the stored result.
   test("with the job's identity, a 2xx answer that is not Dispatch's prints write_outcome_unknown and exits 1", async () => {
     dispatchAnswer = () =>
       new Response("Welcome to Bun! To get started, return a Response object.", {
@@ -3794,6 +3794,107 @@ describe("dispatch result --project, as a CI job writes it", () => {
       ["POST", "/api/v1/issues/DSP-1/results"],
     ]);
   });
+
+  // A job's step writes `--issue "$ISSUE" --check "$CHECK" --commit "$SHA"`, and an empty variable
+  // is the honest way to send one empty: the issue form refuses it before the trade or any write,
+  // naming the flag, and the project form refuses an empty --commit the same way.
+  test("with the job's identity, an empty --issue, --check or --commit is refused before any request, naming the flag", async () => {
+    for (const [argv, flag, noun] of [
+      [issueRecord, "--issue", "issue"],
+      [issueRecord, "--check", "check"],
+      [issueRecord, "--commit", "commit"],
+      [record, "--commit", "commit"],
+    ] as const) {
+      const emptied = [...argv];
+      emptied[emptied.indexOf(flag) + 1] = "";
+      const { code, stdout, stderr } = await runJob(emptied, jobEnvironment());
+      expect({ code, stderr, lines: stdout.split("\n").slice(0, 2) }, `${argv[1]} ${flag}`).toEqual(
+        {
+          code: 2,
+          stderr: "",
+          lines: [
+            "dispatch result was not called: 1 problem",
+            `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+          ],
+        }
+      );
+    }
+    sentNothing();
+  });
+
+  // The issue form reads its answer as the project form does: it prints a landing only where
+  // Dispatch names the write's key back, on a 2xx whose body gives no stored result
+  // (ANSWER_LOST) as on a 409 KEY_COMMITTED. A 2xx that names no key back and gives the stored
+  // result is the answer of a Dispatch with no keyed layer, and the result prints. Every other
+  // answer that does not name the write's key back leaves the outcome unknown: the result may be
+  // stored, and a second run is safe. The rows that print the result are the controls of the rest.
+  for (const [name, answer, echo, code, printed] of [
+    ["a 201 with the stored result that names the key back", "result", "this", 0, recordedOnIssue],
+    ["a 201 with the stored result that names no key back", "result", "none", 0, recordedOnIssue],
+    [
+      "a 201 with the stored result that names another request's key back",
+      "result",
+      "other",
+      1,
+      { write_outcome_unknown: "HTTP_201" },
+    ],
+    [
+      "a 201 of {} that names the key back",
+      "{}",
+      "this",
+      0,
+      { landed_without_answer: "ANSWER_LOST" },
+    ],
+    ["a 201 of {} that names no key back", "{}", "none", 1, { write_outcome_unknown: "HTTP_201" }],
+    [
+      "a 409 KEY_COMMITTED that names the key back",
+      "committed",
+      "this",
+      0,
+      { landed_without_answer: "KEY_COMMITTED" },
+    ],
+    [
+      "a 409 KEY_COMMITTED that names no key back",
+      "committed",
+      "none",
+      1,
+      { write_outcome_unknown: "HTTP_409" },
+    ],
+    [
+      "a 409 KEY_COMMITTED that names another request's key back",
+      "committed",
+      "other",
+      1,
+      { write_outcome_unknown: "HTTP_409" },
+    ],
+  ] as const) {
+    const prints =
+      "write_outcome_unknown" in printed
+        ? "write_outcome_unknown"
+        : "landed_without_answer" in printed
+          ? "landed_without_answer"
+          : "the stored result";
+    test(`with the job's identity, --issue answered ${name} prints ${prints} and exits ${code}`, async () => {
+      dispatchAnswer = () => {
+        // The key the answer names back: the write's own (`this`), none, or another request's.
+        const key =
+          echo === "none" ? "" : echo === "this" ? answeringKey : `${answeringKey}-another`;
+        if (answer === "committed") return keyCommitted(key);
+        return Response.json(answer === "result" ? recordedOnIssue : {}, {
+          status: 201,
+          headers: key === "" ? {} : { [IDEMPOTENCY_KEY_HEADER]: key },
+        });
+      };
+      const ran = await runJob(issueRecord, jobEnvironment());
+      expect(
+        { code: ran.code, stderr: ran.stderr, printed: JSON.parse(ran.stdout) },
+        ran.stdout
+      ).toEqual({ code, stderr: "", printed });
+      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+        ["POST", "/api/v1/issues/DSP-1/results"],
+      ]);
+    });
+  }
 });
 
 describe("the dispatch CLI's envoy.json", () => {
