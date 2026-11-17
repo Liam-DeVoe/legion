@@ -452,12 +452,12 @@ async function refreshedAnswers(
       if (outcome.dispatch_url === dispatchUrl) {
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
-      // Compared whole above; the reason reaches the session's context, so it names the URL
-      // without the user, password, query and fragment it may carry (`urlForText`).
+      // Compared whole above; the reason reaches the session's context, so it names the URL only
+      // where it is a plain http(s) URL, and by a fixed phrase otherwise (`urlForText`).
       const read =
         outcome.dispatch_url === null
           ? "no Dispatch"
-          : urlForText(outcome.dispatch_url, "the Dispatch URL the refresher read")
+          : urlForText(outcome.dispatch_url, "another Dispatch URL")
       return {
         reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }

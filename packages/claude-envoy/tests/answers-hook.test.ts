@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text"
 import {
   renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -841,7 +842,8 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // refresher started while envoy.json named `before` that finishes after a later hook, started
   // after envoy.json moved to `now`, began must not give that hook `before`'s list, the
   // invariant the review asked for ("no list from another Dispatch URL"). `before` is named with
-  // a user and a password, which the request carries and the hook's reason leaves out.
+  // a user and a password, which the request carries and the hook's reason names by its fixed
+  // phrase alone (`urlForText`), no part of it.
   const before = standinDispatch()
   before.route = { kind: "list", items: [answer("ask-x", "Read from the Dispatch before.", 1)] }
   const now = standinDispatch()
@@ -895,7 +897,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // read from `now`, so the failure line stands.
   expect(context).toBe(
     sessionAnswersFailureLine(
-      `the refresher read ${before.base}, not the Dispatch envoy.json names now`,
+      `the refresher read another Dispatch URL ${URL_NOT_PRINTED}, not the Dispatch envoy.json names now`,
     ),
   )
   expect(context).not.toContain(user)

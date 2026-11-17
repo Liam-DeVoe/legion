@@ -20111,8 +20111,9 @@ console.log(JSON.stringify(args));
         attempted += 1;
         if (attempted >= reached.at) reached.resolve();
       }
-      // The symptom from production: the registration call itself times out under listener load.
-      if (registryDown) throw new Error("The operation timed out.");
+      // The symptom from production: the registration call itself times out under listener load,
+      // as AbortSignal.timeout raises it.
+      if (registryDown) throw new DOMException("The operation timed out.", "TimeoutError");
       if (registering) registrations += 1;
       // An accepted registration answers a consumer, as every accepted one does: a session
       // receives only what its own consumer holds, so an answer naming none would fail the
@@ -20161,9 +20162,12 @@ console.log(JSON.stringify(args));
     expect(delayMs).toBeGreaterThanOrEqual(20_000);
     expect(delayMs).toBeLessThanOrEqual(40_000);
     // Two notices, in this order: the outage is told once (the session receives nothing while
-    // no registration is accepted), and the heartbeat says when it asks again.
+    // no registration is accepted), and the heartbeat says when it asks again. The call is named
+    // with the failure's class, never the runtime's message, which can repeat the host it dialed.
     expect(notifications).toEqual([
-      expect.stringContaining("inbound messages are unavailable (The operation timed out.)"),
+      expect.stringContaining(
+        "inbound messages are unavailable (POST http://envoy.test/v1/interests/subscribe got no answer: TimeoutError (message withheld))"
+      ),
       expect.stringContaining(`retrying once in ${Math.round(delayMs / 1000)} s`),
     ]);
 
