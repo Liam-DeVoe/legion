@@ -225,6 +225,19 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(2);
   });
 
+  test("no dispatch command on PATH is UNKNOWN, exit 2, naming what is missing", () => {
+    // The PATH the script gets holds no directory, so bash is named by the path this one finds.
+    const bash = Bun.which("bash");
+    if (bash === null) throw new Error("no bash on this test's PATH");
+    const result = Bun.spawnSync([bash, script, key], {
+      env: { PATH: join(dir, "no-such-directory"), HOME: dir },
+    });
+    expect(result.stdout.toString()).toContain(
+      "UNKNOWN: no dispatch command is on PATH, so nothing was read"
+    );
+    expect(result.exitCode).toBe(2);
+  });
+
   test("no issue, two issues or a malformed key is refused, exit 2, reading nothing", () => {
     for (const args of [[], [key, "INFRA-43"], ["infra-42"]]) {
       const { code, stderr, calls } = read(whole.join("\n") + "\n", args);
