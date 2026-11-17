@@ -366,7 +366,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
     const assignee = page.getByLabel(`Assignee of ${issue.key}`);
-    await expect(assignee).toHaveValue("carol");
+    await expect(assignee).toHaveAccessibleDescription("carol");
 
     const bobPage = await bob.newPage();
     await bobPage.goto("/?group=waiting-on");
@@ -379,7 +379,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
       home
     );
     expect(assigned.code, `${assigned.stdout}${assigned.stderr}`).toBe(0);
-    await expect(assignee).toHaveValue("bob");
+    await expect(assignee).toHaveAccessibleDescription("bob");
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
 
@@ -390,9 +390,9 @@ test("an agent sets and clears the issue assignee from the command", async ({
       home
     );
     expect(cleared.code, `${cleared.stdout}${cleared.stderr}`).toBe(0);
-    await expect(assignee).toHaveValue("");
+    await expect(assignee).toHaveAccessibleDescription("Unassigned");
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^Unassigned$/ })
+      page.getByTestId("issue-header").getByText("Unassigned", { exact: true })
     ).toBeVisible();
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
 
@@ -404,7 +404,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     expect(stranger.code).not.toBe(0);
     expect(`${stranger.stdout}${stranger.stderr}`).toContain("ASSIGNEE_NOT_ALLOWED");
     expect((await getIssue(issue.key)).assignee).toBeNull();
-    await expect(assignee).toHaveValue("");
+    await expect(assignee).toHaveAccessibleDescription("Unassigned");
 
     // 4. The same call on a closed issue is refused too: a closed issue takes no assignee until
     // somebody reopens it.

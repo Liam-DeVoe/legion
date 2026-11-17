@@ -3884,20 +3884,31 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAt
  *  a native select then, a button now whose 44 px below 1280 px (styles.css) overhangs it. */
 const ASKED_OF_LINE = 32;
 
+/** The issue header's Assignee badge from `md`, at the base: its wrapper, the badge's own item in
+ *  the header's wrapping row, 32 px (`badgeSelectWrapper`'s `md:min-h-8`), with the native
+ *  select laid over the badge taking no room - the list's 44 px trigger now, which overhangs it
+ *  below 1280 px (`badgeSelectTrigger`). */
+const ASSIGNEE_BADGE = 32;
+
+/** The issue header's `Repository:` line in its details rail from `md`, at the base: the 28 px of
+ *  its badge's wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), the select over the badge taking
+ *  no room - the list's trigger now, which overhangs it below 1280 px (`badgeSelectRailTrigger`). */
+const REPOSITORY_LINE = 28;
+
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
 // rows and its reading pane are the stub row's (`table-controls.stub.e2e.ts`), and the tables
 // with no controls the row above; this one holds the Board's cards and the rows of the Agents
 // page, the project List and the Delivery list to what they drew at the base
 // (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
 // size, where a height the fonts decide is the one its lines and the base's classes give it
-// (`linedHeights`). It holds an ask card's "Asked of" line to its height at the base too, at
-// 1024x768, between `md` and `xl`, the widths where every button is 44 px tall. The Delivery list
-// draws its clock times in the browser's own zone and words, so both are pinned to the ones the
-// base was read in.
+// (`linedHeights`). It holds an ask card's "Asked of" line, and the issue header's Assignee badge
+// and `Repository:` line, to their heights at the base too, at 1024x768, between `md` and `xl`,
+// the widths where every button is 44 px tall. The Delivery list draws its clock times in the
+// browser's own zone and words, so both are pinned to the ones the base was read in.
 test.describe("R8's rows and cards", () => {
   test.use({ locale: "en-US", timezoneId: "UTC" });
 
-  // SLOW(>=2s): four pages over two seeded fixtures, each list read until it is the base's.
+  // SLOW(>=2s): six pages over two seeded fixtures, each list read until it is the base's.
   test("the Board's cards and the rows of the Agents page, the project List and the Delivery list draw the parts and the size they had at the base @phone", async ({
     page,
   }, testInfo) => {
@@ -3905,7 +3916,7 @@ test.describe("R8's rows and cards", () => {
     if (atTheBase === undefined) {
       throw new Error(`no reading at the base for the ${testInfo.project.name} project`);
     }
-    await seedRealStackSurfaces();
+    const { issue } = await seedRealStackSurfaces();
     await seedSurfaces();
     if (!isPhoneProject(testInfo)) await page.setViewportSize({ height: 900, width: 1440 });
     const main = page.getByTestId("main-content");
@@ -4028,6 +4039,47 @@ test.describe("R8's rows and cards", () => {
       if (Math.abs(height - ASKED_OF_LINE) > 0.5) {
         changed.push(
           `the Inbox's ask card ${index + 1}'s "Asked of" line at 1024x768 is ${height}px, and ${ASKED_OF_LINE}px at the base`
+        );
+      }
+    }
+
+    // The issue header's two badges, read once CORE maps a repository, so its rail draws one:
+    // the Assignee's wrapper, the badge's own item in the wrapping row, and the `Repository:`
+    // line around the repository's wrapper. Each control's wrapper is its parent, at the base as
+    // now.
+    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+    await page.goto(`/issues/${issue}`);
+    const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
+    const repositoryControl = page.getByLabel(`Repository of ${issue}`);
+    await expect(assigneeControl, "the issue header draws no Assignee at 1024x768").toBeVisible();
+    await expect(
+      repositoryControl,
+      "the issue header draws no Repository at 1024x768"
+    ).toBeVisible();
+    const badges = [
+      [
+        "Assignee badge",
+        await assigneeControl.evaluate(
+          (control) =>
+            Math.round((control.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
+        ),
+        ASSIGNEE_BADGE,
+      ],
+      [
+        "`Repository:` line",
+        await repositoryControl.evaluate(
+          (control) =>
+            Math.round(
+              (control.parentElement?.parentElement?.getBoundingClientRect().height ?? 0) * 100
+            ) / 100
+        ),
+        REPOSITORY_LINE,
+      ],
+    ] as const;
+    for (const [badge, height, atTheBase] of badges) {
+      if (Math.abs(height - atTheBase) > 0.5) {
+        changed.push(
+          `the issue header's ${badge} at 1024x768 is ${height}px, and ${atTheBase}px at the base`
         );
       }
     }
@@ -5278,13 +5330,18 @@ interface PickListSeed {
   readonly member: string;
   /** The issue whose spec, and whose `notes.md`, are each in two versions. */
   readonly documented: string;
+  /** The issue whose header's Assignee, Repository and Priority to advance are read, assigned to
+   *  alice and inheriting CORE's default repository. */
+  readonly header: string;
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
- *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's Project list
- *  holds two projects and the people a question can be handed to are alice, bob and carol;
- *  three epics, the first with a member; a spec and a second document of one issue, each in two
- *  versions; and a question for each width. */
+ *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's and the Create
+ *  issue dialog's Project lists hold two projects and the people a question can be handed to, or
+ *  an issue assigned to, are alice, bob and carol; three epics, the first with a member; a spec
+ *  and a second document of one issue, each in two versions; a question for each width; two
+ *  repositories mapped to CORE, acme/widgets its default; three priorities; and an issue of CORE
+ *  assigned to alice, which names no repository of its own and advances no priority. */
 async function seedPickLists(): Promise<PickListSeed> {
   await seedAgents();
   await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
@@ -5323,11 +5380,19 @@ async function seedPickLists(): Promise<PickListSeed> {
     );
     asks.push(ask.id);
   }
-  return { asks, documented: documented.key, member: member.key };
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject("acme/gadgets", { project: "CORE" });
+  for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
+    await createPriority({ owner: "alice", title });
+  }
+  const header = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await patchIssue(header.key, { assignee: "alice" });
+  return { asks, documented: documented.key, header: header.key, member: member.key };
 }
 
-/** The ten lists, in the order the row reads them at one width; `step` is the width's place,
- *  which picks the question it hands on and the issue it addresses. */
+/** The fourteen lists, in the order the row reads them at one width; `step` is the width's
+ *  place, which picks the question it hands on, the issue it addresses, and the person and the
+ *  repository the issue header's lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const main = page.getByTestId("main-content");
   const palette = page.getByRole("dialog", { name: "Search" });
@@ -5367,6 +5432,20 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     step === 0
       ? ["rollout", "CORE-2 · Rollout plan", "CORE-2"]
       : ["keyboard", "CORE-1 · Keyboard issue", "CORE-1"];
+  const assignee = listTrigger(page, `Assignee of ${seed.header}`);
+  const repository = listTrigger(page, `Repository of ${seed.header}`);
+  const advance = listTrigger(page, "Priority to advance");
+  const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
+  const dialogProject = listTrigger(createIssueDialog, "Project");
+  // Each width's pick is a change: the first hands the issue from alice to bob, the second from
+  // bob to carol; the first gives it acme/gadgets of its own, the second takes it back to the
+  // default it inherits.
+  const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
+  const [repositoryWord, repositoryOption, repositoryPicked] =
+    step === 0
+      ? ["gadg", "acme/gadgets", /^acme\/gadgets$/]
+      : ["inh", "Inherit", /^acme\/widgets$/];
+  const reviewQueue = /^P\d+ Cut the review queue$/;
   return [
     {
       name: "the search bar's Project",
@@ -5504,16 +5583,68 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: [versionOne],
       picked: versionOne,
     },
+    {
+      name: "the issue header's Assignee",
+      reach: async () => {
+        await page.goto(`/issues/${seed.header}`);
+      },
+      trigger: assignee,
+      value: shown(assignee),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // Its value is the badge: the trigger's words of its own, which say whether the issue
+      // inherits it, are its description and are never shown.
+      name: "the issue header's Repository",
+      trigger: repository,
+      value: async () => (await repository.locator('[aria-hidden="true"]').innerText()).trim(),
+      word: repositoryWord,
+      left: [repositoryOption],
+      picked: repositoryPicked,
+    },
+    {
+      // A pick stages the priority, which Add would write.
+      name: "the issue header's Priority to advance",
+      reach: async () => {
+        await page
+          .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
+          .click();
+      },
+      trigger: advance,
+      value: shown(advance),
+      word: "queue",
+      left: [reviewQueue],
+      picked: reviewQueue,
+    },
+    {
+      // Opened with `c` over the issue page, whose project it starts on, and read once its title
+      // has the focus the dialog gives it on opening.
+      name: "the Create issue dialog's Project",
+      reach: async () => {
+        await page.locator("body").focus();
+        await page.keyboard.press("c");
+        await expect(createIssueDialog.getByRole("textbox", { name: "Title" })).toBeFocused();
+      },
+      trigger: dialogProject,
+      value: shown(dialogProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
   ];
 }
 
-// SLOW(>=2s): ten lists on six pages, each list opened three times at each of two widths.
+// SLOW(>=2s): fourteen lists on seven pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
 // Each list a reader picks one value from is the single-pick mode of the shared list
 // (`components/MultiSelect.tsx`): the search bar's Project and Status, the List's Move to epic, an
 // epic's Merge into another epic, the Inbox's Hand this question to (`AskHandOn`), the Agents
-// composer's Issue, the Spec tab's Version (`SpecToolbar`), and a document page's Version
-// (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`). At each width each list is
+// composer's Issue, the Spec tab's Version (`SpecToolbar`), a document page's Version
+// (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
+// (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
+// and the Create issue dialog's Project (`CreateIssueDialog`). At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
 // only the options it matches, Escape picks nothing and changes no value, Tab out of the text box
 // (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, and Enter
@@ -5528,11 +5659,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Seven page loads at each width, with the lists read between them. Measured in an issue pod
-  // (two cores), with each list opened three times: the row took 2.4 min in Chromium and 2.7 to
-  // 3.3 min in Firefox, which five minutes keeps under two thirds of the budget, and WebKit, which
-  // no pod runs, is given the same.
-  test.setTimeout(300_000);
+  // Eight page loads and a dialog at each width, with the lists read between them. Measured in
+  // an issue pod (two cores), with each of the fourteen lists opened three times: the row took
+  // 2.9 min in Chromium and 3.4 min in Firefox, which six minutes keeps under two thirds of the
+  // budget, and WebKit, which no pod runs, is given the same.
+  test.setTimeout(360_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
    *  a list holding other than one text box. */
