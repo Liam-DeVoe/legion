@@ -182,9 +182,10 @@ const DRAWING_FRAMES = 10;
 const COMPOSER_FIELD = '[data-testid="issue-composer"] textarea';
 
 /** The writers whose criterion line has its write out (`OutlineWriter.holdCriterion`), each by
- *  the name its line's sends are held under (`sendKey`), which every target already reads the
- *  held sends by: while one is out, that writer's targets and `clear` are refused, as they are
- *  while a send of the line's own is out (`HeldSends.sendingNow`). */
+ *  the identity of its memoised `sendKey` array: a `WeakSet` matches that one array, never an
+ *  equal key made elsewhere, where `HeldSends` matches a key by its hash. While one is out, that
+ *  writer's targets and `clear` are refused, as they are while a send of the line's own is out
+ *  (`HeldSends.sendingNow`). */
 const criterionOut = new WeakSet<MutationKey>();
 
 /** Holds the writer for one issue's body. */

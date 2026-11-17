@@ -924,13 +924,16 @@ function CriterionForm({
             }
             writing={dispatchWritingBox("issue-page-composer", "criterion")}
           />
-          <div className={pageComposer.controls}>
+          {/* A press here leaves the focus where it is (`keepFocusOnPress`), so on a phone the
+              line keeps its form under the pointer and the press lands where it was aimed. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only keeps a press on the buttons inside from moving the focus, and each of them is its own control. */}
+          <div className={pageComposer.controls} onMouseDown={keepFocusOnPress}>
             <RefusableButton
               busy={line.pending ? ANSWER_LINES.sending : undefined}
               look="page-send"
               // An empty line says why it sends nothing, as the answer's says it by its
               // placeholder.
-              refusal={line.text.trim() === "" ? CONTROL_LABELS.criterion_placeholder_phone : null}
+              refusal={line.blank ? CONTROL_LABELS.criterion_placeholder_phone : null}
               type="submit"
             >
               {CONTROL_LABELS.send}

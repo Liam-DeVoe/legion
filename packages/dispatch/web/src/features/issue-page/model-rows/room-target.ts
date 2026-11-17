@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../../../api/client";
-import type { Artifact, IssueDetails } from "../../../api/types";
+import type { Artifact } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { parseNodeReference } from "../../refs/routes";
 import { documentOfNode } from "../issue-artifacts";
@@ -43,10 +43,10 @@ const NO_TEXT: RoomTarget = { report: "no_text" };
 
 /**
  * The room `node` is edited in, by its own address and the issue's documents (`artifacts`, by
- * slug, as `issue-artifacts.ts` holds them). With no `room`, or one the conversion has not
- * reached, a node is edited in the document `documentOfNode` finds, as part I does.
+ * slug, as `issue-artifacts.ts` holds them). On an issue the conversion has not reached, a node
+ * is edited in the document `documentOfNode` finds.
  *
- * A result answers `no_text` wherever a room is given, before its address is read: no room holds
+ * A result answers `no_text` before its address is read: no room holds
  * a result's text, and a borrowed result says `no_text`'s sentence rather than `issue_above`'s
  * (R5, decision 165). Any other node whose address names another issue answers `issue_above`
  * before its id is read, since a borrowed node's id can carry the slug of one of this issue's own
@@ -61,12 +61,11 @@ const NO_TEXT: RoomTarget = { report: "no_text" };
 export function roomTarget(
   node: Pick<TreeNode, "id" | "reference" | "type">,
   artifacts: ReadonlyMap<string, Artifact>,
-  room: RoomFacts | undefined
+  room: RoomFacts
 ): RoomTarget {
   const place = documentOfNode(node.id, artifacts);
   const inDocument =
     place === undefined ? NO_TEXT : { artifactId: place.artifact.id, blockId: place.blockId };
-  if (room === undefined) return inDocument;
   if (node.type === "result") return NO_TEXT;
   const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
   const ofIssue = route !== undefined && "key" in route ? route : undefined;
@@ -98,25 +97,21 @@ export function useRoomFacts(_issueKey: string | undefined): RoomFacts | undefin
 }
 
 /**
- * The tree artifact a row is being edited in (`editing`, the artifact id `slots/body.tsx` holds),
- * where it is the one `issue`'s tree read names as `tree` and the issue read lists it among none
- * of the issue's documents: a node written into the issue, such as a criterion, is edited in it,
- * so the body draws that artifact's editor as it draws a document's. The first Enter on such a
+ * The tree artifact a row is being edited in (`editing`, the artifact id `useOutlineEditing`
+ * holds), where it is the one the tree read of the issue `issueKey` names as `tree`: a node
+ * written into the issue, such as a criterion, is edited in it, so the body draws that
+ * artifact's editor as it draws a document's. Its caller takes this only where no document the
+ * issue read lists is `editing`, and that read never lists the tree artifact, so this asks the
+ * tree read alone. The first Enter on such a
  * row reads it with the artifact read (`GET /api/v1/artifacts/{id}`, R6) under the key the
  * document's own editor reads an artifact by (`ProofDocument.tsx`), so it is read once.
  * `undefined` while the row edits anything else, or nothing. While it reads no tree it does not
  * subscribe to that key (`subscribed`), so a refetch of the edited document's own read under the
  * same key does not draw the body again.
  */
-export function useEditedTree(
-  issue: Pick<IssueDetails, "artifacts" | "key">,
-  editing: string | undefined
-): Artifact | undefined {
-  const tree = useRoomFacts(issue.key)?.tree;
-  const reads =
-    editing !== undefined &&
-    editing === tree &&
-    !(issue.artifacts ?? []).some((artifact) => artifact.id === editing);
+export function useEditedTree(issueKey: string, editing: string | undefined): Artifact | undefined {
+  const tree = useRoomFacts(issueKey)?.tree;
+  const reads = editing !== undefined && editing === tree;
   const read = useQuery({
     enabled: reads,
     queryFn: () => api.getArtifact(editing ?? ""),

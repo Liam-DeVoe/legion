@@ -449,16 +449,22 @@ test("a blank text sends nothing", () => {
   const onLanded = mock(() => {});
   const line = renderLine(onLanded);
   try {
+    // The line starts blank, and its Send's refusal reads that.
+    expect(line.result.current.blank).toBe(true);
     // A send that makes its write is pending at once - the mutation's first step, before any
     // request goes - so a line still not pending after its send made none.
     for (const blank of ["", " \n\t \n"]) {
       act(() => line.result.current.setText(blank));
+      expect(line.result.current.blank).toBe(true);
       act(() => line.result.current.send());
       expect(line.result.current.pending).toBe(false);
       expect(line.result.current.text).toBe(blank);
     }
     expect(sent).toEqual([]);
     expect(onLanded).not.toHaveBeenCalled();
+    // Words with blank lines around them are no blank text: Send and Enter write them.
+    act(() => line.result.current.setText(` \n${TEXT}\n `));
+    expect(line.result.current.blank).toBe(false);
   } finally {
     line.unmount();
   }

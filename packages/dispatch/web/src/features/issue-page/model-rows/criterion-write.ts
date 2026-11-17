@@ -162,9 +162,12 @@ export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWr
 export interface CriterionLineState {
   /** The box's text, kept while the write is out and after a refusal. */
   readonly text: string;
+  /** Whether the text is blank: such a line sends nothing, by Enter or by Send, whose refusal
+   *  says why. */
+  readonly blank: boolean;
   /** Sets the text, and lets the last refusal's answer go. */
   readonly setText: (text: string) => void;
-  /** Writes the text as a criterion, unless it is blank or a write of it is still out. */
+  /** Writes the text as a criterion, unless it is `blank` or a write of it is still out. */
   readonly send: () => void;
   /** Whether the criterion's write is out. */
   readonly pending: boolean;
@@ -190,11 +193,13 @@ export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): C
     },
   });
   const pending = write.isPending;
+  const blank = text.trim() === "";
   return {
     answer: write.error === null ? undefined : criterionAnswer(write.error),
+    blank,
     pending,
     send: () => {
-      if (pending || text.trim() === "") return;
+      if (pending || blank) return;
       write.mutate(criterionMarkdown(aim.parent, text));
     },
     setText: (next) => {

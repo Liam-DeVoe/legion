@@ -157,25 +157,24 @@ test("a node of another issue is read-only", () => {
 });
 
 test("an unconverted node edits in its document's room", () => {
-  for (const facts of [undefined, room(false)]) {
-    expect(roomTarget(STATEMENT, ARTIFACTS, facts)).toEqual({
-      artifactId: "artifact-spec",
-      blockId: "r1",
-    });
-    expect(roomTarget(CHECK, ARTIFACTS, facts)).toEqual({
-      artifactId: "artifact-verification",
-      blockId: "c1",
-    });
-    expect(roomTarget(ASK_BLOCK, ARTIFACTS, facts)).toEqual({
-      artifactId: "artifact-spec",
-      blockId: "q1",
-    });
-    expect(roomTarget(CRITERION, ARTIFACTS, facts)).toEqual({ report: "no_text" });
-    expect(roomTarget(COMMENT, ARTIFACTS, facts)).toEqual({ report: "no_text" });
-    const nodes = [STATEMENT, CHECK, ASK_BLOCK, UNREAD_ASK_BLOCK, CRITERION, ASK, COMMENT, MESSAGE];
-    for (const one of nodes) {
-      expect(roomTarget(one, ARTIFACTS, facts)).toEqual(todaysRoom(one));
-    }
+  const facts = room(false);
+  expect(roomTarget(STATEMENT, ARTIFACTS, facts)).toEqual({
+    artifactId: "artifact-spec",
+    blockId: "r1",
+  });
+  expect(roomTarget(CHECK, ARTIFACTS, facts)).toEqual({
+    artifactId: "artifact-verification",
+    blockId: "c1",
+  });
+  expect(roomTarget(ASK_BLOCK, ARTIFACTS, facts)).toEqual({
+    artifactId: "artifact-spec",
+    blockId: "q1",
+  });
+  expect(roomTarget(CRITERION, ARTIFACTS, facts)).toEqual({ report: "no_text" });
+  expect(roomTarget(COMMENT, ARTIFACTS, facts)).toEqual({ report: "no_text" });
+  const nodes = [STATEMENT, CHECK, ASK_BLOCK, UNREAD_ASK_BLOCK, CRITERION, ASK, COMMENT, MESSAGE];
+  for (const one of nodes) {
+    expect(roomTarget(one, ARTIFACTS, facts)).toEqual(todaysRoom(one));
   }
 });
 

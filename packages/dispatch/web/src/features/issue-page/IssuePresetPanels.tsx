@@ -28,7 +28,7 @@ export function useOutlineEditing(issue: IssueDetails): {
   const [editing, setEditing] = useState<string | undefined>(undefined);
   // A node written into the issue is edited in the tree artifact, which no document of the issue
   // is, so its editor is drawn from the artifact read (dispatch://INFRA-4066 R5).
-  const tree = useEditedTree(issue, editing);
+  const tree = useEditedTree(issue.key, editing);
   const edited =
     editing === undefined
       ? undefined

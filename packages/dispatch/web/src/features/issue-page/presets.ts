@@ -125,12 +125,6 @@ function holds(node: TreeNode, wanted: string): boolean {
   return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
 }
 
-/** Whether `node` is a reading: an agent's account of what a decision or an answered question
- *  means (R3). */
-function isReading(node: TreeNode): boolean {
-  return node.type === "reading";
-}
-
 /**
  * The tree as `preset`, `query` and the address's own node leave it. With no filter on the root
  * is always drawn, because an issue whose words filter matches nothing still has to say so
@@ -205,6 +199,11 @@ function filterView(
   const everyPlacement = filter === "verification";
   const context = new Set<string>();
   const matched = new Set<string>();
+  // Whether Decisions leaves `child` out where it stands under a question: a reading the address
+  // does not name. The one rule picks the question to lift again and what it keeps, so the
+  // second lift finds nothing to leave out.
+  const hiddenReading = (child: TreeNode): boolean =>
+    filter === "decisions" && child.type === "reading" && !named.has(child.id);
   // The rows `node` gives the view, and whether `node` is itself one of them: either the node
   // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
   // it stood.
@@ -213,12 +212,8 @@ function filterView(
     // but one the address names, which every filter draws (R20): the question is lifted again
     // without the others, so this runs once for it. A reading stands only under an answered
     // question, since the schema refuses one in an ask with no answer.
-    if (
-      filter === "decisions" &&
-      node.type === "ask" &&
-      node.children.some((child) => isReading(child) && !named.has(child.id))
-    ) {
-      const kept = node.children.filter((child) => !isReading(child) || named.has(child.id));
+    if (node.type === "ask" && node.children.some(hiddenReading)) {
+      const kept = node.children.filter((child) => !hiddenReading(child));
       return lift({ ...node, children: kept });
     }
     if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };

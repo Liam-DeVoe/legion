@@ -1,6 +1,10 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { criterionMarkdown } from "../web/src/features/issue-page/model-rows/criterion-write";
+import type { Body } from "../web/src/api/paths";
+import {
+  criterionMarkdown,
+  criterionRequest,
+} from "../web/src/features/issue-page/model-rows/criterion-write";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
 import {
   answerAsk,
@@ -53,16 +57,13 @@ import { composer } from "./issue-page-l";
  *   `CriterionForm`): a form `[data-criterion-under="<the node's row id>"]` inside
  *   `[data-testid="issue-composer"]`, its refusal in `[data-criterion-answer]`. The act that aims
  *   it is the focused row's `[data-row-act="criterion"]`.
- * - **An editor's socket** is `/ws/doc/<artifact id>` (part I's `ProofDocument`), read with
- *   `page.on("websocket")` as `countDocumentSockets` (`e2e/editor.ts`) reads it.
+ * - **An editor's socket** is `/ws/doc/<artifact id>` (`ProofDocument`), which the rows count
+ *   with `countDocumentSockets` (`e2e/editor.ts`) from just before the Enter that opens it.
  */
 
 /** How long the server has to answer a write in a read the rows wait on: the seeds' own bound
  *  for the document service's settling (`awaitBlockAsk`, `awaitSeededCheckStates`). */
 const SETTLED_WITHIN_MS = 20_000;
-
-/** The path every editor's socket opens under, before its document's id. */
-const DOC_SOCKET = "/ws/doc/";
 
 /** The block ids this file writes. None is a block id of the seed's documents, and the child's
  *  two are none of the parent's, so a block id names one node in either issue. */
@@ -262,26 +263,15 @@ export function criterionRefusal(page: Page): Locator {
   return criterionLine(page).locator("[data-criterion-answer]");
 }
 
-/** The id of each document whose editor's socket the page opens from now on, in the order it
- *  opens them, open or closed since. */
-export function editorSockets(page: Page): () => readonly string[] {
-  const ids: string[] = [];
-  page.on("websocket", (socket) => {
-    const path = new URL(socket.url()).pathname;
-    if (path.startsWith(DOC_SOCKET)) ids.push(decodeURIComponent(path.slice(DOC_SOCKET.length)));
-  });
-  return () => [...ids];
-}
-
 // ---------------------------------------------------------------------------------------------
 // Writing a criterion as the page does.
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The page's own write of a criterion (`criterion-write.ts`): `criterionMarkdown(parent, text)`
- * appended to issue `key`'s tree artifact `tree`, the tree read's `tree`, by
- * `POST /api/v1/artifacts/{tree}/edits` as the reader. It answers the tree read's id for the
- * criterion once the read holds it, under no node in particular.
+ * The page's own write of a criterion: the body `criterionRequest` (`criterion-write.ts`) builds
+ * for `criterionMarkdown(parent, text)`, appended to issue `key`'s tree artifact `tree`, the tree
+ * read's `tree`, by `POST /api/v1/artifacts/{tree}/edits` as the reader. It answers the tree
+ * read's id for the criterion once the read holds it, under no node in particular.
  */
 export async function writeCriterionApi(
   key: string,
@@ -289,11 +279,12 @@ export async function writeCriterionApi(
   parent: string,
   text: string
 ): Promise<string> {
-  await editArtifact(
-    tree,
-    { ops: [{ after: "end", markdown: criterionMarkdown(parent, text), op: "insert" }] },
-    { login: READER }
-  );
+  // The request's body is typed `unknown`, since a kept write is read back from storage; it is
+  // the edits route's body, which `criterionRequest` builds through `writeRequest`.
+  const { body } = criterionRequest(tree, criterionMarkdown(parent, text));
+  await editArtifact(tree, body as Body<"/api/v1/artifacts/{id}/edits", "post">, {
+    login: READER,
+  });
   const name = "the criterion written through the edits route";
   const words = text.split("\n")[0]?.trim() ?? text;
   return placedId(await awaitPlaced(key, [{ name, supertag: "criterion", words }]), name);
