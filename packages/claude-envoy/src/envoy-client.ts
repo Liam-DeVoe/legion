@@ -1,5 +1,5 @@
+import { shownSettingUrl, withoutUserinfo } from "@legion/contracts/setting-url"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { shownSettingUrl, withoutUserinfo } from "@legion/envoy-client/errors"
 import { OWN_PATH_CHECK, redirectedTo, redirectTarget } from "@legion/envoy-client/redirect"
 import ky from "ky"
 

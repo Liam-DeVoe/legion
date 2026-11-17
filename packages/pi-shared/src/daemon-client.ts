@@ -32,8 +32,9 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-import { messageFor, shownSettingUrl } from "@legion/envoy-client/errors";
+import { messageFor } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import type { z } from "zod";
 

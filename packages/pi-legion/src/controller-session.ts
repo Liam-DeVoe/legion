@@ -5,6 +5,7 @@ import {
   slackMentionTopic,
 } from "@legion/contracts";
 import type { LegionGrant } from "@legion/contracts/legion-api";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
@@ -266,8 +267,13 @@ export function createControllerSession(deps: {
     const { daemon: served } = await client.state();
     const servedRole = controllerToken(legionProjectToken(served.project, "the daemon's project"));
     if (controllerToken(project) !== servedRole) {
+      // The daemon's URL may carry a user and a password: the line names it with neither, and one
+      // that is no http or https URL with a host by its length alone (`shownSettingUrl`).
+      const daemonUrl = requiredEnvironment(process.env, "LEGION_DAEMON_URL");
+      const shown =
+        shownSettingUrl(daemonUrl) ?? `the LEGION_DAEMON_URL of ${daemonUrl.length} characters`;
       throw new Error(
-        `LEGION_PROJECT ${project} names controller role ${controllerToken(project)}, but the daemon at ${requiredEnvironment(process.env, "LEGION_DAEMON_URL")} serves project ${served.project}, whose controller role is ${servedRole}`
+        `LEGION_PROJECT ${project} names controller role ${controllerToken(project)}, but the daemon at ${shown} serves project ${served.project}, whose controller role is ${servedRole}`
       );
     }
     const registration = await client

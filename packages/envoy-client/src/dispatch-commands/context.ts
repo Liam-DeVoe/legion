@@ -9,13 +9,13 @@ import type {
   IssuePriority,
   Sleep,
 } from "@legion/contracts";
+import { withoutUserinfo } from "@legion/contracts/setting-url";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
 import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
-import { withoutUserinfo } from "../errors";
 
 /**
  * Tool arguments as the model supplied them. The tool's Zod schema validates

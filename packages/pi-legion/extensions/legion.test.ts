@@ -6465,6 +6465,25 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     );
   });
 
+  // LEGION_DAEMON_URL may carry a user and a password: the refusal names the daemon with neither
+  // (`shownSettingUrl`). The password is made for this run.
+  test("names the daemon with no user and no password when LEGION_PROJECT is not the daemon's project", async () => {
+    const password = crypto.randomUUID();
+    const controller = await launchedController({ sessionId: "ses_controller_daemon_userinfo" });
+    process.env.LEGION_PROJECT = "demo";
+    process.env.LEGION_DAEMON_URL = `http://made-up-user:${password}@daemon.test`;
+
+    const { notices } = await startRefusedController(
+      controller,
+      controller.context("ses_controller_daemon_userinfo")
+    );
+    expect(notices).toEqual([
+      claimRefused(
+        "LEGION_PROJECT demo names controller role legion-demo-controller, but the daemon at http://daemon.test serves project OMP, whose controller role is legion-omp-controller"
+      ),
+    ]);
+  });
+
   test("refuses before claiming the role when the registration names another controller role", async () => {
     const controller = await launchedController({
       sessionId: "ses_controller_other_role",

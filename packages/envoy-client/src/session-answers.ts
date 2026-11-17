@@ -1,12 +1,13 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
+import { withoutUserinfo } from "@legion/contracts/setting-url";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
-import { messageFor, withoutUserinfo } from "./errors";
+import { messageFor } from "./errors";
 
 /**
  * People's answers on every model request: what people wrote in the last 72

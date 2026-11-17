@@ -4,8 +4,8 @@ import {
   type InboxThreadKind,
   type paths,
 } from "@legion/contracts";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import type { Cookie } from "@playwright/test";
-import { shownSettingUrl } from "../../envoy-client/src/errors";
 import {
   OWN_PATH_CHECK,
   type RedirectTarget,

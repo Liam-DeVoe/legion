@@ -90,11 +90,10 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { withoutUserinfo } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
-import { withoutUserinfo } from "./errors";
 
 export type {
   CredentialPendingResponse,

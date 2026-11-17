@@ -11,11 +11,11 @@ import type {
   OpenAsksResponse,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
+import { withoutUserinfo } from "@legion/contracts/setting-url";
 import { actorText } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
-import { withoutUserinfo } from "../errors";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { edgeLine, graphSectionLines } from "./render-graph";

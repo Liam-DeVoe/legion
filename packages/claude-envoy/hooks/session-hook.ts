@@ -88,6 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { withoutUserinfo } from "@legion/contracts/setting-url"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import {
   dispatchFirstSkillFile,
@@ -96,7 +97,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,

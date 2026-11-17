@@ -9,7 +9,7 @@
  */
 
 import { BlockList, isIP } from "node:net";
-import { shownSettingUrl } from "./errors";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 
 /** The broker's agent secret holding the Legion Slack app's bot token (`xoxb-…`). */

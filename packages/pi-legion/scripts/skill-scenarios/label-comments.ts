@@ -38,7 +38,8 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
-import { messageFor, shownSettingUrl } from "@legion/envoy-client/errors";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { messageFor } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import {
   backoffMs,
