@@ -800,8 +800,8 @@ test("an issue's header names the priorities it advances and links to each", asy
     await expect(page).toHaveURL(`/priorities/${seed.ids[0]}`);
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
 
-    // An issue that advances none carries no line at all: no label, no name, only the control
-    // that places it under a priority.
+    // An issue that advances none carries no line at all: no label, no name, only the trigger of
+    // the picker that places it under a priority.
     await page.goto(`/issues/${seed.clock}`);
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await expect(page.getByTestId("issue-advances")).not.toContainText("Advances");
@@ -809,15 +809,21 @@ test("an issue's header names the priorities it advances and links to each", asy
       page.getByRole("button", { name: `Add a priority to ${seed.clock}` })
     ).toBeVisible();
 
-    // A priority an issue inherits says so and carries no remove: that relation is the
-    // ancestor's, and a relation on a child places nothing above it.
+    // A priority an issue inherits says so, and the picker offers no row that would take it off:
+    // that relation is the ancestor's, and a relation on a child places nothing above it. The
+    // row the child could add is read first, so the absence is read off a list that has loaded.
     await page.goto(`/issues/${seed.child}`);
     const inherited = page.getByTestId("issue-advances");
     await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
+    await page.getByRole("button", { name: `Add a priority to ${seed.child}` }).click();
+    const offered = page.getByRole("listbox", { name: "Priorities options" });
     await expect(
-      page.getByRole("button", { name: `Remove P3 ${seed.titles[2]} from ${seed.child}` })
-    ).toHaveCount(0);
+      offered.getByRole("option", { exact: true, name: `P1 ${seed.titles[0]}` })
+    ).toBeVisible();
+    await expect(offered.getByRole("option", { name: `P3 ${seed.titles[2]}` })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(offered).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -895,9 +901,15 @@ test("a person places an issue under a priority from the issue and takes it off 
     await priorityPage(page);
     await page.goto(`/issues/${seed.clock}`);
 
-    await page.getByRole("button", { name: `Add a priority to ${seed.clock}` }).click();
-    await page.getByLabel("Priority to advance").selectOption(seed.ids[1]);
-    await page.getByRole("button", { name: "Add", exact: true }).click();
+    // The header's picker, as the labels beside it: a tick stages the set and the close writes it.
+    const picker = page.getByRole("button", { name: `Add a priority to ${seed.clock}` });
+    const option = page
+      .getByRole("listbox", { name: "Priorities options" })
+      .getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` });
+    await picker.click();
+    await option.click();
+    await expect(option).toHaveAttribute("aria-selected", "true");
+    await picker.click();
     const named = page
       .getByTestId("issue-advances")
       .getByRole("link", { name: `P2 ${seed.titles[1]}` });
@@ -914,11 +926,13 @@ test("a person places an issue under a priority from the issue and takes it off 
       `${seed.queue} Review queue triage`,
     ]);
 
-    // Taken off from the same line, and gone from both ends after a reload.
+    // Taken off from the same picker, and gone from both ends after a reload.
     await page.goto(`/issues/${seed.clock}`);
-    await page
-      .getByRole("button", { name: `Remove P2 ${seed.titles[1]} from ${seed.clock}` })
-      .click();
+    await expect(named).toBeVisible();
+    await picker.click();
+    await expect(option).toHaveAttribute("aria-selected", "true");
+    await option.click();
+    await picker.click();
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await page.reload();
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
@@ -977,11 +991,17 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     await expect(deleted).toHaveCount(0);
     await expect(kept).toBeVisible();
 
-    // The reader places the issue under P2 from the header's own control. The write sends P1 and
-    // P2, which the server takes; a set still naming P3 would be refused, a priority that is gone.
-    await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
-    await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
-    await reader.getByRole("button", { name: "Add", exact: true }).click();
+    // The reader places the issue under P2 from the header's own picker, which holds P1 ticked
+    // and writes on its close. The write sends P1 and P2, which the server takes; a set still
+    // naming P3 would be refused, a priority that is gone.
+    const picker = reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` });
+    const offered = reader.getByRole("listbox", { name: "Priorities options" });
+    await picker.click();
+    await expect(
+      offered.getByRole("option", { exact: true, name: `P1 ${seed.titles[0]}` })
+    ).toHaveAttribute("aria-selected", "true");
+    await offered.getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` }).click();
+    await picker.click();
     const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
     await expect(added).toBeVisible();
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
