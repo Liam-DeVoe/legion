@@ -6572,6 +6572,69 @@ fixRun("threads-closed-text-fixes-head-99", {
   ]),
   "pushes.log": pushed(fix.fixed),
 });
+// head-102: the implementer's two disposition replies made through GitHub's REST route as GitHub
+// serves it, `POST repos/<o>/<r>/pulls/<n>/comments/<comment id>/replies`, each naming the commit
+// and neither naming a thread's node id: the route names the thread by the id of its first
+// comment, which the world seeds (rig.sh's fixture_write numbers them from 7001, each thread's
+// comment carrying its `databaseId`). Measured in INFRA-764 round 25 (runs/e2781f872410,
+// threads-closed-text-fixes-base-4, calls.jsonl:17-18): the world filed both replies in their
+// threads (answered 9001 and 9002) and the score read `replied=0`, because it took a reply's
+// thread from a thread id in the call's text. Catches: a reply credited to a thread only when the
+// call's text names the thread's node id, rather than by the thread the world files it in.
+fixRun("threads-closed-text-fixes-head-102", {
+  "fixtures.json": JSON.stringify({
+    routes: [
+      {
+        match: "^gh api graphql",
+        graph: {
+          query: {
+            repository: {
+              pullRequest: {
+                reviewThreads: JSON.parse(fixThreadsFile).map(
+                  (thread: { id: string; path: string; line: number }, index: number) => ({
+                    id: thread.id,
+                    isResolved: false,
+                    path: thread.path,
+                    line: thread.line,
+                    comments: [
+                      {
+                        id: `PRRC_kwDOAAAAAc4AAC${7001 + index}`,
+                        databaseId: 7001 + index,
+                        path: thread.path,
+                        line: thread.line,
+                        state: "SUBMITTED",
+                        author: { login: "reviewer-bot" },
+                        body: "This sentence is false.",
+                      },
+                    ],
+                  })
+                ),
+              },
+            },
+          },
+        },
+      },
+    ],
+  }),
+  "calls.jsonl": calls([
+    ...[7001, 7002].map((comment, index) => ({
+      at: `2026-09-30T17:31:${index}0.000Z`,
+      as: "gh",
+      by: "implementer",
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        `repos/example/widgets/pulls/1001/comments/${comment}/replies`,
+        "-f",
+        `body=Fixed in ${fix.fixed.slice(0, 12)}: the text now says what the code does.`,
+      ],
+      exit: 0,
+    })),
+    ...closedBoth.slice(2),
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
 // Catches: a reader of "one thread per call" that counts the ids a call names and lets a call
 // naming none through. head-64's reviewer resolved the first thread with the id in a file
 // (`-F id=@thread-id.txt`, which gh reads the value of from that file), so the call shows no
@@ -8650,6 +8713,15 @@ test("threads-closed, text-fixes: a REST reply is a reply, a quoted mutation res
   );
   expect(out).toMatch(
     /threads-closed-text-fixes-head-57\tpass=false\t.*fixed=true threadsLine=false /
+  );
+});
+
+// Catches: a REST reply on GitHub's own path credited to no thread because its text names no
+// thread's node id (head-102; INFRA-764 round 25's threads-closed-text-fixes-base-4 read
+// `replied=0` for two replies the world had filed in their threads).
+test("threads-closed, text-fixes: a REST reply counts for the thread the world files it in", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-102\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
   );
 });
 
