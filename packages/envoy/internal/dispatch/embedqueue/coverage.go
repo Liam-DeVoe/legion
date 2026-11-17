@@ -401,8 +401,8 @@ func coverPass(ctx context.Context, deps Deps) (identityRun, error) {
 	if err != nil {
 		return identityRun{}, err
 	}
-	// The pass reports the whole deployment, which no one caller reads: the server's own viewer.
-	report, err := Coverage(ctx, deps.Store, identity, model.Actor{Viewer: model.ServerViewer})
+	// The pass reports the whole deployment, which no one caller reads: the server's own reader.
+	report, err := Coverage(ctx, deps.Store, identity, model.ServerReader)
 	if err != nil {
 		return identityRun{}, fmt.Errorf("coverage pass: %w", err)
 	}

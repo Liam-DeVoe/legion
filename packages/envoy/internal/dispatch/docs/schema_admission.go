@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -262,12 +261,12 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 
 // recheckAccess closes each document socket this process holds whose person may no longer read its
 // room (errAccessRevoked): for each person with a socket here it reads what they see now
-// (access.Resolve) and which of their rooms they may read (documentReadable), and revokes the rest
-// (revokeUnless). It runs on each access change and after each LISTEN stands, since a change
-// notified while the hub had no connection reached nobody. A socket whose admission read its room
-// before this pass began and that is recorded only after the pass looked is read again as it is
-// recorded (recheckAdmission). A person whose read fails keeps their sockets until the next pass,
-// as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
+// (access.BrowserReader) and which of their rooms they may read (access.DocumentClause), and
+// revokes the rest (revokeUnless). It runs on each access change and after each LISTEN stands,
+// since a change notified while the hub had no connection reached nobody. A socket whose admission
+// read its room before this pass began and that is recorded only after the pass looked is read
+// again as it is recorded (recheckAdmission). A person whose read fails keeps their sockets until
+// the next pass, as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
 func (s *Service) recheckAccess(ctx context.Context) {
 	hidden := make(map[*schemaAdmission]bool)
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
@@ -311,17 +310,15 @@ func (s *Service) recheckAdmission(ctx context.Context, admission *schemaAdmissi
 }
 
 // readableRoomsStatement reads which of the documents $1 the reader bound at $2 may read.
-var readableRoomsStatement = `select a.id::text from artifacts a where a.id = any($1::uuid[]) and ` + documentReadable("a", "$2")
+var readableRoomsStatement = `select a.id::text from artifacts a where a.id = any($1::uuid[]) and ` + access.DocumentClause("a", "$2")
 
 // readableRooms is the rooms of admissions, all person's sockets, that person may read now, as the
-// person's browser sees them (model.BrowserActor): every document socket is a cookie's.
+// person's browser sees them (access.BrowserReader): every document socket is a cookie's.
 func (s *Service) readableRooms(ctx context.Context, person string, admissions []*schemaAdmission) (map[string]bool, error) {
-	who := model.Actor{Kind: "user", ID: person}
-	viewer, err := access.Resolve(ctx, s.store.Pool, model.BrowserActor(person))
+	who, err := access.BrowserReader(ctx, s.store.Pool, person)
 	if err != nil {
 		return nil, err
 	}
-	who.Viewer = &viewer
 	rooms := make([]string, len(admissions))
 	for i, admission := range admissions {
 		rooms[i] = admission.key.room

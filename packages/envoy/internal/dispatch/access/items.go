@@ -28,6 +28,19 @@ func ItemOwnerClause(issueExpr, artifactExpr, viewerParam string) string {
 		else `+PartyClause(file, viewerParam)+` end)`)
 }
 
+// DocumentClause passes the artifacts row alias names: a document of an issue or of a project when
+// the viewer sees that project (ProjectClause over the row's own project_key, which is its issue's
+// project for an issue's document), and a file of an agent's conversation, which no project owns,
+// when the viewer may read that conversation, whose one party is the file's session (PartyClause,
+// the parties graphstore.ArtifactNode states on the document's node). It reads the row's own
+// columns, so a statement that holds the row binds it rather than ItemOwnerClause, which reads the
+// document again by its id. A document its reader may not read is a row the statement does not
+// find, and answers exactly as an id nobody holds.
+func DocumentClause(alias, viewerParam string) string {
+	return clause("DocumentClause", `(case when `+alias+`.project_key is not null then `+ProjectClause(alias+`.project_key`, viewerParam)+
+		` else `+PartyClause(`array['session:' || `+alias+`.session_id]`, viewerParam)+` end)`)
+}
+
 // MessagePartiesSQL is the parties of the conversation the message idExpr (its id as text) is in:
 // those its node carries, which are its thread root's, since every message of a thread on no
 // issue is written between its root's parties.

@@ -682,36 +682,32 @@ type issueRead struct {
 // readIssue reads whether room's issue is open on q, true for a document of no issue (as issueOpen
 // has it), stamped with when the read began: the stamp is taken before the query, so the read is
 // never taken for fresher than it is. It reads for who: a room who may not read - a document of a
-// project who does not see, or of an agent's conversation who is no party to (documentReadable) - is
-// a room no document holds, and the read finds no row. A room's own load reads for every reader its
-// sockets' admissions read for (roomReader).
+// project who does not see, or of an agent's conversation who is no party to
+// (access.DocumentClause) - is a room no document holds, and the read finds no row. A room's own
+// load reads for every reader its sockets' admissions read for (model.ServerReader), whose viewer
+// passes the clause at its `all` flag, so that read binds the statement without it.
 func (s *Service) readIssue(ctx context.Context, q Queryer, room string, who model.Actor) (issueRead, error) {
 	read := issueRead{at: time.Now()}
-	if err := q.QueryRow(ctx, readIssueStatement, room, refs.VisibilityArg(who)).Scan(&read.open); err != nil {
+	statement, args := issueOpenStatement, []any{room}
+	if who.Viewer == nil || !who.Viewer.All {
+		statement, args = readIssueStatement, []any{room, refs.VisibilityArg(who)}
+	}
+	if err := q.QueryRow(ctx, statement, args...).Scan(&read.open); err != nil {
 		return read, fmt.Errorf("check document issue: %w", err)
 	}
 	return read, nil
 }
 
-// readIssueStatement reads whether the issue of the document $1 is open, where the reader bound at
-// $2 (refs.VisibilityArg) may read that document.
-var readIssueStatement = `
+// issueOpenStatement reads whether the issue of the document $1 is open, true for a document of
+// no issue, for no reader in particular (issueOpen).
+const issueOpenStatement = `
 	select coalesce(i.closed_at is null, true)
 	from artifacts a left join issues i on i.key = a.issue_key
-	where a.id = $1 and a.kind = 'doc' and ` + documentReadable("a", "$2")
+	where a.id = $1 and a.kind = 'doc'`
 
-// documentReadable passes the artifacts row alias names to the reader bound at viewerParam: a
-// document of an issue or a project when the reader sees that project, and a file of an agent's
-// conversation when the reader may read that conversation (access.ItemOwnerClause, the rule of a
-// row a document owns, here the document itself).
-func documentReadable(alias, viewerParam string) string {
-	return access.ItemOwnerClause(alias+".issue_key", alias+".id", viewerParam)
-}
-
-// roomReader is who a room's own load reads its document for: the server's own viewer
-// (model.ServerViewer), since the room serves every socket its admissions let in, each of which
-// read the document for its own person (ServeHTTP).
-var roomReader = model.Actor{Viewer: model.ServerViewer}
+// readIssueStatement is issueOpenStatement where the reader bound at $2 (refs.VisibilityArg) may
+// read that document.
+var readIssueStatement = issueOpenStatement + ` and ` + access.DocumentClause("a", "$2")
 
 // recordIssueLocked records read on state unless state holds a record made later (closedRead):
 // an older read never replaces a newer one, nor a close or reopen recorded after it began. Its

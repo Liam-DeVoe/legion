@@ -176,6 +176,10 @@ type Viewer struct {
 // uses gates per viewer where it leaves the server: it sees every project and every party.
 var ServerViewer = &Viewer{Open: true, All: true}
 
+// ServerReader is the server's own reader: an actor that proves no author and carries
+// ServerViewer, for a read the server makes for itself rather than for a caller.
+var ServerReader = Actor{Viewer: ServerViewer}
+
 // SameAs reports whether two actors are the same writer: one session id, or one human login.
 // Dispatch compares actors in this way wherever it has to decide "is this the same session" — a
 // claim's holder against a caller, and an event's actor against the claimant it names. Where

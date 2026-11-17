@@ -64,7 +64,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 		},
 		{
 			name:   "the server's own viewer",
-			reader: model.Actor{Viewer: model.ServerViewer},
+			reader: model.ServerReader,
 			want:   `{"author":null,"sees":[],"open":true,"all":true,"private":false}`,
 		},
 	} {
@@ -128,7 +128,7 @@ func (caller seededCaller) reader(t *testing.T, q access.Querier) model.Actor {
 	case caller.closed:
 		return caller.actor.Reader()
 	case caller.server:
-		return model.Actor{Viewer: model.ServerViewer}
+		return model.ServerReader
 	}
 	viewer, err := access.Resolve(context.Background(), q, caller.actor)
 	if err != nil {
@@ -185,9 +185,9 @@ func writeSeedNodes(t *testing.T, tx pgx.Tx, nodes []graphstore.Node, tuples []g
 }
 
 // serverReader is the reader of every test of this package that reads the graph for no particular
-// viewer: one that proves no author and sees every project and every party (model.ServerViewer),
-// which is what a read with no actor was before a reader carried a viewer.
-var serverReader = model.Actor{Viewer: model.ServerViewer}
+// viewer: the server's own (model.ServerReader), which proves no author and sees every project and
+// every party, which is what a read with no actor was before a reader carried a viewer.
+var serverReader = model.ServerReader
 
 // planReader is a reader a plan or a timing binds, by the name a failure gives it.
 type planReader struct {

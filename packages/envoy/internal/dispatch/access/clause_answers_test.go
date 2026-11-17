@@ -39,11 +39,14 @@ func TestEveryClauseAnswersTrueOrFalseNeverNull(t *testing.T) {
 		"MessageClause over a message on a missing issue":         MessageClause("missing_issue_row", "$1"),
 		"RepositoryClause over a missing repository":              RepositoryClause("null::text", "$1"),
 		"RepositoryClause over a repository no mapping names":     RepositoryClause("'acme/unmapped'", "$1"),
+		"DocumentClause over a document of no project or session": DocumentClause("document_row", "$1"),
 	}
 	// Two message rows the MessageClause cases read, neither of which any table holds: one on no
-	// issue whose node was never stated, and one on an issue nobody holds.
+	// issue whose node was never stated, and one on an issue nobody holds; and a document row that
+	// names neither a project nor a session.
 	const rows = ` from (select null::text as issue_key, '00000000-0000-4000-8000-000000000001'::uuid as id) message_row,
-		(select 'NOPE-1'::text as issue_key, '00000000-0000-4000-8000-000000000002'::uuid as id) missing_issue_row`
+		(select 'NOPE-1'::text as issue_key, '00000000-0000-4000-8000-000000000002'::uuid as id) missing_issue_row,
+		(select null::text as project_key, null::text as session_id) document_row`
 	for viewerName, viewer := range viewers {
 		for clauseName, clause := range clauses {
 			for _, form := range []string{clause, "not " + clause} {

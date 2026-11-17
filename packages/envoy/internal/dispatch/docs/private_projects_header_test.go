@@ -16,7 +16,7 @@ import (
 // A document socket's 101 carries the Dispatch-Private-Projects value the process's middleware set
 // on the writer, beside the process header. ygo's upgrade writes the 101 on the hijacked
 // connection and reads no header of the writer's, so the value reaches it only through the
-// connection the service's Hijack hands out (processHeaderWriter).
+// connection the service's Hijack hands out (upgradeHeadersWriter).
 func TestADocumentSocketsUpgradeSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
