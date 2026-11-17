@@ -381,9 +381,10 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
+// read back and joined in order.
+func reviewerPrompt(t *testing.T) string {
+	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -400,8 +401,15 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 		}
 		prompt.Write(part)
 	}
+	return prompt.String()
+}
+
+// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
+// its own completion carries none, so a rename on either side alone fails here.
+func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	prompt := reviewerPrompt(t)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt.String(), want) {
+		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}
 	}
@@ -417,23 +425,7 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 		t.Fatalf("a task names its reviewed commit as %q, want it to start with %q", got, " "+field)
 	}
 	want := "`" + field
-	composer, err := prompts.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("compose the shipped prompts: %v", err)
-	}
-	parts, err := composer.Compose(claim.RoleReviewer, false)
-	if err != nil {
-		t.Fatalf("compose the reviewer's prompt: %v", err)
-	}
-	var prompt strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		part, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read role prompt part %s: %v", path, err)
-		}
-		prompt.Write(part)
-	}
-	if !strings.Contains(prompt.String(), want) {
+	if !strings.Contains(reviewerPrompt(t), want) {
 		t.Errorf("the reviewer's prompt does not say %q", want)
 	}
 	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
