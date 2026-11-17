@@ -1823,9 +1823,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
-	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
-	// the row retries for ever, and a write without the step's identity is refused only when it is
-	// the record's first, so the same defect would make a record on one run and none on another.
+	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
+	// …", the one answer the row waits on for ever, and a write without the step's identity is
+	// refused only when it is the record's first, so the same defect would make a record on one
+	// run and none on another.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)

@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"sync"
@@ -183,24 +185,97 @@ func (r *stepRecordRig) retriedThenLanded(refused int) []stepPut {
 	return puts
 }
 
-// A Dispatch older than the route answers its router's 404 under the code NOT_FOUND, which is no
-// refusal of the record: the row retries on its backoff until the upgraded Dispatch takes it, which
-// is what lets the daemon and Dispatch deploy in either order. Each failed attempt is the outbox's
-// own Error line, and nothing says the record was dropped, because it was not. The write that lands
-// is the whole record, under its issue and its id.
-func TestAStepRecordRetriesUntilDispatchHasTheRoute(t *testing.T) {
-	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route"}
-	puts := newStepRecordRig(t, answersInTurn(notFound, notFound)).retriedThenLanded(2)
+// A Dispatch older than the route answers each write with its router's 404 NOT_FOUND "no route
+// for …" (routes/router.go, staticHandler), and the daemon and Dispatch deploy in either order.
+// So the row waits rather than fails, as the role holders' publication does
+// (TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt): it logs `outbox row waits` and
+// no ERROR line, at INFO on its first run, DEBUG on the next six, and WARN from its seventh retry,
+// when its backoff has reached its cap of about a minute (waitWarnAttempts); each run keeps the row,
+// and nothing says the record was dropped, because it was not. Once Dispatch serves the route, the
+// next run writes the whole record, under its issue and its id, and ends the row. The stand-in
+// answers as the router does, through the daemon's real HTTP client, so the client's reading of
+// that body is what decides.
+func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
+	rig := newStepRecordRig(t, nil)
+	rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	route := "/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID
+
+	var mu sync.Mutex
+	routed, asked := false, 0
+	var landed []stepPut
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked++
+		w.Header().Set("Content-Type", "application/json")
+		if !routed || req.Method != http.MethodPut || req.URL.Path != route {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"code": "NOT_FOUND", "error": "no route for " + req.Method + " " + req.URL.Path, "hint": "GET /api/v1 lists every route",
+			})
+			return
+		}
+		var write dispatch.StepWrite
+		if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		landed = append(landed, stepPut{Issue: stepIssue, ID: stepRecordID, Write: write})
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": stepRecordID})
+	}))
+	t.Cleanup(server.Close)
+	rig.runner.dispatch = dispatch.New(server.URL, "agent-token")
+
+	const tries = waitWarnAttempts + 1
+	for try := 1; try <= tries; try++ {
+		rig.run()
+		var attempts int
+		if err := rig.pool.QueryRow(context.Background(), `select attempts from outbox where kind = $1 and issue = $2`,
+			string(record.OutboxKindStepRecord), stepIssue).Scan(&attempts); err != nil {
+			t.Fatalf("after try %d, read the row: %v", try, err)
+		}
+		if attempts != try {
+			t.Fatalf("after try %d the row has %d attempts, want %d: the record kept for its next run", try, attempts, try)
+		}
+		mu.Lock()
+		reached := asked
+		mu.Unlock()
+		if reached != try {
+			t.Fatalf("after try %d the stand-in was asked %d times, want once a try", try, reached)
+		}
+	}
+
+	mu.Lock()
+	routed = true
+	mu.Unlock()
+	rig.run()
 	started, ended := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC), time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
 	session, model, result, report := "ses-reviewer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
 	returnedTo := 2
-	want := stepPut{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 4, Kind: "step",
+	want := []stepPut{{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 4, Kind: "step",
 		Role: "reviewer", Type: "review", Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session,
-		Model: &model, StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}}
-	for i, put := range puts {
-		if !reflect.DeepEqual(put, want) {
-			t.Fatalf("PUT %d = %+v, want %+v", i, put, want)
-		}
+		Model: &model, StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}}}
+	if !reflect.DeepEqual(landed, want) {
+		t.Fatalf("once the route was served the stand-in took %+v, want %+v", landed, want)
+	}
+	if left := rig.left(); left != 0 {
+		t.Fatalf("after the record landed the issue has %d rows left, want none", left)
+	}
+
+	logs := rig.logs.String()
+	if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
+		t.Errorf("logged %d ERROR lines while Dispatch had no route, want none: %s", len(errored), logs)
+	}
+	if dropped := loggedLines(t, logs, stepRefusedLine); len(dropped) != 0 {
+		t.Errorf("logged the record dropped %d times, want never: %s", len(dropped), logs)
+	}
+	var levels []string
+	for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
+		level, _ := line["level"].(string)
+		levels = append(levels, level)
+	}
+	if want := []string{"INFO", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "WARN"}; !slices.Equal(levels, want) {
+		t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs)
 	}
 }
 
@@ -293,7 +368,9 @@ func TestAReturnToTheRetroReachesDispatchAsPlaceZero(t *testing.T) {
 
 // What a retry can change is retried: an outage, "come back later", a codeless answer from a
 // proxy, and a credential an operator restores, as the shared rule rides each of them out
-// (dispatch.PermanentRefusal). So is the old router's NOT_FOUND, and an older Dispatch's refusal of
+// (dispatch.PermanentRefusal). So is a handler's 404 NOT_FOUND "not found", which is not the
+// router's "no route for …" that a Dispatch older than the route answers (a wait, as
+// TestAStepRecordWaitsForADispatchThatHasNoRouteForIt shows), and an older Dispatch's refusal of
 // a field this daemon added. Each is the answer to a real PUT of the queued row: the row stays,
 // its failed attempt is the outbox's own Error line and nothing says the record was dropped, and
 // once Dispatch answers again the next run writes the same record under the same id and ends it.
@@ -306,7 +383,7 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 		{name: "a transport failure", err: &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}},
 		{name: "401", err: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"}},
 		{name: "403 ACTOR_SESSION_MISMATCH", err: &dispatch.Error{Status: http.StatusForbidden, Code: "ACTOR_SESSION_MISMATCH", Message: "the bearer names another session"}},
-		{name: "404 NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route"}},
+		{name: "a handler's 404 NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}},
 		{name: "408", err: &dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT", Message: "slow"}},
 		{name: "429", err: &dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "later"}},
 		{name: "a codeless 400", err: &dispatch.Error{Status: http.StatusBadRequest, Message: "Bad Request"}},

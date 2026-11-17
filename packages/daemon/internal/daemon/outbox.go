@@ -629,7 +629,8 @@ func retryBackoff(attempts int) time.Duration {
 // purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
 // refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
 // stay permanent and end the row. A step record ends on exactly the refusals its route makes for
-// good (stepRecordRefused), so the old router's NOT_FOUND and a credential answer retry.
+// good (stepRecordRefused), so a credential answer retries; the router's NOT_FOUND of a Dispatch
+// older than the route is a wait of its executor's (publishStepRecord), and never reaches this.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
@@ -1240,10 +1241,14 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 // leaves out, so the start and the end land in either order, and a write that runs again after a
 // lost answer changes nothing.
 //
-// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
-// and nothing here treats that as final (permanentRefusal): the lane's backoff holds the row
-// until the server has the route, which is what lets the daemon and Dispatch deploy in either
-// order.
+// A Dispatch that has not got the route yet answers its router's 404 (dispatch.NoRoute), so the
+// daemon and Dispatch deploy in either order: that answer is a wait, not a failure, as it is for
+// the role holders' publication (publishRoleHolders). The row runs again on its backoff and is
+// logged as a wait is (settle): INFO at its first run, DEBUG after, and WARN from waitWarnAttempts
+// on. The wait wraps nothing of Dispatch's refusal, so no reading of stepRecordRefused can end the
+// row on it, and once Dispatch serves the route the row's next run writes the record and ends it.
+// Every other answer is decided by stepRecordRefused: a refusal its route makes for good ends the
+// row, and anything else is a failure retried on the same backoff.
 func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
 	if r.dispatch == nil {
 		return errors.New("step record executor has no Dispatch client")
@@ -1253,6 +1258,9 @@ func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, pa
 		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
 		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
 	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {
+		if dispatch.NoRoute(err) {
+			return wait.Errorf("the step record %s of %s waits for a Dispatch that serves the route: %v", payload.ID, row.Issue, err)
+		}
 		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
 	}
 	return nil
@@ -1263,8 +1271,9 @@ func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, pa
 // calls final, which leaves out an older Dispatch's refusal of a field this daemon added), a
 // writer its route refuses (403 STEP_WRITER: the daemon names its own session on every write, so
 // the route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE).
-// Everything else retries: the old router's NOT_FOUND, an outage, "come back later", a codeless
-// answer and a credential an operator restores.
+// Everything else retries: a handler's 404 NOT_FOUND, an outage, "come back later", a codeless
+// answer and a credential an operator restores. The router's NOT_FOUND of a Dispatch older than
+// the route never reaches it: publishStepRecord makes that answer a wait.
 func stepRecordRefused(err error) bool {
 	var refusal *dispatch.Error
 	if !errors.As(err, &refusal) {
