@@ -1194,9 +1194,12 @@ func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, pa
 }
 
 // publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's
-// issue and the plan's own id. Dispatch sets each field once, so a write that runs again after a
-// lost answer changes nothing. A Dispatch that has not got the route yet is waited out as for a
-// step record (publishStepRecord).
+// issue and the plan's own id, one for each run. The source, the document, the version and the
+// tasks are one fact, which each write carries whole: Dispatch replaces all four for a version
+// above the one it holds and changes nothing for one at or below it, a version left out (the
+// source default) counting as 0, so a write that runs again after a lost answer, or arrives after a
+// later version's, changes nothing. A Dispatch that has not got the route yet is waited out as for
+// a step record (publishStepRecord).
 func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, payload record.PlanRecord) error {
 	if r.dispatch == nil {
 		return errors.New("plan record executor has no Dispatch client")

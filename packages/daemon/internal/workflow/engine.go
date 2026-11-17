@@ -1690,9 +1690,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
-	// out is written: the default plan (defaultPlan), the steps whose first is the start below.
+	// out is written: the run's plan node (planNode), the plan whose first step is the start below.
 	if trigger == TriggerGateOpened && recordsSteps(issue) {
-		if err := e.enqueue(ctx, tx, issue.Key, defaultPlan(issue)); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, w)); err != nil {
 			return err
 		}
 	}

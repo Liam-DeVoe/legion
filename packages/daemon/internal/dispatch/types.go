@@ -57,7 +57,9 @@ type Client interface {
 	// one. Dispatch writes each field once and keeps every field the write leaves out.
 	PutStep(ctx context.Context, key, id string, write StepWrite) error
 	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
-	// issue. Dispatch writes each field once, so a plan sent again changes nothing.
+	// issue. Its source, document, version and tasks are one fact: a write whose version is above
+	// the version Dispatch holds replaces all four, and one at or below it changes nothing (a
+	// version left out, the source default, counts as 0), so a plan sent again or late changes nothing.
 	PutPlan(ctx context.Context, key, id string, plan PlanWrite) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).

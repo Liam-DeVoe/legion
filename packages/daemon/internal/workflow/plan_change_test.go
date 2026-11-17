@@ -159,6 +159,7 @@ func architectOf(t *testing.T) claim.Token {
 // engine's clock, and each task waits at no act with the steps its block names, each with the type
 // of its role. A block that names no steps runs the default steps, and given again it changes no
 // task, also while the task runs: the held plan is read as its block was given, not from its steps.
+// The version taken while the task runs queues one row, the run's plan node at that version (C9).
 // An issue that started its work before Legion took plans is refused and walks today's line, and
 // so is a plan given at a generation the issue has left, and one in a lingering tree; each refusal
 // writes nothing and leaves the fact unspent. The twin (R20): a root given no plan opens to
@@ -276,8 +277,13 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if task.State != record.TaskRunning || task.Place != was.Place || !task.StepsByDefault || !reflect.DeepEqual(after.plan.Steps, running.plan.Steps) {
 			t.Fatalf("task a after the same block given again = %+v with steps %v, want it running at %+v on the same steps", task, stepsOfTask(after.plan, "a"), was.Place)
 		}
-		if !reflect.DeepEqual(after.issue, running.issue) || after.outbox != running.outbox {
-			t.Fatalf("the same block given again moved %s or queued %d outbox rows, want neither", root.Key, after.outbox-running.outbox)
+		if !reflect.DeepEqual(after.issue, running.issue) || after.outbox != running.outbox+1 {
+			t.Fatalf("the same block given again moved %s or queued %d outbox rows, want no move and one row, the plan node", root.Key, after.outbox-running.outbox)
+		}
+		node := record.PlanRecord{ID: PlanID(root.Key, root.Generation), Generation: root.Generation, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
+			Version: 2, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		if nodes := planWrites(t, pool, root.Key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
+			t.Fatalf("the plan nodes of %s after version 2 = %+v, want the newest %+v", root.Key, nodes, node)
 		}
 	})
 
@@ -344,8 +350,9 @@ func runningRefusal() *intake.Refusal {
 // A later version changes only a task that waits or is stopped (R16; B-3, B-24; C2-1). While
 // task a runs, a version that changes its steps, or only its text, is refused naming a, and writes
 // nothing. A version that leaves a's block as it is, and changes only the prose outside it, is
-// taken, and a goes on at its step. A version at or below the one in force, and a version of
-// another document, are refused. A version given while a is stopped that leaves its block as it is
+// taken, a goes on at its step, and the run's plan node is written again at that version (C9). A
+// version at or below the one in force, and a version of another document, are refused. A version
+// given while a is stopped that leaves its block as it is
 // is taken and a stays stopped; one with other steps is taken, and starts a again at its first
 // step on the new steps: the hold is cleared, the issue stands in that step's phase, its role is
 // started at a raised entry told why, the pass rises by one, and no pair, round or hook is counted.
@@ -380,8 +387,13 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 			!reflect.DeepEqual(kept.plan.Steps, before.plan.Steps) || !sameReturnCounts(task.Counts, was.Counts) {
 			t.Fatalf("task a after version 4 = %+v, want it running at %+v on its steps, its counts as they were", task, was.Place)
 		}
-		if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox {
-			t.Fatalf("version 4 moved %s or queued %d outbox rows, want neither", key, kept.outbox-before.outbox)
+		if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
+			t.Fatalf("version 4 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
+		}
+		node := record.PlanRecord{ID: PlanID(key, gen), Generation: gen, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
+			Version: 4, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}}}}
+		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
+			t.Fatalf("the plan nodes of %s after version 4 = %+v, want the newest %+v", key, nodes, node)
 		}
 
 		// Version 3, refused while a ran, is now below the version in force.
@@ -401,13 +413,18 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		entry := roleRowOf(t, pool, engine, key, claim.RoleImplementer).Entry
 		prompts := len(hookPrompts(t, pool))
 
-		// A version that leaves the stopped task's block as it is changes no task: a stays stopped.
+		// A version that leaves the stopped task's block as it is changes no task: a stays stopped,
+		// and the one row queued is the run's plan node at version 5 (C9).
 		mustTake(t, "version 5 with a's block as it is", apply(planID(key, gen, 5), ownersPlan(t, key, gen, 5, built)))
 		still := planStandingOf(t, pool, engine, key, gen)
 		if task := still.task(t); task.State != record.TaskStopped || task.Place != stopped.task(t).Place || still.issue.Phase != phase.Held ||
-			still.outbox != stopped.outbox {
-			t.Fatalf("task a after version 5 = %+v, %s %s, %d outbox rows queued, want it stopped where it stood, the issue held, nothing queued",
+			still.outbox != stopped.outbox+1 {
+			t.Fatalf("task a after version 5 = %+v, %s %s, %d outbox rows queued, want it stopped where it stood, the issue held, one row, the plan node",
 				task, key, still.issue.Phase, still.outbox-stopped.outbox)
+		}
+		node.Version = 5
+		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
+			t.Fatalf("the plan nodes of %s after version 5 = %+v, want the newest %+v", key, nodes, node)
 		}
 
 		mustTake(t, "version 6 with other steps", apply(planID(key, gen, 6), ownersPlan(t, key, gen, 6, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
@@ -631,6 +648,10 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 			startsOfA[0].Type != "implementation" || startsOfA[0].ID != StepID(key, gen, "a", record.PlaceStep, 1, 1) {
 			t.Fatalf("the start records of task a = %+v, want one, of step 1 (implementer, implementation) at attempt 1", startsOfA)
 		}
+		// The version taken writes the run's plan node again, as the plan of task a (C9).
+		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], ownersNode(1)) {
+			t.Fatalf("the plan nodes of %s after version 1 = %+v, want the newest %+v", key, nodes, ownersNode(1))
+		}
 	})
 
 	t.Run("the twin: an issue with no plan rows in planning takes no plan", func(t *testing.T) {
@@ -724,6 +745,8 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 		if processed(t, pool, unregistered) {
 			t.Fatalf("version 2, which nobody gave, is marked processed")
 		}
+		// The run's plan node is version 1's, written once at the start: version 2 wrote none.
+		assertPlanNodes(t, pool, key, "after the walk", ownersNode(1))
 		return walked
 	}
 

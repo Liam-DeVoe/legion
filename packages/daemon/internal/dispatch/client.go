@@ -223,12 +223,14 @@ func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrit
 
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
 // issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
-// the route takes a plan of the issue from. The write appends no event and notifies nobody, and
-// Dispatch sets each field once, so a plan sent again changes nothing. Dispatch answers 400
-// PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other writer, 404
-// ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id that is a plan
-// of another issue; a Dispatch older than the route answers its router's 404 under the code
-// NOT_FOUND, which the caller retries until the server release that has it.
+// the route takes a plan of the issue from. The write appends no event and notifies nobody. The
+// plan's source, document, version and tasks are one fact: a write whose version is above the
+// version Dispatch holds replaces all four, and a write at or below it changes nothing, a version
+// left out (the source default) counting as 0, so a plan sent again or late changes nothing.
+// Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other
+// writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id
+// that is a plan of another issue; a Dispatch older than the route answers its router's 404 under
+// the code NOT_FOUND, which the caller retries until the server release that has it.
 func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
 		PlanWrite: plan,

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -79,11 +80,38 @@ func PlanID(issue string, generation uint64) string {
 	return uuid.NewSHA1(planRecordNamespace, []byte(fmt.Sprintf("%s/%d", issue, generation))).String()
 }
 
-// defaultPlan is the plan of issue's run whose owner gave none: the source default, and one task,
-// default, whose steps are DefaultSteps.
-func defaultPlan(issue record.Issue) record.PlanRecord {
-	return record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: defaultTask, Steps: DefaultSteps()}}}
+// planNode is the plan node of issue's run (C9): the plan w walks, as Dispatch records it under
+// the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
+// owner, with the document and the version of it Legion took, or default, the project's default
+// steps, with neither. Its task is the run's one task, with its steps in order, each a role or
+// `role:key` (plan.Step.String). The node is written at the start of the work and again, whole, at
+// each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
+// above the one it holds. A run with no plan rows walks today's line, and its node is the default
+// steps of a project that names none (config.Project.RunsByDefault), as the release before wrote.
+func planNode(issue record.Issue, w Walk) record.PlanRecord {
+	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
+	if !w.Stored {
+		node.Tasks = []record.PlanRecordTask{{ID: defaultTask, Steps: stepWords(config.Project{}.RunsByDefault())}}
+		return node
+	}
+	if w.Version.Source == record.PlanSourceOwner {
+		node.Source, node.ArtifactID, node.Version = record.PlanSourceOwner, w.Version.ArtifactID, w.Version.Version
+	}
+	steps := make([]plan.Step, len(w.Steps))
+	for i, step := range w.Steps {
+		steps[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
+	}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: stepWords(steps)}}
+	return node
+}
+
+// stepWords is steps as a plan writes them, each `role` or `role:key`.
+func stepWords(steps []plan.Step) []string {
+	words := make([]string, len(steps))
+	for i, step := range steps {
+		words[i] = step.String()
+	}
+	return words
 }
 
 // passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first
@@ -546,7 +574,10 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // version in force (givenRows): each task it leaves as it was keeps its steps and where it stands,
 // each task it changes takes the steps its block now names, and each task it removes is deleted.
 // Where it changes the stopped task of an issue held for that task, the task the plan now holds
-// starts again at its first step (restartTask), and its worker is told which version did it.
+// starts again at its first step (restartTask), and its worker is told which version did it. A
+// version taken after the work started writes the run's plan node again, whole (planNode, C9): the
+// start wrote it at the version then in force, and the node names the plan the run walks now. A
+// version taken before the work starts writes none, since the start writes the version in force.
 //
 // A plan given at a generation the issue has left, or in a lingering tree, is refused too. Each
 // refusal writes nothing and leaves the fact unspent, so the same registration, whose id names the
@@ -632,12 +663,20 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	}
 	e.logOnCommit(ctx, "workflow: an owner's plan is taken", "issue", fact.Issue, "generation", fact.Generation, "version", fact.Plan.Version,
 		"document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "changed", changed)
-	if !recorded || len(stopped) == 0 || !planHold(*issue) || issue.Hold.Reason != record.HoldTaskStopped {
+	if !recorded || beforeItsWork(*issue) {
 		return intake.Result{}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	if recordsSteps(*issue) {
+		if err := e.enqueue(ctx, tx, issue.Key, planNode(*issue, w)); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	if len(stopped) == 0 || !planHold(*issue) || issue.Hold.Reason != record.HoldTaskStopped {
+		return intake.Result{}, nil
 	}
 	reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, strings.Join(stopped, ", "))
 	refusal, err := e.restartTask(ctx, tx, *issue, w, reason)

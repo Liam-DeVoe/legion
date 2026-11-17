@@ -1110,12 +1110,16 @@ type StepRecord struct {
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 
 // PlanRecord is the plan one run of an issue carries out, written onto Dispatch (PUT
-// /api/v1/issues/{key}/plans/{id}) when the run's work starts. ID is the plan's id, a uuid of the
-// issue and its run, and the row's issue column is the issue. Each other field is a field of the
-// route's body under the same name: the run (record.Issue.Generation), where the plan came from
-// (default, the steps Legion runs when the owner gave none, or owner), the owner's document and its
-// version, which a plan of the source default leaves out, and each task with its steps in order.
-// Dispatch sets each field once, so a plan sent again changes nothing.
+// /api/v1/issues/{key}/plans/{id}) when the run's work starts and again at each later version of
+// the owner's plan that Legion takes (workflow's planNode). ID is the plan's id, a uuid of the
+// issue and its run, one for each run, and the row's issue column is the issue. Each other field
+// is a field of the route's body under the same name: the run (record.Issue.Generation), where the
+// plan came from (default, the steps Legion runs when the owner gave none, or owner), the owner's
+// document and its version, which a plan of the source default leaves out, and each task with its
+// steps in order. The source, the document, the version and the tasks are one fact, so each write
+// carries all four: a write whose version is above the version Dispatch holds replaces all four,
+// and a write at or below it changes nothing, a version left out (the source default) counting as
+// 0. So a write that arrives late or twice does no harm.
 type PlanRecord struct {
 	ID         string           `json:"id"`
 	Generation uint64           `json:"generation"`

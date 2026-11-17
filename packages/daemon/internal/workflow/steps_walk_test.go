@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -415,5 +416,70 @@ func TestThePullRequestRowNamesItsTask(t *testing.T) {
 		openedOnce(t, pool, engine, root.Key)
 		assertPullRequestNames(t, pool, root.Key, "", "after the opened, with no plan rows")
 		assertLaterWritesKeep(t, pool, engine, root.Key, "")
+	})
+}
+
+// assertPlanNodes fails unless the plan node rows key's outbox holds are want, in the order they
+// were queued, saying when.
+func assertPlanNodes(t *testing.T, pool *pgxpool.Pool, key, when string, want ...record.PlanRecord) {
+	t.Helper()
+	if got := planWrites(t, pool, key); !reflect.DeepEqual(append([]record.PlanRecord{}, got...), append([]record.PlanRecord{}, want...)) {
+		t.Fatalf("%s: the plan nodes of %s = %+v, want %+v", when, key, got, want)
+	}
+}
+
+// ownersNode is the plan node of LEGION-208's run 1 on version of the owner's plan whose one
+// task, a, runs the implementer and the reviewer.
+func ownersNode(version int) record.PlanRecord {
+	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
+		Version: version, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
+}
+
+// The plan node of a run is the plan its walk holds (C9, B-7). An owner's plan given before the
+// work starts is the node the start writes: the source owner, the document, version 1 and the
+// task a with its steps; a version given before the start writes no node of its own, since the
+// start writes the version then in force. A version 2 taken while a runs writes the node again,
+// whole, at version 2, under the run's one id. A version that replaces the stopped task default
+// with a writes the node of a. An issue whose owner gave no plan writes the source default, with
+// no document and no version, and the project's default_steps as the task default.
+func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T) {
+	t.Run("the owner's plan: version 1 at the start, and version 2 again when it is taken", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		apply := applyFacts(t, pool, engine)
+		root := stepRoot(t, pool, phase.Admitted)
+		task := givenTask(t, "Build the widget.", "implementer", "reviewer")
+		mustTake(t, "version 1 before the work starts", apply(planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, task)))
+		assertPlanNodes(t, pool, root.Key, "after version 1, before the work starts")
+		firstStep(t, pool, engine, root.Key)
+		assertPlanNodes(t, pool, root.Key, "at the start", ownersNode(1))
+		mustTake(t, "version 2 while a runs, which changes no task", apply(planID(root.Key, root.Generation, 2), ownersPlan(t, root.Key, root.Generation, 2, task)))
+		assertPlanNodes(t, pool, root.Key, "after version 2", ownersNode(1), ownersNode(2))
+	})
+
+	t.Run("a version that replaces the stopped task default writes the node of a", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		apply := applyFacts(t, pool, engine)
+		root := stepRoot(t, pool, phase.Admitted)
+		firstStep(t, pool, engine, root.Key)
+		defaults := record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
+			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		assertPlanNodes(t, pool, root.Key, "at the start on the default steps", defaults)
+		if result := apply("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
+			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
+		}
+		mustTake(t, "version 1, which replaces default with a", apply(planID(root.Key, root.Generation, 1),
+			ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		assertPlanNodes(t, pool, root.Key, "after version 1", defaults, ownersNode(1))
+	})
+
+	t.Run("an issue whose owner gave no plan: the source default with the project's default_steps", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := engineRunningByDefault(t, "implementer", "reviewer")
+		root := stepRoot(t, pool, phase.Admitted)
+		firstStep(t, pool, engine, root.Key)
+		assertPlanNodes(t, pool, root.Key, "at the start", record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
+			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"implementer", "reviewer"}}}})
 	})
 }
