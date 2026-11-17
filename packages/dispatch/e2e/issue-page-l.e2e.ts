@@ -6,7 +6,15 @@ import {
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
-import { createAsk, getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createProject,
+  getArtifactBlocks,
+  getIssueEvents,
+  getMyState,
+  listComments,
+} from "./api";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
 import {
@@ -55,6 +63,7 @@ import {
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
+import { asUser } from "./users";
 
 /**
  * Writing on the new issue page: the page's one
@@ -1345,4 +1354,71 @@ test.skip("r on a statement in the Spec view writes a comment under it @owed", {
       `the comment from the Spec view is anchored to ${JSON.stringify(comment.anchor)}, not inside ${STATEMENT_BLOCKS.two}`
     ).toBe(true);
   });
+});
+
+// Tester's finding, round 4 of the test of part L: the foot inset counts a sticky element held at
+// the foot, the new page's box. Today's docked composer is sticky too, held at the top from 640 px
+// up, and keeps the 64 px `bottom` of its fixed look below 640 px, so a wide window whose foot
+// meets its bottom edge counted it, published its whole height and drew the shell's status corner
+// above the screen's top edge, which `main` never does (R10).
+test("today's docked composer lifts nothing at the foot of a short wide window", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  // An issue of a project of the row's own: the database is empty at each row's start.
+  await createProject({ key: "DOCK", name: "Today's docked composer" });
+  const { key } = await createIssue({
+    force: true,
+    project: "DOCK",
+    title: "Today's page in a window whose foot meets its composer",
+  });
+  // Today's page: the reader has not turned the new page on.
+  const context = await asUser(browser, READER);
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    await page.goto(`/issues/${key}/conversation`);
+    const docked = page.getByRole("form", { name: "Comment composer" });
+    await expect(docked, "today's Conversation tab draws no docked composer").toBeVisible();
+    // The window's foot on the composer's bottom edge, which is where the inset reads its box: the
+    // window is set to the composer's bottom until the two meet, as a reader's short window does.
+    const bottomOf = async () => {
+      const box = await docked.boundingBox();
+      return box === null ? Number.NaN : Math.round(box.y + box.height);
+    };
+    let bottom = await bottomOf();
+    for (
+      let tries = 0;
+      tries < 3 && Math.abs((page.viewportSize()?.height ?? 0) - bottom) > 1;
+      tries++
+    ) {
+      expect(bottom, "the docked composer's foot is not on a desktop screen").toBeLessThan(
+        DESKTOP.height
+      );
+      await page.setViewportSize({ height: bottom, width: DESKTOP.width });
+      await expect
+        .poll(bottomOf, { message: "the docked composer moved on the resize" })
+        .toBeGreaterThan(0);
+      bottom = await bottomOf();
+    }
+    expect(
+      Math.abs((page.viewportSize()?.height ?? 0) - bottom),
+      "the window's foot never met the docked composer's bottom edge"
+    ).toBeLessThanOrEqual(1);
+    const inset = () =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--foot-composer-inset")
+      );
+    // Two frames after the window met it: the resize and the composer's size observer have both
+    // run by then, so the inset read is the one the shell draws its status corner by.
+    await page.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+    );
+    expect(
+      await inset(),
+      `today's docked composer published a foot inset at ${DESKTOP.width}x${bottom}`
+    ).toMatch(/^(0px)?$/);
+  } finally {
+    await context.close();
+  }
 });
