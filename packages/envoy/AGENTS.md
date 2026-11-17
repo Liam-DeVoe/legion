@@ -840,7 +840,7 @@ the document websocket's admission check (`loadTree`), a read outside any transa
 a repair reads the tree inside the transaction that writes it (`rewriteLive`), and the unrecorded-mark sweep (`sweepUnrecordedMarks`) inside the transaction that unmarks it.
 A room's load reads the live tree before ygo hands the room to anyone (`onLoadDocument`).
 A write reads its transaction's fork, with no exception:
-every operation that changes the document - `ReplaceText`, `MarkQuote`, `SetBlockAttributes` and the rest of `applyLive`'s callers - takes it from a transaction its caller joined first (`Docs.Join`), and refuses one that didn't (`errUnjoined`).
+every operation that changes the document - `ReplaceText`, `MarkQuote`, `KeepAskBlockInStep` and the rest of `applyLive`'s callers - takes it from a transaction its caller joined first (`Docs.Join`), and refuses one that didn't (`errUnjoined`).
 Main's own `applyLive`/`applyJoined` fold (#1693) removed the unjoined branch this used to carve out as a tests-only exception, which walked the room's own live document directly inside `Server.Apply`, holding no lock across its callback, and so could read a peer's write halfway through as a tree outside the schema;
 every write now reads through its own transaction's fork instead, which is always a consistent copy no peer's concurrent write can tear.
 A tree a read returns shares no map or slice with the document it was read from (`pmdoc.Read` copies each mark's attributes and every list or object an attribute holds), so a reader that edits its tree changes nothing a later read of the replica meets (`TestEditingALiveReadsTreeChangesNoLaterRead`).
@@ -1818,7 +1818,7 @@ The step ticks at `docs.BlockIndexReconcileInterval` for as long as the process 
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, on the shared pool, and dials no connection (`TestATickWithNothingOwedReadsNoTableWhole`).
 `graphcensus.AsksOwed` reads its tables to the end when nothing is owed, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, until it finds nothing: this build's create sites write their nodes and markers, so only another build writes a row it finds.
 A session advisory lock keeps two processes from running it together: a booting process waits for it, and a tick that finds it held skips.
-The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed` once a pass has run, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
+The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed`, one number, once a tick has counted it, and whose three parts each count logs, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, beside `DISPATCH_TEST_HOOKS=1`, keeps every phase from running, and `backfill-graph-store` runs the first phase.
 
 A node's `state` takes five values (`graphstore.NodeStates`): `live`, `gone`, `proposed`, `settled` and `overtaken`, and its `visibility` two, `project` and `author`.
@@ -2246,7 +2246,7 @@ Text a caller writes reaches the parser with line feeds alone:
 in every edit operation's text before any check reads it (`applyOperation`:
 a replace's `with`, an insert's markdown whether it becomes blocks or table rows, a retype's attributes);
 in a suggestion's `replace_with` when it is created and when it is accepted;
-in the attributes written onto a typed block (`SetBlockAttributes`, `pmdoc.LineFeedAttrs`), and in an answer's text, which its ask block carries;
+in an answer's text, which the ask's node holds;
 and in a block ask's edited question and options.
 A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
 the block ids an edit carries are the browser editor's own offsets, and a ProseMirror document holds no carriage return, so that normalisation shortens no offset a caller sent.

@@ -362,7 +362,9 @@ export interface AskBlockHost {
  * its state, and `data-dispatch-ask-malformed`, `"true"` while the block is malformed and
  * `undefined` otherwise. The key is always present so one loop writes every stamp: a static spec
  * skips an undefined attribute (prosemirror-model's `renderSpec`), and `applyAskBlockShell`
- * removes it. */
+ * removes it. The state stamped here is the block's own attribute; the card mounted into the
+ * shell stamps the state it shows over it, the server's read of the ask where it holds one
+ * (`AskBlockCard`), since the block no longer records an answer. */
 type AskBlockStamps = {
   readonly "data-dispatch-ask-urgency": AskUrgency;
   readonly "data-dispatch-ask-state": string;

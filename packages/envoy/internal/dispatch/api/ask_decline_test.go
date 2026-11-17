@@ -288,17 +288,22 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 	}
 
 	// A declined ask whose question is a document's decision block leaves that block closed, as
-	// every other resolution leaves it. It runs on a server whose documents settle fast enough
-	// to watch.
+	// every other resolution leaves it: the document's text, as an agent reads it, shows the block
+	// resolved, rendered from the ask's node on read (dispatch://INFRA-1150 R3), and the decline
+	// changes no byte of the document. It runs on a server whose documents settle fast enough to
+	// watch.
 	t.Run("a declined block ask reads resolved in its document", func(t *testing.T) {
-		handler, _ := blockAskHandler(t)
+		handler, database := blockAskHandler(t)
 		issue, askID := seedBlockAsk(t, handler, "Declined block", "decision", transportAsk, "Which transport?")
+		awaitSettled(t, database, issue.PrimaryArtifactID)
+		before := documentVersions(t, handler, issue.PrimaryArtifactID)
 		if declined := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/decline",
 			map[string]any{"note": "Whoever builds it decides."}, "alice"); declined.Code != http.StatusOK {
 			t.Fatalf("decline a block ask: status=%d body=%s", declined.Code, declined.Body.String())
 		}
-		awaitDocumentText(t, handler, issue.PrimaryArtifactID, `the block reading state="resolved"`,
+		awaitTextShows(t, handler, issue.PrimaryArtifactID, `the block reading state="resolved"`,
 			contains(`#decision urgency="high" multiple="false" state="resolved"`), nil)
+		requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, before[len(before)-1].Number)
 	})
 }
 

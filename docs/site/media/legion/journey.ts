@@ -180,20 +180,20 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
   await expect.poll(async () => (await api.getIssue(issue.key)).open_asks?.length ?? 0).toBe(1);
 }
 
-/** The number of versions the spec has, to wait for the one an answer writes. */
-export async function specVersions(issue: Tracked): Promise<number> {
-  const api = await dispatchApi();
-  return (await api.getArtifact(issue.spec)).versions?.length ?? 0;
-}
-
-/** Waits until the spec has more versions than `before`: an answer is written into its decision
- *  block as a new version, and an approval asked for before that version lands would move to it
- *  and wait on the architect to hand it back. */
-export async function specVersionAfter(issue: Tracked, before: number): Promise<void> {
+/** Waits until the ask of the example's decision block reads answered with the example's pick,
+ *  which is what the block's card reads to show the answer. A person's answer is held on the ask
+ *  alone and writes no version of the spec, so an approval asked for next is asked of the version
+ *  the architect wrote. */
+export async function decisionAnswered(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await expect
-    .poll(async () => (await api.getArtifact(issue.spec)).versions?.length ?? 0)
-    .toBeGreaterThan(before);
+    .poll(async () => {
+      const ask = (await api.listIssueAsks(issue.key)).find(
+        (candidate) => candidate.block_id === example.decision.id
+      );
+      return { selected: ask?.answer?.selected ?? null, state: ask?.state ?? null };
+    })
+    .toEqual({ selected: [example.decision.pick], state: "answered" });
 }
 
 /** The human answers the decision block. */
@@ -203,9 +203,8 @@ export async function answerDecision(issue: Tracked, example: Example): Promise<
   if (decision === undefined) {
     throw new Error(`journey: ${issue.key} has no open ask to answer`);
   }
-  const versions = await specVersions(issue);
   await api.answerAsk(decision.id, { expected_edited_at: null, selected: [example.decision.pick] });
-  await specVersionAfter(issue, versions);
+  await decisionAnswered(issue, example);
 }
 
 /** The architect asks the human to approve the spec, with its summary; answers the ask's id. */

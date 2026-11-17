@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -84,6 +84,15 @@ export function AskBlockCard({
   served,
 }: AskBlockCardProps): ReactNode {
   const facts = askBlockFacts(host.node, served);
+  // The frame's state stamp (`data-dispatch-ask-state`) is what the document's styles read to keep
+  // the source option list folded under the caret once the decision is no longer open. The node
+  // view stamps the block's own `state` at every redraw of the shell (`applyAskBlockShell`), and
+  // the block no longer records an answer, so the card stamps the state it shows over it: the
+  // server's read of the ask where it holds one. A new host comes with each redraw, so the stamp
+  // follows it.
+  useLayoutEffect(() => {
+    host.header.parentElement?.setAttribute("data-dispatch-ask-state", facts.state);
+  }, [host, facts.state]);
   const malformed = facts.malformedReason !== undefined;
   const open = facts.state === "open";
   const answered = facts.state === "answered";

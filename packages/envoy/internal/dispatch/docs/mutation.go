@@ -1888,24 +1888,6 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 	return newBatchTree(tree), nil
 }
 
-// SetBlockAttributes applies server-owned typed-block state through the transactional
-// live-document mutation path. attributes' names are the server's own, never taken from a request
-// (pmdoc.SetBlockAttributes).
-func (s *Service) SetBlockAttributes(
-	ctx context.Context,
-	artifactID, blockID string,
-	attributes map[string]any,
-	actor model.Actor,
-) error {
-	err := s.setBlockAttributes(ctx, artifactID, blockID, attributes, actor)
-	// Setting attributes a block already carries writes nothing, which the live path reports as
-	// ErrNoChanges; the block holds what the caller asked for, so that is success.
-	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
-		return wrapUnlessTooLarge(err, "set live block attributes")
-	}
-	return nil
-}
-
 // KeepAskBlockInStep writes ask's state, as the answer, resolve and decline routes leave it, into
 // the ask's own block, in the transaction ctx joined, while another build serves
 // (anotherBuildServes), whose pages read an ask's state from its block: the attributes the roll
@@ -1962,8 +1944,8 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 		if err != nil {
 			return err
 		}
-		// The fragment is taken before the transaction, as setBlockAttributes takes it: the doc's
-		// lock the transaction holds is the one taking the fragment would wait for.
+		// The fragment is taken before the transaction: the doc's lock the transaction holds is the
+		// one taking the fragment would wait for.
 		fragment := doc.GetXmlFragment(fragmentName)
 		var updateErr error
 		transact(func(transaction *crdt.Transaction) {
@@ -1975,32 +1957,6 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 		return wrapUnlessTooLarge(err, "keep an ask block in step with its ask")
 	}
 	return nil
-}
-
-func (s *Service) setBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error {
-	return s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
-		fragment := doc.GetXmlFragment(fragmentName)
-		valid, err := startTree(current, doc)
-		if err != nil {
-			return err
-		}
-		tree := valid.Node()
-		next, err := pmdoc.SetBlockAttributes(tree, blockID, pmdoc.Attrs(pmdoc.LineFeedAttrs(attributes)))
-		if err != nil {
-			return err
-		}
-		if next.EqualWithBlockIDs(tree) {
-			return nil
-		}
-		var updateErr error
-		transact(func(transaction *crdt.Transaction) {
-			updateErr = pmdoc.Update(transaction, fragment, next)
-		})
-		if updateErr != nil {
-			return updateErr
-		}
-		return nil
-	})
 }
 
 // NamedVersion records the live document as a deliberately named immutable version. Like

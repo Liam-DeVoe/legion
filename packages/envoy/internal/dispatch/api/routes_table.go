@@ -408,6 +408,7 @@ var idRoutes = map[string]idRoute{
 	// document that does not exist and resolve no prefix: a short id written at one of them
 	// reaches the hook as the caller wrote it, as every other value does.
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":            {Reason: "a test hook's document id, naming a live room rather than a stored document"},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":               {Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":                {Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}":    {Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}":    {Reason: "a test hook's document id, naming a live room rather than a stored document"},
