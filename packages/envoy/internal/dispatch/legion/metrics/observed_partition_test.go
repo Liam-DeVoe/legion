@@ -74,6 +74,18 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 				observeString(legion.FieldPhase, hour(3), "awaiting_person").
 				observeString(legion.FieldPhase, hour(6), "implementing"),
 		},
+		{
+			// Review round 32's probe: `done` from the close at hour 3 through the reopen at
+			// hour 5 to hour 6, out of the workflow, and the queue after it.
+			name:  "merged, closed, then reopened and queued",
+			issue: mergedThenReopened("INFRA-6"),
+		},
+		{
+			// The daemon parks a child that leaves the workflow in `done`, and reports it
+			// again once it is back.
+			name:  "a child moved to triage and reported again",
+			issue: triagedAndObserved("INFRA-7").under("INFRA-1"),
+		},
 	}
 
 	for _, each := range cases {
@@ -85,8 +97,8 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 // timeline. dispatch://INFRA-979's corpus does hold it over all 289 finished issues, but the
 // corpus is one shape of history: every issue there runs forward through its phases once. These
 // are the shapes that bend — a handoff with no role event after it, a send-back, two parks, an
-// issue only one role ever touched — which the corpus happens not to carry in a form that would
-// break the sum.
+// issue only one role ever touched, a close a reopen undid, a stretch in `triage` — which the
+// corpus happens not to carry in a form that would break the sum.
 func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -130,6 +142,14 @@ func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 		{
 			name:  "one role and nothing else",
 			issue: newIssue("INFRA-5").worked("implementer", hour(0)).closedAt(hour(4)),
+		},
+		{
+			name:  "closed, then reopened",
+			issue: reopened("INFRA-6", "todo"),
+		},
+		{
+			name:  "moved to triage and back",
+			issue: triaged("INFRA-7"),
 		},
 	}
 
