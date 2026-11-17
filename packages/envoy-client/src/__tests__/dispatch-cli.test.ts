@@ -3876,7 +3876,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
           : "the stored result";
     test(`with the job's identity, --issue answered ${name} prints ${prints} and exits ${code}`, async () => {
       dispatchAnswer = () => {
-        // The key the answer names back: the write's own (`this`), none, or another request's.
         const key =
           echo === "none" ? "" : echo === "this" ? answeringKey : `${answeringKey}-another`;
         if (answer === "committed") return keyCommitted(key);

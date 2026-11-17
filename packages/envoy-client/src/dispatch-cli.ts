@@ -84,16 +84,17 @@ const REFUSED = 1;
 const USAGE = 2;
 
 /**
- * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
- * ends `totalMs` after it starts: one timeout, made where the call starts, is the signal every
- * await of it runs under — its wait on the broker's trade and on the runner's token request the
- * trade makes, each write with the asks the write client makes again under its key, and each wait
- * after an answer that says "not now" (`notNow`) — since the write client takes that signal as
- * its deadline and hands it to the credential. The trade itself runs under its own bound, which a
- * second caller of the credential may share (`BrokerTokenClient.token`), so the signal ends the
- * call's wait on it and not the trade. No round starts, and the write client asks nothing again,
- * in its last `reserveMs`, the time a last attempt has to be answered before the bound ends it. A
- * job's step of many checks still ends, and the wait of one call stays far below a job's timeout.
+ * The one bound of a CI job's `dispatch result`, `--project` or `--issue` (`ownIdentityResult`).
+ * The whole call ends `totalMs` after it starts: one timeout, made where the call starts, is the
+ * signal every await of it runs under — its wait on the broker's trade and on the runner's token
+ * request the trade makes, each write with the asks the write client makes again under its key,
+ * and each wait after an answer that says "not now" (`notNow`) — since the write client takes that
+ * signal as its deadline and hands it to the credential. The trade itself runs under its own bound,
+ * which a second caller of the credential may share (`BrokerTokenClient.token`), so the signal ends
+ * the call's wait on it and not the trade. No round starts, and the write client asks nothing
+ * again, in its last `reserveMs`, the time a last attempt has to be answered before the bound ends
+ * it. A job's step of many checks still ends, and the wait of one call stays far below a job's
+ * timeout.
  */
 export interface ResultBound {
   readonly totalMs: number;
