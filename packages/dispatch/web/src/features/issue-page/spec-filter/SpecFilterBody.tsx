@@ -180,13 +180,16 @@ export function SpecFilterBody({
   // after a read again that fails, which leaves the body an answer to draw. Until the view and
   // the asks read have both answered the column says nothing of a statement no decision shaped,
   // since it does not know yet: a person's decision is a question they answered, which only the
-  // asks read says.
+  // asks read says. Where the asks read failed with no answer held, the column says its
+  // decisions could not be read, on a line of its own after the view read's, with a Retry that
+  // reads the asks alone again.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
-  const asks = useQuery({
+  const asksRead = useQuery({
     enabled: false,
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
-  }).data;
+  });
+  const asks = asksRead.data;
   const answered = root.views?.spec;
   const [last, setLast] = useState(answered);
   useEffect(() => {
@@ -198,6 +201,7 @@ export function SpecFilterBody({
     [asks, held, issue]
   );
   const decisionsFailed = failedWithNothing({ data: held, isError: specRead.isError });
+  const asksFailed = failedWithNothing(asksRead);
   // The two reads the statements come from, the coverage and the spec's blocks, under the keys
   // the tree reads them with (no request of their own): until both hold an answer the body
   // cannot say the issue holds no statement. Both documents' blocks, the spec's here and the
@@ -478,6 +482,16 @@ export function SpecFilterBody({
         <QueryError
           message={ANSWER_LINES.decisions_unreadable}
           onRetry={() => void specRead.refetch()}
+        />
+      ) : null}
+      {/* The asks read failed with no answer held: a person's decisions come from it, so the
+          column says its decisions could not be read, after the view read's line. It is a copy
+          of the shape of the page's shared failed-read line (`slots/failed-read-line.tsx`'s
+          `FailedReadLine`), which it takes once this branch holds it. */}
+      {asksFailed ? (
+        <QueryError
+          message={ANSWER_LINES.decisions_unreadable}
+          onRetry={() => void asksRead.refetch()}
         />
       ) : null}
       {resultsFailed ? (

@@ -35,9 +35,13 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * Until the view or the tree read has answered, and the asks read too, the view does not know
  * what the issue holds, so it says nothing of its decisions (`known`). Where neither the view
  * nor the tree read holds an answer and one of them failed, it says the decisions could not be
- * read, with a Retry that reads again each of the two that failed (`failed`, `retry`). A read
- * asked again keeps its answer while it is out and when it fails, and the view draws from that
- * answer, so only a read that failed with no answer held counts as failed.
+ * read, with a Retry that reads again each of the two that failed (`failed`, `retry`). The asks
+ * read is the third read the decisions come from: a person's decision is a question they
+ * answered, and the open questions are the issue's open asks, which only the asks read says.
+ * Where it failed with no answer held, the view says so on a line of its own after that one, in
+ * the same words, with a Retry that reads the asks alone again (`asksFailed`, `asksRetry`). A
+ * read asked again keeps its answer while it is out and when it fails, and the view draws from
+ * that answer, so only a read that failed with no answer held counts as failed.
  *
  * The reads are the page's own, under the keys it reads them by (`useIssueTree.ts`,
  * `ViewReadProvider`): the tree read, the decisions view and the issue's asks, each watched and
@@ -58,6 +62,11 @@ export interface DecisionsEntries extends DecisionsParts {
   readonly failed: boolean;
   /** Reads again each of those two reads that failed with no answer held. */
   readonly retry: () => void;
+  /** Whether the asks read failed with no answer held, which leaves the view no open question
+   *  and no person's decision to draw. */
+  readonly asksFailed: boolean;
+  /** Reads the asks again. */
+  readonly asksRetry: () => void;
 }
 
 /** The Decisions view's parts and how its reads stand, from the issue, the reader's login, the
@@ -87,11 +96,12 @@ export function useDecisionsEntries({
   const viewRead = useQuery({ ...viewQuery(issue.key, "decisions"), enabled: false });
   // The issue's asks, which say which answered question is a person's decision
   // (`decisionNodes`), watched the same way: the page's tree reads them under this key.
-  const asks = useQuery({
+  const asksRead = useQuery({
     enabled: false,
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
-  }).data;
+  });
+  const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer.
   const held = root.views?.decisions ?? tree;
   const decisions = useMemo(
@@ -134,7 +144,15 @@ export function useDecisionsEntries({
     if (treeFailed) void readTree();
     if (viewFailed) void readView();
   }, [readTree, readView, treeFailed, viewFailed]);
-  return useMemo(() => ({ ...parts, failed, known, retry }), [failed, known, parts, retry]);
+  const asksFailed = asksRead.isError && asks === undefined;
+  const { refetch: readAsks } = asksRead;
+  const asksRetry = useCallback(() => {
+    void readAsks();
+  }, [readAsks]);
+  return useMemo(
+    () => ({ ...parts, asksFailed, asksRetry, failed, known, retry }),
+    [asksFailed, asksRetry, failed, known, parts, retry]
+  );
 }
 
 /**
