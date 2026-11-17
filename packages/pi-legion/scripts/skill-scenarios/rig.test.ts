@@ -8559,7 +8559,7 @@ docker() {
       "services_up",
     ].map(fn),
     assignment("postgres_image"),
-    assignment("nats_image"),
+    `root=${JSON.stringify(CHECKOUT)}; . "$root/scripts/e2e/lib/nats-image.sh"`,
     assignment("worker_boots"),
   ].join("\n");
   const given = {

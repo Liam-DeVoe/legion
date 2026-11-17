@@ -1528,10 +1528,13 @@ services_postgres=$work/services/postgres-url
 # since the services files beside it name every label.
 tokens=$work/services/tokens
 # The two images a batch starts when it is given no servers, by digest (services_up), which each
-# run's provenance names (services_from): ghcr.io/cybermonklabs/legion/ci's copies of
-# pgvector/pgvector and nats:2.10 (.github/ci-images.yaml).
+# run's provenance names (services_from): ghcr.io/cybermonklabs/legion/ci's copy of
+# pgvector/pgvector (.github/ci-images.yaml), and the hub's nats-server, which
+# scripts/e2e/lib/nats-image.sh reads from testnats.HubImage: the listener and the daemon refuse a
+# nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
 postgres_image=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-nats_image=ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
 
 # build_dir CHECKOUT prints where the Go binaries built from CHECKOUT are kept:
 # $work/builds/<the first 16 hex digits of the digest of CHECKOUT's path>, beside the daemon facts
