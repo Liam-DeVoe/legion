@@ -47,6 +47,14 @@ func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, strin
 // runs; a read that waited out its deadline logs "could not read the session's interests". Every
 // wait is bounded by the test's deadline alone (testnats.Remaining).
 //
+// What the row cannot tell apart: a request that finds the connection down also ends its life
+// (bus's requestLife), and the registry watchers on this client probe their bucket's stream every
+// 2 s (kvwatch's streamProbeInterval), here as in a deployed listener. So with the drop's own report
+// and the disconnect callback both taken out, the row still passes at the next probe, about 2 s
+// after the drop. The bus rows in internal/bus/lost_reply_test.go, whose bare client makes no other
+// request, decide the drop's own report; this row decides the listener's side: the restart's read
+// is bound, answers relayLost and gives the lock up.
+//
 // The control is the same row at main a97cd59397 (and 44a1f1fb97): the restart holds the lock
 // until its read's deadline, sessionConsumerCallTimeout (5 s), fires, and logs that read as one
 // it could not make.
