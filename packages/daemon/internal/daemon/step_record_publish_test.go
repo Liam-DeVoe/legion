@@ -170,6 +170,49 @@ func (r *stepRecordRig) run() {
 // left is how many rows the issue has left.
 func (r *stepRecordRig) left() int { return outboxRowsOf(r.t, r.pool, stepIssue) }
 
+// endedWithOneWarning holds that the rig's row ended with one Warn line, line, naming its issue,
+// its record under idKey (step for a step record, plan for a plan) and the status and code
+// Dispatch refused it with, and that its failure is not logged as a failed attempt besides.
+func (r *stepRecordRig) endedWithOneWarning(line, idKey, id string, refusal *dispatch.Error) {
+	t := r.t
+	t.Helper()
+	logs := r.logs.String()
+	warned := loggedLines(t, logs, `"level":"WARN"`)
+	if len(warned) != 1 || warned[0]["msg"] != line {
+		t.Fatalf("warnings = %v, want the one %q: %s", warned, line, logs)
+	}
+	for key, want := range map[string]any{"issue": stepIssue, idKey: id, "code": refusal.Code, "status": float64(refusal.Status)} {
+		if warned[0][key] != want {
+			t.Errorf("%q names %s %v, want %v", line, key, warned[0][key], want)
+		}
+	}
+	if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 0 {
+		t.Fatalf("logged %d failed attempts, want none for a refusal no retry changes: %s", len(failed), logs)
+	}
+}
+
+// waitedNeverFailed holds that the rig's runs logged no ERROR line and never dropped, the line
+// that says the write was dropped, and that each wait was logged at levels, in order.
+func (r *stepRecordRig) waitedNeverFailed(dropped string, levels []string) {
+	t := r.t
+	t.Helper()
+	logs := r.logs.String()
+	if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
+		t.Errorf("logged %d ERROR lines while Dispatch had no route, want none: %s", len(errored), logs)
+	}
+	if said := loggedLines(t, logs, dropped); len(said) != 0 {
+		t.Errorf("logged the write dropped %d times, want never: %s", len(said), logs)
+	}
+	var logged []string
+	for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
+		level, _ := line["level"].(string)
+		logged = append(logged, level)
+	}
+	if !slices.Equal(logged, levels) {
+		t.Fatalf("the waits logged at %v, want %v:\n%s", logged, levels, logs)
+	}
+}
+
 // retriedThenLanded drains the rig's one row refused times, each run keeping it for its retry,
 // then once more, which lands it: refused+1 PUTs of the same record under the same id, one failed
 // attempt logged for each refusal and no warning, since nothing was dropped. It answers the PUTs.
@@ -285,21 +328,7 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 		t.Fatalf("after the record landed the issue has %d rows left, want none", left)
 	}
 
-	logs := rig.logs.String()
-	if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
-		t.Errorf("logged %d ERROR lines while Dispatch had no route, want none: %s", len(errored), logs)
-	}
-	if dropped := loggedLines(t, logs, stepRefusedLine); len(dropped) != 0 {
-		t.Errorf("logged the record dropped %d times, want never: %s", len(dropped), logs)
-	}
-	var levels []string
-	for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
-		level, _ := line["level"].(string)
-		levels = append(levels, level)
-	}
-	if want := []string{"INFO", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "WARN"}; !slices.Equal(levels, want) {
-		t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs)
-	}
+	rig.waitedNeverFailed(stepRefusedLine, []string{"INFO", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "WARN"})
 }
 
 // A step record and the write Dispatch gets are the same fields, the record's id aside, and the
@@ -486,21 +515,7 @@ func TestAStepRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 			if puts := rig.client.received(); len(puts) != 1 {
 				t.Fatalf("PUTs of the record = %d, want the one Dispatch refused", len(puts))
 			}
-			logs := rig.logs.String()
-			warned := loggedLines(t, logs, `"level":"WARN"`)
-			if len(warned) != 1 || warned[0]["msg"] != stepRefusedLine {
-				t.Fatalf("warnings = %v, want the one %q: %s", warned, stepRefusedLine, logs)
-			}
-			line := warned[0]
-			for key, want := range map[string]any{"issue": stepIssue, "step": stepRecordID, "code": tc.err.Code,
-				"status": float64(tc.err.Status)} {
-				if line[key] != want {
-					t.Errorf("%q names %s %v, want %v", stepRefusedLine, key, line[key], want)
-				}
-			}
-			if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 0 {
-				t.Fatalf("logged %d failed attempts, want none for a refusal no retry changes: %s", len(failed), logs)
-			}
+			rig.endedWithOneWarning(stepRefusedLine, "step", stepRecordID, tc.err)
 		})
 	}
 }

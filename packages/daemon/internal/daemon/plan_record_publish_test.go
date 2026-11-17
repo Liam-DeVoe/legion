@@ -4,16 +4,21 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// planRecordID is the id of the plan every plan record here writes, a version 5 id of the form the
-// workflow names a plan by.
-const planRecordID = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
+// planRecordID is the id of the plan every plan record here writes, and retroRecordID the id of
+// the retro's own record, which the rating is written on: each a version 5 id of the form the
+// workflow names a plan and a record by, and neither the reviewer's record (stepRecordID), which
+// is a record of its own.
+const (
+	planRecordID  = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
+	retroRecordID = "7a1c3e55-2b6d-5f48-9c0e-1d2b3a4c5e6f"
+)
 
 // planRefusedLine is the one line that says a plan record ended unwritten.
 const planRefusedLine = "outbox plan record refused by Dispatch and dropped"
@@ -28,14 +33,14 @@ type planPut struct {
 // planRecordOf is the default plan of the run 2 of the issue.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: workflow.DefaultSteps()}}}
 }
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
 func ratingRecordOf() record.StepRecord {
-	return record.StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
+	return record.StepRecord{ID: retroRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
 		Agent: "legion-legion-legion-1-implementer", Generation: 2,
-		PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}
+		PlanRating: &record.PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}}
 }
 
 // A plan record is written once, under the row's issue and the plan's own id, with the run, the
@@ -50,7 +55,7 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 		want dispatch.PlanWrite
 	}{
 		{name: "the default plan", plan: planRecordOf(), want: dispatch.PlanWrite{Generation: 2, Source: "default",
-			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
+			Tasks: []dispatch.PlanTask{{ID: "default", Steps: workflow.DefaultSteps()}}}},
 		{
 			name: "an owner's plan of two tasks",
 			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", PlanDocument: &record.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
@@ -84,9 +89,9 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 		t.Fatalf("rows left after Dispatch took the rating = %d, want none", left)
 	}
 	steps := rig.client.received()
-	want := stepPut{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 0, Kind: "retro",
+	want := stepPut{Issue: stepIssue, ID: retroRecordID, Write: dispatch.StepWrite{Task: "default", Step: 0, Kind: "retro",
 		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2,
-		PlanRating: &dispatch.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}}
+		PlanRating: &dispatch.PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}}}
 	if len(steps) != 1 || !reflect.DeepEqual(steps[0], want) {
 		t.Fatalf("Dispatch received %+v, want the one rating %+v", steps, want)
 	}
@@ -128,21 +133,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 			if len(plans)+len(steps) != 3 {
 				t.Fatalf("PUTs = %d plans and %d step writes, want three of one: two the old router refused, one stored", len(plans), len(steps))
 			}
-			logs := rig.logs.String()
-			if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
-				t.Errorf("logged %d ERROR lines while Dispatch had no route, want none: %s", len(errored), logs)
-			}
-			if dropped := loggedLines(t, logs, route.dropped); len(dropped) != 0 {
-				t.Errorf("logged the write dropped %d times, want never: %s", len(dropped), logs)
-			}
-			var levels []string
-			for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
-				level, _ := line["level"].(string)
-				levels = append(levels, level)
-			}
-			if want := []string{"INFO", "DEBUG"}; !slices.Equal(levels, want) {
-				t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs)
-			}
+			rig.waitedNeverFailed(route.dropped, []string{"INFO", "DEBUG"})
 		})
 	}
 }
@@ -163,19 +154,7 @@ func TestARatingThatDispatchRefusesByNameEndsWithAWarning(t *testing.T) {
 	if puts := rig.client.received(); len(puts) != 1 {
 		t.Fatalf("PUTs of the rating = %d, want the one Dispatch refused", len(puts))
 	}
-	logs := rig.logs.String()
-	warned := loggedLines(t, logs, `"level":"WARN"`)
-	if len(warned) != 1 || warned[0]["msg"] != stepRefusedLine {
-		t.Fatalf("warnings = %v, want the one %q: %s", warned, stepRefusedLine, logs)
-	}
-	for key, want := range map[string]any{"issue": stepIssue, "step": stepRecordID, "code": refusal.Code, "status": float64(refusal.Status)} {
-		if warned[0][key] != want {
-			t.Errorf("%q names %s %v, want %v", stepRefusedLine, key, warned[0][key], want)
-		}
-	}
-	if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 0 {
-		t.Fatalf("logged %d failed attempts, want none for a refusal no retry changes: %s", len(failed), logs)
-	}
+	rig.endedWithOneWarning(stepRefusedLine, "step", retroRecordID, refusal)
 }
 
 // What no retry changes ends a plan record after its one run, and the one Warn line says the plan
@@ -202,20 +181,7 @@ func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 			if plans := rig.client.receivedPlans(); len(plans) != 1 {
 				t.Fatalf("PUTs of the plan = %d, want the one Dispatch refused", len(plans))
 			}
-			logs := rig.logs.String()
-			warned := loggedLines(t, logs, `"level":"WARN"`)
-			if len(warned) != 1 || warned[0]["msg"] != planRefusedLine {
-				t.Fatalf("warnings = %v, want the one %q: %s", warned, planRefusedLine, logs)
-			}
-			for key, want := range map[string]any{"issue": stepIssue, "plan": planRecordID, "code": tc.err.Code,
-				"status": float64(tc.err.Status)} {
-				if warned[0][key] != want {
-					t.Errorf("%q names %s %v, want %v", planRefusedLine, key, warned[0][key], want)
-				}
-			}
-			if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 0 {
-				t.Fatalf("logged %d failed attempts, want none for a refusal no retry changes: %s", len(failed), logs)
-			}
+			rig.endedWithOneWarning(planRefusedLine, "plan", planRecordID, tc.err)
 		})
 	}
 }
