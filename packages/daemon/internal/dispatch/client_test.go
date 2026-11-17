@@ -427,9 +427,8 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 	}))
 	defer server.Close()
 
-	rating, reason := 4, "The plan put the tests after the review."
 	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}
+		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}
 	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
 		t.Fatalf("write the rating: %v", err)
 	}
@@ -453,38 +452,59 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 // session of the issue's project, the one session Dispatch's route takes a plan from. The body
 // names the run, the source and every task with its steps in order; a plan of the source default
 // names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out.
+// out, and a plan of the source owner names both, under the names Dispatch's route reads.
 func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
-	var body map[string]json.RawMessage
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/plans/"+id {
-			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/plans/%s", r.Method, r.URL.EscapedPath(), id)
-		}
-		assertBearer(t, r)
-		decodeJSON(t, r, &body)
-		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-	}))
-	defer server.Close()
-
-	plan := PlanWrite{Generation: 2, Source: "default",
-		Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
-	if err := New(server.URL, dispatchToken).PutPlan(context.Background(), "LEG-1", id, plan); err != nil {
-		t.Fatalf("write the plan: %v", err)
-	}
-	for name, want := range map[string]string{
-		"generation": "2", "source": `"default"`,
-		"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`,
-		"actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
+	for _, tc := range []struct {
+		name    string
+		plan    PlanWrite
+		present map[string]string
+		absent  []string
+	}{
+		{
+			name: "the default plan",
+			plan: PlanWrite{Generation: 2, Source: "default",
+				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}},
+			present: map[string]string{"generation": "2", "source": `"default"`,
+				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
+			absent: []string{"id", "artifact_id", "version"},
+		},
+		{
+			name: "an owner's plan",
+			plan: PlanWrite{Generation: 3, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
+				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}}},
+			present: map[string]string{"generation": "3", "source": `"owner"`, "artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
+				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"]}]`},
+			absent: []string{"id"},
+		},
 	} {
-		if got := string(body[name]); got != want {
-			t.Errorf("the body writes %s as %q, want %s", name, got, want)
-		}
-	}
-	for _, name := range []string{"id", "artifact_id", "version"} {
-		if raw, ok := body[name]; ok {
-			t.Errorf("the body writes %s as %s, want it left out", name, raw)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/plans/"+id {
+					t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/plans/%s", r.Method, r.URL.EscapedPath(), id)
+				}
+				assertBearer(t, r)
+				decodeJSON(t, r, &body)
+				writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
+			}))
+			defer server.Close()
+
+			if err := New(server.URL, dispatchToken).PutPlan(context.Background(), "LEG-1", id, tc.plan); err != nil {
+				t.Fatalf("write the plan: %v", err)
+			}
+			tc.present["actor"] = `{"kind":"session","id":"legion-daemon:LEG"}`
+			for name, want := range tc.present {
+				if got := string(body[name]); got != want {
+					t.Errorf("the body writes %s as %q, want %s", name, got, want)
+				}
+			}
+			for _, name := range tc.absent {
+				if raw, ok := body[name]; ok {
+					t.Errorf("the body writes %s as %s, want it left out", name, raw)
+				}
+			}
+		})
 	}
 }
 

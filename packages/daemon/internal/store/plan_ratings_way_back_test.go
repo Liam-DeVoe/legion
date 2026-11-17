@@ -66,7 +66,7 @@ func planRatingsWayBack(t *testing.T) string {
 
 // stepRecordBeforeTheRating is record.StepRecord as the release that records each step declares
 // it (commit aa36bcbe4e), the release this rollback goes back to: every field of this release's
-// shape but Rating and RatingReason. It is a copy because that release's type is not in the tree.
+// shape but PlanRating. It is a copy because that release's type is not in the tree.
 // That release decodes a step_record row strictly (record.DecodeOutboxPayload,
 // DisallowUnknownFields), so a row this shape refuses is a row it fails at every attempt.
 type stepRecordBeforeTheRating struct {
@@ -100,9 +100,12 @@ func decodedBeforeTheRating(payload []byte) error {
 // cannot take, and nothing else: the plan records, and the step records that carry a retro's
 // rating. The rows here are an issue's pending writes as this release queues them
 // (record.NewOutboxRow): a plan, the retro's rating, the start and the end of a step, the retro's
-// own end, whose record id is the rating's, and a status write of the issue. The block runs as the
-// migration's header carries it, as one exec (the simple protocol a psql run uses). Then the plan
-// and the rating are gone, and every other row is still there with its payload: none of them is a
+// own end, whose record id is the rating's, and a status write of the issue. A plan, a rating and a
+// step's start and end of an earlier run stand again as rows waiting to retry, as an older
+// Dispatch's NOT_FOUND leaves a row (the daemon's RetryOutbox): attempts counted, the last error
+// kept and a retry time ahead. The block runs as the migration's header carries it, as one exec
+// (the simple protocol a psql run uses). Then the plans and the ratings are gone, waiting or not,
+// and every other row is still there with its payload and its retry state: none of them is a
 // write the earlier image is owed less than this one.
 //
 // The control comes first, on the same rows: the strict decode of the release before refuses the
@@ -125,23 +128,40 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	agent := "legion-legion-legion-208-implementer"
 	retro := "7a1b2c3d-4e5f-5a6b-8c7d-9e0f1a2b3c4d"
 	step := "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b"
+	earlierRetro := "2b3c4d5e-6f70-5a8b-9c0d-1e2f3a4b5c6d"
+	earlierStep := "3c4d5e6f-7081-5b9c-8d0e-2f3a4b5c6d7e"
+	// retryAt and retryError are the retry state an older Dispatch's NOT_FOUND leaves on a row:
+	// a retry time ahead, and the error of the attempt it answered.
+	retryAt := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
+	retryError := "write the step record of LEGION-208: NOT_FOUND (404): no route for PUT /api/v1/issues/LEGION-208/…"
 	queued := []struct {
 		name    string
 		payload record.OutboxPayload
 		kept    bool
+		// waiting is a row an attempt has met already, now waiting to retry.
+		waiting bool
 	}{
 		{name: "the plan", payload: record.PlanRecord{ID: "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e", Generation: 2, Source: "default",
 			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
 		{name: "the start of a step", kept: true, payload: record.StepRecord{ID: step, Task: "default", Step: 2, Kind: "step",
 			Role: "implementer", Type: "implementation", Agent: agent, Generation: 2, Session: new("s1"), StartedAt: &started}},
 		{name: "the retro's rating", payload: record.StepRecord{ID: retro, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
-			Agent: agent, Generation: 2, Rating: new(4), RatingReason: new("The plan put the tests after the review.")}},
+			Agent: agent, Generation: 2, PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}},
 		{name: "the end of a step", kept: true, payload: record.StepRecord{ID: step, Task: "default", Step: 2, Kind: "step",
 			Role: "implementer", Type: "implementation", Agent: agent, Generation: 2, Session: new("s1"), Model: new("first/model"),
 			StartedAt: &started, EndedAt: &ended, Result: new("passed")}},
 		{name: "the retro's end", kept: true, payload: record.StepRecord{ID: retro, Task: "default", Step: 0, Kind: "retro",
 			Role: "implementer", Agent: agent, Generation: 2, StartedAt: &started, EndedAt: &ended, Result: new("passed")}},
 		{name: "a status write of the issue", kept: true, payload: record.OrdinaryStatusWrite("retro", "in_progress", "")},
+		{name: "an earlier run's plan, waiting to retry", waiting: true, payload: record.PlanRecord{ID: "4d5e6f70-8192-5cad-9e0f-3a4b5c6d7e8f",
+			Generation: 1, Source: "default", Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer"}}}}},
+		{name: "an earlier run's rating, waiting to retry", waiting: true, payload: record.StepRecord{ID: earlierRetro, Task: "default", Step: 0,
+			Kind: "retro", Role: "implementer", Agent: agent, Generation: 1, PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan was late."}}},
+		{name: "an earlier run's start of a step, waiting to retry", kept: true, waiting: true, payload: record.StepRecord{ID: earlierStep,
+			Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation", Agent: agent, Generation: 1, StartedAt: &started}},
+		{name: "an earlier run's end of a step, waiting to retry", kept: true, waiting: true, payload: record.StepRecord{ID: earlierStep,
+			Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation", Agent: agent, Generation: 1,
+			StartedAt: &started, EndedAt: &ended, Result: new("failed")}},
 	}
 	ids := make([]int64, len(queued))
 	for i, q := range queued {
@@ -149,15 +169,19 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("queue %s: %v", q.name, err)
 		}
+		attempts, nextAt, lastError := 0, row.NextAt, ""
+		if q.waiting {
+			attempts, nextAt, lastError = 3, retryAt, retryError
+		}
 		if err := store.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, $2, $3, 0, $4, '') returning id`, string(row.Kind), row.Issue, row.Payload, row.NextAt).Scan(&ids[i]); err != nil {
+			values ($1, $2, $3, $4, $5, $6) returning id`, string(row.Kind), row.Issue, row.Payload, attempts, nextAt, lastError).Scan(&ids[i]); err != nil {
 			t.Fatalf("insert %s: %v", q.name, err)
 		}
 		if row.Kind != record.OutboxKindStepRecord {
 			continue
 		}
 		write, _ := q.payload.(record.StepRecord)
-		if err := decodedBeforeTheRating(row.Payload); (write.Rating != nil) != (err != nil) {
+		if err := decodedBeforeTheRating(row.Payload); (write.PlanRating != nil) != (err != nil) {
 			t.Fatalf("the release before's decode of %s = %v; the control wants it to refuse the rating row alone, or this test cannot see the row the way back exists for",
 				q.name, err)
 		}
@@ -167,20 +191,27 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		t.Fatalf("run the way back %s's header carries: %v", planRatingsMigration, err)
 	}
 
-	rows, err := store.Pool().Query(ctx, `select id, kind, issue, payload from outbox order by id`)
+	rows, err := store.Pool().Query(ctx, `select id, kind, issue, payload, attempts, next_at, last_error from outbox order by id`)
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}
 	defer rows.Close()
-	left := map[int64]record.OutboxRow{}
+	// stood is a row left after the way back, with its retry state.
+	type stood struct {
+		row       record.OutboxRow
+		attempts  int
+		nextAt    time.Time
+		lastError string
+	}
+	left := map[int64]stood{}
 	for rows.Next() {
-		var row record.OutboxRow
+		var s stood
 		var kind string
-		if err := rows.Scan(&row.ID, &kind, &row.Issue, &row.Payload); err != nil {
+		if err := rows.Scan(&s.row.ID, &kind, &s.row.Issue, &s.row.Payload, &s.attempts, &s.nextAt, &s.lastError); err != nil {
 			t.Fatalf("read an outbox row: %v", err)
 		}
-		row.Kind = record.OutboxKind(kind)
-		left[row.ID] = row
+		s.row.Kind = record.OutboxKind(kind)
+		left[s.row.ID] = s
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the outbox: %v", err)
@@ -190,7 +221,8 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		if q.kept {
 			wantLeft = append(wantLeft, ids[i])
 		}
-		row, stands := left[ids[i]]
+		s, stands := left[ids[i]]
+		row := s.row
 		switch {
 		case q.kept && !stands:
 			t.Errorf("the way back deleted %s (row %d), which the release before reads and is owed", q.name, ids[i])
@@ -205,6 +237,10 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			t.Errorf("this release's decode of %s after the way back: %v", q.name, err)
 		} else if !reflect.DeepEqual(decoded, q.payload) {
 			t.Errorf("%s reads %#v after the way back, want %#v as it was queued", q.name, decoded, q.payload)
+		}
+		if q.waiting && (s.attempts != 3 || !s.nextAt.Equal(retryAt) || s.lastError != retryError) {
+			t.Errorf("%s waits to retry after the way back with %d attempts, at %s, after %q; want its 3, %s and %q as they were",
+				q.name, s.attempts, s.nextAt.UTC(), s.lastError, retryAt, retryError)
 		}
 		if row.Kind != record.OutboxKindStepRecord {
 			continue

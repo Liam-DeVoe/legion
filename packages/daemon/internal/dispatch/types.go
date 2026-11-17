@@ -83,39 +83,56 @@ type DesignGateDocument struct {
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
 // leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
 // because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
-// StepRecord, because this package imports no record of the daemon's. Rating and RatingReason are
-// the rating a retro gave the plan, which only the record's rating route takes (HTTPClient.PutStep
-// sends a write naming a rating there) and every other write leaves out.
+// StepRecord, because this package imports no record of the daemon's. PlanRating is the rating a
+// retro gave the plan, which only the record's rating route takes (HTTPClient.PutStep sends a
+// write naming a rating there) and every other write leaves out.
 type StepWrite struct {
-	Task         string     `json:"task"`
-	Step         int        `json:"step"`
-	Kind         string     `json:"kind"`
-	Role         string     `json:"role"`
-	Type         string     `json:"type"`
-	Agent        string     `json:"agent"`
-	Generation   uint64     `json:"generation"`
-	Session      *string    `json:"session,omitempty"`
-	Model        *string    `json:"model,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
-	Result       *string    `json:"result,omitempty"`
-	ReturnedTo   *int       `json:"returned_to,omitempty"`
-	Report       *string    `json:"report,omitempty"`
-	Rating       *int       `json:"rating,omitempty"`
-	RatingReason *string    `json:"rating_reason,omitempty"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
+// route takes them: embedded in StepWrite, its members are members of the body, both written or
+// neither. It mirrors the record's own PlanRating, which publishStepRecord converts to it, because
+// this package imports no record of the daemon's; internal/daemon's
+// TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
-// the plan is of, its source (default or owner), the owner's document and its version, which a
+// the plan is of, its source (default or owner), the owner's document with its version, which a
 // plan of the source default leaves out because Dispatch refuses either on one, and each task with
 // its steps in order. It mirrors the record's own PlanRecord, because this package imports no
 // record of the daemon's.
 type PlanWrite struct {
-	Generation uint64     `json:"generation"`
-	Source     string     `json:"source"`
-	ArtifactID string     `json:"artifact_id,omitempty"`
-	Version    int        `json:"version,omitempty"`
-	Tasks      []PlanTask `json:"tasks"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	*PlanDocument
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from, as the plan
+// route takes it: embedded in PlanWrite, its artifact_id and version are members of the body, both
+// written or neither. It mirrors the record's own PlanDocument, which publishPlanRecord converts
+// to it, because this package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanTask is one task of a plan's write: its id and its steps in order, each a role or

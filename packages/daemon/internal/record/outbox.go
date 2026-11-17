@@ -1097,11 +1097,23 @@ type StepRecord struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
-	// Rating and RatingReason are the rating the retro gave the plan, from 1 to 5, and why: the
-	// one write that carries them is the retro's rating, which Dispatch takes on the record's
-	// rating route (dispatch.HTTPClient.PutStep), and every other write leaves both out.
-	Rating       *int    `json:"rating,omitempty"`
-	RatingReason *string `json:"rating_reason,omitempty"`
+	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
+	// it is the retro's rating, which Dispatch takes on the record's rating route
+	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
+	// members are members of the payload itself, written together and left out together when it is
+	// nil; a stored row naming one of them alone reads as a rating whose other member is zero.
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan its issue ran: Rating, from 1 (the plan cost the
+// work) to 5 (the plan fit the work), and Reason, why. The two are one value, so a step record
+// carries a rating with its reason or no rating. It mirrors dispatch.PlanRating, which the
+// publication converts it to (publishStepRecord), because the dispatch package imports no record
+// of the daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to
+// the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
@@ -1110,16 +1122,26 @@ func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 // /api/v1/issues/{key}/plans/{id}) when the run's work starts. ID is the plan's id, a uuid of the
 // issue and its run, and the row's issue column is the issue. Each other field is a field of the
 // route's body under the same name: the run (record.Issue.Generation), where the plan came from
-// (default, the steps Legion runs when the owner gave none, or owner), the owner's document and its
-// version, which a plan of the source default leaves out, and each task with its steps in order.
-// Dispatch sets each field once, so a plan sent again changes nothing.
+// (default, the steps Legion runs when the owner gave none, or owner), the owner's document with
+// its version, which a plan of the source default leaves out, and each task with its steps in
+// order. Dispatch sets each field once, so a plan sent again changes nothing.
 type PlanRecord struct {
-	ID         string           `json:"id"`
-	Generation uint64           `json:"generation"`
-	Source     string           `json:"source"`
-	ArtifactID string           `json:"artifact_id,omitempty"`
-	Version    int              `json:"version,omitempty"`
-	Tasks      []PlanRecordTask `json:"tasks"`
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	// PlanDocument is embedded, so its two members are members of the payload itself, written
+	// together and left out together when it is nil.
+	*PlanDocument
+	Tasks []PlanRecordTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from: the artifact and
+// the version of it Legion took. The two are one value, so a plan names its document with its
+// version or no document. It mirrors dispatch.PlanDocument, which the publication converts it to
+// (publishPlanRecord), because the dispatch package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
@@ -1830,14 +1852,15 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
-	// with a warning (the outbox's permanentRefusal). These three it would not: an empty id
+	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
-	// the row retries for ever; a write without the step's identity is refused only when it is the
-	// record's first, so the same defect would make a record on one run and none on another; and a
-	// rating's reason without the rating goes to the step route (dispatch.HTTPClient.PutStep picks
-	// the rating route by the rating), which takes no reason and answers 200, so the reason would be
-	// lost with no line. The rating and its reason are one value, written together or not at all,
-	// so a rating without its reason, which the rating route would refuse, is refused here too.
+	// the row retries for ever; and a write without the step's identity is refused only when it is
+	// the record's first, so the same defect would make a record on one run and none on another.
+	// A rating is held whole here too, though Dispatch's rating route would refuse half of one: the
+	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
+	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
+	// the daemon, refused where it is queued rather than found by a warning after the completion
+	// that carried it committed.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -1845,8 +1868,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
 		}
-		if (value.Rating == nil) != (value.RatingReason == nil) {
-			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries one without the other")
+		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
+			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
+				value.PlanRating.Rating, value.PlanRating.Reason)
 		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.

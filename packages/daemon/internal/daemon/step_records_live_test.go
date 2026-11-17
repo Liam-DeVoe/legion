@@ -72,16 +72,17 @@ func TestStepRecordsLive(t *testing.T) {
 	l.step("a-write-that-names-another-session-is-refused", l.writerRefused)
 }
 
-// newStepRecordsLive is the run a live driver of the walk makes around its steps: the checkout its
-// script runs from and bun on PATH (liveCLICheckout), the broker the script names (or a skip
-// naming script), the walk's rig over issues issues on a Dispatch this checkout builds, the
+// newStepRecordsLive is the run a live driver of the walk makes around its steps: the broker the
+// script names (or a skip naming script), the checkout its script runs from and bun on PATH
+// (liveCLICheckout), the walk's rig over issues issues on a Dispatch this checkout builds, the
 // person's CLI home, and a personal token named reader minted for the person, which every read of
-// the CLI carries.
+// the CLI carries. The broker comes first, as newHandoffRecordsLive takes it, so a run that names
+// none skips before it needs bun.
 func newStepRecordsLive(t *testing.T, script string, issues int, reader string) *stepRecordsLive {
 	t.Helper()
 	fixtureenv.Live(t)
-	root := liveCLICheckout(t)
 	proof := newLiveProof(t, script)
+	root := liveCLICheckout(t)
 	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues), root: root, cliHome: t.TempDir()}
 	l.mintReader(reader)
 	return l

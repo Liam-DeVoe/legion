@@ -25,11 +25,8 @@ type StepAgent struct {
 	Model   string
 }
 
-// stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps
-// (stepIn): the place its count of starts is kept under (its place in the task from 1 for a step, 0
-// for a retro or a merge, which no plan names, so the kind tells those two apart), its role and its
-// type ("" for a retro or a merge). A phase that runs no step — admitted, awaiting a person, held,
-// done — answers ok false; a held issue's step is the step of the phase its hold is from
+// stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps:
+// stepIn over that list. A held issue's step is the step of the phase its hold is from
 // (record.StandsAt), which the caller reads.
 func stepOf(p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
 	return stepIn(DefaultSteps(), p)

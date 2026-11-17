@@ -211,7 +211,7 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 // release that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/steps/" + url.PathEscape(id)
-	if write.Rating != nil {
+	if write.PlanRating != nil {
 		path += "/rating"
 	}
 	return c.request(ctx, http.MethodPut, path, stepWrite{

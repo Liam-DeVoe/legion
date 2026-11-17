@@ -219,7 +219,6 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s closed at %s is listed after %s closed at %s, want the newest close first", after.Issue, after.ClosedAt, before.Issue, before.ClosedAt)
 		}
 	}
-	plans := map[string]string{}
 	for place, w := range want {
 		got := read.Issues[place]
 		if got.Issue != w.issue {
@@ -236,13 +235,9 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 		case plan.Issue != w.issue || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.issue, retro.Generation):
 			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
 				w.issue, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.issue, retro.Generation), w.issue, retro.Generation)
-		case plans[plan.ID] != "":
-			return fmt.Errorf("%s lists the plan %s, which %s lists too", w.issue, plan.ID, plans[plan.ID])
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
 			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
 			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, workflow.DefaultSteps())
-		default:
-			plans[plan.ID] = w.issue
 		}
 		switch {
 		case w.rating == 0 && len(got.Ratings) != 0:
@@ -294,27 +289,8 @@ func (r *stepRecordsRig) readPlans() (projectPlansRead, error) {
 	return read, nil
 }
 
-// waitPlans waits for the read by project to hold want, and fails with plansHold's last answer.
-func (r *stepRecordsRig) waitPlans(what string, want []ratedWant) {
-	r.t.Helper()
-	var last error
-	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
-		read, err := r.readPlans()
-		if err != nil {
-			last = err
-			return false
-		}
-		last = plansHold(read, want)
-		return last == nil
-	}) {
-		r.t.Fatalf("%s never reached the read of %s: %v", what, r.cfg.Project, last)
-	}
-}
-
-// waitClosed waits for the read by project to list the issue the walk is on, which it does once
-// the daemon's write of the issue's close has reached Dispatch, so a close that follows is a later
-// one there too.
-func (r *stepRecordsRig) waitClosed() {
+// waitPlansRead waits for the read by project to satisfy hold, and fails with hold's last answer.
+func (r *stepRecordsRig) waitPlansRead(what string, hold func(projectPlansRead) error) {
 	r.t.Helper()
 	var last error
 	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
@@ -323,12 +299,28 @@ func (r *stepRecordsRig) waitClosed() {
 			last = err
 			return false
 		}
-		if slices.ContainsFunc(read.Issues, func(listed finishedIssueRead) bool { return listed.Issue == r.key }) {
-			return true
-		}
-		last = fmt.Errorf("the read lists %d finished issues and not %s", len(read.Issues), r.key)
-		return false
+		last = hold(read)
+		return last == nil
 	}) {
-		r.t.Fatalf("the close of %s never reached the read of %s: %v", r.key, r.cfg.Project, last)
+		r.t.Fatalf("%s never reached the read of %s: %v", what, r.cfg.Project, last)
 	}
+}
+
+// waitPlans waits for the read by project to hold want, and fails with plansHold's last answer.
+func (r *stepRecordsRig) waitPlans(what string, want []ratedWant) {
+	r.t.Helper()
+	r.waitPlansRead(what, func(read projectPlansRead) error { return plansHold(read, want) })
+}
+
+// waitClosed waits for the read by project to list the issue the walk is on, which it does once
+// the daemon's write of the issue's close has reached Dispatch, so a close that follows is a later
+// one there too.
+func (r *stepRecordsRig) waitClosed() {
+	r.t.Helper()
+	r.waitPlansRead("the close of "+r.key, func(read projectPlansRead) error {
+		if slices.ContainsFunc(read.Issues, func(listed finishedIssueRead) bool { return listed.Issue == r.key }) {
+			return nil
+		}
+		return fmt.Errorf("the read lists %d finished issues and not %s", len(read.Issues), r.key)
+	})
 }

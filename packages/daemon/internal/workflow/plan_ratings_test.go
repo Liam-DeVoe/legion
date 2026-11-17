@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -192,7 +193,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 				if write.Kind == "retro" && isEnd(write) {
 					end = &write
 				}
-				if write.Rating != nil || write.RatingReason != nil {
+				if write.PlanRating != nil {
 					rated = append(rated, write)
 				}
 			}
@@ -214,10 +215,10 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			}
 			rating := rated[0]
 			want := record.StepRecord{ID: end.ID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: end.Agent, Generation: 1, Rating: new(tc.rating.Score), RatingReason: new(tc.rating.Reason)}
+				Agent: end.Agent, Generation: 1, PlanRating: &record.PlanRating{Rating: tc.rating.Score, Reason: tc.rating.Reason}}
 			if !reflect.DeepEqual(rating, want) {
-				t.Fatalf("the rating = %+v (rating %v, reason %v), want %+v on the retro's record %s", rating, deref(rating.Rating),
-					deref(rating.RatingReason), want, end.ID)
+				t.Fatalf("the rating = %+v (rating %v), want %+v on the retro's record %s", rating, deref(rating.PlanRating),
+					want, end.ID)
 			}
 			if wantID := StepID(root.Key, 1, record.StepPlace{Task: "default", Kind: "retro"}, 1); rating.ID != wantID {
 				t.Fatalf("the rating's id = %s, want %s, the first run of the retro", rating.ID, wantID)
@@ -263,25 +264,76 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 		if write.Kind == "retro" && isEnd(write) {
 			ends = append(ends, write)
 		}
-		if write.Rating != nil || write.RatingReason != nil {
+		if write.PlanRating != nil {
 			rated = append(rated, write)
 		}
 	}
 	agent := treeRoleToken(t, root.Key, claim.RoleImplementer)
 	want := []record.StepRecord{
 		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
-			Generation: 3, Rating: new(2), RatingReason: new("The plan put the tests after the review.")},
+			Generation: 3, PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}},
 		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
-			Generation: 3, Rating: new(4), RatingReason: new("The plan left the migration to its last step.")},
+			Generation: 3, PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan left the migration to its last step."}},
 	}
 	if len(ends) != 2 || len(rated) != 2 {
 		t.Fatalf("two retros wrote the retro ends %+v and the ratings %+v, want two of each", ends, rated)
 	}
 	for i := range want {
 		if !reflect.DeepEqual(rated[i], want[i]) || rated[i].ID != ends[i].ID {
-			t.Errorf("rating %d = %+v (rating %v, reason %v), want %+v on the record of retro %d, whose end is %s", i+1, rated[i],
-				deref(rated[i].Rating), deref(rated[i].RatingReason), want[i], i+1, ends[i].ID)
+			t.Errorf("rating %d = %+v (rating %v), want %+v on the record of retro %d, whose end is %s", i+1, rated[i],
+				deref(rated[i].PlanRating), want[i], i+1, ends[i].ID)
 		}
+	}
+}
+
+// A retro already running when this release deployed started under the release before, which
+// counted no start, so the retro's place holds no count of starts. Its completion ends it as a
+// record of its own at the count 0 (record.Store.EndUncountedStep), under the agent its start
+// would have named, the implementer's claim; and the rating the completion carries lands on that
+// same record: the id of the run counted 0, the implementer's agent, the rating and its reason. The
+// retro writes no plan, which only the start of a run's work writes.
+func TestARetroRunningAtTheDeployRatesTheRecordItsEndMakes(t *testing.T) {
+	pool := migratedPool(t)
+	root := stepRoot(t, pool, phase.Retro)
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implement-claim", Entry: 1,
+		EntryRaisedAt: stepClock.Add(-time.Hour)})
+	place := record.StepPlace{Task: "default", Kind: "retro"}
+	var before record.StepStart
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		before, err = record.NewStore().StepStarts(t.Context(), tx, root.Key, place)
+		return err
+	})
+	if before != (record.StepStart{}) || len(stepWrites(t, pool, root.Key)) != 0 {
+		t.Fatalf("before its completion the retro's place holds %+v and the outbox the step writes %+v, want neither: the case is a retro begun before the deploy",
+			before, stepWrites(t, pool, root.Key))
+	}
+
+	applyRefusingNothing(t, pool, stepEngine(nil), intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
+		Claim: "implement-claim", Summary: "retro done", Commit: "head",
+		PlanRating: &intake.PlanRating{Score: 3, Reason: "The plan split the work where the review could see it."}})
+	assertPhase(t, pool, phase.Merging)
+
+	id, agent := StepID(root.Key, 1, place, 0), treeRoleToken(t, root.Key, claim.RoleImplementer)
+	var ends, rated []record.StepRecord
+	for _, write := range stepWrites(t, pool, root.Key) {
+		if write.Kind == "retro" && isEnd(write) {
+			ends = append(ends, write)
+		}
+		if write.PlanRating != nil {
+			rated = append(rated, write)
+		}
+	}
+	if len(ends) != 1 || ends[0].ID != id || ends[0].Agent != agent {
+		t.Fatalf("the retro's completion wrote the retro ends %+v, want one, of the run counted 0 (%s) under the implementer's agent %s", ends, id, agent)
+	}
+	want := record.StepRecord{ID: id, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "", Agent: agent, Generation: 1,
+		PlanRating: &record.PlanRating{Rating: 3, Reason: "The plan split the work where the review could see it."}}
+	if len(rated) != 1 || !reflect.DeepEqual(rated[0], want) {
+		t.Fatalf("the retro's completion wrote the ratings %+v, want the one %+v (rating %v) on the record its end made", rated, want, deref(want.PlanRating))
+	}
+	if plans := planWrites(t, pool, root.Key); len(plans) != 0 {
+		t.Fatalf("the retro wrote the plans %+v, want none: a plan is written at the start of a run's work alone", plans)
 	}
 }
 
