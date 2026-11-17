@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
+  useContext,
   useLayoutEffect,
   useRef,
   useState,
@@ -44,6 +45,7 @@ import {
 } from "./issue-tree";
 import { LensChain } from "./lenses/LensChain";
 import { LensLines } from "./lenses/LensLines";
+import { LensActContext, LensMenu, lensActFor } from "./lenses/LensMenu";
 import { kindWords } from "./lenses/lens-drafts";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
@@ -883,6 +885,11 @@ export function NodeOptions({
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
  * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
  *
+ * In the outline, after Copy reference and its answer, a node of this issue that the invoke
+ * route takes draws the Lens act and its menu of lens kinds (`lenses/LensMenu.tsx`,
+ * dispatch://INFRA-4065 R4), offered through the context `TreeRows.tsx` provides. It writes as
+ * the reader, whether or not a writer is, and carries `data-row-lens` rather than `data-row-act`.
+ *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
  * order unless `tabStops` holds (`NodeRow`'s).
@@ -899,6 +906,7 @@ export function RowActs({
   writer: OutlineWriter | undefined;
 }): ReactNode {
   const { copy, status } = useCopyFeedback();
+  const lensAct = useContext(LensActContext);
   const acts: { readonly act: string; readonly label: string; readonly run: () => void }[] = [];
   if (writer !== undefined && takesAnswer(node)) {
     acts.push({ act: "answer", label: CONTROL_LABELS.answer, run: () => writer.answerNode(node) });
@@ -958,6 +966,9 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
+      {lensAct !== undefined && lensActFor(node, lensAct) ? (
+        <LensMenu node={node} tabStops={tabStops} />
+      ) : null}
     </p>
   );
 }

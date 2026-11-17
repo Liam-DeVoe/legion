@@ -1,0 +1,347 @@
+import { useQuery } from "@tanstack/react-query";
+import {
+  createContext,
+  type KeyboardEvent,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+
+import { ApiError } from "../../../api/client";
+import {
+  pageFailedText,
+  pageMenu,
+  pageMenuItem,
+  pageMutedText,
+  pageQuietText,
+  pageRowAct,
+} from "../../../theme/classes";
+import { storeAddressReference } from "../../refs/store-address";
+import type { TreeNode } from "../issue-tree";
+import { authorText, pageChrome } from "../page-structure";
+import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
+import { lensKindsQuery, useInvokeLens } from "./lens-reads";
+
+/**
+ * What a focused row needs to offer the Lens act (dispatch://INFRA-4065 R4): the issue the page
+ * is on, and whether the address's preset is the outline, the one place the act is drawn.
+ * `TreeRows.tsx` provides it from the address; a route that names no issue provides none, and
+ * `RowActs` then draws no act.
+ */
+export interface LensAct {
+  readonly issueKey: string;
+  readonly outline: boolean;
+}
+
+export const LensActContext = createContext<LensAct | undefined>(undefined);
+
+/** Whether the invoke route takes a node of each kind: a block of one of the issue's documents,
+ *  an ask, a comment, a message, a lens, a finding, a risk and a constraint (R4). Every kind is
+ *  named, so a kind the page learns to draw says here whether it takes the act. */
+const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
+  ask: true,
+  callout: true,
+  check: true,
+  child_issue: false,
+  comment: true,
+  constraint: true,
+  decision: true,
+  document: false,
+  finding: true,
+  handoff: false,
+  image: true,
+  issue: false,
+  lens: true,
+  message: true,
+  plan_task: true,
+  requirement: true,
+  result: false,
+  risk: true,
+};
+
+/** The kinds of the node store the route takes by their uuid address: a lens, a block of a lens
+ *  (a finding), a risk and a constraint (`store-address.ts`). */
+const STORE_KINDS = ["lens", "risk", "constraint"] as const;
+
+/**
+ * Whether a row offers the Lens act: in the outline alone, on a node of a kind the invoke route
+ * takes, whose address names this issue - `dispatch://<key>` and then `/` or `#`, so a key that
+ * merely starts with this one is another issue - or is a uuid address of the node store. A child
+ * issue, a result, the issue, a document, a handoff and a node of another issue get none. A
+ * closed issue keeps the act: the server decides.
+ */
+export function lensActFor(node: TreeNode, act: LensAct): boolean {
+  const reference = node.reference;
+  if (!act.outline || !INVOKED_ON[node.type] || reference === undefined) return false;
+  const issue = `dispatch://${act.issueKey}`;
+  if (reference.startsWith(`${issue}/`) || reference.startsWith(`${issue}#`)) return true;
+  const stored = storeAddressReference(reference);
+  return (
+    stored !== undefined && STORE_KINDS.some((kind) => stored.startsWith(`dispatch://${kind}/`))
+  );
+}
+
+/**
+ * The Lens act of a focused row and the menu of lens kinds it opens (R4, R6).
+ *
+ * The act is one of `RowActs`' controls, drawn the way they are and out of the tab order unless
+ * `tabStops` holds, so `f` reaches it as a control no key presses (`useTreeKeymap.ts`'s
+ * `rowStops`). It carries `data-row-lens` and not `data-row-act`, which names the writer's acts
+ * alone. A press opens the menu, titled `LENS_WORDS.menu_title`, which reads the lens catalogue
+ * as it opens - once in a load, and again after a read that failed - and lists each kind in the
+ * catalogue's order by its words and, under them, its first source's standard.
+ *
+ * The menu is drawn with phrasing elements, since it stands in `RowActs`' `<p>`, on a line of its
+ * own under the acts, hung from that line's left edge and no wider than it, so it stays inside
+ * a 390 px page. Its keys are `IssuePresets.tsx`'s menu's: it takes the focus as it opens, and
+ * the first item once the catalogue answers; Up and Down move, wrapping, Home and End go to the
+ * ends, Enter or a press picks, Escape closes it and gives the focus back to the row, Tab closes
+ * it, and so does a press outside it.
+ *
+ * A pick sends the node's address and the kind's id, nothing more (`useInvokeLens`). A refusal
+ * closes the menu, gives the focus back to the row and says so after the act until the menu
+ * opens again; the row losing the focus unmounts `RowActs`, which ends it too.
+ */
+export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
+  const act = useContext(LensActContext);
+  const on = node.reference;
+  if (act === undefined || on === undefined) return null;
+  return <ActAndMenu issueKey={act.issueKey} on={on} tabStops={tabStops} />;
+}
+
+/** What a refused invocation says: the node is gone (404), or anything else. */
+type Refusal = "gone" | "failed";
+
+function ActAndMenu({
+  issueKey,
+  on,
+  tabStops,
+}: {
+  issueKey: string;
+  on: string;
+  tabStops: boolean;
+}): ReactNode {
+  const invoke = useInvokeLens(issueKey);
+  const [open, setOpen] = useState(false);
+  const [examining, setExamining] = useState(false);
+  const [refusal, setRefusal] = useState<Refusal | undefined>(undefined);
+  const kinds = useQuery(lensKindsQuery(open));
+  const listed = kinds.data;
+  const control = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLSpanElement>(null);
+  const titleId = useId();
+
+  // The menu takes the focus as it opens, and its first item once the catalogue answers; an
+  // item the reader moved to keeps it.
+  useEffect(() => {
+    const list = menu.current;
+    if (!open || list === null) return;
+    const first = list.querySelector<HTMLElement>('[role="menuitem"]');
+    if (listed === undefined || first === null) {
+      list.focus();
+      return;
+    }
+    const focus = document.activeElement;
+    if (focus === list || !list.contains(focus)) first.focus();
+  }, [open, listed]);
+
+  // A press outside the act and the menu closes it, and leaves the focus to the press. Escape is
+  // read in the capture phase, as `IssuePresets.tsx`'s menu reads it, so it is marked before any
+  // other listener of the page's: the tree's own Escape passes a marked key by (`keymap.ts`). A
+  // dialog over the page takes its own presses and its own Escape.
+  useEffect(() => {
+    if (!open) return;
+    const inDialog = (target: EventTarget | null) =>
+      target instanceof Element && target.closest('[role="dialog"]') !== null;
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (inDialog(target)) return;
+      const inside =
+        target instanceof Node &&
+        (menu.current?.contains(target) === true || control.current?.contains(target) === true);
+      if (!inside) setOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || inDialog(event.target)) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+      event.preventDefault();
+      focusRow(control.current);
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [open]);
+
+  const openMenu = () => {
+    setRefusal(undefined);
+    setOpen(true);
+    // A failed read holds no catalogue: the next opening reads it again (R6).
+    if (kinds.isError) void kinds.refetch();
+  };
+
+  /** Closes the menu once an invocation is answered, giving the focus back to the row where it
+   *  was still in the menu. */
+  const answered = () => {
+    setExamining(false);
+    if (menu.current?.contains(document.activeElement) === true) focusRow(control.current);
+    setOpen(false);
+  };
+
+  // One invocation at a time: a second pick while one is out sends nothing.
+  const pick = (kind: string) => {
+    if (examining) return;
+    setExamining(true);
+    void invoke(on, kind).then(
+      // The tree read and the move to the new lens's row are t8's.
+      answered,
+      (error: unknown) => {
+        setRefusal(error instanceof ApiError && error.status === 404 ? "gone" : "failed");
+        answered();
+      }
+    );
+  };
+
+  // Every key but Tab is the menu's while it is open, its default prevented, so the page's
+  // keymap, which passes a marked key by, moves nothing of the tree under it (`keymap.ts`); no
+  // React handler of the row or the tree reads keys. A key held with Control, Meta or Alt is no
+  // key of the tree (the keymap matches those modifiers exactly), so the browser keeps its own
+  // shortcuts, zoom and reload among them. Tab closes the menu: the focus goes back to the act
+  // first, so Tab moves on from the act, as from the row's other controls.
+  const walk = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "Tab") {
+      control.current?.focus();
+      setOpen(false);
+      return;
+    }
+    event.preventDefault();
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
+    if (event.key === "Enter") {
+      const kind = listed?.[at];
+      if (kind !== undefined) pick(kind.id);
+      return;
+    }
+    const to = step(event.key, at, items.length);
+    if (to !== undefined) items[to]?.focus();
+  };
+
+  return (
+    <>
+      {/* A press leaves the focus where it is, as the row's other acts do; the menu takes it
+          once it opens. */}
+      <button
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className={`dispatch-inline-link ${pageRowAct}`}
+        data-row-lens=""
+        onClick={() => {
+          if (!open) {
+            openMenu();
+            return;
+          }
+          focusRow(control.current);
+          setOpen(false);
+        }}
+        onMouseDown={(event) => event.preventDefault()}
+        ref={control}
+        tabIndex={tabStops ? undefined : -1}
+        type="button"
+        {...pageChrome}
+      >
+        {LENS_WORDS.act}
+      </button>
+      {refusal === undefined ? null : (
+        <span className={pageFailedText} role="status" {...pageChrome}>
+          {refusal === "gone" ? LENS_ANSWERS.gone : LENS_ANSWERS.failed}
+        </span>
+      )}
+      {open ? (
+        // A line of its own under the acts, which the menu hangs from.
+        <span className="relative block h-0 basis-full">
+          <span
+            aria-labelledby={titleId}
+            className={`${pageMenu} left-0 max-w-full text-left`}
+            onKeyDown={walk}
+            ref={menu}
+            role="menu"
+            tabIndex={-1}
+          >
+            <span
+              className={`block px-2 pt-1 pb-1.5 text-xs font-semibold ${pageMutedText}`}
+              id={titleId}
+              {...pageChrome}
+            >
+              {LENS_WORDS.menu_title}
+            </span>
+            {listed !== undefined ? (
+              listed.map((kind) => {
+                const standard = kind.sources?.[0]?.standard ?? "";
+                return (
+                  <button
+                    className={`${pageMenuItem} flex flex-col gap-0.5`}
+                    key={kind.id}
+                    onClick={() => pick(kind.id)}
+                    role="menuitem"
+                    tabIndex={-1}
+                    type="button"
+                  >
+                    <span className="break-words" data-lens-kind-words="" {...authorText}>
+                      {kind.words}
+                    </span>
+                    {standard === "" ? null : (
+                      <span
+                        className={`break-words text-xs font-normal ${pageMutedText}`}
+                        data-lens-kind-standard=""
+                        {...authorText}
+                      >
+                        {standard}
+                      </span>
+                    )}
+                  </button>
+                );
+              })
+            ) : kinds.isError && !kinds.isFetching ? (
+              <span className={`block px-2 py-[7px] text-sm ${pageFailedText}`} {...pageChrome}>
+                {LENS_ANSWERS.kinds_failed}
+              </span>
+            ) : (
+              <span className={`block px-2 py-[7px] text-sm ${pageQuietText}`} {...pageChrome}>
+                {LENS_ANSWERS.loading_kinds}
+              </span>
+            )}
+            {examining ? (
+              <span className={`block px-2 py-[7px] text-sm ${pageQuietText}`} {...pageChrome}>
+                {LENS_ANSWERS.examining}
+              </span>
+            ) : null}
+          </span>
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/** Gives the focus back to the row the control `inside` stands in, which is focusable. */
+function focusRow(inside: HTMLElement | null): void {
+  inside?.closest<HTMLElement>("[data-node-row]")?.focus();
+}
+
+/** Where the focus goes from item `at` of `count` on `key`: Up and Down step one, wrapping, and
+ *  Home and End go to the ends; from the menu itself, Down goes to the first and Up to the last.
+ *  Undefined for any other key, and in a menu with no item. */
+function step(key: string, at: number, count: number): number | undefined {
+  if (count === 0) return undefined;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowDown") return at < 0 ? 0 : (at + 1) % count;
+  if (key === "ArrowUp") return at < 0 ? count - 1 : (at - 1 + count) % count;
+  return undefined;
+}
