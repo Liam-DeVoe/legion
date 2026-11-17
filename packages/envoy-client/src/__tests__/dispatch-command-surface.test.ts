@@ -433,7 +433,9 @@ function stepsBody() {
 }
 
 /** `GET /api/v1/projects/{key}/plans`: one finished issue Legion ran and rated, so the record
- *  holds the issue's whole line. */
+ *  holds the issue's whole line. Its start, its retro's end, its last end and its close are four
+ *  times, and the last end is an hour and a half after the start, as `duration_seconds` counts
+ *  it, so a line that printed one of the four in place of another reads differently. */
 function plansBody() {
   return {
     project: "INFRA",
@@ -457,10 +459,15 @@ function plansBody() {
           ],
         },
         ratings: [
-          { rating: 4, reason: "The plan fit the work.", step_id: OTHER_UUID, ended_at: AT },
+          {
+            rating: 4,
+            reason: "The plan fit the work.",
+            step_id: OTHER_UUID,
+            ended_at: "2026-01-02T02:40:05Z",
+          },
         ],
-        started_at: AT,
-        ended_at: AT,
+        started_at: "2026-01-02T01:31:05Z",
+        ended_at: "2026-01-02T03:01:05Z",
         duration_seconds: 5400,
         failed_steps: 1,
       },

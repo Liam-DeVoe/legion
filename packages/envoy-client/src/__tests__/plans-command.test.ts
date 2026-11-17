@@ -144,9 +144,11 @@ const neverRan: FinishedIssue = {
   failed_steps: 0,
 };
 
-/** A finished issue whose first step started before Dispatch recorded starts: a plan and a
- *  rating, an end, and no time. */
-const unknownStart: FinishedIssue = {
+/** A finished issue whose time Dispatch cannot count: a plan and a rating, a start and an end,
+ *  and no time, since its latest end is before its earliest start. An older run, whose starts
+ *  Dispatch never got, ended and was rated; the newer run, whose plan the line names, started
+ *  after it and never ended. */
+const uncountedTime: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-10",
   plan: defaultPlan("INFRA-10", "8d3b2e5a-4f6c-5a0d-9e2f-3c4d5e6f7a81"),
@@ -159,7 +161,7 @@ const unknownStart: FinishedIssue = {
       ended_at: "2026-11-14T08:50:00Z",
     },
   ],
-  started_at: null,
+  started_at: "2026-11-14T08:58:00Z",
   ended_at: "2026-11-14T08:55:00Z",
   duration_seconds: null,
   failed_steps: 2,
@@ -330,7 +332,7 @@ describe("dispatch plans", () => {
   });
 
   test("an issue with no time prints time -, and one Legion never ran prints plan none too", async () => {
-    const answer: ProjectPlans = { project: "INFRA", issues: [unknownStart, neverRan] };
+    const answer: ProjectPlans = { project: "INFRA", issues: [uncountedTime, neverRan] };
 
     const { result } = await readPlans({ project: "INFRA" }, answer);
 
