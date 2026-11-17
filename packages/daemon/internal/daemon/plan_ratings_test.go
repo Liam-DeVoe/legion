@@ -11,13 +11,18 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -45,6 +50,57 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 			t.Fatalf("the assertion over a read without the failed review's record = %v, want an error saying %q", err, wanted)
 		}
 	})
+}
+
+// A plugin of the release before PlanRatingContract completes its retro with no rating, and the
+// daemon takes it and writes no rating. The case is the one a deploy meets: the implementer is in
+// its retro's turn when the daemon of the release before stops, and the daemon of this release
+// boots on the store it left, where the claim records the contract its plugin registered,
+// PlanRatingContract-1. This daemon relaunches a stale claim onto its own plugin, but it holds the
+// relaunch of a claim in a turn for that turn's end and serves the turn until then
+// (refreshStalePlugins, supervise's holdStaleRelaunch, api's staleClaim). So the old plugin's
+// completion of the retro, which carries no rating, is taken: the issue moves to merging, the
+// relaunch comes at the turn's end, the walk ends at done, and the read by project lists the issue
+// with no rating. The merge's record ends after the retro's completion, and a lane runs an issue's
+// records one at a time in the order they are due (outbox_lanes.go), so a rating row the
+// completion had written would have run before the read holds the seven records.
+//
+// Before the deploy, the same completion from the same claim at this release's contract is
+// refused PLAN_RATING_REQUIRED, so the contract the claim records is what decides, and the
+// daemon's own view of the claim after the boot must read the old contract.
+func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
+	r := newStepRecordsRig(t)
+	r.plan()
+	r.implement()
+	r.test()
+	r.review("APPROVED", phase.Accepting)
+	r.accept()
+	implementer := r.worker(claim.RoleImplementer)
+	implementer.take()
+	if status, body := r.complete(implementer, r.retroCompletion(0, "")); status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
+		t.Fatalf("the retro's completion with no rating from the implementer at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
+			r.d.claim(implementer.token).PluginContract, status, body)
+	}
+
+	old := api.PlanRatingContract - 1
+	r.restartWith(func() {
+		tag, err := r.st.Pool().Exec(context.Background(), "update claims set plugin_contract = $1 where token = $2", old, string(implementer.token))
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("record %s at plugin contract %d, as the daemon of the release before left it: %d rows, %v", implementer.token, old, tag.RowsAffected(), err)
+		}
+	})
+	implementer.waitState(supervise.StateWorking)
+	if got := r.d.claim(implementer.token).PluginContract; got != old {
+		t.Fatalf("the booted daemon reads %s at plugin contract %d, want %d: this case proves nothing", implementer.token, got, old)
+	}
+
+	r.finish(implementer, "", r.retroCompletion(0, ""), phase.Merging)
+	// The stale claim's relaunch, which the boot held for the turn's end.
+	r.awaitLaunch(implementer.token)
+	r.merge()
+	var steps stepRecordsRead
+	r.waitSteps("the seven records of the walk whose retro gave no rating", func(got stepRecordsRead) error { steps = got; return stepsHold(got, stepRecordsSeven) })
+	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{issue: r.key, steps: steps}})
 }
 
 // ratedWant is what the read by project must list of one issue: its rating and reason (none for

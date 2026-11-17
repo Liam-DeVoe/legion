@@ -354,7 +354,15 @@ func (r *stepRecordsRig) boot() {
 // has held since its launch, its turn and its session as they were.
 func (r *stepRecordsRig) restart() {
 	r.t.Helper()
+	r.restartWith(func() {})
+}
+
+// restartWith is restart with between run on the store while no daemon runs, which is where a
+// deploy leaves what the daemon of the release before wrote and the next one boots on.
+func (r *stepRecordsRig) restartWith(between func()) {
+	r.t.Helper()
 	r.d.stop()
+	between()
 	rebindHeldPorts(r.t, &r.cfg)
 	r.boot()
 	for _, c := range r.claims {
