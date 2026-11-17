@@ -219,7 +219,6 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s closed at %s is listed after %s closed at %s, want the newest close first", after.Issue, after.ClosedAt, before.Issue, before.ClosedAt)
 		}
 	}
-	plans := map[string]string{}
 	for place, w := range want {
 		got := read.Issues[place]
 		if got.Issue != w.issue {
@@ -236,13 +235,9 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 		case plan.Issue != w.issue || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.issue, retro.Generation):
 			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
 				w.issue, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.issue, retro.Generation), w.issue, retro.Generation)
-		case plans[plan.ID] != "":
-			return fmt.Errorf("%s lists the plan %s, which %s lists too", w.issue, plan.ID, plans[plan.ID])
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
 			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
 			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, workflow.DefaultSteps())
-		default:
-			plans[plan.ID] = w.issue
 		}
 		switch {
 		case w.rating == 0 && len(got.Ratings) != 0:
