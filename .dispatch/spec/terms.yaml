@@ -1,6 +1,0 @@
----
-type: term
-id: planted
-name: planted term
-definition:
-  - A planted term is a term that this check adds.
