@@ -1199,11 +1199,14 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-served:
-		case <-time.After(30 * time.Second):
-			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
-		}
+		testwait.Until(t, "the tester's manager to return after its context ended (the reading is its log)", func() (string, bool) {
+			select {
+			case <-served:
+				return "", true
+			default:
+				return stderr.String(), false
+			}
+		})
 	})
 	return acceptRole(t, listener), stderr
 }
@@ -1307,11 +1310,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 	done := serveMemoryGuard(ctx, Config{RolesDir: t.TempDir(), MicroVM: true}, []*manager{tester}, &pidGuard{})
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the guest watch did not return after its context ended")
-		}
+		testwait.Receive(t, "the guest watch to return after its context ended", done)
 	})
 	rig.started()
 	for _, tc := range []struct {
