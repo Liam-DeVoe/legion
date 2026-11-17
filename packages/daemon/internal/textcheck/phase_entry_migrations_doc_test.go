@@ -1,6 +1,8 @@
 package textcheck
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,12 +28,13 @@ import (
 // rule of their names, so importing it puts in this job's filter the files whose change these
 // tests must see, and nothing else of the daemon.
 //
-// The list is what a reader sees of it: a name inside an HTML comment counts for nothing, since
-// the rendered guide does not show it. A migration the list describes is one an entry says what
-// the block does to: it opens the entry, or opens a clause of it after ", and", so one entry may
-// speak for several migrations (entrySubjects). A name anywhere else in an entry is a mention in
-// passing, which tells the operator nothing of what the block does to that migration, so it
-// describes nothing; the list's every name is still held to the embedded set.
+// The list is what a reader sees of it (visibleMarkdown): a name inside an HTML comment counts
+// for nothing, since the rendered guide does not show it, and a list whose opening sentence or
+// ending line a comment hides is no list a reader finds. A migration the list describes is one an
+// entry says what the block does to: it opens the entry, or opens a clause of it after ", and", so
+// one entry may speak for several migrations (entrySubjects). A name anywhere else in an entry is
+// a mention in passing, which tells the operator nothing of what the block does to that
+// migration, so it describes nothing; the list's every name is still held to the embedded set.
 const (
 	// phaseEntryMigration is the migration whose way back the list follows, by the name the guide
 	// (wayBackGuide, way_back_doc_test.go) writes. The list's subject is every embedded migration
@@ -48,10 +51,6 @@ var (
 	// migrationNameInGuide is a migration's name as the guide writes it: the file's name without
 	// `.up.sql`.
 	migrationNameInGuide = regexp.MustCompile(`\b\d{14}_\w+`)
-	// htmlComment is an HTML comment of the guide's Markdown, which the rendered guide does not
-	// show. One never closed is read as hiding the rest of the list, since a comment that opens a
-	// line runs to the end of the document.
-	htmlComment = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)`)
 	// entrySubjects is where an entry says what the block does to a migration: the migrations
 	// that open the entry, or open a clause of it after ", and", alone or several joined by
 	// " and ", each perhaps followed by the ", of <reference>," of the change it came with. Its
@@ -103,35 +102,59 @@ func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 
 // A migration the list names only inside an HTML comment is one the operator never reads: the
 // rendered guide shows nothing of it. So the list counts no name a comment holds, whether the
-// comment fills a line, follows an entry, spans lines or is never closed, and still counts every
-// name of an entry the reader sees. Each case is a list as the guide writes one, between its
-// opening sentence and the line that ends it.
+// comment fills a line, follows an entry or spans lines, and still counts every name of an entry
+// the reader sees. A comment that hides the sentence opening the list, opened before it or around
+// it alone, or one never closed, which hides the line that ends the list, leaves no list a reader
+// sees, so the list is refused as hidden rather than read. A comment closed before the sentence,
+// and a "<!--" inside a fenced block, hide nothing of it. Each case is a list as the guide writes
+// one, between its opening sentence and the line that ends it, after the text before it.
 func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 	const (
 		opening = phaseEntryListOpening + "\n"
 		end     = phaseEntryListEnd + "`20261111225552_phase_entry.up.sql`.\n"
 	)
 	for _, list := range []struct {
-		shape, entries string
-		want           []string
+		shape, before, entries string
+		want                   []string
+		err                    error
 	}{
-		{"a comment on a line of its own",
+		{"a comment on a line of its own", "",
 			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table. -->\n",
-			[]string{"20990101000001_seen"}},
-		{"a comment after an entry",
+			[]string{"20990101000001_seen"}, nil},
+		{"a comment after an entry", "",
 			"20990101000001_seen adds a column. <!-- 20990101000002_hidden adds a table. -->\n",
-			[]string{"20990101000001_seen"}},
-		{"a comment across lines",
+			[]string{"20990101000001_seen"}, nil},
+		{"a comment across lines", "",
 			"20990101000001_seen adds a column.\n<!--\n20990101000002_hidden adds a table.\n-->\n",
-			[]string{"20990101000001_seen"}},
-		{"a comment never closed",
+			[]string{"20990101000001_seen"}, nil},
+		{"a comment never closed", "",
 			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table.\n",
-			[]string{"20990101000001_seen"}},
-		{"one visible entry for two migrations",
+			nil, errHidden},
+		{"one visible entry for two migrations", "",
 			"20990101000001_seen and 20990101000003_seen_with_it touch none of the six.\n",
-			[]string{"20990101000001_seen", "20990101000003_seen_with_it"}},
+			[]string{"20990101000001_seen", "20990101000003_seen_with_it"}, nil},
+		{"a comment opened before the opening sentence and closed inside the list", "<!--\n",
+			"20990101000002_hidden adds a table.\n-->\n20990101000001_seen adds a column.\n",
+			nil, errHidden},
+		{"the whole list inside a comment", "<!--\n",
+			"20990101000001_seen adds a column.\n-->\n",
+			nil, errHidden},
+		{"the opening sentence alone inside a comment", "<!--\n",
+			"-->\n20990101000001_seen adds a column.\n",
+			nil, errHidden},
+		{"a comment closed before the opening sentence", "<!--\n20990101000002_hidden adds a table.\n-->\n",
+			"20990101000001_seen adds a column.\n",
+			[]string{"20990101000001_seen"}, nil},
+		{"a comment opened inside a fenced block before the list", "```\n<!--\n```\n",
+			"20990101000001_seen adds a column.\n",
+			[]string{"20990101000001_seen"}, nil},
 	} {
-		described, named := phaseEntryListIn(t, list.shape, opening+list.entries+end)
+		described, named, err := readPhaseEntryList(list.shape, list.before+opening+list.entries+end)
+		if !errors.Is(err, list.err) {
+			t.Errorf("%s: reading the list answers the error %v, want %v: %q", list.shape, err, list.err,
+				list.before+list.entries)
+			continue
+		}
 		if !slices.Equal(described, list.want) || !slices.Equal(named, list.want) {
 			t.Errorf("%s: the list describes %v and names %v, want %v for both: %q", list.shape, described,
 				named, list.want, list.entries)
@@ -176,7 +199,11 @@ func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntryOrAClause(t *testing.T)
 			"20990101000001_alone adds a column and 20990101000002_passing reads it.",
 			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
 	} {
-		described, named := phaseEntryListIn(t, list.shape, opening+list.entry+"\n"+end)
+		described, named, err := readPhaseEntryList(list.shape, opening+list.entry+"\n"+end)
+		if err != nil {
+			t.Errorf("%s: %v", list.shape, err)
+			continue
+		}
 		if want := append(slices.Clone(list.described), list.mentions...); !slices.Equal(described, list.described) ||
 			!slices.Equal(named, want) {
 			t.Errorf("%s: the list describes %v and names %v, want %v described and %v named: %q", list.shape,
@@ -208,51 +235,103 @@ func embeddedMigrationsAboveThePhaseEntry(t *testing.T) (above, all []string) {
 	return all[at+1:], all
 }
 
-// phaseEntryList is what the list in the guide describes and names (phaseEntryListIn).
+// phaseEntryList is what the list in the guide describes and names (readPhaseEntryList). A guide
+// it cannot read the list of stops the test.
 func phaseEntryList(t *testing.T) (described, named []string) {
 	t.Helper()
-	return phaseEntryListIn(t, wayBackGuide, shippedText(t, wayBackGuide))
+	described, named, err := readPhaseEntryList(wayBackGuide, shippedText(t, wayBackGuide))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return described, named
 }
 
-// phaseEntryListIn reads the list in text, the guide called name, where a reader sees it: the
-// lines after its opening sentence, up to the line phaseEntryListEnd opens, with every HTML
-// comment taken out. It answers the migrations the list describes and every migration name it
-// carries. A text with no such sentence or with two, with no such line after it, or whose list
-// names no migration stops the test: each would otherwise read as a list that names nothing,
-// which TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes.
-func phaseEntryListIn(t *testing.T, name, text string) (described, named []string) {
-	t.Helper()
-	lines := strings.Split(text, "\n")
+// errHidden is why a check refuses a line it reads the guide by: only an HTML comment holds it.
+var errHidden = errors.New("only an HTML comment holds it, and the rendered guide shows none of it")
+
+// readPhaseEntryList reads the list in text, the guide called name, where a reader sees it
+// (visibleMarkdown): the lines after its opening sentence, up to the line phaseEntryListEnd opens.
+// It answers the migrations the list describes and every migration name it carries. A text with
+// no such sentence or with two, with no such line after it, or whose list names no migration is
+// refused: each would otherwise read as a list that names nothing, which
+// TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes. A sentence or line that only
+// an HTML comment holds is refused as hidden (errHidden), a comment opened before the sentence
+// among them: that comment hides the sentence and whatever of the list it runs over.
+func readPhaseEntryList(name, text string) (described, named []string, err error) {
+	written, lines := strings.Split(text, "\n"), strings.Split(visibleMarkdown(text), "\n")
 	start := -1
 	for i, line := range lines {
 		if line != phaseEntryListOpening {
 			continue
 		}
 		if start >= 0 {
-			t.Fatalf("%s opens the list of the migrations above %s twice, at lines %d and %d",
+			return nil, nil, fmt.Errorf("%s opens the list of the migrations above %s twice, at lines %d and %d",
 				name, phaseEntryMigration, start+1, i+1)
 		}
 		start = i
 	}
+	if start < 0 && slices.Contains(written, phaseEntryListOpening) {
+		return nil, nil, fmt.Errorf("%s's line %q, which opens the list of the migrations recorded above %s: %w",
+			name, phaseEntryListOpening, phaseEntryMigration, errHidden)
+	}
 	if start < 0 {
-		t.Fatalf("%s carries no line %q: that sentence, which carries no count and no contract number, "+
-			"opens the list of the migrations recorded above %s after that migration's way back", name,
-			phaseEntryListOpening, phaseEntryMigration)
+		return nil, nil, fmt.Errorf("%s carries no line %q: that sentence, which carries no count and no "+
+			"contract number, opens the list of the migrations recorded above %s after that migration's way back",
+			name, phaseEntryListOpening, phaseEntryMigration)
 	}
-	end := slices.IndexFunc(lines[start+1:], func(line string) bool { return strings.HasPrefix(line, phaseEntryListEnd) })
+	isEnd := func(line string) bool { return strings.HasPrefix(line, phaseEntryListEnd) }
+	end := slices.IndexFunc(lines[start+1:], isEnd)
+	if end < 0 && slices.ContainsFunc(written[start+1:], isEnd) {
+		return nil, nil, fmt.Errorf("%s's line opening %q after line %d, which ends the list of the migrations "+
+			"above %s: %w", name, phaseEntryListEnd, start+1, phaseEntryMigration, errHidden)
+	}
 	if end < 0 {
-		t.Fatalf("%s carries no line opening %q after line %d, which ends the list of the migrations above %s",
-			name, phaseEntryListEnd, start+1, phaseEntryMigration)
+		return nil, nil, fmt.Errorf("%s carries no line opening %q after line %d, which ends the list of the "+
+			"migrations above %s", name, phaseEntryListEnd, start+1, phaseEntryMigration)
 	}
-	visible := htmlComment.ReplaceAllString(strings.Join(lines[start+1:start+1+end], "\n"), "")
+	visible := strings.Join(lines[start+1:start+1+end], "\n")
 	named = migrationNameInGuide.FindAllString(visible, -1)
 	if len(named) == 0 {
-		t.Fatalf("%s's list after line %d names no migration", name, start+1)
+		return nil, nil, fmt.Errorf("%s's list after line %d names no migration", name, start+1)
 	}
 	for _, entry := range strings.Split(visible, "\n") {
 		for _, subjects := range entrySubjects.FindAllStringSubmatch(strings.TrimLeft(entry, " \t"), -1) {
 			described = append(described, migrationNameInGuide.FindAllString(subjects[1], -1)...)
 		}
 	}
-	return described, named
+	return described, named, nil
+}
+
+// visibleMarkdown is text as the rendered page shows it: each HTML comment outside a fenced block
+// is blanked, its newlines kept, so that every line keeps its number. A comment never closed runs
+// to the end of the text, as one that opens a line does on the page. A fenced block, from a line
+// opening "```" to the next, shows its lines as written, a "<!--" among them, and a fence inside a
+// comment opens nothing. A check reads the guide through this before it selects a line, so that a
+// comment opened before that line still hides it.
+func visibleMarkdown(text string) string {
+	lines := strings.Split(text, "\n")
+	fenced, commented := false, false
+	for i, line := range lines {
+		if !commented && strings.HasPrefix(line, "```") {
+			fenced = !fenced
+			continue
+		}
+		if fenced {
+			continue
+		}
+		var shown strings.Builder
+		for line != "" {
+			if commented {
+				var closed bool
+				_, line, closed = strings.Cut(line, "-->")
+				commented = !closed
+				continue
+			}
+			var before string
+			before, line, commented = strings.Cut(line, "<!--")
+			shown.WriteString(before)
+		}
+		lines[i] = shown.String()
+	}
+	return strings.Join(lines, "\n")
 }
