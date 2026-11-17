@@ -42,6 +42,21 @@ body: |-
     The next holder bounds that call. After a release, the next holder waits `relayFormerSettle`
     (1 s) from its acquisition before it restarts a consumer. After a take-over by force, it
     takes the record at least `leaseMargin` (1 s) after the loss deadline of the pod before it.
+    A pod whose receive term ended also no longer forwards a session's messages. Before this
+    change, its pull request could still wait at the server after the term ended. The pod then
+    forwarded a message the server delivered to it, and the term's end left that message
+    unacknowledged, so the next holder was given it again and the session took it twice. Now the
+    pod unsubscribes its pull's inbox as soon as its term ends, or as soon as the lease's loss
+    deadline passes. The server then drops the waiting pull request without handing it another
+    message: measured, a message stored just after the unsubscribe went to the next holder's pull
+    only. The next holder's restart of the consumer does not do this when no message awaits an
+    ack, because that restart updates the consumer in place and the old request stays. Each pull
+    request still waits 30 s, as before. The pod sends no pull request after its term ends, and it
+    does not start a pull. A message that reaches the pod after its term ended and before the
+    unsubscribe lands is not forwarded and gets no answer: no `done`, no NAK and no progress. The
+    next holder's restart of the session's consumer at its ack floor gives the message to that
+    holder. If no restart comes, the server delivers it again after the consumer's 60 s ack wait.
+    A frame that the pod forwarded before its term ended keeps the 750 ms settle grace as before.
 time: 2026-11-03T09:40:00.000000000Z
 custom:
     Issue: pr2404

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -73,6 +74,30 @@ var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard n
 // would otherwise find it.
 var ErrSessionPullReconnected = errors.New("bus: the session consumer's pull request was lost when its connection reconnected")
 
+// PullBound is how long a pull (SessionConsumers.Pull) may still take messages, read before each
+// pull request the pull sends, while Next waits, as Next hands out each message, and as each
+// message arrives. It shortens no request: each waits sessionPullExpires at the server.
+//
+// Once the bound is zero or less, the pull sends no request, and Next hands out nothing and
+// returns ErrSessionPullBound, a Next that is waiting when the bound runs out included: what the
+// pull holds stays in it for Release. A message that arrives once the bound is zero or less is
+// left unanswered, with no ack, no nak and no progress. Next never returns it and Release never
+// naks it, so the server delivers it again once the consumer's ack wait (SessionConsumerAckWait)
+// has passed, or sooner at a restart of the consumer at its ack floor (RestartAtFloor).
+//
+// A request already waiting at the server goes on waiting until it expires. A caller that wants
+// the server to hand that request nothing more detaches the pull (Detach): the server drops a
+// waiting request whose inbox has no subscriber, at the next message it would deliver to it or
+// the next time it reads its waiting requests, without handing it that message (nats-server
+// v2.15.1 server/consumer.go:4519-4559, nextWaiting, and :5143-5157, processWaiting). A nil bound
+// bounds nothing.
+type PullBound func() time.Duration
+
+// ErrSessionPullBound ends a pull's Next once the pull's bound (PullBound) has run out: Next hands
+// out no message and sends no pull request past it. The pull goes on, and a Next made once the
+// bound is above zero again goes on pulling.
+var ErrSessionPullBound = errors.New("bus: the session consumer's pull is past its bound")
+
 // SessionPull is a pull of one session consumer's messages, which arrive in stream order, except
 // messages naked back to the server (Release), which arrive in the server's own order unless a
 // restart at the ack floor (RestartAtFloor) came first. It sends the consumer's pull requests
@@ -88,9 +113,11 @@ type SessionPull struct {
 	watch connWatch
 	sub   *nats.Subscription
 	// name is the consumer's, next its pull request subject, inbox the subject the server answers
-	// on, and request the pull request's body.
+	// on, and request the pull request's body. bound, nil for none, is how long the pull may still
+	// take messages (PullBound).
 	name, next, inbox string
 	request           []byte
+	bound             PullBound
 	// remaining is how many messages the pull request in flight may still deliver; 0 when none is.
 	// Only Next reads or writes it.
 	remaining int
@@ -117,8 +144,10 @@ type SessionPull struct {
 // Next returns ErrSessionConsumerNotFound when the stream holds no such consumer. Pulled messages
 // wait in the pull for Next. Release ends it and hands every one of them back to the server at
 // once; Stop ends it and leaves them, so the server delivers each message it delivered and was
-// not acked for again only once its ack wait has passed, or at a restart (RestartAtFloor).
-func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*SessionPull, error) {
+// not acked for again only once its ack wait has passed, or at a restart (RestartAtFloor). bound,
+// nil for none, is how long the pull may still take messages (PullBound): Pull returns
+// ErrSessionPullBound, and starts nothing, once it has run out.
+func (s *SessionConsumers) Pull(ctx context.Context, sessionID string, bound PullBound) (*SessionPull, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
 		return nil, err
@@ -145,7 +174,7 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	// one restart at the ack floor, where the cost of missing the event is a stalled relay.
 	watch := s.client.watchConnection()
 	conn := watch.conn
-	p := &SessionPull{watch: watch, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
+	p := &SessionPull{watch: watch, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, bound: bound, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
 	}
@@ -156,19 +185,31 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	return p, nil
 }
 
-// receive takes what the server sends on the pull's inbox: a heartbeat only marks it heard, and
-// anything else is queued for Next.
+// receive takes what the server sends on the pull's inbox: a heartbeat only marks it heard, a
+// message that arrives once the pull's bound has run out only marks it heard too and is left
+// unanswered (PullBound), and anything else is queued for Next. The bound is read before the
+// pull's lock is taken, since a caller's bound may take locks of its own.
 func (p *SessionPull) receive(msg *nats.Msg) {
+	status, _ := pullStatus(msg)
+	late := status == "" && p.pastBound()
 	p.mu.Lock()
 	p.heard = time.Now()
-	if status, _ := pullStatus(msg); status != pullStatusHeartbeat {
+	if status != pullStatusHeartbeat && !late {
 		p.queue = append(p.queue, msg)
 	}
 	p.mu.Unlock()
+	if late {
+		return
+	}
 	select {
 	case p.wake <- struct{}{}:
 	default:
 	}
+}
+
+// pastBound reports whether the pull's bound has run out (PullBound).
+func (p *SessionPull) pastBound() bool {
+	return p.bound != nil && p.bound() <= 0
 }
 
 // The status codes the server answers a pull request with, beside the messages it delivers.
@@ -192,8 +233,12 @@ func pullStatus(msg *nats.Msg) (status, description string) {
 	return msg.Header.Get("Status"), msg.Header.Get("Description")
 }
 
-// pull sends a pull request for sessionPullBatch messages.
+// pull sends a pull request for sessionPullBatch messages, or none, returning ErrSessionPullBound,
+// once the pull's bound has run out (PullBound).
 func (p *SessionPull) pull() error {
+	if p.pastBound() {
+		return ErrSessionPullBound
+	}
 	p.mu.Lock()
 	p.heard = time.Now()
 	p.mu.Unlock()
@@ -206,10 +251,16 @@ func (p *SessionPull) pull() error {
 
 // Next returns the next message the pull holds, waiting for one until ctx ends. It returns
 // ErrSessionConsumerNotFound once the stream holds no such consumer, ErrSessionPullReconnected
-// once the connection the pull request was sent on reconnected, and ErrSessionPullStalled once
-// the server has sent nothing for twice sessionPullHeartbeat.
+// once the connection the pull request was sent on reconnected, ErrSessionPullStalled once
+// the server has sent nothing for twice sessionPullHeartbeat, and ErrSessionPullBound while the
+// pull's bound has run out (PullBound). The bound is read again once a message is in hand, so a
+// bound that ran out while Next waited hands out nothing: the message stays first in the pull,
+// for a later Next or for Release.
 func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 	for {
+		if p.pastBound() {
+			return SessionMessage{}, ErrSessionPullBound
+		}
 		if p.remaining == 0 {
 			if err := p.pull(); err != nil {
 				return SessionMessage{}, err
@@ -221,6 +272,12 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 		}
 		switch status, description := pullStatus(msg); {
 		case status == "":
+			if p.pastBound() {
+				p.mu.Lock()
+				p.queue = slices.Insert(p.queue, 0, msg)
+				p.mu.Unlock()
+				return SessionMessage{}, ErrSessionPullBound
+			}
 			p.remaining--
 			return sessionMessageOf(msg)
 		case status == pullStatusExpired, status == pullStatusConflict && description == pullLeadershipChange:
@@ -235,10 +292,11 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 }
 
 // take returns the first message the server sent that Next has not read, waiting until one comes,
-// ctx ends, a connection event dropped the pull's request (connWatch.lostRequest), or the server
-// has sent nothing for twice sessionPullHeartbeat. The messages the server already sent are handed
-// out first: they are the consumer's, not the lost request's, and acking one is a publish like any
-// other.
+// ctx ends, a connection event dropped the pull's request (connWatch.lostRequest), the server
+// has sent nothing for twice sessionPullHeartbeat, or the pull's bound runs out
+// (ErrSessionPullBound), which it reads at each wake and times its wait to. The messages the
+// server already sent are handed out first: they are the consumer's, not the lost request's, and
+// acking one is a publish like any other.
 func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	for {
 		p.mu.Lock()
@@ -251,13 +309,21 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 		}
 		stalled := time.Until(p.heard.Add(2 * p.heartbeat))
 		p.mu.Unlock()
+		wait := stalled
+		if p.bound != nil {
+			left := p.bound()
+			if left <= 0 {
+				return nil, ErrSessionPullBound
+			}
+			wait = min(wait, left)
+		}
 		if p.watch.lost() {
 			return nil, ErrSessionPullReconnected
 		}
 		if stalled <= 0 {
 			return nil, ErrSessionPullStalled
 		}
-		timer := time.NewTimer(stalled)
+		timer := time.NewTimer(wait)
 		select {
 		case <-p.wake:
 		case <-p.watch.changed:
@@ -321,11 +387,13 @@ const sessionPullStopFlush = 2 * time.Second
 
 // Detach takes the pull's interest away without answering anything: the server's next attempt to
 // deliver on the pull request still standing for this pull finds no interest and drops that
-// request. A caller that holds messages of this pull's consumer elsewhere -- a relay holding
-// frames it published -- detaches first, so that naking those does not deliver them straight back
-// into the pull it is giving up, from where they reach the next owner only once Release naks them
-// again, as a further delivery and out of stream order. Release detaches by itself, so a caller
-// that only returns what the pull holds needs this not at all.
+// request without handing it the message, and so does the next read of its waiting requests
+// (PullBound has the server's lines). A caller that holds messages of this pull's consumer
+// elsewhere -- a relay holding frames it published -- detaches first, so that naking those does
+// not deliver them straight back into the pull it is giving up, from where they reach the next
+// owner only once Release naks them again, as a further delivery and out of stream order. A
+// caller whose bound ran out detaches so that the server hands the pull nothing more. Release
+// detaches by itself, so a caller that only returns what the pull holds needs this not at all.
 //
 // It is idempotent: the drain runs once and every call answers its result.
 func (p *SessionPull) Detach() error {

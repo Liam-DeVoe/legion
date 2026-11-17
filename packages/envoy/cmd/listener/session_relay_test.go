@@ -54,8 +54,10 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 	return rig
 }
 
-// endlessTerm is a receive term that never ends and that no lease bounds, for a rig that serves
-// its machine's receive term with no receive loop of its own (sessionRelays.setOwned).
+// endlessTerm is a receive term that never ends and that no lease bounds: the term a rig with no
+// receive loop of its own gives its relays, whether it elects them with it (sessionRelays.setOwned)
+// or only holds it so that the restarts and pulls a row drives itself act under a live term
+// (newRelayRigUnownedOn).
 func endlessTerm() *relayTerm {
 	return &relayTerm{ctx: context.Background()}
 }
@@ -80,11 +82,12 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 // connection goes to url itself: a test that takes the main connection off NATS while the
 // session-consumer connection stays opens client through a testnats.Proxy.
 //
-// No relay of the rig's own starts, but a restart a row drives itself (sessionRelays.restart)
-// acts only under a live receive term (sessionRelays.termContext). So the rig's relays hold an
-// endless term without serving it: a row that drives a restart reaches the consumer as the relay
-// of a live term would, and a row may set a term of its own in its place before it drives one.
-// The term a row elects the rig with, and its end, replace it (sessionRelays.setOwned).
+// No relay of the rig's own starts, but a restart a row drives itself (sessionRelays.restart), and
+// the pull it starts, act only under a live receive term (sessionRelays.termContext,
+// sessionRelays.pullBound). So the rig's relays hold an endless term without serving it: a row
+// that drives a restart reaches the consumer as the relay of a live term would, and a row may set
+// a term of its own in its place before it drives one. The term a row elects the rig with, and
+// its end, replace it (sessionRelays.setOwned).
 func newRelayRigUnownedOn(t *testing.T, client *bus.Client, url string, first, max time.Duration) *relayRig {
 	t.Helper()
 	rig := newSessionConsumerRigOn(t, client, url)
@@ -843,7 +846,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	rig.relays.setOwned(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
@@ -957,7 +960,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// take some of them away from.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}

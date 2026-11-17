@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -102,6 +103,11 @@ const (
 	// failed restarts at the ack floor; it doubles from the first to the max.
 	relayRetryFirst = time.Second
 	relayRetryMax   = 30 * time.Second
+	// relayTermPoll is how often a relay whose pull is past its bound (pullBound) reads the bound
+	// again while it waits for its term's end to cancel it (relayNATS). The bound comes back above
+	// zero within the same term only when a renewal that started inside the lease's validity
+	// lands after it, which the lease's renewal interval (leaseRenewEvery) paces.
+	relayTermPoll = 100 * time.Millisecond
 	// relayPruneInterval is how often the relay drops lapsed session entries from the cache
 	// (session.SessionRegistry.PruneLapsed), so a session that stopped registering stops being
 	// relayed: a lapse has no watch event.
@@ -918,10 +924,13 @@ func (m *sessionRelays) formerSettleWait() time.Duration {
 //
 // Just before its RestartAtFloor the restart checks that this task's receive term is current, and
 // sends that call and the settle of its filter on a context that ends with the term or at the
-// lease's loss deadline, whichever is first (termContext): a term that ended, or a lease that
-// another pod may hold, leaves the consumer to the pod that takes the lease next. Such a restart
-// sends nothing more, starts no pull, and answers relayRetry, so the relay tries again after its
-// retry wait while the session is still this listener's, and the term's end stops it meanwhile.
+// lease's loss deadline, whichever is first (termContext). Its pull starts only while the term is
+// still current, by the same bound (pullBound): a term that ended, or a lease that another pod may
+// hold, leaves the consumer to the pod that takes the lease next. Whether the term ended before
+// the RestartAtFloor, during it, or during the settle after it, the restart sends no further call,
+// starts no pull, and answers relayRetry, so the relay tries again after its retry wait while the
+// session is still this listener's, and the term's end stops it meanwhile. A call it had already
+// sent can still land (termContext).
 //
 // The first restart of a run the burst of gaining the receive term started has the session's
 // consumer as that burst listed it (relayRun.listed): when the restart would keep it unchanged
@@ -947,7 +956,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		if err == nil && kept {
 			run.restartedAt.Store(run.listedAt)
 			var pull *bus.SessionPull
-			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID, m.pullBound); err == nil {
 				// Once the pull has started, an earlier registration is already reflected: it
 				// wrote its row before this restart read the session's stored topics under the
 				// session's lock, or made its own consumer calls under that lock after the
@@ -988,9 +997,9 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 			slog.String("session_id", sessionID))
 		return bus.SessionConsumerStart{}, nil, relayRetry
 	}
+	defer stopRestart()
 	start, err := m.delivery.consumers.RestartAtFloor(restartCtx, sessionID, filter)
 	if err != nil && restartCtx.Err() != nil && callCtx.Err() == nil {
-		stopRestart()
 		unlock()
 		m.logger.Info("session relay restart cut off: this pod's receive term ended, or another pod may hold the machine's lease, before the restart was over; a call it had already sent can still land, and it tries again after its retry wait while the session is still this listener's",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -1002,12 +1011,11 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	if err == nil || !consumerCallAnswered(err) {
 		m.settleFilter(restartCtx, sessionID, revision)
 	}
-	stopRestart()
 	unlock()
 	if err == nil {
 		run.restartedAt.Store(at)
 		var pull *bus.SessionPull
-		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID, m.pullBound); err == nil {
 			// Once the pull has started, an earlier registration is already reflected, as after
 			// the keep above, so its wake is dropped.
 			run.dropWake()
@@ -1042,26 +1050,48 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 // less than 20 %. So a call still in flight lands within about a second of the cut, or races the
 // next holder's restart: no fence holds it, since a consumer call carries no term.
 func (m *sessionRelays) termContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
-	m.eventsMu.Lock()
-	term := m.term
-	m.eventsMu.Unlock()
-	if term == nil || term.ctx.Err() != nil {
+	term, left := m.currentTerm()
+	if left <= 0 {
 		return nil, nil, false
 	}
 	var bounded context.Context
 	var cancel context.CancelFunc
 	if term.untilLoss == nil {
 		bounded, cancel = context.WithCancel(ctx)
-	} else if left := term.untilLoss(); left > 0 {
-		bounded, cancel = context.WithTimeout(ctx, left)
 	} else {
-		return nil, nil, false
+		bounded, cancel = context.WithTimeout(ctx, left)
 	}
 	unwatch := context.AfterFunc(term.ctx, cancel)
 	return bounded, func() {
 		unwatch()
 		cancel()
 	}, true
+}
+
+// currentTerm is the receive term this task serves (setOwned) and how long that term may still act
+// on a session's consumer: what is left before the lease's loss deadline (lease.UntilLoss), the
+// longest duration there is for a term no lease bounds, and zero, with no term, when none is
+// current, because this task serves none or the term's context has ended.
+func (m *sessionRelays) currentTerm() (*relayTerm, time.Duration) {
+	m.eventsMu.Lock()
+	term := m.term
+	m.eventsMu.Unlock()
+	if term == nil || term.ctx.Err() != nil {
+		return nil, 0
+	}
+	if term.untilLoss == nil {
+		return term, math.MaxInt64
+	}
+	return term, term.untilLoss()
+}
+
+// pullBound is how long a pull of this task's relays may still take messages (bus.PullBound): how
+// long its term may still act on a session's consumer (currentTerm). So no pull request is sent
+// once the term's context has ended or the lease's loss deadline has passed, and a message that
+// arrives after that is neither forwarded nor answered (relayNATS).
+func (m *sessionRelays) pullBound() time.Duration {
+	_, left := m.currentTerm()
+	return left
 }
 
 // storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV
@@ -1131,6 +1161,10 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 	switch {
 	case ctx.Err() != nil:
 		return bus.SessionConsumerStart{}, nil, relayEnded
+	case errors.Is(err, bus.ErrSessionPullBound):
+		m.logger.Info("session relay started no pull of the session's consumer: this pod's receive term is over, or another pod may hold the machine's lease; it tries again after its retry wait while the session is still this listener's",
+			slog.String("session_id", sessionID))
+		return bus.SessionConsumerStart{}, nil, relayRetry
 	case errors.Is(err, bus.ErrSessionConsumerNotFound) || errors.Is(err, bus.ErrNoSessionConsumerName):
 		m.logger.Info("session relay paused: the session has no consumer; its next registration creates one", slog.String("session_id", sessionID))
 		return bus.SessionConsumerStart{}, nil, relayEnded
@@ -1153,6 +1187,51 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // ack wait, and the relay starts again at the ack floor after its pause backoff or at the
 // session's next registration, whichever comes first (sessionRelays.relay), so the messages it
 // was sending reach a session that was only slow without waiting for a registration.
+//
+// The pull is held to this task's receive term (pullBound). Its requests wait the pull's own 30 s
+// at the server, but once the term's context has ended or the lease's loss deadline has passed,
+// it sends no request and hands out no message, and the run unsubscribes its inbox at once
+// (bus.SessionPull.Detach): its waits end with the term's context, and the pull wakes at the loss
+// deadline. The server drops a waiting request whose inbox has no subscriber, at the next message
+// it would deliver to it or the next time it reads its waiting requests, without handing it that
+// message (nats-server v2.15.1 server/consumer.go:4519-4559, nextWaiting, and :5143-5157,
+// processWaiting). Measured on the in-process server, a message stored right after the
+// unsubscribe reached no one until the next holder's pull took it, and the consumer counted no
+// waiting request 1.5 ms after the unsubscribe began. The next holder's restart at the ack floor
+// ends this pod's waiting request only where it deletes the consumer, since a message awaits an
+// ack (releaseAnyPendingRequests, :3231-3247, answers it 409 Consumer Deleted). Where nothing awaits
+// one, the restart updates the consumer in place (updateConfig, :2607, keeps every waiting request)
+// and the server goes on sharing messages between that request and the next holder's: measured,
+// each got every other message. So the unsubscribe is what leaves the next holder the only puller.
+//
+// Two limits of that unsubscribe, and what holds each. First, on a clustered hub the unsubscribe
+// crosses the routes before the server that holds the consumer sees it, and that delay was not
+// measured. Second, a pod cut off from the server whose connection the server still holds cannot
+// unsubscribe at all, so its waiting request stays until the server drops the connection or the
+// request's 30 s expire. In both cases the drop on arrival below keeps a message the server hands
+// this pod from being forwarded, so the session never gets it twice, and the message reaches the
+// next holder after the session consumer's ack wait (60 s) or at that holder's next restart of the
+// consumer at its ack floor, whichever comes first.
+//
+// A message the pull receives once the term is over, before that unsubscribe lands, is not
+// forwarded to the session and is not answered, with no done, nak or progress. The server
+// delivers it again once the session consumer's ack wait has passed, 60 s
+// (bus.SessionConsumerAckWait, internal/bus/session_consumers.go:26, which applySettings sets on
+// every session consumer at :894). The next holder's restart of the consumer at its ack floor
+// delivers it sooner, since a message that awaits an ack makes that restart a delete and a
+// create (bus.SessionConsumers.KeepListed keeps no consumer with one, :842).
+//
+// When the pull got a message is what tells the two apart. The pull reads its bound as each
+// message arrives, and again as Next hands the message out, and this run publishes a message as
+// a frame as soon as Next hands it out. So a frame is a message that arrived, and was handed out,
+// while the term was current. A message that arrives after the term is over is dropped where it
+// arrives, and one that arrived before and is not handed out stays in the pull. The frames keep
+// the settle a stopped relay gives them (endFrames, settleStoppedFrames): a run whose pull is
+// past its bound does not return, but waits for the term's end to cancel it, reading the bound
+// again every relayTermPoll. Its cancellation then settles its frames, as before, and returns to
+// the server what the pull got during the term and did not hand out (bus.SessionPull.Release).
+// A run whose term is current again, as after a renewal that landed late, starts again at the
+// ack floor at once with a new pull (relayReconnected).
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
 	start, pull, outcome := m.restart(ctx, run)
@@ -1164,6 +1243,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// stopping, or a new epoch replaced the run. Such a run returns everything it holds; one
 	// that ended for a reason of its own leaves it where it is.
 	defer func() {
+		if ctx.Err() != nil {
+			// The inbox is unsubscribed before the frames settle, so the server hands the pull
+			// nothing more meanwhile (relayNATS's doc).
+			_ = pull.Detach()
+		}
 		// dropped is what endFrames left (its doc, and settleStoppedFrames' for a term's end);
 		// a cancelled run returns it below (release).
 		dropped := m.endFrames(ctx, run)
@@ -1171,13 +1255,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			pull.Stop()
 			return
 		}
-		// The pull is detached before anything is naked. A cancelled pull still has a pull
-		// request standing at the server, so a nak sent while that pull is subscribed can be
-		// delivered straight back into the pull this run is giving up; its drain queues the
-		// message and the Release below naks it again, so the next owner gets it once more, as a
-		// further delivery and behind messages of higher sequences. Detached, the pull has no
-		// interest left and the frames reach the session's next owner, where it has one, in the
-		// order they are naked.
+		// The pull is detached before anything is naked: above already for a run cancelled when
+		// it returned, here for one cancelled since. A cancelled pull still has a pull request
+		// standing at the server, so a nak sent while that pull is subscribed can be delivered
+		// straight back into the pull this run is giving up; its drain queues the message and the
+		// Release below naks it again, so the next owner gets it once more, as a further delivery
+		// and behind messages of higher sequences. Detached, the pull has no interest left and the
+		// frames reach the session's next owner, where it has one, in the order they are naked.
 		// TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
 		// holds that order. The detach's error is not read here: Release calls Detach again,
 		// which answers the same result, and joins it into the error it returns.
@@ -1225,20 +1309,42 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		return relayRetry
 	}
 	streamID, gap := start.StreamID, start.Gap
+	// The pull's waits end with the term's context as well as the run's, so a term that ends wakes
+	// the run at once; the pull itself wakes at the loss deadline (bus.PullBound).
+	pullCtx, cancelPull := context.WithCancel(ctx)
+	defer cancelPull()
+	if term, _ := m.currentTerm(); term != nil {
+		unwatch := context.AfterFunc(term.ctx, cancelPull)
+		defer unwatch()
+	}
 	for {
-		next := ctx
+		next := pullCtx
 		cancelNext := context.CancelFunc(func() {})
 		if deadline, waiting := m.receiptDeadline(run); waiting {
 			if !time.Now().Before(deadline) {
 				return relayPaused
 			}
-			next, cancelNext = context.WithDeadline(ctx, deadline)
+			next, cancelNext = context.WithDeadline(pullCtx, deadline)
 		}
 		msg, err := pull.Next(next)
 		cancelNext()
 		if err != nil {
 			if ctx.Err() != nil {
 				return relayEnded
+			}
+			if errors.Is(err, bus.ErrSessionPullBound) || pullCtx.Err() != nil {
+				// The term is over, or another pod may hold the lease: the inbox is unsubscribed at
+				// once, so the server hands the pull nothing more, and nothing more is forwarded.
+				// The run waits for the term's end to cancel it, so its frames settle.
+				_ = pull.Detach()
+				for m.pullBound() <= 0 {
+					if waitUnlessDone(ctx, relayTermPoll) != nil {
+						return relayEnded
+					}
+				}
+				m.logger.Info("session relay starts again at the ack floor with a new pull: the term its pull was held to ended, and this task serves a term again",
+					slog.String("session_id", sessionID))
+				return relayReconnected
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				continue

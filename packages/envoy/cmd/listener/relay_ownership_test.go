@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -123,10 +126,13 @@ func TestAnUnboundProbeInsideALiveTermLeavesTheHolderRelaying(t *testing.T) {
 }
 
 // A relay acts on a session's consumer only while this pod's receive term is current and no other
-// pod can hold the lease yet. The rows below hold the two windows in which the term had ended and
-// this pod still relayed: a term that ended before its receiving began, and a lease that ended
-// the term before the receive loop heard it. Each lease is on a fake clock, as the lease's own
-// rows are, and is stepped by hand.
+// pod can hold the lease yet. The rows below hold the windows in which a pod whose term had ended
+// still acted on a consumer: a term that ended before its receiving began (durableReceiver.begin),
+// a lease that ended the term before the receive loop heard it, which each restart checks for and
+// is cut off at (sessionRelays.termContext), and a pull whose request still waited at the consumer
+// after the term ended, which the term's end unsubscribes, or whose message arrived after it
+// (sessionRelays.pullBound). Each lease is on a fake clock, as the lease's own rows are, and is
+// stepped by hand.
 
 // stepLeaseDown has l step down as a holder does whose renewal finds another pod's record: pod-d
 // writes the record over l's, and l's next round reads it (lease.stepDown). It reports false when
@@ -230,7 +236,8 @@ func TestARelayRestartAfterTheLeaseSteppedDownDoesNotRestartTheConsumer(t *testi
 
 // A restart that starts just before the lease's loss deadline is cut off at it: the restart sends
 // RestartAtFloor on a context that ends at that deadline (sessionRelays.termContext), the moment
-// another pod may take the lease, so it cannot act on the consumer after that. The
+// another pod may take the lease, so it sends the consumer no call after that and starts no pull.
+// A call it had already sent can still land, which termContext's doc bounds. The
 // session-consumer connection goes through a proxy that the restart's read of the session's row
 // freezes, so the call waits with no answer until its context ends.
 func TestARelayRestartStartedJustBeforeTheLeasesLossDeadlineIsCutOffAtIt(t *testing.T) {
@@ -302,4 +309,194 @@ func TestARelayRestartStartedJustBeforeTheLeasesLossDeadlineIsCutOffAtIt(t *test
 		<-done
 		t.Fatalf("a restart started %s before the lease's loss deadline was still running %s after it: its context did not end there, so it acts on the consumer once another pod may hold the lease", left, 2*slack)
 	}
+}
+
+// A restart whose term ends after its RestartAtFloor landed, while it settles the consumer's
+// filter, starts no pull: a pull starts only while the term is current (sessionRelays.pullBound),
+// so the consumer the restart left is the next holder's to pull. The settle makes a second pass
+// because a newer interest row lands under the restart, and the term's context ends inside that
+// pass.
+func TestARelayRestartWhoseTermEndsAfterItsRestartAtFloorStartsNoPull(t *testing.T) {
+	rig, run := newRestartableRun(t, "ses_term_ends_in_settle_")
+	termCtx, endTerm := context.WithCancel(context.Background())
+	defer endTerm()
+	rig.relays.term = &relayTerm{ctx: termCtx}
+	reads := 0
+	rig.deps.consumers.afterStoredRowRead = func() {
+		reads++
+		switch reads {
+		case 1:
+			// The restart has read the row: a newer one lands under it, so its settle corrects
+			// the filter the RestartAtFloor writes.
+			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: run.sessionID, MachineID: "test-machine"}, []string{"notifications.dispatch.issue.SETTLEEND.>"}); err != nil {
+				t.Errorf("store a newer interest row for %s: %v", run.sessionID, err)
+			}
+		case 2:
+			// The settle's corrective pass has read that row: the term ends.
+			endTerm()
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, pull, outcome := rig.relays.restart(ctx, run)
+	rig.deps.consumers.afterStoredRowRead = nil
+	if reads < 2 {
+		t.Fatalf("the restart read the session's row %d times, want its own read and its settle's corrective pass", reads)
+	}
+	if pull != nil {
+		pull.Stop()
+		t.Fatal("a restart whose term ended while it settled the consumer's filter started a pull of the consumer: this pod pulls it beside the pod that holds the lease next")
+	}
+	if run.restartedAt.Load() == 0 {
+		t.Fatal("the restart recorded no restart, want the RestartAtFloor that landed before the term ended")
+	}
+	if outcome != relayRetry {
+		t.Fatalf("the restart's outcome is %d, want relayRetry (%d)", outcome, relayRetry)
+	}
+}
+
+// consumerCounts reads sessionID's consumer through rig's own view of the session consumers: the
+// pull requests waiting on it, and the messages it delivered that await an ack.
+func consumerCounts(t *testing.T, rig *relayRig, sessionID string) (waiting, ackPending int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := rig.consumers.Info(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("read the consumer of %s: %v", sessionID, err)
+	}
+	return info.NumWaiting, info.NumAckPending
+}
+
+// heldLongLease is pod-a's lease on clock, taken, with a holder's validity of 30 s, as long as a
+// pull request waits at the server, so that a row about a pull's term reads the term alone. It
+// returns the lease, its bucket, and the term it holds.
+func heldLongLease(t *testing.T, clock *fakeLeaseClock) (*lease, bus.KeyValue, uint64) {
+	t.Helper()
+	kv := leaseBucket(t)
+	cfg := productionLeaseConfig()
+	cfg.ttl = 30*time.Second + cfg.margin
+	held := testLease(kv, "pod-a", cfg, clock.now)
+	held.step()
+	status := held.Status()
+	if !status.Holding {
+		t.Fatalf("pod-a did not take the lease: %+v", status)
+	}
+	return held, kv, status.Term
+}
+
+// A relay whose term ends unsubscribes its pull's inbox at once, so the server drops the pull
+// request still waiting at the consumer and the next holder is its only puller (relayNATS): a
+// message stored after that never reaches the old pod's pull, and the session takes it once, from
+// the next holder, on its first delivery. The next holder restarts the consumer with nothing
+// awaiting an ack, and such a restart updates the consumer in place and ends no waiting request
+// of the old pod's: only the unsubscribe does. The old pod's term ends the way the lease ends it -
+// another pod takes the record, the lease steps down and the receive loop's watcher ends the
+// term's context - before the term's end reaches the relays (durableReceiver.end), so nothing but
+// the term's end makes the run let go. Its pull request would otherwise wait out its 30 s.
+//
+// The bound on the delivery is 5 s. With the old pod's request gone, the next holder's is the one
+// request waiting, so the server hands it the message as soon as it is stored, and the frame and
+// its reply take milliseconds. A message handed to the old pod's request instead comes back only
+// after the consumer's 60 s ack wait, since nothing restarts the consumer after the next holder's
+// own restart.
+func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage(t *testing.T) {
+	old := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	next := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	sessionID := "ses_pull_unsubscribed_" + id.New()
+	standIn := startSessionStandIn(t, old.url, sessionID, answerDone)
+	old.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+
+	clock := newFakeLeaseClock()
+	held, kv, term := heldLongLease(t, clock)
+	termCtx, endTerm := context.WithCancel(context.Background())
+	defer endTerm()
+	old.relays.setOwned(&relayTerm{ctx: termCtx, untilLoss: func() time.Duration { return held.UntilLoss(term) }})
+	waitFor(t, 10*time.Second, "the old pod's pull request to wait at the session's consumer", func() bool {
+		waiting, _ := consumerCounts(t, old, sessionID)
+		return waiting == 1
+	})
+
+	if !stepLeaseDown(t, kv, held) {
+		t.Fatal("pod-a's lease did not step down for the record another pod wrote")
+	}
+	endTerm()
+	const gone = 2 * time.Second
+	for ended := time.Now(); ; time.Sleep(10 * time.Millisecond) {
+		if waiting, _ := consumerCounts(t, old, sessionID); waiting == 0 {
+			break
+		}
+		if time.Since(ended) > gone {
+			t.Fatalf("the old pod's pull request still waits at the session's consumer %s after its term ended: the server can hand it a message that then comes back only after the consumer's 60 s ack wait", gone)
+		}
+	}
+
+	next.relays.setOwned(endlessTerm())
+	waitFor(t, 10*time.Second, "the next holder's pull request to wait at the session's consumer", func() bool {
+		waiting, _ := consumerCounts(t, next, sessionID)
+		return waiting == 1
+	})
+	item, seq := old.storeEvent(t, contracts.AgentSubject(sessionID))
+	frame := standIn.collect(t, 1, 5*time.Second)[0]
+	if frame.seq != seq || frame.item.EventID != item.EventID {
+		t.Fatalf("the session took seq %d (event %s), want seq %d (event %s)", frame.seq, frame.item.EventID, seq, item.EventID)
+	}
+	if got, want := frame.listener(), strings.TrimSuffix(next.relays.replyPrefix, "."); got != want {
+		t.Fatalf("the message was relayed by %s, want the next holder %s", got, want)
+	}
+	if delivered := frame.msg.Header.Get(relayHeaderDelivered); delivered != "1" {
+		t.Fatalf("the next holder relayed delivery %s of the message, want its first: an earlier delivery went to the old pod's pull", delivered)
+	}
+	standIn.none(t, time.Second)
+}
+
+// A message that reaches a relay's pull after the relay's term ended is neither forwarded nor
+// answered: the pull drops it where it arrives (bus.PullBound), and the session takes it once, from
+// the pod that holds the lease next, whose restart of the consumer at its ack floor hands the
+// message to it again. The old pod's term ends by its lease's loss deadline passing on the fake
+// clock, with the term's context still live: the pull's wait, which runs on the real clock and was
+// timed to the 30 s then left, does not wake, so the run neither unsubscribes its pull nor is
+// cancelled. That holds open the gap between a term's end and the unsubscribe that follows it
+// (relayNATS), in which the old pod's pull request still waits at the consumer, so the server
+// delivers the message to the old pod.
+func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testing.T) {
+	old := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	sessionID := "ses_after_term_end_" + id.New()
+	standIn := startSessionStandIn(t, old.url, sessionID, answerDone)
+	old.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+
+	clock := newFakeLeaseClock()
+	held, _, term := heldLongLease(t, clock)
+	old.relays.setOwned(&relayTerm{ctx: context.Background(), untilLoss: func() time.Duration { return held.UntilLoss(term) }})
+	waitFor(t, 10*time.Second, "the old pod's pull request to wait at the session's consumer", func() bool {
+		waiting, _ := consumerCounts(t, old, sessionID)
+		return waiting == 1
+	})
+
+	clock.advance(30 * time.Second)
+	if left := held.UntilLoss(term); left != 0 {
+		t.Fatalf("pod-a's lease has %s left before its loss deadline, want none", left)
+	}
+	item, seq := old.storeEvent(t, contracts.AgentSubject(sessionID))
+	select {
+	case frame := <-standIn.frames:
+		t.Fatalf("the old pod forwarded seq %d (event %s), which reached its pull after its term ended: the session takes it from this pod and again from the next holder, which the server delivers it to unacked", frame.seq, frame.item.EventID)
+	case <-time.After(time.Second):
+	}
+	if _, ackPending := consumerCounts(t, old, sessionID); ackPending != 1 {
+		t.Fatalf("%d of the consumer's messages await an ack, want the one the old pod's pull was delivered after its term ended and left unanswered", ackPending)
+	}
+
+	// The term's end reaches the old pod's relays, and the next holder's relays take a term.
+	old.relays.setOwned(nil)
+	next := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	next.relays.setOwned(endlessTerm())
+	frame := standIn.collect(t, 1, 15*time.Second)[0]
+	if frame.seq != seq || frame.item.EventID != item.EventID {
+		t.Fatalf("the session took seq %d (event %s), want seq %d (event %s)", frame.seq, frame.item.EventID, seq, item.EventID)
+	}
+	if got, want := frame.listener(), strings.TrimSuffix(next.relays.replyPrefix, "."); got != want {
+		t.Fatalf("the message was relayed by %s, want the next holder %s", got, want)
+	}
+	standIn.none(t, time.Second)
 }
