@@ -122,6 +122,31 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 func isStart(w record.StepRecord) bool { return w.StartedAt != nil && w.EndedAt == nil }
 func isEnd(w record.StepRecord) bool   { return w.EndedAt != nil && w.Result != nil }
 
+// writesAt is the writes of one place among writes, those of kind at step, in their order.
+func writesAt(writes []record.StepRecord, kind string, step int) []record.StepRecord {
+	var at []record.StepRecord
+	for _, w := range writes {
+		if w.Kind == kind && w.Step == step {
+			at = append(at, w)
+		}
+	}
+	return at
+}
+
+// runOf is the latest start and the latest end among writes of kind at step, the zero record for
+// none.
+func runOf(writes []record.StepRecord, kind string, step int) (start, end record.StepRecord) {
+	for _, w := range writesAt(writes, kind, step) {
+		if isStart(w) {
+			start = w
+		}
+		if isEnd(w) {
+			end = w
+		}
+	}
+	return start, end
+}
+
 // resultOf is the result an end write carries, "" for a start.
 func resultOf(w record.StepRecord) string {
 	if w.Result == nil {
@@ -153,14 +178,7 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 		between(pool)
 		// The restart: a new engine on a new store over the same database.
 		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
-		for _, w := range stepWrites(t, pool, "LEGION-208") {
-			if w.Kind == "step" && w.Step == 3 && isStart(w) {
-				start = w
-			}
-			if w.Kind == "step" && w.Step == 3 && isEnd(w) {
-				end = w
-			}
-		}
+		start, end = runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 		return start, end, pool
 	}
 	start, end, pool := run(t, func(*pgxpool.Pool) {})
@@ -202,15 +220,7 @@ func TestAnEndWritesTheMomentItsStartWrote(t *testing.T) {
 	ending.cfg.Clock = func() time.Time { return ended }
 	move(t, pool, starting, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 	move(t, pool, ending, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
-	var start, end record.StepRecord
-	for _, w := range stepWrites(t, pool, "LEGION-208") {
-		if w.Kind == "step" && w.Step == 3 && isStart(w) {
-			start = w
-		}
-		if w.Kind == "step" && w.Step == 3 && isEnd(w) {
-			end = w
-		}
-	}
+	start, end := runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 	if want := began.Truncate(time.Microsecond); start.StartedAt == nil || !start.StartedAt.Equal(want) {
 		t.Fatalf("the start of testing began at %v, want %s, the moment its engine read to the microsecond", start.StartedAt, want)
 	}
@@ -316,9 +326,8 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 		onStored(t, pool, engine, key, endTwice)
 	}
 	testingWrites := func(key string) (starts, ends []record.StepRecord) {
-		for _, w := range stepWrites(t, pool, key) {
+		for _, w := range writesAt(stepWrites(t, pool, key), "step", 3) {
 			switch {
-			case w.Step != 3:
 			case isStart(w):
 				starts = append(starts, w)
 			case isEnd(w):
@@ -455,10 +464,7 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				run := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 4}, starts)
 				var reviewWrites, ends, late []record.StepRecord
 				reports := map[string]int{}
-				for _, w := range stepWrites(t, pool, "LEGION-208") {
-					if w.Kind != "step" || w.Step != 4 {
-						continue
-					}
+				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 4) {
 					if w.ID != run || w.Task != "default" || w.Role != "reviewer" || w.Type != "review" || w.Agent != reviewer || w.Generation != 1 {
 						t.Fatalf("a write of the review = %+v, want the identity of its run: id %s, role reviewer, type review, agent %s, generation 1",
 							w, run, reviewer)
@@ -491,11 +497,11 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				}
 				apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
 				var ended bool
-				for _, w := range stepWrites(t, pool, "LEGION-208") {
-					if w.Kind == "step" && w.Step == 5 && w.Report != nil {
+				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 5) {
+					if w.Report != nil {
 						t.Fatalf("a write of the acceptance names report %s, want none: the reviewer's handoff is the review's", *w.Report)
 					}
-					ended = ended || w.Kind == "step" && w.Step == 5 && isEnd(w)
+					ended = ended || isEnd(w)
 				}
 				if !ended {
 					t.Fatal("the sign-off wrote no end of the acceptance")
@@ -575,13 +581,7 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 		if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 			t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
 		}
-		var accepting []record.StepRecord
-		for _, w := range stepWrites(t, pool, "LEGION-209") {
-			if w.Kind == "step" && w.Step == 5 {
-				accepting = append(accepting, w)
-			}
-		}
-		return accepting
+		return writesAt(stepWrites(t, pool, "LEGION-209"), "step", 5)
 	}
 	treeArchitects := func(t *testing.T, w record.StepRecord) {
 		t.Helper()
@@ -631,12 +631,8 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	stepRoot(t, pool, phase.Reviewing)
 	engine := stepEngine(nil)
 	mergingChild(t, pool, engine)
-	var merge string
-	for _, w := range stepWrites(t, pool, "LEGION-209") {
-		if w.Kind == "merge" && isStart(w) {
-			merge = w.ID
-		}
-	}
+	start, _ := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0)
+	merge := start.ID
 	if merge == "" {
 		t.Fatalf("LEGION-209's merge wrote no start: %+v", stepWrites(t, pool, "LEGION-209"))
 	}
