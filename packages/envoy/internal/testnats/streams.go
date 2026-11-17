@@ -18,7 +18,8 @@ import (
 const jetStreamWait = 10 * time.Second
 
 // JetStream is a JetStream context, its requests bounded by jetStreamWait, on whichever running
-// member of the cluster answers (Connect), closed when the test ends.
+// member of the cluster answers (Connect), closed when the test ends. A test creates a
+// stream of more than one copy with CreateStream rather than through it.
 func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -28,6 +29,22 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	return js
+}
+
+// CreateStream creates the stream config names on a connection of its own to the cluster
+// (Connect), within createWait, and fails the test with the server's answer when the create is
+// refused. It sends the create once. nats-server answers the successful create of a stream of
+// more than one copy from that stream's first leader, once its members have elected one
+// (processStreamLeaderChange), so on a loaded machine the answer can come after jetStreamWait,
+// which would read a stream the server goes on to make as a failed create. A refusal, such as a
+// placement the cluster cannot make, is answered before any election.
+func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
+	t.Helper()
+	conn := Connect(t, c.URL())
+	t.Cleanup(conn.Close)
+	if _, err := createJetStream(t, conn).AddStream(&config); err != nil {
+		t.Fatalf("create stream %s: %v", config.Name, err)
+	}
 }
 
 // Copies is how many copies of a stream or a consumer a cluster holds, its leader's and its
