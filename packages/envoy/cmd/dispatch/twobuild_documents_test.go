@@ -597,11 +597,12 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	for {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		// The carried approval names the person whose review it carries (model.Actor.SameAs): a
-		// build carrying #4281 marks that person proven and an older build does not, so the whole
-		// actor is not what two builds agree on.
+		// The carried approval is the person's: its actor's kind and login. Whether the actor also
+		// reads proven depends on which of the two builds wrote the carry and which one lists it (a
+		// build that predates the field neither stores nor answers it), so that flag is no part of
+		// what crosses the builds.
 		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor.SameAs(model.Actor{Kind: "user", ID: dispatchTestLogin}) {
+			reviews[0].Actor.Kind == "user" && reviews[0].Actor.ID == dispatchTestLogin {
 			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
 			return
 		}
