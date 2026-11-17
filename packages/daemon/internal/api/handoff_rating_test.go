@@ -461,7 +461,7 @@ func TestHandoffCompleteRequestRatedGolden(t *testing.T) {
 	})
 }
 
-// The bounds of a rating of the plan, as planRatingRefusal holds a completion to them: the scale
+// The bounds of a rating of the plan, as planRatingOf holds a completion to them: the scale
 // (planRatingLeast, planRatingMost) and the most characters of the reason (planReasonMax). Go
 // writes them (`-update`), and `packages/contracts/src/legion-api.test.ts` holds the contract's own
 // bounds, which the plugin's tool reads, equal to the file.
