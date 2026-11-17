@@ -345,7 +345,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// this completion is the turn's own work at all, so a completion of a run or an entry that is
 	// over is told that rather than asked for a rating; and before the handoff record and the pull
 	// request are read, so a rating where none belongs costs no read of Dispatch or GitHub.
-	rating, refusal := planRatingOf(req, endsRetro, c.PluginContract, issue.Key, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key))
+	rating, refusal := planRatingOf(req, endsRetro, c.PluginContract, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key))
 	if refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -433,10 +433,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 
 // planRatingOf holds a completion's rating of the plan to PlanRatingContract's rule, and returns
 // the rating it held there (nil for a completion that carries none) or the refusal. endsRetro is
-// whether the completion is the one that ends the retro of issue (phase.Of is retro),
-// pluginContract the contract the claim's plugin declared at its registration
-// (supervise.Claim.PluginContract), and what names the completion in a refusal. The rating is
-// built only where each rule has held, so no caller reads either member of the request itself.
+// whether the completion is the one that ends the retro (phase.Of is retro), pluginContract the
+// contract the claim's plugin declared at its registration (supervise.Claim.PluginContract), and
+// what names the completion and its issue in a refusal. The rating is built only where each rule
+// has held, so no caller reads either member of the request itself.
 // Every refusal is a 400 its caller writes before anything is recorded, so the same completion
 // sent again, corrected, is taken:
 //
@@ -448,11 +448,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 //     it, and a claim that recorded no contract (0), never sends them and completes unrated.
 //   - PLAN_RATING_INPUT: a rating outside 1 to 5, one of the two without the other, or a reason
 //     that is blank or holds more than planReasonMax characters, counted as Unicode code points.
-func planRatingOf(req HandoffCompleteRequest, endsRetro bool, pluginContract int, issue, what string) (*intake.PlanRating, *intake.Refusal) {
+func planRatingOf(req HandoffCompleteRequest, endsRetro bool, pluginContract int, what string) (*intake.PlanRating, *intake.Refusal) {
 	if req.PlanRating == nil && req.PlanReason == nil {
 		if endsRetro && pluginContract >= PlanRatingContract {
 			return nil, &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
-				"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue, planRatingLeast, planRatingMost)}
+				"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, planRatingLeast, planRatingMost)}
 		}
 		return nil, nil
 	}
@@ -985,7 +985,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
 		return
 	}
-	if _, refusal := planRatingOf(req, false, 0, grant.Issue, fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)); refusal != nil {
+	if _, refusal := planRatingOf(req, false, 0, fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)); refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}

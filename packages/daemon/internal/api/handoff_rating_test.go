@@ -105,7 +105,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 			rating := request
 			rating.GrantID, rating.PlanRating, rating.PlanReason = worker.grant(t), new(3), new("The plan fit the work.")
 			message := refused(t, h.complete(rating), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
-			for _, want := range []string{"only the completion that ends the retro rates the plan", "nothing was recorded"} {
+			for _, want := range []string{"of LEGION-208", "only the completion that ends the retro rates the plan", "nothing was recorded"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal = %q, want it to say %q", message, want)
 				}
@@ -333,7 +333,7 @@ func TestANewPluginMustRate(t *testing.T) {
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"}),
 		http.StatusBadRequest, "PLAN_RATING_REQUIRED")
-	for _, want := range []string{"ends the retro of LEGION-208", "planRating", "planReason", "1 (the plan cost the work) to 5 (the plan fit the work)", "nothing was recorded"} {
+	for _, want := range []string{"this completion of phase retro of LEGION-208 carries no rating of the plan", "planRating", "planReason", "1 (the plan cost the work) to 5 (the plan fit the work)", "nothing was recorded"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
 		}
