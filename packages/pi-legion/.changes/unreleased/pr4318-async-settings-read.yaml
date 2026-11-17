@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A `!` token command in envoy.json no longer holds a Legion pane's process while the notice
+  publisher or the document lookup reads Envoy or Dispatch; two notices due together build one
+  publisher, and a build that failed is tried again at the next notice.
+time: 2026-11-17T12:31:04Z
+custom:
+  Issue: pr4318

@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  A `token` or `natsSeed` value in envoy.json that starts with `!` runs its command asynchronously:
+  the read waits for it while the process goes on serving its timers, deliveries and NATS pings,
+  where it used to hold the whole process for up to the command's 10 s. `fileValue`, `fileBearer`,
+  `dispatchSettings`, `envoySettings`, `sessionSettings`, `sessionDispatchSettings` and
+  `sessionEnvoySettings` return Promises of what they returned before. A read that starts while
+  the same command runs waits for that run, so a command still runs once per process; a read with
+  `commands: "kept"` still never runs one. `sessionSettings` resolves Dispatch and Envoy at once. A
+  process that exits while a command runs kills the command's group and removes its output.
+  `@legion/envoy-client/process-group` holds the group kill (`killGroup`) and the kill on exit
+  (`onExit`) that every detached command of the plugins uses.
+time: 2026-11-17T12:31:04Z
+custom:
+  Issue: pr4318

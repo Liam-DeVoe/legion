@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A `!` token command in envoy.json no longer holds the Oh My Pi process while it runs: the
+  extension's load awaits the start read, and every Dispatch reply, open-ask read, accept of a
+  person's turn, whole-body and picture read, AskGate read and decision record waits for its read
+  without stopping the session's timers, deliveries and NATS pings for up to the command's 10 s.
+time: 2026-11-17T12:31:04Z
+custom:
+  Issue: pr4318
