@@ -2555,9 +2555,9 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 // The outbox's runnable predicates are one SQL text, so the lanes' list of due rows (DueRows), their
 // claim (ClaimRow) and the state report's held rows (HeldRows) can never disagree about which row
 // may run. Each refers to the statement's first five parameters, which outboxDueArgs supplies — $1
-// is now, $2 to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
-// embedding one numbers its own parameters from $6. The outer table is `outbox`, unaliased, which
-// the rules' subqueries name.
+// is now, $2 and $3 the kinds the ordering rules name, $4 the kinds of the branch rows a start waits
+// for, $5 the lifecycle lane's kinds — so a statement embedding one numbers its own parameters from
+// $6. The outer table is `outbox`, unaliased, which the rules' subqueries name.
 
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
@@ -2567,9 +2567,10 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // while an older one for the same issue is unfinished, because each carries the status its
 // predecessor leaves, and a newer write run first would find the board short of it and finish
 // unwritten as though a human had moved it. A start of an issue's role waits while an older
-// issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
-// on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
-// the row retries. And a start marked as waiting for the issue's admission slot
+// issue_branch or task_branch row of the issue is unfinished ($4, branchKindNames), so no role
+// starts before its issue's branch, and each branch of a task of its plan queued before the start,
+// exists on GitHub (IssueBranch, TaskBranch), and a create GitHub keeps refusing holds the issue's
+// roles back while the row retries. And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
@@ -2583,7 +2584,7 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
 			where older.kind = $2 and older.issue = outbox.issue and older.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox branch
-			where branch.kind = $4 and branch.issue = outbox.issue and branch.id < outbox.id))
+			where branch.kind = any($4::text[]) and branch.issue = outbox.issue and branch.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
 			and not exists (select 1 from slots where slots.issue = outbox.issue))`
 
@@ -2608,10 +2609,14 @@ const outboxClaimable = outboxUnleasedDue + ` and ` + outboxInOrder + ` and ` + 
 // statement embedding the predicates takes: the lane rule is the lifecycle lane's alone.
 var lifecycleKindNames = kindNames(laneKinds[LaneLifecycle])
 
+// branchKindNames is the kinds of the rows that make a branch on GitHub, the $4 every statement
+// embedding the predicates takes: a start of an issue's role waits for each older one of them.
+var branchKindNames = kindNames([]OutboxKind{OutboxKindIssueBranch, OutboxKindTaskBranch})
+
 // outboxDueArgs is the parameters of a statement that embeds the predicates: now, the ordering
 // rules' kinds and the lifecycle lane's kinds first, then the statement's own.
 func outboxDueArgs(now time.Time, own ...any) []any {
-	return append([]any{now, string(OutboxKindDispatchStatus), string(OutboxKindSupervise), string(OutboxKindIssueBranch), lifecycleKindNames}, own...)
+	return append([]any{now, string(OutboxKindDispatchStatus), string(OutboxKindSupervise), branchKindNames, lifecycleKindNames}, own...)
 }
 
 // kindNames is kinds as the text the outbox stores them in, an empty list for none.
@@ -2781,13 +2786,13 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 // negated), by next_at then id, each with that row: the oldest of its issue's running lifecycle
 // rows. Issue "" is every issue of project. It is the lanes' own predicates read back, so what the
 // state shows held is exactly what the lanes hold back. A start fenced behind an older issue_branch
-// row of its issue is held while the branch row runs — issue_branch is a lifecycle kind, so the
-// start waits on it — and listed by nothing while the branch row waits unleased for its retry, since
-// it then waits on no running row, as it did before the lanes. Board rows are never held: their lane
-// runs them as they come due. A row the lane rule holds fails the claim, so the claim's negation
-// adds no row to the lane rule's; it is written out because Postgres types a parameter by its uses
-// and refuses a statement with one it never uses, and the ordering rules' kinds are among the
-// parameters every fragment shares.
+// or task_branch row of its issue is held while the branch row runs — both are lifecycle kinds, so
+// the start waits on it — and listed by nothing while the branch row waits unleased for its retry,
+// since it then waits on no running row, as it did before the lanes. Board rows are never held:
+// their lane runs them as they come due. A row the lane rule holds fails the claim, so the claim's
+// negation adds no row to the lane rule's; it is written out because Postgres types a parameter by
+// its uses and refuses a statement with one it never uses, and the ordering rules' kinds are among
+// the parameters every fragment shares.
 func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+`, (select min(running.id) from outbox running
 			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on

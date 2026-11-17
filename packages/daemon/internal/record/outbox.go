@@ -32,6 +32,7 @@ const (
 	OutboxKindIssueSuspend     OutboxKind = "issue_suspend"
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
+	OutboxKindTaskBranch       OutboxKind = "task_branch"
 	OutboxKindCheckWake        OutboxKind = "check_wake"
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
@@ -107,7 +108,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -1149,6 +1150,21 @@ type IssueBranch struct {
 
 func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 
+// TaskBranch creates the GitHub branch of a task of the plan of the row's issue (PlanTask.BranchOf)
+// at the task's start, where it starts from the joined work of the tasks it needs: the task's
+// first step starts on it. The branch of the task that holds the issue's own branch is made as
+// IssueBranch makes it. A start of the issue waits while an older row of this kind is unfinished,
+// as it waits for IssueBranch (outboxInOrder).
+type TaskBranch struct {
+	// Generation is the issue generation of the task's plan. A row of an earlier generation, or of
+	// a tree that lingers, finishes without acting.
+	Generation uint64 `json:"generation"`
+	// Task is the id of the task, as the plan's rows name it.
+	Task string `json:"task"`
+}
+
+func (TaskBranch) OutboxKind() OutboxKind { return OutboxKindTaskBranch }
+
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
 // (ProductionCheck.WakeAt), or the retry of a look nobody reported. There is at most one such row
@@ -1509,6 +1525,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindTaskBranch:
+		value := TaskBranch{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1634,6 +1656,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			}
 		}
 	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case TaskBranch:
+		if value.Task == "" {
+			return fmt.Errorf("a task's branch row requires the task it makes the branch of")
+		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
