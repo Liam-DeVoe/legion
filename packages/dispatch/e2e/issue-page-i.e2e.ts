@@ -19,7 +19,7 @@ import {
   PRESET_ORDER,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId, checkState } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId, checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import { DRAWN_LEVELS } from "../web/src/features/issue-page/tree-fold";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { pageFocusedRow } from "../web/src/theme/classes";
@@ -443,7 +443,7 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
   for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
     const id = blockNodeId(slug(check.artifact_id), check.block_id);
     nodes.add(id);
-    if (checkState(check) !== "passed") frontier.add(id);
+    if (checkStanding(check).state !== "passed") frontier.add(id);
     for (const result of check.results ?? []) nodes.add(result.id);
   }
   for (const task of seeded.planTasks) nodes.add(blockNodeId(slug(seeded.planArtifactId), task));

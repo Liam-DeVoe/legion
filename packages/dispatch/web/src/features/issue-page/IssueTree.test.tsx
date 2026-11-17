@@ -921,11 +921,28 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
   setViewport(1440);
   const user = userEvent.setup();
   const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
-  const shared = { id: "spec#b-c1", text: "One check, under two requirements.", type: "check" };
+  // A check of the Verification document draws a state, and a requirement of the spec is a
+  // statement (`isCheck`, `isStatement`): with neither, the outline folds the branch away.
+  const shared = {
+    id: "spec#b-c1",
+    state: "no-result",
+    text: "One check, under two requirements.",
+    type: "check",
+  };
   const root = node({
     children: [
-      node({ children: [node(shared as never)], id: "spec#b-r1", type: "requirement" }),
-      node({ children: [node(shared as never)], id: "spec#b-r2", type: "requirement" }),
+      node({
+        children: [node(shared as never)],
+        id: "spec#b-r1",
+        statement: true,
+        type: "requirement",
+      }),
+      node({
+        children: [node(shared as never)],
+        id: "spec#b-r2",
+        statement: true,
+        type: "requirement",
+      }),
     ],
     id: KEY,
     type: "issue",
@@ -1510,8 +1527,9 @@ test("a row keeps its key, and its pin, through a zoom in and back out", async (
   const root = node({
     children: [
       node({
-        children: [node({ id: "verification#b-c1", type: "check" })],
+        children: [node({ id: "verification#b-c1", state: "no-result", type: "check" })],
         id: "spec#b-r1",
+        statement: true,
         type: "requirement",
       }),
     ],

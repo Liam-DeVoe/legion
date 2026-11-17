@@ -5,7 +5,7 @@
 // draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
 
 import type { Actor } from "../web/src/api/types";
-import { checkState } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -101,7 +101,7 @@ function wantedState(state: SeededCheckState, repositoryInstalled: boolean): str
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that
  *  came out in four states fails here and not inside the test that reads the fifth. The state is
- *  read with the page's own rule (`checkState` in `web/src/features/issue-page/tree-drafts.ts`), so
+ *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/tree-drafts.ts`), so
  *  the seed waits for what the page draws and never for a copy of that rule that has fallen
  *  behind it. With `only`, it waits for the checks seeded in that one state alone. */
 export async function awaitSeededCheckStates(
@@ -119,7 +119,9 @@ export async function awaitSeededCheckStates(
   const deadline = Date.now() + 20_000;
   for (;;) {
     const read = await getIssueResults(issueKey);
-    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, checkState(check)]));
+    const seen = new Map(
+      (read.checks ?? []).map((check) => [check.block_id, checkStanding(check).state])
+    );
     if ([...wanted].every(([block, state]) => seen.get(block) === state)) return;
     if (Date.now() > deadline) {
       throw new Error(
@@ -214,9 +216,7 @@ async function decisionBlockIds(artifactId: string, count: number): Promise<stri
  *  server keeps, so it stands with the App installed on nothing too. The result at a commit no
  *  branch holds is recorded after that read, since the server keeps an answer of "not there"
  *  as well: no read with the App installed compares it, and once the App is gone nothing can
- *  say where it stands. The pass whose check is then reworded comes last, so the newest result
- *  is at the pull request's head, the one commit the page reads every check at
- *  (`checkStanding`, `tree-drafts.ts`). */
+ *  say where it stands. */
 async function recordSeededResults(
   issueKey: string,
   checks: number,
@@ -245,16 +245,15 @@ async function recordSeededResults(
       });
     }
   };
-  const LATER: readonly SeededCheckState[] = ["unmarked", "older"];
-  const each = async (wanted: (state: SeededCheckState) => boolean): Promise<void> => {
-    for (let index = 1; index <= checks; index += 1) {
-      const state = checkStateOf(index);
-      if (state !== "no-result" && wanted(state)) await record(index, state);
-    }
-  };
-  await each((state) => !LATER.includes(state));
+  const unmarked: number[] = [];
+  for (let index = 1; index <= checks; index += 1) {
+    const state = checkStateOf(index);
+    if (state === "no-result") continue;
+    if (state === "unmarked") unmarked.push(index);
+    else await record(index, state);
+  }
   await awaitSeededCheckStates(issueKey, checks, true, "no-control");
-  for (const later of LATER) await each((state) => state === later);
+  for (const index of unmarked) await record(index, "unmarked");
 }
 
 export interface IssueShape {
