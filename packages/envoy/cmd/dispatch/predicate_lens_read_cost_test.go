@@ -53,8 +53,9 @@ const (
 	// predicateCostRequirements is how many requirements each shape's spec marks, each served by
 	// one check and one plan task, so the coverage read of every shape reads the node state of
 	// each requirement and of what serves it, which is the part of that read this child changed
-	// (api/coverage.go's requirementStates and servingBlockCounts). The coverage of a spec that
-	// marks none answers before either statement runs, so it would measure nothing this child did.
+	// (api/coverage.go's queueRequirementStates and queueServingBlockCounts). The coverage of a
+	// spec that marks none answers before either statement runs, so it would measure nothing this
+	// child did.
 	predicateCostRequirements = 20
 	// predicateCostChildren is how many child issues each shape's issue holds, so the issue tree,
 	// the list of an issue's children (GET /api/v1/issues?parent=), answers rows of every shape:
@@ -641,22 +642,6 @@ func requirePredicateCostAuthorNodes(t *testing.T, head *costArm) {
 	}
 }
 
-// predicateCostStoreCounts is the node and tuple store's own row counts on the arm's database, as
-// the corpus line prints them, or the words saying the arm holds no such store. Whether it does is
-// read off the database, never off which arm it is: the base build holds the store wherever
-// BASELINE_SHA names a commit holding INFRA-1149's graph_nodes and graph_tuples.
-func predicateCostStoreCounts(t *testing.T, arm *costArm) string {
-	t.Helper()
-	if held := arm.count(t, `
-		select count(*) from (values (to_regclass('graph_nodes')), (to_regclass('graph_tuples'))) as stored (relation)
-		where relation is not null`); held != 2 {
-		return ", and no node and tuple store, which " + arm.name + " has not got"
-	}
-	return fmt.Sprintf(", %d node(s) and %d tuple(s)",
-		arm.count(t, `select count(*) from graph_nodes`),
-		arm.count(t, `select count(*) from graph_tuples`))
-}
-
 // dropPredicateCostInboundIndexes is the check's negative control on this head's database: it
 // drops predicateCostInboundIndexes, and prints the plan of the lookup the tuples-into-a-node read
 // makes of the node of shape before the drop and after it, so the run shows the read losing the
@@ -814,8 +799,9 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD` (baseBuild),
 // serving a database of its own (startCostArms). Both builds are read in one loop, one reading on
 // each in each turn, the build that goes first alternating, after one warm-up reading on each that
-// is not counted (costInterleaved). The corpus is analysed after the seed (costArm.analyze), and
-// the block-index lease of each build is held while the readings are taken (costHoldBlockIndex).
+// is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
+// backfill (costArm.vacuumAnalyze), and the block-index lease of each build is held while the
+// readings are taken (costHoldBlockIndex).
 // It takes 200 readings of each read over each shape on each build and prints the nearest-rank
 // p50, p95 and p99. A read whose p50 at this head is more than 1.25 times its p50 at the base
 // build fails the test, and the failure prints the read, the shape and both builds' readings. The
@@ -857,11 +843,6 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 	listener := costEnvoy(t)
 	listener.Accept(true)
 	head, base := startCostArms(t, listener.URL)
-	// BASELINE_SHA may name a commit that already holds this child's bases, INFRA-1149's node and
-	// tuple store among them, which "the commit before this child" would misname.
-	started := base.name
-	base.name = "the base build"
-	t.Logf("startCostArms names the base build's arm %q; every line below calls it %q, and %q this head", started, base.name, head.name)
 	builds := []*costArm{head, base}
 	shapes := map[*costArm][]*predicateCostShape{}
 	for _, arm := range builds {
@@ -871,13 +852,13 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 	costRunBackfill(t, head)
 	for _, arm := range builds {
 		costBlockIndexDrained(t, arm, predicateCostIndexWait)
-		arm.analyze(t)
+		arm.vacuumAnalyze(t)
 		t.Logf("%s: the whole corpus holds %d document block(s), %d block reference(s) and %d comment(s)%s",
 			arm.name,
 			arm.count(t, `select count(*) from document_blocks`),
 			arm.count(t, `select count(*) from block_refs`),
 			arm.count(t, `select count(*) from comments`),
-			predicateCostStoreCounts(t, arm))
+			costStoreCounts(t, arm))
 		settlePredicateCost(t, arm, shapes[arm])
 	}
 	requirePredicateCostAuthorNodes(t, head)
@@ -922,6 +903,13 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 
 	t.Logf("the bound: a read whose p50 at %s is more than %.2f times its p50 at %s fails; the p95 and the p99 are printed and bind nothing",
 		head.name, predicateCostRatio, base.name)
+	// A smoke reads too few readings over too small a corpus to be a reading of the bound, so it
+	// prints a cell over the bound in the same words and fails nothing, and ends in the SKIP below:
+	// a test Go reports failed and then skipped is reported FAIL.
+	overBound, crossed := t.Errorf, false
+	if sizes.scale != 1 {
+		overBound = t.Logf
+	}
 	for _, read := range reads {
 		for index, shape := range shapes[head] {
 			here := held[cell(read.name, index, head)]
@@ -943,7 +931,8 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 				ratio, predicateCostRatio, costMilliseconds(here.percentile(0.95)), costMilliseconds(before.percentile(0.95)),
 				costMilliseconds(here.p99()), costMilliseconds(before.p99()))
 			if float64(here.p50()) > predicateCostRatio*float64(before.p50()) {
-				t.Errorf("%s over %q: p50 %.1f ms at %s is %.2f times the %.1f ms at %s, more than the %.2f bound. "+
+				crossed = true
+				overBound("%s over %q: p50 %.1f ms at %s is %.2f times the %.1f ms at %s, more than the %.2f bound. "+
 					"Every reading at %s, in milliseconds, in the order taken: %s. Every reading at %s: %s",
 					read.name, shape.name, costMilliseconds(here.p50()), head.name, ratio,
 					costMilliseconds(before.p50()), base.name, predicateCostRatio,
@@ -951,7 +940,7 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 			}
 		}
 	}
-	if control != "" && !t.Failed() {
+	if control != "" && !crossed {
 		t.Skipf("%s=%s: every read held the %.2f bound with %v dropped from %s's database, so the control did not bite; "+
 			"a run with it set is no reading of c-read-cost", predicateCostControlEnv, control, predicateCostRatio,
 			predicateCostInboundIndexes, head.name)

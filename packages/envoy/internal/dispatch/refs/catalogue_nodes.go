@@ -39,7 +39,7 @@ func loadLensKindNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		if err := rows.Scan(&node.ID, &madeBy, &madeAt, &node.State, &node.Visibility, &words); err != nil {
 			return fmt.Errorf("scan lens_kind node: %w", err)
 		}
-		node.Ref = "dispatch://" + graphstore.KindLensKind + "/" + node.ID
+		node.Ref = StoreRef(graphstore.KindLensKind, node.ID)
 		if err := setMadeAndChanged(&node, madeBy, madeAt, nil, nil, storedActors); err != nil {
 			return err
 		}
@@ -59,7 +59,7 @@ func loadLensKindNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 func loadConstraintNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select id, made_by, made_at, state, visibility, project_key,
-		       `+standingText[graphstore.KindConstraint]("held")+`,
+		       `+standingText[graphstore.KindConstraint]("held", "$4")+`,
 		       placed.to_id
 		from graph_nodes held
 		left join lateral (
@@ -87,7 +87,7 @@ func loadConstraintNodes(ctx context.Context, q Queryer, who model.Actor, _ stri
 		if err := rows.Scan(&node.ID, &madeBy, &madeAt, &node.State, &node.Visibility, &project, &text, &node.IssueKey); err != nil {
 			return fmt.Errorf("scan constraint node: %w", err)
 		}
-		node.Ref = "dispatch://" + graphstore.KindConstraint + "/" + node.ID
+		node.Ref = StoreRef(graphstore.KindConstraint, node.ID)
 		if project != nil {
 			node.Project = *project
 		}
