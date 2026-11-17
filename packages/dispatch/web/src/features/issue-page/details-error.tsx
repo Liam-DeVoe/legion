@@ -26,10 +26,14 @@ export interface DetailsErrorLineProps {
   readonly message: string;
   /** Omitted for a failure a retry cannot get past; no Retry is offered then. */
   readonly onRetry?: () => void;
+  /** Whether the write Retry sent again is still out: Retry takes no press (`aria-disabled`,
+   *  with the `refused:` look of `styles.css`), and the caller drops a press made meanwhile, as
+   *  for any control whose own write is out. */
+  readonly refused?: boolean;
   /** Takes the Retry, so the row can hand its focus on when the line goes (`useFocusHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
-  /** Whether the request Retry sent again is still out: Retry reads busy (`aria-busy`, and a
-   *  quieter look) and stays enabled, and the caller drops a press made meanwhile. */
+  /** Whether the read Retry sent again is still out: Retry reads busy (`aria-busy`, and a
+   *  quieter look) and still takes a press, which the caller joins to the read that is out. */
   readonly retrying?: boolean;
 }
 
@@ -39,15 +43,17 @@ export interface DetailsErrorLineProps {
  * An agent list that is refilling is said as the line every view says it in
  * (`AgentListRefilling`'s test id), as status rather than alert.
  *
- * Retry is never disabled, since Chromium moves the focus of a control that turns disabled to
- * the page's body, which would lose a reader who pressed it by keyboard: while the request it
- * sent is still out it reads busy (`retrying`), and a press then is the caller's to drop.
+ * Retry is never `disabled`, since Chromium moves the focus of a control that turns disabled to
+ * the page's body, which would lose a reader who pressed it by keyboard. While the request it
+ * sent again is still out, Retry reads busy if that request is a read (`retrying`) and takes no
+ * press if it is a write (`refused`), and keeps the focus either way.
  */
 export function DetailsErrorLine({
   error,
   failure,
   message,
   onRetry,
+  refused = false,
   retryRef,
   retrying = false,
 }: DetailsErrorLineProps): ReactNode {
@@ -65,7 +71,8 @@ export function DetailsErrorLine({
       {onRetry === undefined ? null : (
         <button
           aria-busy={retrying || undefined}
-          className={`${pageHeaderControl} aria-busy:opacity-50`}
+          aria-disabled={refused || undefined}
+          className={`${pageHeaderControl} aria-busy:opacity-50 refused:cursor-not-allowed refused:opacity-50`}
           onClick={onRetry}
           ref={retryRef}
           type="button"
@@ -131,12 +138,13 @@ export function useSaidFailure<Variables>(
 }
 
 /**
- * The ref of an element that may leave the page with the focus inside it - a line whose request
- * was answered, with its Retry - which hands that focus to the element `to` finds once the
- * element has left, rather than leave it on the page's body, where Chromium puts the focus of an
- * element that leaves. The focus moves as the commit that took the element away ends, so an
- * element that commit draws in its place can take it, and `to` is asked only then. A focus
- * anywhere else is the reader's, and stays where it is.
+ * The ref of an element that may leave the page with the focus inside it. As React takes the
+ * element off the page, the ref notes whether the focus is inside it; if it is, the hook's next
+ * layout effect, which runs in each commit that renders the component calling the hook, focuses
+ * what `to` returns, without scrolling. `to` is called only then, after that commit has changed
+ * the page, so it can return an element the commit drew. Where it returns none, or an element
+ * that takes no focus, the focus stays where the browser put it; a focus outside the element as
+ * it leaves is not moved.
  */
 export function useFocusHandOff(
   to: () => HTMLElement | null | undefined

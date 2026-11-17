@@ -20,7 +20,8 @@ export const USABLE_CONTROL_ATTRIBUTES = [
 /**
  * Whether `control` takes a press now: the one rule Add's entries and the key `l` read before
  * they list, offer or press a control another component draws, so what is offered is exactly
- * what a press opens. A control is usable while it is on the page; neither `disabled` nor busy
+ * what a press opens. Details reads it too, before it hands on a focus the priority's line held
+ * (`IssueMargin.tsx`). A control is usable while it is on the page; neither `disabled` nor busy
  * (`aria-disabled="true"`, as the page's controls are while they save: the `refused:` variant of
  * `styles.css` reads the same pair); under no element, itself included, that is `hidden`,
  * `inert` or `aria-hidden="true"`; and drawn (`checkVisibility()`, with `visibility: hidden`
@@ -49,9 +50,11 @@ export function usableControl(control: Element | null): boolean {
   if (details?.hasAttribute("hidden") === true) return true;
   // `checkVisibility()` needs Safari 17.4, Chrome 105 or Firefox 106, and Dispatch still runs on
   // browsers without it (`shell/roving.ts`): there the attributes above are the whole rule. With
-  // no options it does not read `visibility: hidden`, so the option asks for that too.
+  // no options it does not read `visibility: hidden`, so the options ask for that too, by both of
+  // its names: a browser that shipped `checkVisibility()` before `visibilityProperty` knows it
+  // only as `checkVisibilityCSS`.
   return (
     typeof control.checkVisibility !== "function" ||
-    control.checkVisibility({ visibilityProperty: true })
+    control.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true })
   );
 }

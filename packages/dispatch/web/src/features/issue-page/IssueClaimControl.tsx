@@ -16,11 +16,11 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
  *
  * No control here is disabled while its release is out, since Chromium moves the focus of a
  * control that turns disabled to the page's body, which would lose a reader who pressed it by
- * keyboard: Release is marked busy, and the failure's line stays, with its Retry marked busy too,
- * until the release it sent again is answered (`useSaidFailure`). A focus on a control that goes
- * as the release lands goes on in the row (`useFocusHandOff`): from Retry to Release while the
- * claim is still drawn, and from any of them, once it is not, to the None the row reads then, the
- * one place left in the row and the answer to the reader's press.
+ * keyboard: Release and Retry take no press while it is out (`aria-disabled`), and the failure's
+ * line stays until the release Retry sent again is answered (`useSaidFailure`). A focus on a
+ * control that goes as the release lands goes on in the row (`useFocusHandOff`): from Retry to
+ * Release while the claim is still drawn, and from any of them, once it is not, to the None the
+ * row reads then, the one place left in the row and the answer to the reader's press.
  */
 export function IssueClaimControl({
   issue,
@@ -69,8 +69,8 @@ export function IssueClaimControl({
           failure={failure.count}
           message="Could not release this claim."
           onRetry={release}
+          refused={releaseClaim.isPending}
           retryRef={retryLeft}
-          retrying={releaseClaim.isPending}
         />
       )}
     </div>

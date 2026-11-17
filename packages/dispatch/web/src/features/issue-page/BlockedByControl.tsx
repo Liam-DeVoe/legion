@@ -27,6 +27,10 @@ function issueKeysIn(value: string): readonly string[] {
   return [...new Set(keys)];
 }
 
+/** The id of the editor's box, by which Details finds the box when it hands the box a focus
+ *  (`IssueMargin.tsx`). */
+export const BLOCKED_BY_INPUT_ID = "issue-blocked-by";
+
 /**
  * The name the blocked-by control answers to: the word it shows and what it opens, in the words
  * the box it opens is named by ("Issues CORE-1 waits on"), so a voice user saying what they read
@@ -154,7 +158,7 @@ export function BlockedByControl({
             aria-describedby="issue-blocked-by-help"
             aria-label={`Issues ${issue.key} waits on`}
             className={`w-full rounded-[7px] border px-2 py-1 text-sm outline-none ${pageField}`}
-            id="issue-blocked-by"
+            id={BLOCKED_BY_INPUT_ID}
             onChange={(event) => onDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key !== "Escape") return;

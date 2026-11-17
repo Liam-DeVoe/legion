@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -42,6 +42,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
@@ -336,7 +337,7 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
     expect(
       cancel,
       "Cancel is drawn as a control while the save it would leave is out"
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-disabled", "true");
     await user.click(cancel);
     expect(
       screen.getByLabelText("Issues CORE-1 waits on"),
@@ -380,8 +381,13 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
     await user.paste("CORE-9");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     expect(await screen.findByRole("alert")).toHaveTextContent("There is no issue CORE-9.");
-    // The answer gives Cancel back: the editor is the reader's to leave again.
+    // The answer gives Cancel back: the editor is the reader's to leave again. A refused Cancel
+    // is `aria-disabled` rather than `disabled`, so both are read.
     expect(screen.getByRole("button", { name: CONTROL_LABELS.cancel })).toBeEnabled();
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.cancel })).not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
 
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
     await waitFor(() =>
@@ -731,29 +737,12 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
   }
 });
 
-/** Moves the focus to the page's body whenever the element that holds it turns disabled, as
- *  Chromium does and happy-dom does not, until the function it returns is called. */
-function blurWhenDisabled(): () => void {
-  const watching = new MutationObserver(() => {
-    const focused = document.activeElement;
-    if (!(focused instanceof HTMLElement) || !focused.hasAttribute("disabled")) return;
-    // happy-dom's `blur()` does nothing on a disabled element, so the attribute comes off for the
-    // blur alone and goes back at once.
-    const value = focused.getAttribute("disabled") ?? "";
-    focused.removeAttribute("disabled");
-    focused.blur();
-    focused.setAttribute("disabled", value);
-  });
-  watching.observe(document, { attributeFilter: ["disabled"], attributes: true, subtree: true });
-  return () => watching.disconnect();
-}
-
 // A Retry that turned disabled while the read it sent again was out lost the focus of a reader
 // who pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to
-// the page's body (`blurWhenDisabled` does that here). Retry stays enabled and reads busy, and a
-// press while its read is out joins that read and sends nothing (`retryRead`). The titles
-// answered once before they failed, because a refetch of a read that holds an answer otherwise
-// ends the request that is out and sends another.
+// the page's body (`emulateChromiumFocusFixup` does that here). Retry stays enabled and reads
+// busy, and a press while its read is out joins that read and sends nothing (`retryRead`). The
+// titles answered once before they failed, because a refetch of a read that holds an answer
+// otherwise ends the request that is out and sends another.
 test("Retry keeps the focus while the read it sent again is out, and a second press sends none", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -767,7 +756,7 @@ test("Retry keeps the focus while the read it sent again is out, and a second pr
   const retried = Promise.withResolvers<ReferenceTargets>();
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { queryClient, unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const retryOfTitles = () =>
     within(detailsRow(PROPERTY_LABELS.blocked_by)).queryByRole("button", {
       name: CONTROL_LABELS.retry,
@@ -829,7 +818,7 @@ test("a read that fails again in the same words is said again, while Retry keeps
   const retried = Promise.withResolvers<ReferenceTargets>();
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { queryClient, unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
 
   try {
@@ -892,7 +881,7 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
   );
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
 
@@ -1035,7 +1024,7 @@ test("Blocks says a read that fails again in the same words again, while its Ret
   const retried = Promise.withResolvers<GraphReferences>();
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
 
   try {
@@ -1630,8 +1619,8 @@ function addMenuControl(): Element | null {
 }
 
 // A press on an entry of Add opens that property's control. While the priorities' save is out,
-// "Add a priority to CORE-1" is drawn disabled (`IssuePriorityLine`'s `busy`), so a press on
-// Add's Advances opens nothing and the focus falls to the page. Found by the tester on the
+// "Add a priority to CORE-1" takes no press (it was drawn disabled when this was found, and is
+// `aria-disabled` now), so a press on Add's Advances opened nothing. Found by the tester on the
 // preview of 8a8f3f6b, with the save held for six seconds: Add listed Advances, and pressing it
 // left the menu closed, the form shut and the focus on the body. Add lists an entry only while its
 // control can be pressed, and lists it again once a refused save gives that control back.
@@ -1900,8 +1889,8 @@ test("the first priority added hands the focus from the add control beside Add t
 
 // The last priority removed moves the line back beside Add, and the focus its Remove held went
 // with the Advances row to the page's body. It goes on to the add control beside Add, the one
-// control the line draws there. happy-dom leaves the focus on a control that turns disabled, as
-// Remove is while its write is out, so this case holds the move between the two places alone.
+// control the line draws there. Remove holds the focus until the line moves: while its write is
+// out it is `aria-disabled`, never `disabled`.
 test("removing the last priority hands the focus from its Remove to the add control beside Add", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -1927,8 +1916,10 @@ test("removing the last priority hands the focus from its Remove to the add cont
         "the removal landed, and the issue was not read again"
       ).toBeGreaterThan(reads)
     );
-    await waitFor(() =>
-      expect(remove, "Remove is still disabled once its write landed").toBeEnabled()
+    // The shared Remove stays refused, and keeps the focus, until the new read is drawn.
+    expect(remove, "Remove took a press again before the new read was drawn").toHaveAttribute(
+      "aria-disabled",
+      "true"
     );
     expect(document.activeElement, "Remove lost the focus before the line moved").toBe(remove);
     await act(async () => reread.resolve(advancesOnly));
@@ -1948,6 +1939,83 @@ test("removing the last priority hands the focus from its Remove to the add cont
     expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// On a closed issue the line's add controls are disabled. Another session's write that takes
+// away the last priority takes the Advances row away, and the focus on its priority went to the
+// disabled add control beside Add, which takes no focus, so it fell to the page's body. It goes
+// on to Development's heading, the button that opens and closes the section those rows are in.
+test("on a closed issue, the last priority taken away hands the focus from its link to Development's heading", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  const closed: IssueDetails = {
+    ...advancesOnly,
+    advances: [{ id: "evals-now", inherited: false }],
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  };
+  getIssue.mockResolvedValue(closed);
+  const { queryClient, unmount } = renderDetails();
+  try {
+    const link = await waitFor(() =>
+      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("link")
+    );
+    act(() => link.focus());
+    act(() => queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...closed, advances: [] }));
+    await waitFor(() =>
+      expect(
+        screen.queryByText(PROPERTY_LABELS.advances, {
+          exact: true,
+          selector: "[data-page-chrome]",
+        }),
+        "the issue advances nothing, and Details still draws the Advances row"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the Advances row went on a closed issue, and the focus did not go to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// An Advances row at the cap draws no add control, so the focus the add control beside Add held
+// as the line moved into that row goes to the row's first priority rather than to the page.
+test("the line moved into an Advances row at the cap hands the focus from the add control beside Add to the row's first priority", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancesOnly);
+  const { queryClient, unmount } = renderDetails();
+  try {
+    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    act(() => control.focus());
+    const atCap = Array.from({ length: MAX_ISSUE_ADVANCES }, (_, index) => ({
+      id: `priority-${index + 1}`,
+      inherited: false,
+    }));
+    act(() =>
+      queryClient.setQueryData(issueQuery("CORE-1").queryKey, {
+        ...advancesOnly,
+        advances: atCap,
+      })
+    );
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    expect(
+      within(row).queryByRole("button", { name: addPriorityControlName("CORE-1") }),
+      "the Advances row at the cap draws an add control"
+    ).toBeNull();
+    expect(
+      document.activeElement,
+      "the line moved into the Advances row at the cap, and the focus did not go to its first priority"
+    ).toBe(within(row).getAllByRole("link")[0]);
+  } finally {
+    unmount();
     priorities.mockRestore();
     restore();
   }
@@ -2993,7 +3061,7 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
     Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
   );
   const { unmount } = renderDetails();
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const retryOfRoute = () =>
     within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry });
 
@@ -3025,10 +3093,10 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
     await waitFor(() =>
       expect(
         retry,
-        "Retry does not read busy while the route it sent again is out"
-      ).toHaveAttribute("aria-busy", "true")
+        "Retry does not refuse a press while the route it sent again is out"
+      ).toHaveAttribute("aria-disabled", "true")
     );
-    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
+    expect(document.activeElement, "Retry lost the focus once it refused a press").toBe(retry);
     await user.keyboard("{Enter}");
     expect(patchIssue, "a press of Retry while its save is out sent another").toHaveBeenCalledTimes(
       2
@@ -3055,8 +3123,8 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
     ).toBe(retry);
     expect(
       retry,
-      "Retry still reads busy after Dispatch refused the route again"
-    ).not.toHaveAttribute("aria-busy");
+      "Retry still refuses a press after Dispatch refused the route again"
+    ).not.toHaveAttribute("aria-disabled", "true");
 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));

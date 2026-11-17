@@ -38,7 +38,12 @@ import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
 import { referencesQuery } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
-import { BlockedByControl, blockedByControlName, IssueLine } from "./BlockedByControl";
+import {
+  BLOCKED_BY_INPUT_ID,
+  BlockedByControl,
+  blockedByControlName,
+  IssueLine,
+} from "./BlockedByControl";
 import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
@@ -59,6 +64,7 @@ import {
 } from "./page-structure";
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { usableControl } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type MarginSections, useMarginSections } from "./useMarginSections";
@@ -255,7 +261,7 @@ export function IssueMarginPanel({
         `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
       ) ??
       blockedByValue.current?.querySelector<HTMLElement>("a[href]") ??
-      blockedByValue.current?.querySelector<HTMLElement>("#issue-blocked-by")
+      blockedByValue.current?.querySelector<HTMLElement>(`#${BLOCKED_BY_INPUT_ID}`)
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
@@ -270,17 +276,27 @@ export function IssueMarginPanel({
   // lands, so the reader stays on the control of that name, whose next press adds another, with
   // Remove of what they added just before it; a line at the cap draws no add control, and there
   // it goes to the row's first priority. Out of the Advances row it goes to the add control
-  // beside Add, the one control the line draws there.
+  // beside Add, the one control the line draws there. Each passes over a control that takes no
+  // press (`usableControl`), and where none is left the focus goes to Development's heading, the
+  // button that opens and closes the section these rows are in. On a closed issue each add
+  // control is disabled and holds no focus, so out of the place beside Add the focus goes to the
+  // row's first priority, and out of the Advances row to that heading.
   const advancesValue = useRef<HTMLDivElement>(null);
   const addRow = useRef<HTMLDivElement>(null);
+  const developmentHeading = useRef<HTMLButtonElement>(null);
   const priorityAddSelector = `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`;
-  const priorityBesideAddLeft = useFocusHandOff(
-    () =>
-      advancesValue.current?.querySelector<HTMLElement>(priorityAddSelector) ??
-      advancesValue.current?.querySelector<HTMLElement>("a[href]")
+  const priorityBesideAddLeft = useFocusHandOff(() =>
+    firstUsable(
+      advancesValue.current?.querySelector<HTMLElement>(priorityAddSelector),
+      advancesValue.current?.querySelector<HTMLElement>("a[href]"),
+      developmentHeading.current
+    )
   );
   const priorityRowLeft = useFocusHandOff(() =>
-    addRow.current?.querySelector<HTMLElement>(priorityAddSelector)
+    firstUsable(
+      addRow.current?.querySelector<HTMLElement>(priorityAddSelector),
+      developmentHeading.current
+    )
   );
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
@@ -314,7 +330,12 @@ export function IssueMarginPanel({
 
   return (
     <div className="flex min-w-0 flex-col gap-3" ref={panel}>
-      <PropertySection drawerBox={drawerBox} name="development" sections={sections}>
+      <PropertySection
+        drawerBox={drawerBox}
+        headingRef={developmentHeading}
+        name="development"
+        sections={sections}
+      >
         <Row glyph="◐" label={PROPERTY_LABELS.status}>
           <span
             className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
@@ -517,9 +538,10 @@ export function IssueMarginPanel({
               the write store leaves its refusal to this row, and the header, which says the
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
-              too; its Retry reads busy while that save is out and is never disabled, since the
-              drafts send nothing while a save is out (`useSubmitGuard`). Once the route lands the
-              line goes, and the row's control takes the focus Retry held (`useFocusHandOff`). */}
+              too; its Retry takes no press while that save is out (`refused`), since the drafts
+              send nothing while a save is out (`useSubmitGuard`), and is never disabled. Once the
+              route lands the line goes, and the row's control takes the focus Retry held
+              (`useFocusHandOff`). */}
           {fieldFailure !== null &&
           fieldFailure.variables?.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
@@ -528,8 +550,8 @@ export function IssueMarginPanel({
               failure={fieldFailure.count}
               message={apiErrorMessage(fieldFailure.error, "Could not update this issue.")}
               onRetry={isClosed ? undefined : writes.drafts.retry}
+              refused={writes.updateIssue.isPending}
               retryRef={routeRetryLeft}
-              retrying={writes.updateIssue.isPending}
             />
           ) : null}
         </Row>
@@ -716,6 +738,13 @@ function readFailed(read: {
   return read.isError || (read.isPending && read.errorUpdateCount > 0);
 }
 
+/** The first of `candidates` that takes a press (`usableControl`), to hand a focus to. */
+function firstUsable(...candidates: (HTMLElement | null | undefined)[]): HTMLElement | undefined {
+  return candidates.find(
+    (candidate): candidate is HTMLElement => candidate != null && usableControl(candidate)
+  );
+}
+
 /** The issues of a list of them, each its key as a link and its title beside it, folded after
  *  ten behind a count that opens the rest. */
 function IssueList({
@@ -782,12 +811,15 @@ function ShowAll({
 function PropertySection({
   children,
   drawerBox,
+  headingRef,
   name,
   sections,
 }: {
   children: ReactNode;
   /** The drawer's `aside` the panel is placed in, which a request for a row is sent to. */
   drawerBox: HTMLElement | null;
+  /** Takes the section's heading, its own control, so a focus can be handed to it. */
+  headingRef?: Ref<HTMLButtonElement>;
   name: MarginSection;
   sections: MarginSections;
 }): ReactNode {
@@ -821,6 +853,7 @@ function PropertySection({
           aria-expanded={open}
           className={`flex min-h-11 w-full items-center justify-between gap-2 text-xs leading-4 font-semibold tracking-[0.08em] uppercase md:min-h-8 ${pageQuietText}`}
           onClick={() => sections.toggle(name)}
+          ref={headingRef}
           type="button"
           {...pageChrome}
         >

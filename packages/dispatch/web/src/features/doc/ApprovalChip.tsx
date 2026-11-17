@@ -280,9 +280,18 @@ function RequestChangesDialog({
           )}
           <div className="flex items-center justify-end gap-2">
             <button
+              // Inside `NoTooltips`, while the write is out, Cancel is `aria-disabled` and a press
+              // of it does nothing, so the focus a reader put on it stays there. Outside it is
+              // `disabled` while the write is out, as on `main`.
+              aria-disabled={(page !== null && saving) || undefined}
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
-              disabled={saving}
-              onClick={onClose}
+              disabled={page === null && saving}
+              onClick={() => {
+                if (saving) {
+                  return;
+                }
+                onClose();
+              }}
               type="button"
             >
               Cancel
@@ -386,39 +395,53 @@ export function ApprovalChip({
     onSettled: () => submitGuard.release(),
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onSuccess: () => {
-      setRequestChangesOpen(false);
+      // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
+      // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
+      // TanStack Query awaits before the write stops pending: Approve, Request changes and the
+      // dialog stay refused, and keep the focus, until the new approval is read, and only then
+      // does the dialog close and give the focus back to the button that opened it.
+      if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
-      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-      if (artifact.issue_key === null) {
-        void queryClient.invalidateQueries({
-          queryKey: ["project", artifact.project, "artifacts"],
-        });
-        void queryClient.invalidateQueries({
-          queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
-        });
-        return;
-      }
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] });
+      const rereads = [
+        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
+        ...(artifact.issue_key === null
+          ? [
+              queryClient.invalidateQueries({
+                queryKey: ["project", artifact.project, "artifacts"],
+              }),
+              queryClient.invalidateQueries({
+                queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+              }),
+            ]
+          : [
+              queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] }),
+            ]),
+      ];
+      if (page === null) return;
+      return Promise.all(rereads).then(() => setRequestChangesOpen(false));
     },
   });
 
-  // Inside `NoTooltips` a press of Approve is remembered, and once its write is no longer out a
-  // focus that fell to the document (`focusOnDocument`) goes to Approve where it is drawn, else to
-  // the chip, which is what replaces it once the approval reads approved; the press is forgotten
-  // then, or once the write failed. A focus anywhere else is left where it is.
-  const approvePressed = useRef(false);
+  // Inside `NoTooltips` a press of Approve is remembered until its write stops pending, which is
+  // once the new approval is read (`onSuccess` returns its reads). Approve is never `disabled`
+  // there, so while it is drawn it keeps the focus and nothing moves it. Once an approval that
+  // reads approved has taken Approve off the page, a focus that fell with it to the document
+  // (`focusOnDocument`) goes to the chip; a focus anywhere else is left where it is. The press is
+  // forgotten whenever the write stops pending, approved or not. It is state, not a ref, so the
+  // render the press makes reads the write pending, and a write that ends before its own pending
+  // render is drawn still ends the press.
+  const [approvePressed, setApprovePressed] = useState(false);
   const approveButton = useRef<HTMLButtonElement>(null);
   const chipButton = useRef<HTMLButtonElement>(null);
-  const approvalState = approval?.state;
   useEffect(() => {
-    if (!approvePressed.current || review.isPending) return;
-    if (focusOnDocument()) (approveButton.current ?? chipButton.current)?.focus();
-    if (approvalState === "approved" || review.isError) approvePressed.current = false;
-  }, [approvalState, review.isError, review.isPending]);
+    if (!approvePressed || review.isPending) return;
+    setApprovePressed(false);
+    if (approveButton.current === null && focusOnDocument()) chipButton.current?.focus();
+  }, [approvePressed, review.isPending]);
 
   if (approval === undefined || approval.state === "draft") {
     return null;
@@ -467,19 +490,26 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
+              // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
+              // of it does nothing, so it keeps the focus: a `disabled` button drops it to the
+              // body in a browser. Outside it is `disabled` while the write is out, as on `main`.
+              aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={
                 size === "compact"
-                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
+                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
-              disabled={review.isPending}
-              onClick={() =>
+              disabled={page === null && review.isPending}
+              onClick={() => {
+                if (review.isPending) {
+                  return;
+                }
                 submitGuard.guard(() => {
-                  if (page !== null) approvePressed.current = true;
+                  if (page !== null) setApprovePressed(true);
                   review.mutate({ state: "approved" });
-                })
-              }
+                });
+              }}
               ref={approveButton}
               type="button"
             >
@@ -488,9 +518,10 @@ export function ApprovalChip({
           )}
           <button
             // Inside `NoTooltips`, while the write is out, this button is `aria-disabled` and a
-            // press of it does nothing: the dialog it opens gives the focus back to it when a
-            // change request lands, and a `disabled` button takes no focus, which then falls to
-            // the body. Outside it is `disabled` while the write is out, as on `main`.
+            // press of it does nothing: the dialog it opens gives the focus back to it once a
+            // change request lands and its new approval is read, and a `disabled` button takes no
+            // focus, which then falls to the body. Outside it is `disabled` while the write is
+            // out, as on `main`.
             aria-disabled={(page !== null && review.isPending) || undefined}
             aria-label={actionNames?.requestChanges}
             className={
@@ -518,6 +549,11 @@ export function ApprovalChip({
         <RequestChangesDialog
           error={review.isError ? review.error : null}
           onClose={() => {
+            // Inside `NoTooltips` Escape, the backdrop and Cancel close nothing while the write is
+            // out: `reset` would let go of the write, and Approve and Request changes could be
+            // pressed again before it lands. Outside they close the dialog at any time, as on
+            // `main`.
+            if (page !== null && review.isPending) return;
             review.reset();
             setRequestChangesOpen(false);
           }}

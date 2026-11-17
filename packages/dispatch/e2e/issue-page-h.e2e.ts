@@ -1269,10 +1269,6 @@ test.describe("the shared controls of Details keep the focus while their write l
   test("Details' priority Remove keeps the focus in the priority's line while the removal lands, and sends one write", async ({
     browser,
   }) => {
-    test.fail(
-      true,
-      "the shared priority Remove is disabled while its write is out, which drops the focus to the page's body; owed until that control is fixed"
-    );
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one, parent } = seeded.keys;
@@ -1319,10 +1315,6 @@ test.describe("the shared controls of Details keep the focus while their write l
   test("Details' Add a priority keeps the focus in the priority's line while the added priority lands, and sends one write", async ({
     browser,
   }) => {
-    test.fail(
-      true,
-      "the shared priority line closes its form and disables its add control while its write is out, which drops the focus to the page's body; owed until that control is fixed"
-    );
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one } = seeded.keys;
@@ -1377,10 +1369,6 @@ test.describe("the shared controls of Details keep the focus while their write l
   test("Details' Blocked by Save keeps the focus in its row while the save is out and lands, and sends one write", async ({
     browser,
   }) => {
-    test.fail(
-      true,
-      "the shared Save of the field forms is disabled while its save is out, which drops the focus to the page's body; owed until that control is fixed"
-    );
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { three, two } = seeded.keys;
@@ -1421,10 +1409,6 @@ test.describe("the shared controls of Details keep the focus while their write l
   test("Details' Blocked by Cancel keeps the focus in its row while the save is out, and the save sends one write", async ({
     browser,
   }) => {
-    test.fail(
-      true,
-      "the shared Cancel of the field forms is disabled while its save is out, so it cannot take the focus; owed until that control is fixed"
-    );
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { three, two } = seeded.keys;
@@ -1469,8 +1453,7 @@ test.describe("the shared controls of Details keep the focus while their write l
 // removed move the line from one place to the other, and a focus the line still holds when it
 // leaves moves with it, to the other place's add control, rather than fall to the page's body
 // with the line it left. These two rows read only where the focus is once the new read is drawn,
-// and the writes sent. The removal row is an expected failure for now: the shared Remove drops
-// the focus while its write is out, before the line moves.
+// inside the line's new place and not on Add beside it, and the writes sent.
 test("Details' Add a priority on an issue that advances none keeps the focus in Details' priority place once the line moves into the Advances row, and sends one write", async ({
   browser,
 }) => {
@@ -1507,7 +1490,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await expect(detailsRow(page, PROPERTY_LABELS.advances).getByRole("link")).toHaveCount(1);
     await expectFocusKept(
       page,
-      priorityLine(page).or(addControl(page)),
+      priorityLine(page),
       issue,
       "once the new read moved the line into the Advances row"
     );
@@ -1517,10 +1500,6 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
 test("Details' priority Remove of an issue's last priority keeps the focus in Details' priority place once the line moves back beside Add, and sends one write", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "the shared priority Remove is disabled while its write is out, which drops the focus before the line moves; owed until that control is fixed"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one } = seeded.keys;
@@ -1544,7 +1523,7 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     ).toBeVisible();
     await expectFocusKept(
       page,
-      priorityLine(page).or(addControl(page)),
+      priorityLine(page),
       issue,
       "once the new read moved the line back beside Add"
     );
