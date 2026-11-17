@@ -155,7 +155,10 @@ export function MarkdownPreview({
   /** Styles the element: its place in a layout, a margin, a colour. Not its size: a `text-*` or
    *  `leading-*` utility here is overridden by `.dispatch-markdown`'s `font-size: inherit;
    *  line-height: inherit` (styles.css), a rule in no layer, so a caller that sizes the text
-   *  sets the size on a wrapper around the preview. */
+   *  sets the size on a wrapper around the preview. A host that cuts the line itself, as a
+   *  `truncate` line does, passes `inline`: the preview is then the host's inline text and the
+   *  host's ellipsis ends it, where under a `white-space: nowrap` host the clamp would have no
+   *  second line to cut and would clip the words with no ellipsis. */
   className?: string;
   /** Whether a pointer reader sees the whole text on hover, for a surface whose text is long
    *  enough to be cut: its plain words, as `TruncatedText`'s `title` offers, never its source. */
