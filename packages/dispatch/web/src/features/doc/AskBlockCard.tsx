@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -52,10 +52,12 @@ export interface AskBlockCardProps {
    *  record: the current document of a closed issue, whose close withdrew the ask. A saved
    *  version reads its own attributes only, so a later withdrawal never appears on it. */
   rowResolution: boolean;
-  /** The server's read of the ask the block shows, keyed by its block id (`servedAskOf`): its
-   *  own ask, or a copy's source. The block's state, answer, answerer, time and a copy's source
-   *  are read from it, since the answer is held on the ask alone; without it the block's own
-   *  attributes are read, as a text body and a version that holds them carry them. */
+  /** The server's read of the ask the block shows, keyed by its block id: its own ask, or a
+   *  copy's source, from the owner's asks (`servedAskOf`) or, for a copy whose source they do not
+   *  list, from what the live text renders on the block (`renderedAskOf`). The block's state,
+   *  answer, answerer, time and a copy's source are read from it, since the answer is held on the
+   *  ask alone; without it the block's own attributes are read, as a text body and a version that
+   *  holds them carry them, and a block that records no state reads as open. */
   served?: ServedAsk;
 }
 
@@ -84,6 +86,15 @@ export function AskBlockCard({
   served,
 }: AskBlockCardProps): ReactNode {
   const facts = askBlockFacts(host.node, served);
+  // The frame's state stamp (`data-dispatch-ask-state`) is what the document's styles read to keep
+  // the source option list folded under the caret once the decision is no longer open. The node
+  // view stamps the block's own `state` at every redraw of the shell (`applyAskBlockShell`), and
+  // the block no longer records an answer, so the card stamps the state it shows over it: the
+  // server's read of the ask where it holds one. A new host comes with each redraw, so the stamp
+  // follows it.
+  useLayoutEffect(() => {
+    host.header.parentElement?.setAttribute("data-dispatch-ask-state", facts.state);
+  }, [host, facts.state]);
   const malformed = facts.malformedReason !== undefined;
   const open = facts.state === "open";
   const answered = facts.state === "answered";

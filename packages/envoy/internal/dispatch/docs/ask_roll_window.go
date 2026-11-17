@@ -68,10 +68,28 @@ func storedAskAttributes() []string {
 // version can store (storedAskAttributes) is taken off. The write reports whether it changed the
 // block, and is made again on the live document (repairLive). On a fleet of one build it is nil:
 // settlement then takes the seven out of the block (askReadableWrite).
+//
+// The options chosen and the words are caller text, and a copy of them in a block grows its
+// document as an edit does, so each write that makes that copy weighs it against what one upload
+// may hold, as the release before does: the answer route (KeepAskBlockInStep) and settlement
+// (withholdAnswersWithoutRoom) write a block whose answer the document has no room for without
+// them (rollWindowAskAttributesWithheld), and the ask keeps the answer whole.
 func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	if !twoBuilds {
 		return nil
 	}
+	return rollWindowAskWrite(ask, copied, true)
+}
+
+// rollWindowAskAttributesWithheld is rollWindowAskAttributes's write for a block whose answer the
+// document has no room for: the block says who answered it and when, and carries neither the
+// options chosen nor the words (answerWords), as the release before wrote such a block.
+func rollWindowAskAttributesWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	return rollWindowAskWrite(ask, copied, false)
+}
+
+// rollWindowAskWrite is the write both of those make, with the answer's words where words.
+func rollWindowAskWrite(ask model.Ask, copied string, words bool) func(*pmdoc.Node) bool {
 	return func(node *pmdoc.Node) bool {
 		desired := pmdoc.Attrs{"state": ask.State}
 		if copied != "" {
@@ -81,9 +99,11 @@ func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(
 		if ask.State == asks.StateAnswered && ask.Answer != nil {
 			desired["answered_by"] = ask.Answer.User
 			desired["answered_at"] = asks.AnsweredAtValue(ask.Answer.At)
-			desired["selected"] = append([]string{}, ask.Answer.Selected...)
-			if ask.Answer.Text != nil {
-				desired["answer"] = *ask.Answer.Text
+			if words {
+				desired["selected"] = append([]string{}, ask.Answer.Selected...)
+				if ask.Answer.Text != nil {
+					desired["answer"] = *ask.Answer.Text
+				}
 			}
 		}
 		changed := false
@@ -102,6 +122,65 @@ func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(
 		}
 		return changed
 	}
+}
+
+// holdsAnswerWords reports whether node, an ask block, carries an answer's words (answerWords).
+func holdsAnswerWords(node *pmdoc.Node) bool {
+	for _, name := range answerWords {
+		if _, held := node.Attrs[name]; held {
+			return true
+		}
+	}
+	return false
+}
+
+// grownBy is document, the rendering of a document holding the block from, grown by what to, the
+// same block with other attributes, adds to the block's own rendering. An answer's words lengthen
+// the block's directive line, which carries every attribute quoted, and make no element, so the
+// document is measured as it was (answersWithRoom weighs the text routes' answers so too).
+func grownBy(document rendering, from, to *pmdoc.Node) (rendering, error) {
+	was, err := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{from}})
+	if err != nil {
+		return rendering{}, err
+	}
+	is, err := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{to}})
+	if err != nil {
+		return rendering{}, err
+	}
+	return rendering{bytes: document.bytes + len(is) - len(was), measured: document.measured}, nil
+}
+
+// answerHasRoom reports whether the document tree, which holds block, has room for block with
+// attrs, the attributes an answer's words are written into (rollWindowAskAttributes), by what one
+// upload may hold (weigh).
+func answerHasRoom(tree, block *pmdoc.Node, attrs pmdoc.Attrs) (bool, error) {
+	markdown, err := renderTree(tree)
+	if err != nil {
+		return false, err
+	}
+	document := renderingOf(markdown)
+	answered := *block
+	answered.Attrs = attrs
+	grown, err := grownBy(document, block, &answered)
+	if err != nil {
+		return false, err
+	}
+	return weigh(document, grown) == nil, nil
+}
+
+// withoutIndexes is items but those at the indexes dropped names, in their order, in items' own
+// array.
+func withoutIndexes[T any](items []T, dropped map[int]bool) []T {
+	if len(dropped) == 0 {
+		return items
+	}
+	kept := items[:0]
+	for index, item := range items {
+		if !dropped[index] {
+			kept = append(kept, item)
+		}
+	}
+	return kept
 }
 
 // sameAskAttribute reports whether got, an attribute value an ask block holds, is want: a list
@@ -163,5 +242,15 @@ func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.
 			return keep(node) || changed
 		}
 		return withoutStoredAskAttributes(node) || changed
+	}
+}
+
+// askReadableWriteWithheld is askReadableWrite while another build serves, for a block whose
+// answer the document has no room for (rollWindowAskAttributesWithheld).
+func askReadableWriteWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	keep := rollWindowAskAttributesWithheld(ask, copied)
+	return func(node *pmdoc.Node) bool {
+		changed := clearAskInvalidAttribute(node)
+		return keep(node) || changed
 	}
 }

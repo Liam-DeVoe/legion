@@ -698,8 +698,9 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval as every version the document service writes
 		// does (docs.carryApproval): when its text is the approved text again, or when every
-		// difference from it is a carry case - the server-owned ask attributes an upload drops
-		// among them - and its decision blocks agree with their nodes.
+		// difference from it is a carry case - the readings of its decisions and answered asks, and
+		// the server-owned ask attributes an upload drops - and its decision blocks agree with
+		// their nodes.
 		carried, err := docs.CarryUploadedApproval(
 			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)

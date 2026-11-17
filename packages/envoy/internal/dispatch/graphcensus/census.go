@@ -1306,6 +1306,14 @@ func currentAuthors(holders string) string {
 // the owner is read as the store holds that tie now, the far end of each alias_of the session
 // states, which an erase of that person deletes with the person's node. authors is the relation
 // storedAuthors is read as (censusAuthors or inlineAuthors).
+//
+// The probe is keyed by the session and names no far end: an alias_of points at a person and at
+// nothing else, since graphstore's aliases is its one writer, so it states graph_tuples_current's
+// predicate (to_kind <> 'value') where it would bind to_kind = 'person'. Bound, that equality fits
+// graph_tuples_inbound too, keyed on its leading to_kind alone, which reads every tuple into a
+// person; over a fixture's empty log the two plans cost within a hundredth of each other (8.17 and
+// 8.18), so either may be taken. Unbound, only an index led by from_kind and from_id keys the
+// probe, whatever the costs.
 func storedOwners(authors string) string {
 	return `
 	select owner.to_id as login
@@ -1313,7 +1321,7 @@ func storedOwners(authors string) string {
 	cross join lateral (
 		` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
 		`t.from_kind = '`+graphstore.KindSession+`' and t.from_id = writer.id and t.kind = '`+graphstore.TupleAliasOf+`'
-		  and t.to_kind = '`+graphstore.KindPerson+`'`) + `
+		  and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 	) owner
 	where owner.asserted`
 }

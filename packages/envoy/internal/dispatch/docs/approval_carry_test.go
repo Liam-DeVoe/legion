@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -268,8 +268,71 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 		if carried != test.carry {
 			t.Errorf("%s: carry = %v, want %v", test.name, carried, test.carry)
 		}
-		if carried && change != attributeRemovalCase.change {
-			t.Errorf("%s: the carried change reads %q, want %q", test.name, change, attributeRemovalCase.change)
+		if want := attributeRemovalCase.change + carriedReasonEnd; carried && change != want {
+			t.Errorf("%s: the carried change reads %q, want %q", test.name, change, want)
+		}
+	}
+}
+
+// The reading case (dispatch://INFRA-1150 R2) over the two versions: N carries the approval of A
+// when the two differ only in the readings their decisions and their answered asks close with -
+// one added, edited or removed - and the case composes with R10's, so one version that drops the
+// server-owned attributes and adds a reading carries, naming both changes. A reading in an ask
+// whose ask holds no answer, a decision's own words changed beside a reading, and a reading
+// retyped into a decision carry nothing.
+func TestCarryVerdictCarriesTheReadingsOfDecisionsAndAnsweredAsks(t *testing.T) {
+	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
+	decision := func(words string, closing ...string) string {
+		if len(closing) == 0 {
+			return `:::decision{#d1 replaced="false"}` + "\n" + words + "\n:::\n"
+		}
+		return `::::decision{#d1 replaced="false"}` + "\n" + words + "\n\n" + strings.Join(closing, "\n") + "::::\n"
+	}
+	reading := func(id, text string) string { return ":::reading{#" + id + "}\n" + text + "\n:::\n" }
+	const shipped = "We ship on Friday."
+	readOnce := reading("r1", "The agent reads it as Friday.")
+	readAgain := reading("r1", "The agent reads it as Friday morning.")
+	retyped := `:::decision{#r1 replaced="false"}` + "\nThe agent reads it as Friday.\n:::\n"
+	ownWithReading := `::::ask{#own urgency="low" multiple="false"}` + "\n" + strings.TrimSuffix(ownBody, ":::\n") + "\n" +
+		reading("r3", "The agent reads it as East.") + "::::\n"
+	answered := map[string]bool{"own": true}
+	parse := func(markdown string) *pmdoc.Node {
+		t.Helper()
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("parse %q: %v", markdown, err)
+		}
+		return tree
+	}
+	readings := readingCase.change + carriedReasonEnd
+	both := readingCase.change + ", and " + attributeRemovalCase.change + carriedReasonEnd
+	for _, test := range []struct {
+		name              string
+		approved, version string
+		answered          map[string]bool
+		change            string
+	}{
+		{"a reading added under a decision", prose + decision(shipped), prose + decision(shipped, readOnce), nil, readings},
+		{"a reading's text edited", prose + decision(shipped, readOnce), prose + decision(shipped, readAgain), nil, readings},
+		{"a reading removed", prose + decision(shipped, readOnce), prose + decision(shipped), nil, readings},
+		{"a second reading beside the first", prose + decision(shipped, readOnce), prose + decision(shipped, readOnce, reading("r2", "The agent reads it as this week.")), nil, readings},
+		{"a reading added inside an answered ask", prose + ownBare + ownBody, prose + ownWithReading, answered, readings},
+		{"a reading inside an ask that holds no answer", prose + ownBare + ownBody, prose + ownWithReading, nil, ""},
+		{"a decision's own words changed beside a reading", prose + decision(shipped, readOnce), prose + decision("We ship on Monday.", readAgain), nil, ""},
+		{"a reading retyped into a decision", prose + decision(shipped, readOnce), prose + decision(shipped, retyped), nil, ""},
+		{"prose changed beside a reading", prose + decision(shipped), strings.Replace(prose, "a flag", "a switch", 1) + decision(shipped, readOnce), nil, ""},
+		{"the attributes dropped and a reading added in one version", prose + decision(shipped) + "\n" + ownDecided + ownBody,
+			prose + decision(shipped, readOnce) + "\n" + ownBare + ownBody, nil, both},
+	} {
+		if rendered, err := pmdoc.Render(parse(test.approved)); err != nil || rendered != test.approved {
+			t.Fatalf("%s: the approved version renders %q (%v), want itself: the verdict compares stored bytes", test.name, rendered, err)
+		}
+		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: true, answered: test.answered})
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if carried != (test.change != "") || change != test.change {
+			t.Errorf("%s: carry = %v with the change %q, want carry %v with %q", test.name, carried, change, test.change != "", test.change)
 		}
 	}
 }
@@ -441,24 +504,16 @@ func joined(t *testing.T, service *Service, op func(ctx context.Context, tx pgx.
 }
 
 // answerBlockAs writes login's answer to the block ask blockID of artifactID as the answer route
-// writes it while another build serves: the row's state and answer, and the block's attributes
-// in step with them through the service's own live attribute write, in one joined transaction.
+// writes it (settleAskAs): on the ask's node and its row, and, while another build serves
+// (serveTwoBuilds), into the block in step with them; on a fleet of one build no byte of the
+// document holds it.
 func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login string, selected []string) {
 	t.Helper()
+	person := model.Actor{Kind: "user", ID: login}
 	at := time.Now().UTC()
-	answer := model.AskAnswer{User: login, Selected: selected, At: at}
-	encoded, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $3 where block_artifact_id = $1 and block_id = $2`, artifactID, blockID, encoded); err != nil {
-			return err
-		}
-		return service.SetBlockAttributes(ctx, artifactID, blockID, map[string]any{
-			"state": "answered", "answered_by": login, "answered_at": at.Format(time.RFC3339Nano), "selected": selected, "answer": nil,
-		}, model.Actor{Kind: "user", ID: login})
-	})
+	change := asks.Answered(model.AskAnswer{User: login, Selected: selected, At: at})
+	change.Who, change.At = person, at
+	settleAskAs(t, service, artifactID, blockID, blockAskOn(t, service, artifactID, blockID).ID, person, change)
 }
 
 // regionSpec is the one-block document the repeated-block-id carry tests decide and then repeat:
@@ -505,10 +560,14 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // A version named from the live tree while it holds two ask nodes under one decided block id - a
 // second node a document-socket peer wrote with the id of the block the human answered - carries
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
-// read. The same version without the repeat carries, so the repeat alone is what refuses.
+// read. The same version without the repeat carries, so the repeat alone is what refuses. Another
+// build serves (serveTwoBuilds), so the answer is written into the block and the version without
+// the repeat differs from the approved one in the block's server-owned attributes alone, which
+// R10's case carries.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+		serveTwoBuilds(t, database)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})

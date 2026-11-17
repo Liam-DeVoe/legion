@@ -21,6 +21,14 @@ import (
 // and the blocks come from one rendering, so the blocks' byte ranges index the markdown answered;
 // the tokens are the document's own, since no token weighs a server-owned attribute. A document
 // holding no ask block is answered as those two read it.
+//
+// What the text routes answer is what an upload of it sends back, so it is held to what one upload
+// may hold as every write is (growth.go): an answer is caller text of up to
+// contracts.DispatchEventBodyMax units, and a document's answers rendered beside its text could
+// pass the bound its own text keeps. Where they would, each answer is given in document order
+// while the document has room for it, and a block whose answer has no room says who answered and
+// when, without the words or the options chosen (answersWithRoom), as the release before wrote
+// such a block; the ask keeps the answer whole.
 func (s *Service) TextWithAnswers(ctx context.Context, artifactID string, withBlocks bool) (string, string, []model.ArtifactBlock, error) {
 	var markdown, token string
 	var blocks []model.ArtifactBlock
@@ -37,11 +45,14 @@ func (s *Service) TextWithAnswers(ctx context.Context, artifactID string, withBl
 	if err != nil || tree == nil {
 		return markdown, token, blocks, err
 	}
-	shown, err := s.askAnswersShown(ctx, artifactID, tree)
+	shown, answered, err := s.askAnswersShown(ctx, artifactID, tree)
 	if err != nil || shown == tree {
 		return markdown, token, blocks, err
 	}
 	rendered, err := renderDocumentTree(shown)
+	if err == nil && len(answered) > 0 && weighRendering(markdown, rendered.markdown) != nil {
+		rendered, err = answersWithRoom(markdown, shown, answered)
+	}
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -54,6 +65,58 @@ func (s *Service) TextWithAnswers(ctx context.Context, artifactID string, withBl
 	return rendered.markdown, rendered.token, rendered.blocks, nil
 }
 
+// answerWords are the attributes of an ask block that carry an answer's caller text: the options
+// it selects, whose labels are the asker's text, and its words. Who answered and when are the
+// server's, and stay on a block whose answer has no room.
+var answerWords = [...]string{"selected", "answer"}
+
+// answersWithRoom is shown, the document whose own canonical markdown is markdown with its ask
+// blocks answered (askAnswersShown), rendered with each answer of answered - the shown blocks
+// carrying one, in document order, each a node of shown's own - given back while the document
+// still has room for it, weighed as a write is (weigh): all are taken out, the document is
+// rendered once without them, and each is weighed by what it adds to its block's own rendering,
+// since an answer lengthens its block's directive line and makes no element. A block whose answer
+// has no room keeps its state, its answerer and its time.
+func answersWithRoom(markdown string, shown *pmdoc.Node, answered []*pmdoc.Node) (renderedDocument, error) {
+	held := make([][len(answerWords)]any, len(answered))
+	for index, node := range answered {
+		for word, name := range answerWords {
+			held[index][word] = node.Attrs[name]
+			delete(node.Attrs, name)
+		}
+	}
+	left, err := renderTree(shown)
+	if err != nil {
+		return renderedDocument{}, err
+	}
+	document, was := renderingOf(left), renderingOf(markdown)
+	for index, node := range answered {
+		alone := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}}
+		withheld, err := renderTree(alone)
+		if err != nil {
+			return renderedDocument{}, err
+		}
+		for word, name := range answerWords {
+			if value := held[index][word]; value != nil {
+				node.Attrs[name] = value
+			}
+		}
+		given, err := renderTree(alone)
+		if err != nil {
+			return renderedDocument{}, err
+		}
+		grown := rendering{bytes: document.bytes + len(given) - len(withheld), measured: document.measured}
+		if weigh(was, grown) != nil {
+			for _, name := range answerWords {
+				delete(node.Attrs, name)
+			}
+			continue
+		}
+		document = grown
+	}
+	return renderDocumentTree(shown)
+}
+
 // askAnswersShown is a copy of tree, a tree of document artifactID, in which each ask block an ask
 // of the document indexes, and each copy of an ask of another document of its owner
 // (readCopiedAskSources), carries that ask's answer state and answer as the release before wrote
@@ -61,13 +124,16 @@ func (s *Service) TextWithAnswers(ctx context.Context, artifactID string, withBl
 // and wrote, and a copy's source and the source's document. The rows are read in a transaction
 // of the read's own that writes nothing and locks no row; the asks row is the projection of its
 // node, written from the node's tuples in the transaction that appends them (asks.Settle). A tree
-// none of whose blocks changes is answered as it is.
-func (s *Service) askAnswersShown(ctx context.Context, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, error) {
+// none of whose blocks changes is answered as it is. Beside the copy it answers the blocks of the
+// copy it gave an answer's words or selection (answerWords), each a fresh node of the copy's own,
+// in document order.
+func (s *Service) askAnswersShown(ctx context.Context, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, []*pmdoc.Node, error) {
 	nodes, readable := askNodes(tree)
 	if !readable || len(nodes) == 0 {
-		return tree, nil
+		return tree, nil, nil
 	}
 	var shown *pmdoc.Node
+	var answered []*pmdoc.Node
 	err := pgx.BeginTxFunc(ctx, s.store.Pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			select `+AskColumns+`
@@ -122,17 +188,23 @@ func (s *Service) askAnswersShown(ctx context.Context, artifactID string, tree *
 			} else if source, copied := sources[id]; copied {
 				write = rollWindowAskAttributes(true, source.ask, source.document)
 			}
-			answered := attributesOf(node)
-			if !write(answered) {
+			written := attributesOf(node)
+			if !write(written) {
 				return node, false
 			}
 			copied := *node
-			copied.Attrs = answered.Attrs
+			copied.Attrs = written.Attrs
+			for _, name := range answerWords {
+				if _, holds := copied.Attrs[name]; holds {
+					answered = append(answered, &copied)
+					break
+				}
+			}
 			return &copied, true
 		})
 		return nil
 	})
-	return shown, err
+	return shown, answered, err
 }
 
 // withAskBlocks is a copy of tree in which each ask block is the node show answers for it, where

@@ -8,20 +8,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // registerTwoBuilds registers, in the registry the document service reads the fleet from
 // (processes.Live), a process of each of two builds, live for the rest of the test, as a roll
 // serves them: the document service then keeps every ask block in step with its asks row
-// (docs' rollWindowAskAttributes), the release before's second copy of the answer.
+// (docs' rollWindowAskAttributes), the release before's second copy of the answer. Both read and
+// create this build's schema, as docs' serveTwoBuilds registers them: a process with no schema
+// numbers counts as reading version 0 (docs' schemaFleet), and its document sockets would then
+// admit a browser read-only, dropping every edit it sends.
 func registerTwoBuilds(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, commit, heartbeat_at)
-		values (gen_random_uuid(), 'the-release-before', now() + interval '1 hour'),
-		       (gen_random_uuid(), 'this-release', now() + interval '1 hour')
-	`); err != nil {
+		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at)
+		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour'),
+		       (gen_random_uuid(), 'this-release', $1, $2, now() + interval '1 hour')
+	`, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
 		t.Fatalf("register a process of each of two builds: %v", err)
 	}
 }

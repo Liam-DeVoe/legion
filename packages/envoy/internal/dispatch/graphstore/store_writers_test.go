@@ -153,6 +153,10 @@ var storeWriteCallSites = []string{
 	// document.retired and the node's facts under it.
 	"docs/retire.go#RetireDocument",
 	"docs/retire.go#writeRetiredNode",
+	// A person's Keep of an agent's decision (dispatch://INFRA-1150 R2): under the issue's owner
+	// row, the person's node, then the decision_keeps row that projects the Keep, then
+	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
+	"api/decisions.go#keepDecisionNode",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,

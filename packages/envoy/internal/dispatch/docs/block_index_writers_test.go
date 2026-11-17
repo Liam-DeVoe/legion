@@ -540,6 +540,11 @@ var indexPasses = map[string]string{
 	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
 	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
 	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
+	// A person's Keep of an agent's decision states its kept_by and kept_text_sum on the decision's
+	// node and writes their projection row, decision_keeps, from the request and the decision the
+	// person read. It reads the kept_by the node holds only to retract one naming another person,
+	// so the node holds the one Keep the row projects: what moved, never a side mended.
+	"api/decisions.go#keepDecisionNode": "the Keep request, the decision the person read, and the kept_by its node holds",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

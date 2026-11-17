@@ -220,19 +220,41 @@ async function listDocumentBlocks(
   }
   return { text: lines.join("\n"), token: live.token, version: live.version };
 }
+
+/** The lines of `lines` that open the ask block `blockId`: `:::ask{<id> …}`, the id as the
+ *  renderer writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut
+ *  cannot hold). A line that quotes the opener (in code, say) is one of them too. */
+function askOpeners(lines: readonly string[], blockId: string): string[] {
+  const id = typedBlockIdAttribute(blockId);
+  return lines.filter((line) => line.includes(`ask{${id} `) || line.includes(`ask{${id}}`));
+}
+
 /**
- * Refuses an approval request while the document holds an open decision block. A request names
- * the latest version, and a new version moves it to that version and leaves it waiting on its
- * agent, so a request over a block the human has yet to answer leaves their turn the moment they
- * answer it. The live document's `ask` blocks are judged by the latest version, the one the
- * request would name: a block that version shows open counts as open even when its ask is already
- * answered or closed, since that answer reaches a version only when the document settles, about
- * two seconds later, or with the agent's next edit, whichever is first. An answered block already
- * carries its own record, so no edit is needed for that; a waiver carries none, so the agent's
- * next edit is where the human's decision gets written into the text. A block not yet in that
- * version counts as open too. A block removed from the document is not judged here;
- * `refuseRemovingOpenDecisionBlocks` keeps one whose ask is open in it. A document already
- * approved at its latest version is left to the server, which answers with that approval.
+ * Refuses an approval request while the document holds an open decision block. A request asks
+ * the human to agree to every point of the latest version, and an open block is a question they
+ * have not decided yet. Their answer is held on the ask, not in the text, so it writes no version
+ * and moves no request. The live document's `ask` blocks are judged against the latest version,
+ * the one the request would name; a block not yet in that version counts as open.
+ *
+ * A person's answer is held once, on the ask's node (dispatch://INFRA-1150 R3), so a version this
+ * release writes records no state on a block's opening line, and such a block is judged by the
+ * server's read of its ask: it is open while its ask is open. A block copied from another
+ * document's ask has no ask of its own and is judged by that source, whose state, id and document
+ * the live text renders on the copy's opening line from the store (`GET /artifacts/{id}/text`,
+ * read only for such a copy). A version the release before wrote records the state settlement
+ * wrote into the block, and is read as it was written: a block it shows open counts as open even
+ * when its ask is already answered or closed, since while that release serves its settlement
+ * writes the answer into the text, which reaches a version when the document settles, about two
+ * seconds later, or with the agent's next edit, whichever is first. An
+ * answered block already carries its own record, so no edit is needed for that; a waiver carries
+ * none, so the agent's next edit is where the human's decision gets written into the text. A
+ * block is taken by the version alone only when every line opening it records a settled state:
+ * one that records none sends it to the server's read, so a line quoting the opener (in code,
+ * say) can add an open block but never hide one.
+ *
+ * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
+ * one whose ask is open in it. A document already approved at its latest version is left to the
+ * server, which answers with that approval.
  */
 async function refuseOpenDecisionBlocks(
   client: DispatchClient,
@@ -251,35 +273,21 @@ async function refuseOpenDecisionBlocks(
   ]);
   const asks = new Map(documentAsks.map((ask) => [ask.block_id, ask]));
   const lines = version.markdown.split("\n");
-  // An answered block already carries its own record and settles into a version on its own; a
-  // waived one (resolved) gets the decision written in.
+  // The live text, read once, the first time a copy needs its source's state.
+  let liveLines: string[] | undefined;
+  const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
+  // Only a version the release before wrote shows open a block whose ask is answered or closed.
+  // While that release serves, its settlement writes an answer into the block, which settles into
+  // a version on its own; a waived one (resolved) gets the decision written in.
   const stillOpen = (named: string, state: string): string =>
     state === "answered"
       ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
       : `${named}, ${state} but still open in version ${latest}: write the decision into the text with dispatch doc-edit, which writes a version that carries it`;
-  const open = blocks.flatMap((block): string[] => {
-    const ask = asks.get(block.id);
-    // The block's opening lines, `:::ask{<id> … state="…"}`, the id as the renderer writes it
-    // (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold). Every
-    // match counts, so a line that quotes the opener (in code, say) can add an open block but
-    // never hide one; a block none of whose lines carries a state is open.
-    const id = typedBlockIdAttribute(block.id);
-    const openers = lines.filter(
-      (line) => line.includes(`ask{${id} `) || line.includes(`ask{${id}}`)
-    );
-    const states = openers.map((line) => /\bstate="(\w+)"/.exec(line)?.[1]);
-    const named =
-      ask === undefined
-        ? `block ${block.id}`
-        : `${JSON.stringify(ask.question)} (block ${block.id}, ask ${ask.id})`;
-    if (states.length === 0) return [`${named}, which version ${latest} does not hold yet`];
-    if (!states.includes("open") && states.some((state) => state !== undefined)) return [];
-    if (ask !== undefined) return ask.state === "open" ? [named] : [stillOpen(named, ask.state)];
-    // A block copied from another document's ask opens none: settlement names that ask in
-    // `copied_from`, its document in `copied_from_document`, and writes its state into the block,
-    // which this version shows open, so the source is where it is answered. The document is named
-    // as the dashboard's decision card names it, its issue key and slug or its project's
-    // `<project>/<slug>`, so the ask's address is the line's one link.
+  // A block copied from another document's ask opens none: settlement names that ask in
+  // `copied_from` and its document in `copied_from_document`, so the source is where it is
+  // answered. The document is named as the dashboard's decision card names it, its issue key and
+  // slug or its project's `<project>/<slug>`, so the ask's address is the line's one link.
+  const openCopy = (named: string, openers: readonly string[]): string => {
     const attribute = (name: string): string | undefined =>
       openers
         .map((line) => new RegExp(`\\b${name}="([^"]+)"`).exec(line)?.[1])
@@ -287,7 +295,7 @@ async function refuseOpenDecisionBlocks(
     const sourceId = attribute("copied_from");
     const document = attribute("copied_from_document");
     if (sourceId === undefined || document === undefined) {
-      return [`${named}, whose ask Dispatch has not opened yet`];
+      return `${named}, whose ask Dispatch has not opened yet`;
     }
     const source = parseDispatchRef(document);
     const where =
@@ -300,15 +308,47 @@ async function refuseOpenDecisionBlocks(
       source?.owner.kind === "issue"
         ? dispatchChildRef(dispatchIssueRef(source.owner.issue), "ask", sourceId)
         : dispatchChildRef(document, "ask", sourceId);
-    return [`${named}, a copy of ask ${ref}, which is open on ${where}: answer it there`];
-  });
+    return `${named}, a copy of ask ${ref}, which is open on ${where}: answer it there`;
+  };
+  /** The refusal's line for `block`, or undefined where the block is not open. */
+  const judged = async (block: ArtifactBlock): Promise<string | undefined> => {
+    const ask = asks.get(block.id);
+    const named =
+      ask === undefined
+        ? `block ${block.id}`
+        : `${JSON.stringify(ask.question)} (block ${block.id}, ask ${ask.id})`;
+    const openers = askOpeners(lines, block.id);
+    const states = openers.map(stateOf);
+    if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
+    // The release before wrote the block's state into the version, which shows it open.
+    if (states.includes("open")) {
+      if (ask === undefined) return openCopy(named, openers);
+      return ask.state === "open" ? named : stillOpen(named, ask.state);
+    }
+    if (states.every((state) => state !== undefined)) return undefined;
+    // A line opening the block records no state: the server's read of its ask judges it.
+    if (ask !== undefined) return ask.state === "open" ? named : undefined;
+    liveLines ??= (await client.docRead(artifact.id)).markdown.split("\n");
+    const served = askOpeners(liveLines, block.id);
+    const sourceStates = served.map(stateOf);
+    const settled =
+      sourceStates.length > 0 &&
+      !sourceStates.includes("open") &&
+      sourceStates.every((state) => state !== undefined);
+    return settled ? undefined : openCopy(named, served);
+  };
+  const open: string[] = [];
+  for (const block of blocks) {
+    const line = await judged(block);
+    if (line !== undefined) open.push(line);
+  }
   if (open.length === 0) return;
   const count = open.length === 1 ? "1 open decision block" : `${open.length} open decision blocks`;
   throw new Error(
     [
-      `dispatch ${commandName(tool)} was not called: ${artifact.name} (version ${latest}) has ${count}. Answering one writes a new version, which would move this request to that version and leave it waiting on you.`,
+      `dispatch ${commandName(tool)} was not called: ${artifact.name} (version ${latest}) has ${count}. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.`,
       ...open.map((line) => `- ${line}`),
-      "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds. When the human approved an earlier version and their answer is the whole change since it, Dispatch carries the approval to the new version in their name: request nothing. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval again once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since the earlier approval. On a document nobody has approved, wait for that version, then request. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason), write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
+      "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Their answer is held on the ask, not in the text: it writes no version and moves no approval, so once every block is answered, request approval of the latest version, after any version a line above says to wait for. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since any earlier approval. If they waive it, close the block with dispatch resolve-ask (--kind resolved, their words as the --reason), write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
     ].join("\n")
   );
 }
