@@ -200,3 +200,47 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 		}
 	}
 }
+
+// TestADeliveryViewIsReadAgainForItsReaderAtANewProject: a new project is public, so every full
+// member sees it as it is made, and its project.created event, which the relay's feed carries and
+// nothing announces on access.ChangedChannel, has the hub resolve every subscriber's reader again.
+// alice, a full member, holds a timeline; carol makes project NEW, and a pull request of
+// acme/fresh, NEW's repository, then reaches alice's page.
+//
+// Control: the hub's intake takes project.created as it takes any other event; alice's view stays
+// read for the reader that saw no NEW, and no frame names acme/fresh#9.
+func TestADeliveryViewIsReadAgainForItsReaderAtANewProject(t *testing.T) {
+	seed := seedPrivateProject(t)
+	seedHubSettings(t, seed.database)
+	clock := newNoonHubClock()
+	rig := hubOn(t, seed.handler, seed.database, seed.deps, clock, nil)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: func(ctx context.Context) (model.Actor, error) {
+		return seed.server.readerFor(ctx, model.BrowserActor(seedAlice))
+	}})
+	conn.snapshot(t, 5*time.Second, "t")
+	rig.waitListening(t)
+	rig.settle(t)
+
+	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{"key": "NEW", "name": "Project NEW"}, http.StatusCreated)
+	if _, err := seed.database.Pool.Exec(t.Context(), `
+		insert into repo_projects (repo, project, created_by) values ('acme/fresh', 'NEW', '{"kind":"user","id":"operator"}')
+	`); err != nil {
+		t.Fatalf("map acme/fresh to NEW: %v", err)
+	}
+	fresh := hubPR(9, clock.Now().Add(-time.Hour))
+	fresh.Repo, fresh.URL = "acme/fresh", "https://github.com/acme/fresh/pull/9"
+	upsertPR(t, seed.database, fresh)
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case frame := <-conn.frames:
+			if ids, _ := framePullRequests(frame); slices.Contains(ids, "acme/fresh#9") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no frame alice's page was sent within 10s named acme/fresh#9, a pull request of NEW, a project made public after she subscribed")
+		}
+	}
+}
