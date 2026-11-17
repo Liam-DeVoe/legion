@@ -142,25 +142,35 @@ var (
 
 // Step is one run of one step, as its node holds it. Place is the step's place in its task, the
 // attribute `step`: from 1 for kind step, 0 for a retro and a merge; it is not named Step, which
-// StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place,
-// ReturnedTo and Rating 0, and a time nil.
+// StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place and
+// ReturnedTo 0, Rating nil, and a time nil.
 type Step struct {
-	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report, RatingReason string
-	Generation                                                                                      int64
-	Place, ReturnedTo, Rating                                                                       int
-	StartedAt, EndedAt                                                                              *time.Time
+	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report string
+	Generation                                                                        int64
+	Place, ReturnedTo                                                                 int
+	Rating                                                                            *StepRating
+	StartedAt, EndedAt                                                                *time.Time
+}
+
+// StepRating is the rating the agent that did a retro gave the plan its issue ran, 1 to 5, with
+// its reason: one value, so a rating is never held or written without its reason, nor a reason
+// without its rating. A write's Reason "" states no reason, which the write refuses.
+type StepRating struct {
+	Rating int
+	Reason string
 }
 
 // StepWrite is one write of a run: the id and the issue it writes, and each field it states, nil
 // where it states nothing. An empty text and a ReturnedTo of 0 state nothing either, so a write
-// that knows no model leaves the model to a later write that knows it. Rating and RatingReason are
-// stated together or not at all, and only of a retro.
+// that knows no model leaves the model to a later write that knows it. Only a retro takes a
+// Rating.
 type StepWrite struct {
-	ID, Issue                                                                            string
-	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report, RatingReason *string
-	Generation                                                                           *int64
-	Place, ReturnedTo, Rating                                                            *int
-	StartedAt, EndedAt                                                                   *time.Time
+	ID, Issue                                                              string
+	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string
+	Generation                                                             *int64
+	Place, ReturnedTo                                                      *int
+	Rating                                                                 *StepRating
+	StartedAt, EndedAt                                                     *time.Time
 }
 
 // StepRead is a run as the read of its issue answers it: its node, and its attempt, the place of
@@ -179,23 +189,32 @@ type PlanTask struct {
 }
 
 // Plan is the plan one run of an issue ran from, as its node holds it: its source, the owner's
-// document and version ("" and 0 for the source default) and its tasks.
+// document (nil for the source default) and its tasks.
 type Plan struct {
-	ID, Issue, Project, Source, ArtifactID string
-	Generation                             int64
-	Version                                int
-	Tasks                                  []PlanTask
+	ID, Issue, Project, Source string
+	Generation                 int64
+	Document                   *PlanDocument
+	Tasks                      []PlanTask
+}
+
+// PlanDocument is the document an owner gave as an issue's plan: its artifact id and the version
+// of it Legion took, one value, so a plan never holds or names a document without its version, nor
+// a version without its document. A write's ArtifactID "" or Version 0 states none of that half,
+// which an owner's plan refuses.
+type PlanDocument struct {
+	ArtifactID string
+	Version    int
 }
 
 // PlanWrite is one write of a plan: the id and the issue it writes, and each field it states. A
-// plan write names its generation, its source and its tasks, and an owner's plan its document and
-// version; the project is set once, never required.
+// plan write names its generation, its source and its tasks, and an owner's plan its document; the
+// project is set once, never required.
 type PlanWrite struct {
-	ID, Issue                   string
-	Project, Source, ArtifactID *string
-	Generation                  *int64
-	Version                     *int
-	Tasks                       []PlanTask
+	ID, Issue       string
+	Project, Source *string
+	Generation      *int64
+	Document        *PlanDocument
+	Tasks           []PlanTask
 }
 
 // IssuePlan is one finished issue of a project as the read of the project answers it: its plan

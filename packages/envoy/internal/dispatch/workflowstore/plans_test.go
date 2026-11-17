@@ -48,8 +48,12 @@ func putPlan(t *testing.T, pool *store.Pool, write PlanWrite, at time.Time) Plan
 
 // planText is a plan as one line, so two plans compare whole and a difference prints whole.
 func planText(plan Plan) string {
-	return fmt.Sprintf("%s %s gen %d %s artifact %q version %d tasks %v", plan.ID, plan.Issue, plan.Generation,
-		plan.Source, plan.ArtifactID, plan.Version, plan.Tasks)
+	document := "none"
+	if plan.Document != nil {
+		document = fmt.Sprintf("%q version %d", plan.Document.ArtifactID, plan.Document.Version)
+	}
+	return fmt.Sprintf("%s %s gen %d %s document %s tasks %v", plan.ID, plan.Issue, plan.Generation,
+		plan.Source, document, plan.Tasks)
 }
 
 // A plan is one node of kind plan, part of its issue by one relation tuple, holding its source, its
@@ -100,8 +104,8 @@ func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	id, document := uuid.NewString(), uuid.NewString()
 	owner := PlanWrite{
 		ID: id, Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		ArtifactID: new(document), Version: new(3),
-		Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer:fresh"}}, {ID: "docs", Steps: []string{"implementer"}}},
+		Document: &PlanDocument{ArtifactID: document, Version: 3},
+		Tasks:    []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer:fresh"}}, {ID: "docs", Steps: []string{"implementer"}}},
 	}
 	first := putPlan(t, pool, owner, minute(0))
 	before := wholeLog(t, pool)
@@ -113,7 +117,7 @@ func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	if after := wholeLog(t, pool); len(after) != len(before) {
 		t.Fatalf("a second write appended %d tuples, want none", len(after)-len(before))
 	}
-	if first.Generation != 2 || first.ArtifactID != document || first.Version != 3 || len(first.Tasks) != 2 {
+	if first.Generation != 2 || first.Document == nil || *first.Document != (PlanDocument{ArtifactID: document, Version: 3}) || len(first.Tasks) != 2 {
 		t.Fatalf("the owner's plan answers %s, want generation 2 and its document %s at version 3 and two tasks", planText(first), document)
 	}
 }
@@ -137,8 +141,8 @@ func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
 
 	owner := putPlan(t, pool, PlanWrite{
 		ID: id, Issue: "LEG-1", Generation: new(int64(1)), Source: new(PlanSourceOwner),
-		ArtifactID: new(uuid.NewString()), Version: new(3),
-		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
+		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 3},
+		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
 	}, minute(1))
 	if planText(owner) != planText(want) {
 		t.Fatalf("a later owner's write answers\n%s\nwant the default plan\n%s", planText(owner), planText(want))
@@ -174,14 +178,14 @@ func TestAPlanWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"steps empty":               func(write *PlanWrite) { write.Tasks[0].Steps = nil },
 		"steps Planner":             func(write *PlanWrite) { write.Tasks[0].Steps[0] = "Planner" },
 		"steps with a blank key":    func(write *PlanWrite) { write.Tasks[0].Steps[4] = "acceptance:" },
-		"artifact_id of default":    func(write *PlanWrite) { write.ArtifactID = new(uuid.NewString()) },
-		"version of default":        func(write *PlanWrite) { write.Version = new(1) },
-		"artifact_id of owner none": func(write *PlanWrite) { write.Source, write.Version = new(PlanSourceOwner), new(1) },
+		"artifact_id of default":    func(write *PlanWrite) { write.Document = &PlanDocument{ArtifactID: uuid.NewString()} },
+		"version of default":        func(write *PlanWrite) { write.Document = &PlanDocument{Version: 1} },
+		"artifact_id of owner none": func(write *PlanWrite) { write.Source, write.Document = new(PlanSourceOwner), &PlanDocument{Version: 1} },
 		"artifact_id not a uuid": func(write *PlanWrite) {
-			write.Source, write.ArtifactID, write.Version = new(PlanSourceOwner), new("plan-md"), new(1)
+			write.Source, write.Document = new(PlanSourceOwner), &PlanDocument{ArtifactID: "plan-md", Version: 1}
 		},
 		"version of owner none": func(write *PlanWrite) {
-			write.Source, write.ArtifactID = new(PlanSourceOwner), new(uuid.NewString())
+			write.Source, write.Document = new(PlanSourceOwner), &PlanDocument{ArtifactID: uuid.NewString()}
 		},
 		"id":    func(write *PlanWrite) { write.ID = "not-a-uuid" },
 		"issue": func(write *PlanWrite) { write.Issue = "" },
@@ -415,7 +419,7 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(15)), ResultPassed)
 
 	putPlan(t, pool, PlanWrite{
-		ID: uuid.NewString(), Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), ArtifactID: new(uuid.NewString()), Version: new(1),
+		ID: uuid.NewString(), Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}},
 	}, minute(20))
 	stepRun(t, pool, "LEG-2", StepKindStep, "implementer", 1, 2, new(minute(20)), new(minute(25)), ResultPassed)
@@ -461,12 +465,12 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	newestID, document := uuid.NewString(), uuid.NewString()
 	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 9), minute(100))
 	putPlan(t, pool, PlanWrite{
-		ID: newestID, Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner), ArtifactID: new(document), Version: new(4),
+		ID: newestID, Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 4},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
 	}, minute(0))
 	putPlan(t, pool, PlanWrite{
 		ID: uuid.NewString(), Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		ArtifactID: new(uuid.NewString()), Version: new(1), Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
+		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
 	}, minute(50))
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 2, "Two tasks were one.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The plan was late.")
@@ -478,7 +482,7 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	if len(read) != 1 || read[0].Plan == nil {
 		t.Fatalf("the read lists %d issues, want LEG-1 with a plan", len(read))
 	}
-	newest := Plan{ID: newestID, Issue: "LEG-1", Source: PlanSourceOwner, ArtifactID: document, Generation: 10, Version: 4,
+	newest := Plan{ID: newestID, Issue: "LEG-1", Source: PlanSourceOwner, Document: &PlanDocument{ArtifactID: document, Version: 4}, Generation: 10,
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}}}
 	if plan := read[0].Plan; planText(*plan) != planText(newest) {
 		t.Fatalf("the plan of LEG-1 is\n%s\nwant the owner's plan of generation 10\n%s", planText(*plan), planText(newest))

@@ -326,21 +326,18 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	return id, append(stated, rated...), nil
 }
 
-// rating checks the rating a write states and its reason, the rating the agent that did a retro
-// gave the plan, and answers their two attributes, or none where the write states neither. They
-// come together; the rating is 1 to 5, the reason is not blank and holds at most RatingReasonMost
-// code points, and kind, where the write names one, is a retro.
+// rating checks the rating a write states with its reason, the rating the agent that did a retro
+// gave the plan, and answers their two attributes, or none where the write states no rating. The
+// reason is stated (a reason "" is none), not blank and holds at most RatingReasonMost code points;
+// the rating is 1 to 5, and kind, where the write names one, is a retro.
 func (write StepWrite) rating(kind string) ([]attribute, error) {
-	reasoned := write.RatingReason != nil && *write.RatingReason != ""
-	switch {
-	case write.Rating == nil && !reasoned:
+	if write.Rating == nil {
 		return nil, nil
-	case write.Rating == nil:
-		return nil, inputError("rating and rating_reason are written together, and this write names rating_reason and no rating")
-	case !reasoned:
-		return nil, inputError("rating and rating_reason are written together, and this write names rating %d and no rating_reason", *write.Rating)
 	}
-	rating, reason := *write.Rating, *write.RatingReason
+	rating, reason := write.Rating.Rating, write.Rating.Reason
+	if reason == "" {
+		return nil, inputError("rating and rating_reason are written together, and this write names rating %d and no rating_reason", rating)
+	}
 	if rating < 1 || rating > 5 {
 		return nil, inputError("rating %d is no rating: a plan is rated from 1 (the plan cost the work) to 5 (the plan fit the work)", rating)
 	}
@@ -438,17 +435,21 @@ type stepAttributes struct {
 	RatingReason string     `json:"rating_reason"`
 }
 
-// stepFrom reads one node row's attributes as the step they hold.
+// stepFrom reads one node row's attributes as the step they hold. A rating of 0 is a run that
+// holds none, since a write sets a rating and its reason together or neither.
 func stepFrom(id string, attributes []byte) (Step, error) {
 	var held stepAttributes
 	if err := json.Unmarshal(attributes, &held); err != nil {
 		return Step{}, fmt.Errorf("decode the attributes of step %s: %w", id, err)
 	}
-	return Step{
+	step := Step{
 		ID: id, Issue: held.Issue, Project: held.Project, Task: held.Task, Kind: held.Kind,
 		Role: held.Role, Type: held.Type, Agent: held.Agent, Session: held.Session, Model: held.Model,
-		Result: held.Result, Report: held.Report, RatingReason: held.RatingReason, Generation: held.Generation,
-		Place: held.Step, ReturnedTo: held.ReturnedTo, Rating: held.Rating, StartedAt: held.StartedAt,
-		EndedAt: held.EndedAt,
-	}, nil
+		Result: held.Result, Report: held.Report, Generation: held.Generation, Place: held.Step,
+		ReturnedTo: held.ReturnedTo, StartedAt: held.StartedAt, EndedAt: held.EndedAt,
+	}
+	if held.Rating != 0 {
+		step.Rating = &StepRating{Rating: held.Rating, Reason: held.RatingReason}
+	}
+	return step, nil
 }

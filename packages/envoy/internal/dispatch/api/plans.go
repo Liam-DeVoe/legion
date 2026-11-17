@@ -89,7 +89,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
 		ID: r.PathValue("id"), Issue: issue, Project: &project, Source: input.Source,
-		ArtifactID: input.ArtifactID, Generation: input.Generation, Version: input.Version, Tasks: tasks,
+		Generation: input.Generation, Document: input.document(), Tasks: tasks,
 	}, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrPlanInput):
@@ -107,6 +107,24 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, planRecord(written))
+}
+
+// document is the owner's document input states as the store's one value: nil where the body
+// names neither its artifact_id nor its version (each left out, null, "" or 0), and else both,
+// the one the body leaves out "" or 0, which the store refuses, naming it, after it has checked
+// the plan's generation and source.
+func (input planRecordInput) document() *workflowstore.PlanDocument {
+	var document workflowstore.PlanDocument
+	if input.ArtifactID != nil {
+		document.ArtifactID = *input.ArtifactID
+	}
+	if input.Version != nil {
+		document.Version = *input.Version
+	}
+	if document == (workflowstore.PlanDocument{}) {
+		return nil
+	}
+	return &document
 }
 
 // listProjectPlans is each finished issue of one project, newest close first:
@@ -188,13 +206,9 @@ func planRecord(plan workflowstore.Plan) model.PlanRecord {
 		ID: plan.ID, Issue: plan.Issue, Generation: plan.Generation, Source: plan.Source,
 		Tasks: make([]model.PlanTask, len(plan.Tasks)),
 	}
-	if plan.ArtifactID != "" {
-		artifact := plan.ArtifactID
-		record.ArtifactID = &artifact
-	}
-	if plan.Version != 0 {
-		version := plan.Version
-		record.Version = &version
+	if plan.Document != nil {
+		document := *plan.Document
+		record.ArtifactID, record.Version = &document.ArtifactID, &document.Version
 	}
 	for index, task := range plan.Tasks {
 		record.Tasks[index] = model.PlanTask(task)

@@ -106,8 +106,22 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write := input.write()
-	write.Rating, write.RatingReason = input.Rating, input.RatingReason
+	write.Rating = input.rating()
 	s.writeIssueStep(w, r, write, input.Actor, true)
+}
+
+// rating is the rating input states as the store's one value: nil where the body names no rating,
+// which the rating route refuses, and else the rating with the reason, "" where the body names
+// none, which the store refuses, naming both, after it has checked the write's other fields.
+func (input stepRatingInput) rating() *workflowstore.StepRating {
+	if input.Rating == nil {
+		return nil
+	}
+	rating := &workflowstore.StepRating{Rating: *input.Rating}
+	if input.RatingReason != nil {
+		rating.Reason = *input.RatingReason
+	}
+	return rating
 }
 
 // writeIssueStep is the one write of a step record behind both routes: the writer and the issue
@@ -239,8 +253,8 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// stepRecord is a run as the routes answer it: a ReturnedTo of 0, an empty report and a Rating of
-// 0 are a run that has none, which the answer carries as null.
+// stepRecord is a run as the routes answer it: a ReturnedTo of 0, an empty report and a nil Rating
+// are a run that has none, which the answer carries as null, the rating and its reason both.
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
@@ -256,9 +270,9 @@ func stepRecord(step workflowstore.StepRead) model.StepRecord {
 		report := step.Report
 		record.Report = &report
 	}
-	if step.Rating != 0 {
-		rating, reason := step.Rating, step.RatingReason
-		record.Rating, record.RatingReason = &rating, &reason
+	if step.Rating != nil {
+		rating := *step.Rating
+		record.Rating, record.RatingReason = &rating.Rating, &rating.Reason
 	}
 	return record
 }
