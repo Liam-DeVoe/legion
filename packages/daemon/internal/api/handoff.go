@@ -49,9 +49,11 @@ import (
 // and passes that refusal — and the workflow moves a time already past out to the wake floor, a
 // minute from now (workflow.CheckWakeFloor), so such a report starts the next look a minute on.
 // PlanRating and PlanReason are the rating of the plan the issue ran, which the completion that
-// ends the retro carries and no other completion does (PlanRatingContract). PlanRating is a
-// pointer for the reason WakeAt is: a completion naming no rating is told from one naming 0, which
-// is refused as outside 1 to 5.
+// ends the retro carries and no other completion does (PlanRatingContract). Both are pointers for
+// the reason WakeAt is: a completion naming no rating is told from one naming 0, which is refused
+// as outside 1 to 5, and a completion naming no reason from one naming "", which is refused as
+// blank, so a completion that names either member is held to the rule of the rating, as the
+// contract's LegionHandoffCompleteRequest holds the two by presence.
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -61,7 +63,7 @@ type HandoffCompleteRequest struct {
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
 	PlanRating     *int       `json:"planRating,omitempty"`
-	PlanReason     string     `json:"planReason,omitempty"`
+	PlanReason     *string    `json:"planReason,omitempty"`
 }
 
 // PlanRatingContract is the daemon contract that added the rating of the plan to the completion
@@ -398,13 +400,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The rating rides only the completion that ends the retro (planRatingRefusal above), and it is
 	// left out of the key as the summary is: the first completion is what the workflow took, so a
 	// retry that rates again is answered already received and the first rating stands.
-	rating := 0
+	rating, reason := 0, ""
 	if req.PlanRating != nil {
 		rating = *req.PlanRating
 	}
+	if req.PlanReason != nil {
+		reason = *req.PlanReason
+	}
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, PlanReason: req.PlanReason}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, PlanReason: reason}, s.handlers...)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -437,14 +442,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 // completion sent again, corrected, is taken:
 //
 //   - PLAN_RATING_UNEXPECTED: a completion that does not end the retro names planRating or
-//     planReason. Dropping them unread would let an agent believe it had rated the plan.
+//     planReason, an empty one included. Dropping them unread would let an agent believe it had
+//     rated the plan.
 //   - PLAN_RATING_REQUIRED: the completion that ends the retro names neither, from a claim whose
 //     plugin declared PlanRatingContract or a later one, whose tool takes the two. A plugin before
 //     it, and a claim that recorded no contract (0), never sends them and completes unrated.
 //   - PLAN_RATING_INPUT: a rating outside 1 to 5, one of the two without the other, or a reason
 //     that is blank or holds more than planReasonMax characters, counted as Unicode code points.
 func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContract int, issue, what string) *intake.Refusal {
-	named := req.PlanRating != nil || req.PlanReason != ""
+	named := req.PlanRating != nil || req.PlanReason != nil
 	switch {
 	case !endsRetro && named:
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
@@ -455,15 +461,19 @@ func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContrac
 	case !named:
 		return nil
 	}
+	reason := ""
+	if req.PlanReason != nil {
+		reason = *req.PlanReason
+	}
 	var wrong string
-	switch length := utf8.RuneCountInString(req.PlanReason); {
+	switch length := utf8.RuneCountInString(reason); {
 	case req.PlanRating == nil:
 		wrong = "planReason comes with no planRating"
 	case *req.PlanRating < planRatingLeast || *req.PlanRating > planRatingMost:
 		wrong = fmt.Sprintf("planRating %d is outside %d to %d", *req.PlanRating, planRatingLeast, planRatingMost)
-	case req.PlanReason == "":
+	case req.PlanReason == nil:
 		wrong = fmt.Sprintf("planRating %d comes with no planReason", *req.PlanRating)
-	case strings.TrimSpace(req.PlanReason) == "":
+	case strings.TrimSpace(reason) == "":
 		wrong = "planReason is blank"
 	case length > planReasonMax:
 		wrong = fmt.Sprintf("planReason is %d characters, and it holds at most %d", length, planReasonMax)

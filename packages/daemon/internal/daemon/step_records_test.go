@@ -411,7 +411,7 @@ func (r *stepRecordsRig) rate(rating int, reason string) {
 func (r *stepRecordsRig) retroCompletion(rating int, reason string) api.HandoffCompleteRequest {
 	req := api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}
 	if rating != 0 {
-		req.PlanRating, req.PlanReason = &rating, reason
+		req.PlanRating, req.PlanReason = &rating, &reason
 	}
 	return req
 }
