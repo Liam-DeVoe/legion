@@ -197,6 +197,28 @@ describe("dispatch plans", () => {
     ]);
   });
 
+  // Dispatch answers newest closed first. Here that order is no order of the keys, by text or by
+  // number, either way up, so a command that sorted the issues by key would print another order.
+  test("the issues print in the order Dispatch answers them, newest closed first, not by key", async () => {
+    const answer: ProjectPlans = {
+      project: "INFRA",
+      issues: [
+        { ...neverRan, issue: "INFRA-12", closed_at: "2026-11-17T10:00:00Z" },
+        { ...neverRan, issue: "INFRA-9", closed_at: "2026-11-16T10:00:00Z" },
+        { ...neverRan, issue: "INFRA-11", closed_at: "2026-11-15T10:00:00Z" },
+      ],
+    };
+
+    const result = await readPlans({ project: "INFRA" }, answering([], answer));
+
+    expect(result.text.split("\n")).toEqual([
+      "INFRA: 3 finished issues",
+      "INFRA-12 closed 2026-11-17T10:00:00Z plan none ratings none time - failed steps 0",
+      "INFRA-9 closed 2026-11-16T10:00:00Z plan none ratings none time - failed steps 0",
+      "INFRA-11 closed 2026-11-15T10:00:00Z plan none ratings none time - failed steps 0",
+    ]);
+  });
+
   test("an issue with no time prints time -, and one Legion never ran prints plan none too", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [unknownStart, neverRan] };
 
