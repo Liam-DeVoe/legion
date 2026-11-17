@@ -101,7 +101,12 @@ whole number from 1 to 5, and `planReason`, why, the two together; the daemon re
 other completion, `PLAN_RATING_UNEXPECTED`, and refuses the retro's completion without them from a
 claim at 161 or later, `PLAN_RATING_REQUIRED`, while a plugin below 161 never sends them and its
 retro, where the daemon serves it, completes with no rating; no shape of the state moves), after
-contract 146's architect handshake (dispatch://INFRA-2614:
+contract 151's microVM issue pods (dispatch://INFRA-3729: an issue pod's launcher takes
+`--microvm`, and `--metadata-workload-pool` and `--metadata-identity-provider` where the
+deployment sets `runtime.kubernetes.sandbox.microvm.metadata`; the daemon's answer to an issue
+pod launcher's hello carries `kernelKills`, `launcher_memory_kill` carries a `cause`, and the
+state's settings carry `runtime.kubernetes.sandbox`, which the plugin parses loosely, so no shape
+the plugin parses moves), after contract 146's architect handshake (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
