@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: pr4238
+body: |-
+  A listener's KV caches (sessions, role claims, interests, known sessions, CI state) no longer
+  drop or miss a record another listener writes while a cache is being read: a completed read
+  holds every key the bucket held at the barrier it writes (a delete marker on `_kvwatch-barrier`),
+  and removes a row only once the stream's leader says the bucket holds no record of it.
+  Each read costs one barrier write, one STREAM.INFO listing the bucket's keys (64 KB for 1,055
+  sessions) and one leader read per key the read did not deliver, usually none; a read the stream
+  cannot answer keeps every row, fails and is read again.
