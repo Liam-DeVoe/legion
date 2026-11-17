@@ -440,9 +440,15 @@ describe("the dispatch command surface", () => {
       [["issue-update", "--issue", "  ", "--status", "in_progress"], blank("--issue", "issue")],
       [["read", "--issue", ".."], step("--issue", "..", "issue")],
       [["read", "--issue", " . "], step("--issue", ".", "issue")],
-      [["result", "--retract", "..", "--reason", "Wrong commit."], step("--retract", "..", "result")],
+      [
+        ["result", "--retract", "..", "--reason", "Wrong commit."],
+        step("--retract", "..", "result"),
+      ],
       [["resolve-comment", "--comment", "."], step("--comment", ".", "comment")],
-      [["send-to-agent", "--session", "..", "--body", "Hello."], step("--session", "..", "session")],
+      [
+        ["send-to-agent", "--session", "..", "--body", "Hello."],
+        step("--session", "..", "session"),
+      ],
       [
         ["send-to-agent", "--session", "", "--body", "Hello."],
         "--session is empty, so the call names no session: a variable that gives it may be empty or unset",

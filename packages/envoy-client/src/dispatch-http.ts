@@ -100,7 +100,7 @@ import type { ZodType } from "zod";
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
 import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
-import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
+import { isRedirectStatus, messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 
 export type {
   CredentialPendingResponse,
@@ -342,7 +342,11 @@ export class DispatchEmptyPathError extends Error {
   constructor(path: readonly string[]) {
     const route = path
       .map((segment) =>
-        segment === "" ? "{empty}" : namesNothing(segment) ? `{${JSON.stringify(segment)}}` : segment
+        segment === ""
+          ? "{empty}"
+          : namesNothing(segment)
+            ? `{${JSON.stringify(segment)}}`
+            : segment
       )
       .join("/");
     super(
@@ -852,11 +856,7 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
   const echoed = keyEchoed(response, key);
   // A redirect is a definitive answer whose body is never read (`#response`), so it is handed on
   // as it came.
-  if (
-    response.ok ||
-    NULL_BODY_STATUSES.has(response.status) ||
-    (response.status >= 300 && response.status < 400)
-  ) {
+  if (response.ok || NULL_BODY_STATUSES.has(response.status) || isRedirectStatus(response.status)) {
     return {
       response,
       again: false,
@@ -2725,7 +2725,7 @@ export class DispatchClient {
         signal: bound,
       });
       // A redirect's body is not read, whatever its type says: it is no word of Dispatch's.
-      if (response.status >= 300 && response.status < 400) {
+      if (isRedirectStatus(response.status)) {
         response.body?.cancel().catch(() => undefined);
         return false;
       }
@@ -2824,7 +2824,7 @@ export class DispatchClient {
     // its body is neither read nor kept, since a redirector writes its target, path and query with
     // it, into the body too, and Dispatch answers no route with a redirect. It is cancelled, and
     // nothing waits on it.
-    if (response.status >= 300 && response.status < 400) {
+    if (isRedirectStatus(response.status)) {
       response.body?.cancel().catch(() => undefined);
       const target = redirectOrigin(response, url);
       throw this.#gateway(

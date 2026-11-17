@@ -602,6 +602,8 @@ jobs:
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
+              # brokerclient's GitHub Actions identity takes its client from redirects.Refused.
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
@@ -822,6 +824,8 @@ jobs:
               # line adds the package to no other filter's meaning.
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
+              # brokerclient's GitHub Actions identity takes its client from redirects.Refused.
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
@@ -3953,6 +3957,8 @@ jobs:
               # line adds the package to no other filter's meaning.
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
+              # brokerclient's GitHub Actions identity takes its client from redirects.Refused.
+              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
@@ -4128,6 +4134,8 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
+              # brokerclient's GitHub Actions identity takes its client from redirects.Refused.
+              - 'packages/envoy/internal/redirects/*'
               # internal/broker/judge/model.go mints the account token it reads Dispatch with
               # through brokertoken.
               - 'packages/envoy/internal/brokertoken/*'

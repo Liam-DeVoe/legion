@@ -12,7 +12,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
+import { isRedirectStatus, messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -751,7 +751,7 @@ export class EnvoyApiError extends Error {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
     // A redirect's body is not read: a redirector writes its target, path and query with it, into
     // the body too, and the line names the redirect's origin alone.
-    const redirect = details.status >= 300 && details.status < 400;
+    const redirect = isRedirectStatus(details.status);
     try {
       const result = redirect
         ? undefined
@@ -965,7 +965,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // A redirect's body is neither read nor kept: a redirector writes its target, path and query,
     // into it, and the line names the redirect's origin alone (`EnvoyApiError`). It is cancelled,
     // and nothing waits on it.
-    if (response.status >= 300 && response.status < 400) {
+    if (isRedirectStatus(response.status)) {
       response.body?.cancel().catch(() => undefined);
       return { response, body: "" };
     }

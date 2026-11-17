@@ -2144,7 +2144,8 @@ describe("a listener answer that redirects to another origin", () => {
           new ReadableStream<Uint8Array>({
             pull(controller) {
               pulls += 1;
-              if (pulls === 1) controller.enqueue(new TextEncoder().encode(`Redirecting to ${target}`));
+              if (pulls === 1)
+                controller.enqueue(new TextEncoder().encode(`Redirecting to ${target}`));
               // Then nothing more: the body never ends.
               return new Promise<void>(() => {});
             },
