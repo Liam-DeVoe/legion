@@ -374,7 +374,10 @@ Each item below names a task and where its code is, then notes on it.
 
   - `PUT /api/v1/issues/{key}/plans/{id}` writes the plan a run of an issue runs from, under the step write's writer check (`403 STEP_WRITER`), the same `for key share` read with no open check, and no event:
     every write names the run's generation, its source, `default` or `owner` (the owner's document `artifact_id` and its `version` with `owner` alone), and its tasks, each an id and its steps (a role or `role:key`).
-    Each field is set once, a value outside its form is `400 PLAN_INPUT`, the message naming the field, and an id whose plan is another issue's is `409 PLAN_OTHER_ISSUE`.
+    The daemon writes it under one id for the run, when the work starts and again at each later version of the owner's plan that Legion takes.
+    The source, the document, the version and the tasks are one fact: a write whose version is above the one the plan holds replaces all four in one write, a value tuple for each, and every other write leaves them, a `default` plan counting as version 0, so a write that arrives late, twice or out of order changes nothing and is answered `200` with the plan as it stands.
+    The generation and the project are each set once.
+    A value outside its form is `400 PLAN_INPUT`, the message naming the field, and an id whose plan is another issue's is `409 PLAN_OTHER_ISSUE`.
 
   - `GET /api/v1/projects/{key}/plans` lists each finished issue of the project, status `done` with `closed_at` set, newest close first, with `?since=` and `?until=` bounding the close to `[since, until)`
     (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold).
