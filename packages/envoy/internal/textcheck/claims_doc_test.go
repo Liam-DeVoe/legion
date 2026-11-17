@@ -104,7 +104,7 @@ var errCommented = errors.New("the text as written and as the rendered page show
 // (claimListNames of the text as written and of visibleMarkdown's): a list the two read
 // differently, or that one of them cannot read, is refused for the comment (errCommented), naming
 // what each reading gives. Where both fail alike, the written one answers, so a page whose
-// comments stand outside the list fails as it always did.
+// comments stand outside the list fails with the written reading's error alone.
 func claimListOfThePage(doc string) ([]string, error) {
 	written, writtenErr := claimListNames(doc)
 	shown, shownErr := claimListNames(visibleMarkdown(doc))
@@ -218,7 +218,7 @@ func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
 // readings of the guide, and each of those is refused for the comment. A comment inside a claim's
 // prose, a "<!--" inside a fenced block above the list, and a comment after the list, where both
 // readings have ended it, change nothing it reads; a guide with no list fails in both readings
-// alike, with the refusal it always gave.
+// alike, with the written reading's refusal.
 func TestTheClaimListIsReadWhereAReaderSeesIt(t *testing.T) {
 	const (
 		prose = "An issued token carries these claims and no others:\n\n"
