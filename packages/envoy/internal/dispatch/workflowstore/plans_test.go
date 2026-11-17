@@ -377,18 +377,25 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	}
 }
 
-// The plan is the newest node of the issue, the one of the highest generation, and every retro's
-// rating is listed, in the order the retros ran.
+// The plan is the newest node of the issue, the one of the highest generation, whatever order the
+// plans were made in and however their generations sort as text, and every retro's rating is
+// listed, in the order the retros ran.
 func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(5 * time.Hour)
 	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed})
-	document := uuid.NewString()
+	// Generations 2, 9 and 10, made in the order 10, 2, 9 and sorting as text "10", "2", "9",
+	// written in the order 9, 10, 2, each plan of its own source, document, version and tasks.
+	newestID, document := uuid.NewString(), uuid.NewString()
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 9), minute(100))
+	putPlan(t, pool, PlanWrite{
+		ID: newestID, Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner), ArtifactID: new(document), Version: new(4),
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
+	}, minute(0))
 	putPlan(t, pool, PlanWrite{
 		ID: uuid.NewString(), Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		ArtifactID: new(document), Version: new(4), Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
-	}, minute(100))
-	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
+		ArtifactID: new(uuid.NewString()), Version: new(1), Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
+	}, minute(50))
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 2, "Two tasks were one.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The plan was late.")
 
@@ -399,8 +406,10 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	if len(read) != 1 || read[0].Plan == nil {
 		t.Fatalf("the read lists %d issues, want LEG-1 with a plan", len(read))
 	}
-	if plan := read[0].Plan; plan.Source != PlanSourceOwner || plan.Generation != 2 || plan.ArtifactID != document || plan.Version != 4 {
-		t.Fatalf("the plan of LEG-1 is %s, want the owner's plan of generation 2", planText(*plan))
+	newest := Plan{ID: newestID, Issue: "LEG-1", Source: PlanSourceOwner, ArtifactID: document, Generation: 10, Version: 4,
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}}}
+	if plan := read[0].Plan; planText(*plan) != planText(newest) {
+		t.Fatalf("the plan of LEG-1 is\n%s\nwant the owner's plan of generation 10\n%s", planText(*plan), planText(newest))
 	}
 	var ids []string
 	for _, rating := range read[0].Ratings {
