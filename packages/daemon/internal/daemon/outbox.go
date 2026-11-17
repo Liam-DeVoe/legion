@@ -2448,7 +2448,13 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if !ok {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
 	}
-	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
+	// The save names the claim whose shim it asks (record.IssueBundle.Claim); a save the release
+	// before wrote names none and asks the claim of the worker on its role's step.
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	if err != nil {
+		return err
+	}
+	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, token)
 	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}

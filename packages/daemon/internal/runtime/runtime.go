@@ -215,14 +215,15 @@ type IssueSuspender interface {
 	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
 }
 
-// WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
-// workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. The role named must be one whose process runs: the shim builds the
-// bundle with the jj and git of the workspace it already works in. A runtime whose processes
-// share no workspace implements nothing here, and the release of such a pod saves nothing because
-// there is no such pod.
+// WorkspaceBundler asks one live claim's process to bundle the unpushed work of the issue
+// workspace every claim of the issue shares, so a release can keep it while the pod, its disk and
+// the workspace on it go. The claim is named by its token, since the agent that works a role's step
+// can run in a claim another role started (a keyed agent): its process must run, as the shim
+// builds the bundle with the jj and git of the workspace it already works in. A runtime whose
+// processes share no workspace implements nothing here, and the release of such a pod saves
+// nothing because there is no such pod.
 type WorkspaceBundler interface {
-	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
+	BundleWorkspace(ctx context.Context, issue string, token claim.Token) (WorkspaceBundle, error)
 }
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,

@@ -1032,22 +1032,19 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 
 var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 
-// BundleWorkspace has role's shim bundle the unpushed work of the issue workspace every role of
-// the issue shares, over that claim's connection, for a release about to take the pod and its
-// disk away. The role named must be one whose process runs in the issue's own running pod: its
-// shim builds the bundle in the workspace it already works in, so a claim with no locator, one
-// whose pod is not the recorded one, and one with no connection are each a refusal rather than an
-// empty bundle.
+// BundleWorkspace has the shim of the claim token names bundle the unpushed work of the issue
+// workspace every claim of the issue shares, over that claim's connection, for a release about to
+// take the pod and its disk away. The claim must be one whose process runs in the issue's own
+// running pod: its shim builds the bundle in the workspace it already works in, so a claim with
+// no locator, one whose pod is not the recorded one, and one with no connection are each a
+// refusal rather than an empty bundle. The claim is named by its token rather than derived from a
+// role, since a keyed agent works a step of another role in the claim it started.
 //
-// It is the role's shim that answers, never its launcher, so a release has to ask before it stops
-// the role's process: the idle release's save is a row of its own ahead of its role stops
+// It is the claim's shim that answers, never its launcher, so a release has to ask before it
+// stops the claim's process: the idle release's save is a row of its own ahead of its stops
 // (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
 // no role process to bundle it".
-func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	token, err := claim.NewToken(r.project, issue, role)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
-	}
+func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceBundle, error) {
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)

@@ -40,7 +40,7 @@ type releaseRuntime struct {
 	onImage   bool
 	bundle    runtime.WorkspaceBundle
 	bundleErr error
-	bundled   []claim.Role
+	bundled   []claim.Token
 	suspended int
 	refused   int
 	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
@@ -70,10 +70,10 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 	return r.sandboxName, true
 }
 
-func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
+func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, token claim.Token) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, role)
+	r.bundled = append(r.bundled, token)
 	return r.bundle, r.bundleErr
 }
 
@@ -98,10 +98,10 @@ func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authoriz
 	return nil
 }
 
-func (r *releaseRuntime) reads() (bundled []claim.Role, suspended int) {
+func (r *releaseRuntime) reads() (bundled []claim.Token, suspended int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]claim.Role(nil), r.bundled...), r.suspended
+	return append([]claim.Token(nil), r.bundled...), r.suspended
 }
 
 // refusals is how many times the runtime asked the store under its pod lock and was refused.
@@ -537,8 +537,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	}
 
 	bundled, suspended := rig.rt.reads()
-	if len(bundled) != 1 || bundled[0] != claim.RoleImplementer {
-		t.Fatalf("bundle asked of %v, want the pod's one live role", bundled)
+	if len(bundled) != 1 || bundled[0] != rig.token {
+		t.Fatalf("bundle asked of %v, want the pod's one live claim %s", bundled, rig.token)
 	}
 	if suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want one", suspended)

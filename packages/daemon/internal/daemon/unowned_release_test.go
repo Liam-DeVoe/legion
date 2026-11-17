@@ -238,7 +238,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 			t.Fatalf("Sandbox teardowns = %d, want the one this release is made of", suspended)
 		}
 		if len(bundled) != 0 {
-			t.Fatalf("the bundle was asked of %v, want no role: no shim is left to build one", bundled)
+			t.Fatalf("the bundle was asked of %v, want no claim: no shim is left to build one", bundled)
 		}
 		if rig.bundled(t) {
 			t.Fatal("the release saved a bundle, which no role of this pod is coming back for")
