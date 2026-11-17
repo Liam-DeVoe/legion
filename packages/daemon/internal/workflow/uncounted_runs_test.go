@@ -15,7 +15,8 @@ import (
 // row, or one an earlier release started after a rollback, whose row the roll forward marked
 // uncounted — gets an open row at the daemon's boot (OpenUncountedRuns): at the count its end
 // would have taken, with the agent and the moment its start would have named, and with no record
-// queued. A second boot opens nothing. An issue in a phase that runs no step, and one in a tree
+// queued. A second boot opens nothing. A child in accepting, whose step's start no entry records,
+// gets the tree architect and no moment. An issue in a phase that runs no step, and one in a tree
 // the operator holds, get no row. The run's end is then the settle's end of an open run, written
 // once, under that count's id.
 func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
@@ -40,15 +41,16 @@ func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
 			} else {
 				execSQL(t, pool, `delete from step_starts where issue = 'LEGION-208'`)
 			}
-			stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+			stepChild(t, pool, "LEGION-209", phase.Accepting, nil)
+			stepChild(t, pool, "LEGION-210", phase.Admitted, nil)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-300",
 				Project: "LEGION", Title: "operator", Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "W", LastDispatchSeq: 1})
 			seedOperatorTree(t, pool, "LEGION-300")
 			written := len(stepWrites(t, pool, "LEGION-208"))
 
 			engine := stepEngine(nil)
-			if opened := openUncountedRuns(t, pool, engine); opened != 1 {
-				t.Fatalf("the boot opened %d runs, want the tester's alone", opened)
+			if opened := openUncountedRuns(t, pool, engine); opened != 2 {
+				t.Fatalf("the boot opened %d runs, want the tester's and the acceptance's", opened)
 			}
 			testing3 := placeOf("step", 3)
 			tester := treeRoleToken(t, "LEGION-208", claim.RoleTester)
@@ -58,9 +60,23 @@ func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
 			if opened != want {
 				t.Fatalf("the tester's row after the boot = %+v, want %+v", opened, want)
 			}
+			accepting5 := placeOf("step", 5)
+			acceptance := stepStartRow{starts: 0, agent: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), run: record.RunOpen,
+				id: StepID("LEGION-209", 3, accepting5, 0), generation: 3}
+			if got := readStepStartRow(t, pool, "LEGION-209", accepting5); got != acceptance {
+				t.Fatalf("the acceptance's row after the boot = %+v, want %+v, with no moment", got, acceptance)
+			}
+			var momentless bool
+			if err := pool.QueryRow(t.Context(), `select started_at is null and record->'started_at' is null from step_starts where issue = 'LEGION-209'`).
+				Scan(&momentless); err != nil || !momentless {
+				t.Fatalf("the acceptance's row holds a moment = %t, %v; want none in the column and none in the kept record", !momentless, err)
+			}
 			var others int
-			if err := pool.QueryRow(t.Context(), `select count(*) from step_starts where issue <> 'LEGION-208'`).Scan(&others); err != nil || others != 0 {
+			if err := pool.QueryRow(t.Context(), `select count(*) from step_starts where issue not in ('LEGION-208', 'LEGION-209')`).Scan(&others); err != nil || others != 0 {
 				t.Fatalf("rows of the other issues = %d, %v; want none for an issue at admitted or in the operator's tree", others, err)
+			}
+			if got := len(stepWrites(t, pool, "LEGION-209")); got != 0 {
+				t.Fatalf("the boot queued %d step records of the acceptance, want none", got)
 			}
 			if got := len(stepWrites(t, pool, "LEGION-208")); got != written {
 				t.Fatalf("the boot queued %d step records, want none", got-written)
