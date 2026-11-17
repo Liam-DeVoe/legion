@@ -1592,7 +1592,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// task-stopped notice that names it finishes here, and the one the issue's notices reach is
 	// told only when that is another claim (record.Notice.StoppedBy). Published keeps the field,
 	// so a re-held copy is judged the same way.
-	if payload.StoppedBy != "" && payload.StoppedBy == architect {
+	if payload.StoppedBy == architect {
 		r.log.Info("outbox notice finished without publishing: its architect stopped the task itself",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect)
 		return nil
