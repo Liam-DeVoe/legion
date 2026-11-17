@@ -389,7 +389,7 @@ func (s *Service) reconcileAskBlocks(
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
 			}
 			// The new ask's parts, beside its own references: both named by the ask.opened.
-			changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, changes)
+			changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
@@ -418,7 +418,7 @@ func (s *Service) reconcileAskBlocks(
 			// back is a part again, and the event names what that moved.
 			restoredAt := refs.AskPartsAt(ask)
 			changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
-				ask, restoredAt, model.ReferenceChanges{})
+				ask, restoredAt, false, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
 			}
@@ -478,7 +478,7 @@ func (s *Service) reconcileAskBlocks(
 			// The block's wording is now the row's: its parts are that wording too, read through
 			// the one reader, and the ask.edited names what they moved beside the ask's own
 			// references.
-			changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, changes)
+			changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, editedAt, true, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}

@@ -104,7 +104,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// 28-version documents owed, which settle.go's owedWorkCounts refuses and a server started
 	// on the data set would rewrite.
 	if _, err := refs.ReplaceDocumentCounted(ctx, tx, document.ID, document.Versions, versionAt,
-		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located, serverURL)); err != nil {
+		text.Refs(located), moved, refs.MentionExcerpts(latest, blocks, located, serverURL), true); err != nil {
 		return fmt.Errorf("index references: %w", err)
 	}
 	if document.Primary {

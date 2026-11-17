@@ -27,8 +27,10 @@ import (
 // parts of the ask this write just wrote - its question, its options and its answer - indexed in
 // the same transaction through a reader of their own (refs.NewReader), written at `at`, with
 // what they moved merged into beside, the counted changes the same write already holds, so the
-// event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
+// event it appends names them all. No write through it reconciled the ask's question first, so
+// the index reconciles the question itself (questionReconciled false). A write that reconciles
+// the ask's question as well builds the one reader itself and passes it to both
+// (refs.ReplaceCounted, refs.IndexAskPartsCounted with questionReconciled true).
 func (s *server) indexAskParts(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -36,7 +38,7 @@ func (s *server) indexAskParts(
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, false, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event

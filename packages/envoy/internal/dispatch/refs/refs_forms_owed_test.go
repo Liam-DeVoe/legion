@@ -100,7 +100,7 @@ func indexDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, 
 		t.Fatalf("index the blocks of version %d of %s: %v", number, document, err)
 	}
 	if _, err := ReplaceDocumentCounted(ctx, tx, document, number, versionAt, text.Refs(located), moved,
-		MentionExcerpts(markdown, blocks, located, refsGrammarServer)); err != nil {
+		MentionExcerpts(markdown, blocks, located, refsGrammarServer), true); err != nil {
 		t.Fatalf("index version %d of %s: %v", number, document, err)
 	}
 }
@@ -202,7 +202,7 @@ func TestAVersionThatLeavesItsBlocksToTheBlockIndexStaysOwed(t *testing.T) {
 	}
 	located := NewReader(ctx, tx, "artifact", document, refsGrammarServer).Mentions(markdown)
 
-	if _, err := ReplaceDocumentCounted(ctx, tx, document, 1, versionAt, text.Refs(located), nil, nil); err != nil {
+	if _, err := ReplaceDocumentCounted(ctx, tx, document, 1, versionAt, text.Refs(located), nil, nil, false); err != nil {
 		t.Fatalf("index version 1 with no rendering: %v", err)
 	}
 
@@ -231,7 +231,7 @@ func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
 	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
 		t.Fatalf("index the ask's question: %v", err)
 	}
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
+	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now(), true); err != nil {
 		t.Fatalf("index the ask's parts: %v", err)
 	}
 	cite := Target{Kind: "issue", ID: "CORE-2"}
@@ -288,7 +288,7 @@ func TestABareDeleteFromEachBlockTableLeavesItsOwnerOwed(t *testing.T) {
 	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
 		t.Fatalf("index the ask's question: %v", err)
 	}
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
+	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now(), true); err != nil {
 		t.Fatalf("index the ask's parts: %v", err)
 	}
 	if owed := formsOwed(t, tx); len(owed) != 0 {
@@ -351,7 +351,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
 		t.Fatalf("index the ask's question: %v", err)
 	}
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
+	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now(), true); err != nil {
 		t.Fatalf("index the ask's parts: %v", err)
 	}
 	if owed := formsOwed(t, tx); len(owed) != 0 {
@@ -366,7 +366,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	if _, err := ReplaceCountedEdit(ctx, tx, edit, previous, ask.Question); err != nil {
 		t.Fatalf("index the edited question: %v", err)
 	}
-	if _, err := IndexAskParts(ctx, tx, edit, ask, time.Now()); err != nil {
+	if _, err := IndexAskParts(ctx, tx, edit, ask, time.Now(), true); err != nil {
 		t.Fatalf("index the edited parts: %v", err)
 	}
 	cite := Target{Kind: "issue", ID: "CORE-2"}
@@ -384,7 +384,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	if owed := formsOwed(t, tx); !slices.Equal(owed, []string{"ask " + ask.ID}) {
 		t.Fatalf("the answer's row write owes %v, want the ask", owed)
 	}
-	if _, err := IndexAskParts(ctx, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, ask.Answer.At); err != nil {
+	if _, err := IndexAskParts(ctx, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, ask.Answer.At, false); err != nil {
 		t.Fatalf("index the answered ask's parts: %v", err)
 	}
 	if edges := edgesFrom(t, tx, "ask", ask.ID); !slices.Equal(edges, []string{"issue CORE-2"}) {

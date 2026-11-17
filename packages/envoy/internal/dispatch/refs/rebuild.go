@@ -510,7 +510,7 @@ func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 		if _, err := tx.Exec(ctx, `delete from refs where from_kind = $1 and from_id = $2`, kind, id); err != nil {
 			return fmt.Errorf("delete the references of %s %s, which is gone: %w", kind, id, err)
 		}
-		return settleOwed(ctx, tx, kind, id, grammarQueue|formsQueue)
+		return settleOwed(ctx, tx, kind, id, true)
 	}
 	resolve := NewReader(ctx, tx, kind, id, serverURL)
 	if ItemKind(kind) == ItemAsk {
@@ -524,7 +524,7 @@ func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 		if !found {
 			return fmt.Errorf("index the parts of ask %s: its row is gone though this transaction holds it", id)
 		}
-		if _, err := IndexAskParts(ctx, tx, resolve, ask, writtenAt); err != nil {
+		if _, err := IndexAskParts(ctx, tx, resolve, ask, writtenAt, false); err != nil {
 			return fmt.Errorf("index the parts of ask %s: %w", id, err)
 		}
 		return nil

@@ -48,11 +48,6 @@ type Reader struct {
 	// that names nothing or two items or more, so a body writing the same short id twice is one
 	// query.
 	items map[prefixKey]string
-	// reconciled is whether the write reconciled the source's own references through this reader
-	// (ReplaceCounted, ReplaceCountedEdit). An ask's parts index read through it then settles the
-	// forms queue after its own delete rather than reconciling the question again, and one read
-	// through a reader that did not reconciles the question itself (IndexAskParts).
-	reconciled bool
 }
 
 // prefixKey is one short id as ResolvePrefix is asked it: the kind of item it names, the owner it

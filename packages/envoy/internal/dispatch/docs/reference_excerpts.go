@@ -129,7 +129,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL))
+	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL), true)
 }
 
 // blockPointers is each `block[]` value of the version (pmdoc.BlockPointers) as the block index
@@ -158,19 +158,22 @@ func blockPointers(artifactID, markdown string, blocks []model.ArtifactBlock, tr
 }
 
 // indexUnrenderedVersion indexes one document version with no rendering, written at versionAt, in
-// a transaction holding the document's owner row: its references alone. It indexes no blocks and
-// marks the document's mentions owed an excerpt (refs.ClearExcerpts) for the excerpt
-// reconciliation, which reads the document itself.
+// a transaction holding the document's owner row: its references alone. It indexes no blocks, so
+// it leaves the document owed to the forms queue (blocksIndexed false), and marks the document's
+// mentions owed an excerpt (refs.ClearExcerpts) for the excerpt reconciliation, which reads the
+// document itself.
 func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string) (model.ReferenceChanges, error) {
 	reader := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL)
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil)
+	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil, false)
 }
 
 // replaceVersionRefs reconciles the document's references, dated versionAt, to the mentions
 // located in its version, stores excerpts on them (nil: marks them owed), and counts the targets
 // moved, which its blocks and their mentions moved, as well (refs.ReplaceDocumentCounted).
-func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt) (model.ReferenceChanges, error) {
-	return refs.ReplaceDocumentCounted(ctx, tx, artifactID, version, versionAt, text.Refs(located), moved, excerpts)
+// blocksIndexed says the caller indexed the version's blocks in tx first, which is what lets the
+// write settle the document's row of the forms queue.
+func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt, blocksIndexed bool) (model.ReferenceChanges, error) {
+	return refs.ReplaceDocumentCounted(ctx, tx, artifactID, version, versionAt, text.Refs(located), moved, excerpts, blocksIndexed)
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an

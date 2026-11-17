@@ -794,7 +794,7 @@ func (s *server) openApprovalAsk(
 	}
 	// The request's parts - its question and its two review options - beside its own
 	// references, read through the same reader and both named by the ask.opened below.
-	askChanges, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, askChanges)
+	askChanges, err = refs.IndexAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, askChanges)
 	if err != nil {
 		return nil, model.Event{}, err
 	}

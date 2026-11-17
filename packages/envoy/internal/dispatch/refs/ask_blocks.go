@@ -174,40 +174,42 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r *Reader) []blockPair
 //
 // The parts are the rest of the ask's text beside its question, so this is where any write of an
 // ask settles what the forms queue holds for it (RefsFormsOwed), after the parts' own delete from
-// ask_block_refs, which owes that queue the ask (migration 20261117025910): a write that
-// reconciled the question through r settles that queue alone, in the state update that ends the
-// parts' index (itemBlockSource.settleForms), so the settle costs the write no round trip of its
-// own; one that did not - an answer, a resolution, a restoration, the block index of an owed ask -
-// reconciles the question's own references here as well, dating a new edge `at`, and settles both
-// queues after both deletes (replaceRefs). Either way the ask is left owing nothing once this
-// build has indexed its whole text, and no write of it leaves the question's references to a
-// build that read the ask with another grammar.
+// ask_block_refs, which owes that queue the ask (migration 20261117025910). questionReconciled
+// says the caller reconciled the question's own references in tx before this call
+// (ReplaceCounted, ReplaceCountedEdit): this then settles that queue alone, in the state update
+// that ends the parts' index (itemBlockSource.settleForms), so the settle costs the write no round
+// trip of its own. A write that did not - an answer, a resolution, a restoration, the block index
+// of an owed ask - passes false, and this reconciles the question's own references as well,
+// dating a new edge `at`, and settles both queues after both deletes (replaceRefs). Either way the
+// ask is left owing nothing once this build has indexed its whole text, and no write of it leaves
+// the question's references to a build that read the ask with another grammar.
 //
 // It returns the targets of the part mentions it moved, and of the question's references where it
 // reconciled them, which the caller's event counts.
-func IndexAskParts(ctx context.Context, tx pgx.Tx, r *Reader, ask model.Ask, at time.Time) ([]Target, error) {
+func IndexAskParts(ctx context.Context, tx pgx.Tx, r *Reader, ask model.Ask, at time.Time, questionReconciled bool) ([]Target, error) {
 	parts := AskParts(ask)
-	return indexAskParts(ctx, tx, ask, parts, askPartsSum(parts), r, at)
+	return indexAskParts(ctx, tx, ask, parts, askPartsSum(parts), r, at, questionReconciled)
 }
 
 // IndexAskPartsCounted is IndexAskParts for a writer that appends an event: it indexes the ask's
 // parts, resolves the counted targets they moved (CountedChanges) and merges them into beside,
-// what the same write moved elsewhere - the ask's own references, which every writer of an ask's
-// question still reconciles (ReplaceCounted, ReplaceCountedEdit), or nothing
-// (model.ReferenceChanges{}) for a write that holds the parts alone, whose question's references
-// IndexAskParts reconciles itself and counts with the parts. Each target is named once
-// (MergeChanges), since the ask's row and the part holding the same link resolve to it alike. It
-// is ReplaceCountedItem's shape for an ask, whose question text is reconciled beside its parts
-// rather than from one extraction.
+// what the same write moved elsewhere - the ask's own references, which a writer of the ask's
+// question reconciled before this call (ReplaceCounted, ReplaceCountedEdit) and says so with
+// questionReconciled, or nothing (model.ReferenceChanges{}) for a write that holds the parts
+// alone, which passes false and whose question's references IndexAskParts reconciles itself and
+// counts with the parts. Each target is named once (MergeChanges), since the ask's row and the
+// part holding the same link resolve to it alike. It is ReplaceCountedItem's shape for an ask,
+// whose question text is reconciled beside its parts rather than from one extraction.
 func IndexAskPartsCounted(
 	ctx context.Context,
 	tx pgx.Tx,
 	r *Reader,
 	ask model.Ask,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	moved, err := IndexAskParts(ctx, tx, r, ask, at)
+	moved, err := IndexAskParts(ctx, tx, r, ask, at, questionReconciled)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -219,7 +221,7 @@ func IndexAskPartsCounted(
 }
 
 // indexAskParts is IndexAskParts over parts the caller has already read and summed.
-func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itemblocks.Block, sum string, r *Reader, at time.Time) ([]Target, error) {
+func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itemblocks.Block, sum string, r *Reader, at time.Time, questionReconciled bool) ([]Target, error) {
 	makers, err := askPartMakers(ask, parts)
 	if err != nil {
 		return nil, err
@@ -236,19 +238,18 @@ func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itembl
 		pairs: func(next []itemblocks.Block, ids []string) []blockPair {
 			return askPartPairs(next, ids, r)
 		},
-		settleForms: r.reconciled,
+		settleForms: questionReconciled,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if r.reconciled {
+	if questionReconciled {
 		return moved, nil
 	}
 	changed, err := replaceRefs(ctx, tx, string(ItemAsk), ask.ID, text.Refs(r.Mentions(ask.Question)), &at, true)
 	if err != nil {
 		return nil, fmt.Errorf("index ask %s: %w", ask.ID, err)
 	}
-	r.reconciled = true
 	return append(moved, changed...), nil
 }
 
@@ -298,8 +299,9 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // indexAskIfOwed is IndexItemIfOwed for an ask: it indexes the ask's parts when they are owed,
 // which is when its state row is missing (a build older than the part index wrote the ask),
 // owed (owed_at set by such a build's write, or by rebuild-refs), or indexed from other parts
-// than the ask holds now, and the question's own references with them (IndexAskParts), so it
-// settles the ask's forms row after the ask's whole text. The caller holds the ask row.
+// than the ask holds now, and the question's own references with them (IndexAskParts, with no
+// question reconciled before it), so it settles the ask's forms row after the ask's whole text.
+// The caller holds the ask row.
 func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID, serverURL string) (bool, error) {
 	var stated, owed bool
 	var sum *string
@@ -317,7 +319,7 @@ func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID, serverURL string) (bo
 		return false, nil
 	}
 	resolve := NewReader(ctx, tx, string(ItemAsk), askID, serverURL)
-	if _, err := indexAskParts(ctx, tx, ask, parts, partsSum, resolve, writtenAt); err != nil {
+	if _, err := indexAskParts(ctx, tx, ask, parts, partsSum, resolve, writtenAt, false); err != nil {
 		return false, fmt.Errorf("index the parts of ask %s: %w", askID, err)
 	}
 	return true, nil

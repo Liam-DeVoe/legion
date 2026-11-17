@@ -246,7 +246,7 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 			Options:  wording.wording.Options,
 			Answer:   wording.answer,
 		}
-		if _, err := refs.IndexAskParts(ctx, tx, reader, ask, at); err != nil {
+		if _, err := refs.IndexAskParts(ctx, tx, reader, ask, at, true); err != nil {
 			return nil, fmt.Errorf("index the parts of the restored ask %s: %w", wording.ask, err)
 		}
 	}

@@ -49,10 +49,11 @@ type Target struct {
 //
 // The source is r's own: a write that holds another text of the same source - an ask's parts
 // beside its question (IndexAskParts) - passes the one reader to both, so the database answers
-// once per kind for the write rather than once per text. The reader records that this write
-// reconciled the source's own references, and the index of the parts that follows settles what
-// the forms queue holds for the source after its own delete (RefsFormsOwed): those parts are the
-// rest of the ask's text, and this call settles the whole grammar's queue alone.
+// once per kind for the write rather than once per text. Such a write tells the index of the
+// parts that follows that it reconciled the question here (IndexAskParts' questionReconciled),
+// and that index settles what the forms queue holds for the source after its own delete
+// (RefsFormsOwed): those parts are the rest of the ask's text, and this call settles the whole
+// grammar's queue alone.
 func ReplaceCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -64,7 +65,6 @@ func ReplaceCounted(
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	r.reconciled = true
 	return CountedChanges(ctx, tx, changed)
 }
 
@@ -82,7 +82,6 @@ func ReplaceCountedEdit(
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	r.reconciled = true
 	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, r.serverURL, found)...))
 }
 
@@ -112,10 +111,12 @@ func editedHeadTargets(previous, body, serverURL string, found []text.Ref) []Tar
 // same write moved elsewhere - the version's blocks and their mentions (IndexBlocks) - so its event
 // names them all.
 //
-// The blocks and the excerpts are cut from the one rendering, so a version with excerpts has had
-// its blocks indexed in tx before this call (docs' indexRenderedVersion), and one without has
-// left them to the block index (docs' indexUnrenderedVersion): only the first settles what the
-// forms queue holds for the document (replaceRefs).
+// blocksIndexed says the caller indexed the version's blocks in tx before this call (IndexBlocks,
+// docs' indexRenderedVersion), so the text this call reads is the document's whole text and every
+// delete that index made came before it: only then does it settle what the forms queue holds for
+// the document (replaceRefs). A version that leaves its blocks to the block index (docs'
+// indexUnrenderedVersion) passes false, and the document stays owed. Whether excerpts is nil
+// decides only whether the excerpts are stored or marked owed.
 func ReplaceDocumentCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -125,8 +126,9 @@ func ReplaceDocumentCounted(
 	found []text.Ref,
 	moved []Target,
 	excerpts map[Target]model.GraphExcerpt,
+	blocksIndexed bool,
 ) (model.ReferenceChanges, error) {
-	changed, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt, excerpts != nil)
+	changed, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt, blocksIndexed)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -189,55 +191,37 @@ func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found 
 		}
 		changed = append(changed, added...)
 	}
-	settle := grammarQueue
-	if whole {
-		settle |= formsQueue
-	}
-	if err := settleOwed(ctx, tx, fromKind, fromID, settle); err != nil {
+	if err := settleOwed(ctx, tx, fromKind, fromID, whole); err != nil {
 		return nil, err
 	}
 	return changed, nil
 }
 
-// owedQueues is a set of the re-index queues a write settles (settleOwed).
-type owedQueues uint8
-
-const (
-	// grammarQueue is refs_grammar_owed (RefsGrammarOwed), which a write settles once it has read
-	// the source's own text with the whole grammar.
-	grammarQueue owedQueues = 1 << iota
-	// formsQueue is refs_forms_owed (RefsFormsOwed), which a write settles only once it has
-	// indexed the source's whole text, its blocks too, after every delete that index made.
-	formsQueue
-)
-
-// settleOwed deletes the rows one source owes the re-index queues of queues, in the write's own
-// transaction, which holds that source's row: every write of the text was committed before this
-// transaction read it, so whatever enqueued_at a row holds, the text this write indexed is the
-// text the row is owed for. It is the queues' four source kinds that are settled this way -
-// artifact, ask, comment and message, which are the from_kind of every refs row too, so one
-// statement serves them all. The fifth kind of the whole grammar's queue, `scope`, names a
-// document whose sources are owed a re-index, not a source whose refs this writes, and only the
-// scope drain settles it. A from_id that is no uuid (a test's synthetic source) owes nothing,
-// since the queues key their id as one.
+// settleOwed deletes the row one source owes the whole grammar's re-index queue
+// (RefsGrammarOwed), which a write settles once it has read the source's own text with the whole
+// grammar, and, with forms, the row it owes the forms queue (RefsFormsOwed) too, in the same
+// statement: a write passes forms only once it has indexed the source's whole text, its blocks
+// too, after every delete that index made. It runs in the write's own transaction, which holds
+// that source's row: every write of the text was committed before this transaction read it, so
+// whatever enqueued_at a row holds, the text this write indexed is the text the row is owed for.
+// It is the queues' four source kinds that are settled this way - artifact, ask, comment and
+// message, which are the from_kind of every refs row too, so one statement serves them all. The
+// fifth kind of the whole grammar's queue, `scope`, names a document whose sources are owed a
+// re-index, not a source whose refs this writes, and only the scope drain settles it. A from_id
+// that is no uuid (a test's synthetic source) owes nothing, since the queues key their id as one.
 //
 // A build older than a queue's table settles nothing of it, so a text it indexes stays owed in
 // that table until a build that reads its grammar indexes it (RefsFormsOwed).
-func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string, queues owedQueues) error {
+func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string, forms bool) error {
 	id, ok := canonicalUUID(fromID)
 	if !ok {
 		return nil
 	}
-	var statement string
-	switch queues {
-	case grammarQueue:
-		statement = `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`
-	case grammarQueue | formsQueue:
+	statement := `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`
+	if forms {
 		statement = `
 			with grammar as (delete from refs_grammar_owed where kind = $1 and id = $2::uuid)
 			delete from refs_forms_owed where kind = $1 and id = $2::uuid`
-	default:
-		return nil
 	}
 	if _, err := tx.Exec(ctx, statement, fromKind, id); err != nil {
 		return fmt.Errorf("settle the index owed by %s %s: %w", fromKind, fromID, err)

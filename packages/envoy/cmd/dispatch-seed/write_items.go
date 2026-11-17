@@ -144,7 +144,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
 			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
-			if _, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt); err != nil {
+			if _, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt, false); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
 			// The index records the parts and leaves their windows to the block-index tick's

@@ -192,7 +192,7 @@ func rewriteApprovalAsk(
 	}
 	// The rewording is a revision of the request's question part, read through the one reader,
 	// which its ask.edited names beside the request's own references.
-	changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, *ask, editedAt, changes)
+	changes, err = refs.IndexAskPartsCounted(ctx, tx, reader, *ask, editedAt, true, changes)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
