@@ -158,8 +158,8 @@ const config = {
 /** The one route the command reads. */
 const STEPS_PATH = "/api/v1/issues/LEG-1/steps";
 
-/** `dispatch steps --issue LEG-1` over `dispatch`, a fake Dispatch as a fetch; each wait before a
- *  request Dispatch answered with no route is asked again returns at once. */
+/** `dispatch steps --issue LEG-1` over `dispatch`, a fake Dispatch as a fetch. The client waits
+ *  no time before it asks again a request Dispatch answered with no route. */
 function runSteps(dispatch: FakeDispatchFetch) {
   return executeDispatchTool({
     tool: "dispatch_steps",
