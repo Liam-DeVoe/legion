@@ -759,8 +759,8 @@ const answerer = `coalesce(user_threads_login(k.answer->>'user'), '')`
 
 // commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
 // the node graphstore.AuthorOf reads off the actor the row stored, a login canonicalised as
-// commentPeople canonicalises one, and null for an actor that names nobody, whose comment states
-// no authored_by at all.
+// commentWriterPeople canonicalises one, and null for an actor that names nobody, whose comment
+// states no authored_by at all.
 const commentAuthor = `case
 			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> ''
 				then '` + graphstore.KindPerson + `:' || user_threads_login(c.author->>'id')
@@ -789,7 +789,7 @@ var commentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 // commentWriters are the comments the store holds or held, each as the actor that wrote it, the
 // time it was written and the event that stored it, null for a row: every comments row the store
 // holds (commentInTheStore), and the comment.created or comment.answered event of every comment
-// the comments table no longer holds. It is who wrote a comment, as commentPeople and
+// the comments table no longer holds. It is who wrote a comment, as commentWriterPeople and
 // recordedSessions read it.
 //
 // The events are there for the erase. It deletes a comment's row and keeps the comment's events,
@@ -837,19 +837,47 @@ func erasedSince(kind, id, at string) string {
 		where erased.node_kind = ` + kind + ` and erased.node_id = ` + id + ` and erased.ran_at >= ` + at + `)`
 }
 
-// commentPeople are the people who wrote a comment the store holds or held (commentWriters), as
-// graphstore.AuthorOf reads an actor: the login an actor of kind user carries, or the owner a
-// personal token's actor carries, each canonicalised the way user_threads_login canonicalises a
-// login (migration 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the
-// sessions the server proved that wrote a comment: the comment's author is the session, whose act
-// names that same session and whose owner is the person it belongs to, and the write that ties
-// the two with an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except
-// for a session past the store's bound, of which nothing is written.
+// commentWriterPeople is each person a comment the store holds or held names as its writer
+// (commentWriters), one row for each such comment and person, with the time the comment was
+// written and the event that stored it (null for a row). It reads an actor as graphstore.AuthorOf
+// does: the login an actor of kind user carries, or the owner a personal token's actor carries,
+// each canonicalised the way user_threads_login canonicalises a login (migration 0095, which is
+// model.CanonicalLogin in SQL). Beside them are the owners of the sessions the server proved that
+// wrote a comment: the comment's author is the session, whose act names that same session and
+// whose owner is the person it belongs to, and the write that ties the two with an alias_of tuple
+// makes the owner's node with it (graphstore.AuthorFacts), except for a session past the store's
+// bound, of which nothing is written.
 //
 // Only the comments the store holds name anybody here (commentInTheStore): a comment anchored
 // to or owned by a document whose address is past the bound is left whole out of the store, so
 // it states no authored_by and makes no author node, and a person whose only comment is one of
 // those is no node of the store and no difference of this census.
+//
+// It is the one reading of who a comment names, read by two: the census's person row side
+// (commentPeople) and the sizing's people (sizingWritesWith), so the sizing counts the people
+// the census holds to a node for a comment. It reads no table of the store, so the sizing can
+// read it on a database the store does not exist in yet.
+var commentWriterPeople = `
+	select user_threads_login(author.login) as login, written.at, written.event
+	from (` + commentWriters + `) written
+	cross join lateral (
+		select case
+			when written.actor->>'kind' = 'user' and coalesce(written.actor->>'id', '') <> ''
+				then written.actor->>'id'
+			when written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> '' then null
+			when coalesce(written.actor->>'owner', '') <> '' then written.actor->>'owner'
+		end
+		union all
+		select written.actor->>'owner'
+		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
+		  and written.actor->'act'->>'session' = written.actor->>'id'
+		  and octet_length(written.actor->>'id') <= ` + addressBound + `
+	) author (login)
+	where author.login is not null and user_threads_login(author.login) <> ''`
+
+// commentPeople are the people the census holds to a person node, each once: who wrote a comment
+// the store holds or held (commentWriterPeople), and the people an ask, a decision or a reading of
+// the store names, below.
 //
 // A person the erase took is held to no event that came before that erase (erasedSince): the
 // events of their erased comments name them as the author after it.
@@ -882,23 +910,10 @@ func commentPeople(authors string) string {
 	return `
 	select distinct user_threads_login(author.login) as login
 	from (
-		select wrote.login
-		from (` + commentWriters + `) written
-		cross join lateral (
-			select case
-				when written.actor->>'kind' = 'user' and coalesce(written.actor->>'id', '') <> ''
-					then written.actor->>'id'
-				when written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> '' then null
-				when coalesce(written.actor->>'owner', '') <> '' then written.actor->>'owner'
-			end
-			union all
-			select written.actor->>'owner'
-			where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
-			  and written.actor->'act'->>'session' = written.actor->>'id'
-			  and octet_length(written.actor->>'id') <= ` + addressBound + `
-		) wrote (login)
-		where written.event is null
-		   or not ` + erasedSince(`'`+graphstore.KindPerson+`'`, `user_threads_login(wrote.login)`, `written.at`) + `
+		select named.login
+		from (` + commentWriterPeople + `) named
+		where named.event is null
+		   or not ` + erasedSince(`'`+graphstore.KindPerson+`'`, `named.login`, `named.at`) + `
 		union all
 		select case
 			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
@@ -1093,7 +1108,7 @@ func storedOwners(authors string) string {
 // test before and after, so the flip to sent owes no node the settle did not already write.
 //
 // Only the comments the store holds name a session here (commentWriters), for the reason
-// commentPeople binds the same: a comment left out of the store records no author at all.
+// commentWriterPeople binds the same: a comment left out of the store records no author at all.
 //
 // It is one definition read by two: the census's session row side and the backfill's session
 // pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the

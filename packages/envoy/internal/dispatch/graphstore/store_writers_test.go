@@ -27,15 +27,15 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same eight docs' register of the tree's passes scans for
-// (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
-// caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
-// Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, and FillScopes, the backfill's fill of the project of a node stored with none.
-// Each is a function of the package, never a method, so a call of one is named by the package
-// and found here wherever it is made. A write that holds a statement of its own instead is found
-// by rawStoreWrite, and none outside this package may hold one.
+// package goes through, the same ten docs' register of the tree's passes scans for
+// (storeWriterCall): Write, WriteUncaused and Caused in a caller's transaction, WriteArms and
+// WriteArmsUncaused spliced into a caller's statement, Authored, Reached and SessionRecorded,
+// which run those arms for the writers that record an author, a reached session and a session
+// an ask names, EraseNode, the erase's delete of a node and its tuples, and FillScopes, the
+// backfill's fill of the project of a node stored with none. Each is a function of the package,
+// never a method, so a call of one is named by the package and found here wherever it is made.
+// A write that holds a statement of its own instead is found by rawStoreWrite, and none outside
+// this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
 	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes"}
 
