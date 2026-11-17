@@ -15,8 +15,9 @@ import type { DocumentBlocks } from "./issue-tree";
  *
  * A Change is a comment of the issue anchored to the decision's own words in the decisions
  * document (`DecisionActions.tsx`), which is the write the old Decisions tab made; `changeAnchor`
- * gives the quote and the occurrence it is written with, so it lands on the decision's first
- * block below its heading though an earlier decision opens with the same words. The decisions
+ * gives the quote and the occurrence it is written with, counted over the decisions document's
+ * own reading, so it lands on the decision's first block below its heading though an earlier
+ * decision, or the document's text above its first decision, holds the same words. The decisions
  * read holds no state for it. So the page reads it from the comments it already reads: every
  * comment a person anchored in a decision's section of the decisions document, on that
  * decision's words, since that decision last changed is a change they asked for, and is drawn
@@ -186,20 +187,34 @@ export function decisionChanges(
  * never its markdown, so a list or a hard break quoted as markdown would anchor on nothing. They
  * are read from the tree Go read the decision's text into (`Decision.text_tree`), whose
  * top-level blocks are the paragraphs the markdown would have been split into; an answer that
- * carried no reading - a pod of the build before during a rolling deploy - leaves the first
- * paragraph's own markdown, which is all the browser has. Undefined for a decision whose heading
- * is all it holds.
+ * carried no reading - a pod of the build before during a rolling deploy - or a reading that
+ * holds no blocks leaves the first paragraph's own markdown, which is all the browser has
+ * (`decisionWords`' rule). Undefined for a decision whose heading is all it holds.
  */
 export function anchorQuote(decision: Pick<Decision, "text" | "text_tree">): string | undefined {
-  return firstBlockOf(decision)?.quote;
+  const tree = decision.text_tree;
+  if (tree === undefined || !Array.isArray(tree.content)) {
+    return firstParagraph(decision.text);
+  }
+  const block = (tree.content as DisplayTree[]).find((node) => node.type !== "heading");
+  return block === undefined ? undefined : wordsOf(block);
 }
 
-/** The anchor a Change of a decision is written with: the quote (`anchorQuote`) and its zero-based
- *  occurrence in the decisions document's text. */
+/**
+ * The anchor a Change of a decision is written with: the quote (`anchorQuote`) and its zero-based
+ * occurrence in the decisions document's text. The occurrence is absent where the document's
+ * reading is not in hand, or does not line up with the decisions read (`changeAnchor`). A write
+ * without it is anchored by the server where the quote stands once in the document, and refused
+ * (409) where it stands more than once, rather than landed on the wrong place.
+ */
 export interface ChangeAnchor {
-  readonly occurrence: number;
+  readonly occurrence?: number;
   readonly quote: string;
 }
+
+/** The heading of the section that holds the replaced decisions (`replacedHeading`,
+ *  `api/decisions.go`): its `###` sections are the replaced decisions, and it is none itself. */
+const REPLACED_HEADING = "Replaced";
 
 /**
  * The anchor a Change of `decision` is written with: the quote `anchorQuote` gives, and which of
@@ -209,95 +224,113 @@ export interface ChangeAnchor {
  * places; pass a zero-based occurrence"); so a Change names it (decision 92 of
  * dispatch://INFRA-1196). Undefined for a decision whose heading is all it holds.
  *
- * The occurrence follows the server's rule (`pmdoc.FindQuote`). The document's text is every text
- * node's text joined, with one space wherever two text runs are not adjacent, as between two
- * blocks or two list items (`buildFlattenedText`); a quote's matches are every exact match in that
- * text, overlapping ones included, in document order; the occurrence picks one of them. The
- * decisions read (`decisions`) holds every decision of the document in document order, replaced
- * ones included, so the text up to the decision is the words of each row above it
- * (`decisionWords`), then its own, each joined to the next by one space; a row holding no words
- * adds no space. The occurrence is the number of matches that start before the decision's first
- * block in that text, which starts after the words of its heading and one space. A match that
- * starts in the heading and runs into the block counts too, since the server lists it first.
- * Rows below the decision hold no match above it and are not read; a decision `decisions` does
- * not hold (by `block_id`) is counted with no row above it.
+ * The server counts the quote's places over the whole decisions document (`docs.MarkQuote`,
+ * `pmdoc.FindQuote`; decision 92 as amended), so this counts over it too. The text above the
+ * first decision (the document's title, an intro), the `## Replaced` heading and a `#` section are
+ * in no row of the decisions read, so a count over the rows missed a match there, and the Change
+ * then landed outside every decision. The blocks read (`ArtifactBlock`) cannot serve either: it
+ * holds each block's id, type and markdown range, and no text. So the caller passes `document`,
+ * the decisions document's own reading: the `markdown_tree` of its text read
+ * (`api.getArtifactText`), read once when the reader sends the Change. `decisions` are the
+ * decisions read's rows, replaced ones included, in document order.
  *
- * A row the read sent no reading for - a pod of the build before during a rolling deploy - or a
- * reading that holds no blocks is counted by its stored markdown (`text`) in place of its words,
- * as the decision itself is and by the same rule (`decisionWords`), and the decision's own first
- * block then starts after its markdown before the first paragraph: the same approximation
- * `anchorQuote` makes there, where the quote is that paragraph's markdown.
+ * The document's text is every text node's text joined, with one space wherever two text runs are
+ * not adjacent, as between two blocks or two list items (`buildFlattenedText`): the words of the
+ * reading (`wordsOf`). A quote's matches are every exact match in that text, overlapping ones
+ * included, in document order (`findAll`), and the occurrence picks one of them: it is the number
+ * of matches that start before the decision's first block. A match that starts in the heading and
+ * runs into the block counts too, since the server lists it first. Where the block's words start
+ * is read off the nodes above it, never found by searching for the quote.
  *
- * One limit: text outside every decision - above the first decision, the `## Replaced` heading, a
- * `#` section - is in no row of the read, so a match there is not counted, and the occurrence then
- * names a place earlier than the decision's own block. A decisions document holds a decision's
- * first sentence there only where its preamble quotes it.
+ * The decision's heading is found among the reading's top-level nodes by the server's section
+ * rule (`decisionSections`, `isDecisionHeading`), walking them in order. A heading closes an open
+ * section whose heading's level is its own or deeper; a `#` or `##` heading says whether what
+ * follows is under `## Replaced`; and a heading opens a decision where none is open, at `##`
+ * outside `## Replaced` and at `###` under it. The decision's heading is the one at the
+ * decision's own index in `decisions` (by `block_id`). The reading lines up with the read only
+ * where that heading's words are the decision's heading, and the node right after it is a block,
+ * no heading, whose words are the quote. Otherwise, and where `document` is undefined, the anchor
+ * carries no occurrence (`ChangeAnchor`). That is so for a heading the server reads with markup
+ * or closing hashes, for a sub-heading right below the decision's heading, and for a decision
+ * read with no reading whose first paragraph holds markup.
+ *
+ * One assumption remains: the reading's text runs are the stored document's, which the server
+ * makes its display reading from.
  */
 export function changeAnchor(
-  decision: Pick<Decision, "block_id" | "text" | "text_tree">,
-  decisions: readonly Pick<Decision, "block_id" | "text" | "text_tree">[] | null | undefined
+  decision: Pick<Decision, "block_id" | "heading" | "text" | "text_tree">,
+  decisions: readonly Pick<Decision, "block_id">[] | null | undefined,
+  document: DisplayTree | undefined
 ): ChangeAnchor | undefined {
-  const block = firstBlockOf(decision);
-  if (block === undefined) return undefined;
-  const rows = decisions ?? [];
-  const index = rows.findIndex((row) => row.block_id === decision.block_id);
-  const above = rows
-    .slice(0, Math.max(index, 0))
-    .map(decisionWords)
-    .filter((words) => words !== "")
-    .join(" ");
-  const words = decisionWords(decision);
-  const text = above === "" ? words : `${above} ${words}`;
-  const start = (above === "" ? 0 : above.length + 1) + block.at;
-  return { occurrence: matchesBefore(text, block.quote, start), quote: block.quote };
+  const quote = anchorQuote(decision);
+  if (quote === undefined) return undefined;
+  if (document === undefined || !Array.isArray(document.content)) return { quote };
+  const nodes = document.content as DisplayTree[];
+  const index = (decisions ?? []).findIndex((row) => row.block_id === decision.block_id);
+  const heading = index === -1 ? undefined : decisionHeadings(nodes)[index];
+  const block = heading === undefined ? undefined : nodes[heading + 1];
+  if (
+    heading === undefined ||
+    wordsOf(nodes[heading]).trim() !== decision.heading.trim() ||
+    block === undefined ||
+    block.type === "heading" ||
+    wordsOf(block) !== quote
+  ) {
+    return { quote };
+  }
+  // The block's words start one space after the words of the nodes above it, where those hold
+  // any: `wordsOf` writes that space between two blocks, as the server does.
+  const above = wordsOf({ ...document, content: nodes.slice(0, heading + 1) });
+  const start = above === "" ? 0 : above.length + 1;
+  return { occurrence: matchesBefore(wordsOf(document), quote, start), quote };
 }
 
-/** A decision's whole words, as a Change's quote is matched against them and its occurrence
- *  counted in them: the words of the server's reading of its text (`Decision.text_tree`) where
- *  the read carried a reading that holds blocks, and its stored markdown otherwise - the one rule
- *  this module reads a decision by, which `firstBlockOf` reads its first block by too. */
+/** Where each decision's heading stands among the top-level nodes of the decisions document's
+ *  reading, in document order, by the server's section rule (`changeAnchor`). */
+function decisionHeadings(nodes: readonly DisplayTree[]): number[] {
+  const headings: number[] = [];
+  // The level of the open decision's heading, and 0 while no decision is open.
+  let open = 0;
+  let replaced = false;
+  for (const [index, node] of nodes.entries()) {
+    const level = headingLevel(node);
+    if (level === 0) continue;
+    if (level <= open) open = 0;
+    if (level <= 2) replaced = level === 2 && wordsOf(node).trim() === REPLACED_HEADING;
+    if (open === 0 && level === (replaced ? 3 : 2)) {
+      open = level;
+      headings.push(index);
+    }
+  }
+  return headings;
+}
+
+/** A node's heading level (its `attrs.level`), and 0 for a node that is no heading, as the server
+ *  reads a block that is none (`headingOf`). */
+function headingLevel(node: DisplayTree): number {
+  if (node.type !== "heading") return 0;
+  const attrs = node.attrs;
+  const level =
+    typeof attrs === "object" && attrs !== null && "level" in attrs ? attrs.level : undefined;
+  return typeof level === "number" ? level : 0;
+}
+
+/** A decision's whole words, as a Change's quote is matched against them: the words of the
+ *  server's reading of its text (`Decision.text_tree`) where the read carried a reading that holds
+ *  blocks, and its stored markdown otherwise - the one rule this module reads a decision by, which
+ *  `anchorQuote` reads its first block by too. */
 function decisionWords(row: Pick<Decision, "text" | "text_tree">): string {
   const tree = row.text_tree;
   return tree !== undefined && Array.isArray(tree.content) ? wordsOf(tree) : row.text;
 }
 
-/** The decision's first block below its heading, as a Change quotes it: its words (`quote`), and
- *  where in the decision's whole words (`decisionWords`) the block starts (`at`). */
-interface FirstBlock {
-  readonly at: number;
-  readonly quote: string;
-}
-
-/** The decision's first block below its heading (`FirstBlock`), read out of the server's reading
- *  of its text, or out of its markdown where it has no reading, by `decisionWords`' rule.
- *  Undefined for a decision whose heading is all it holds. */
-function firstBlockOf(decision: Pick<Decision, "text" | "text_tree">): FirstBlock | undefined {
-  const tree = decision.text_tree;
-  if (tree === undefined || !Array.isArray(tree.content)) {
-    return firstParagraph(decision.text);
-  }
-  const nodes = tree.content as DisplayTree[];
-  const first = nodes.findIndex((node) => node.type !== "heading");
-  if (first === -1) return undefined;
-  // The block starts after the words of the nodes above it, its heading, and the one space
-  // `wordsOf` writes between theirs and its own, as the server does between two blocks.
-  const head = wordsOf({ ...tree, content: nodes.slice(0, first) });
-  return { at: head === "" ? 0 : head.length + 1, quote: wordsOf(nodes[first]) };
-}
-
-/** The decision's first paragraph below its heading, as markdown, and where in its markdown it
- *  starts: the block of a decision read with no reading (`decisionWords`). Undefined for a
- *  decision whose heading is all it holds. */
-function firstParagraph(text: string): FirstBlock | undefined {
-  // The split keeps each blank line as a piece of its own, so the pieces' lengths add up to where
-  // the next one starts; a blank line holds nothing once trimmed, so it is never the paragraph.
-  let at = 0;
-  for (const piece of text.split(/(\n\s*\n)/)) {
+/** The decision's first paragraph below its heading, as markdown: the block of a decision read
+ *  with no reading (`decisionWords`). Undefined for a decision whose heading is all it holds. */
+function firstParagraph(text: string): string | undefined {
+  // A blank line holds nothing once trimmed, so it is never the paragraph.
+  for (const piece of text.split(/\n\s*\n/)) {
     const paragraph = piece.trim();
-    if (paragraph !== "" && !paragraph.startsWith("#")) {
-      return { at: at + piece.length - piece.trimStart().length, quote: paragraph };
-    }
-    at += piece.length;
+    if (paragraph !== "" && !paragraph.startsWith("#")) return paragraph;
   }
   return undefined;
 }

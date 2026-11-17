@@ -84,18 +84,25 @@ export function Timestamp({ at, className, exact = false }: TimestampProps): Rea
   const page = usePageWords();
   const [, forceUpdate] = useState(0);
   useEffect(() => subscribe(() => forceUpdate((count) => count + 1)), []);
+  // Inside `NoTooltips` an instant is a value the page draws whole, so it keeps `max-w-full` and
+  // breaks anywhere, as every value there does (dispatch://INFRA-3935 R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md); outside it keeps the host's class alone.
+  const shownClassName =
+    page === null
+      ? className
+      : `${className === undefined ? "" : `${className} `}max-w-full [overflow-wrap:anywhere]`;
 
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) {
     return (
-      <time className={className} {...page?.authorText}>
+      <time className={shownClassName} {...page?.authorText}>
         {at}
       </time>
     );
   }
   return (
     <time
-      className={className}
+      className={shownClassName}
       dateTime={at}
       title={tooltips ? date.toLocaleString() : undefined}
       {...page?.authorText}
