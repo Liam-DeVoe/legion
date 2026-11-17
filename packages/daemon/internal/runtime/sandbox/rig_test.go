@@ -1263,17 +1263,17 @@ func claimLabels(_ claim.Role) map[string]string {
 	return map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: testTree}
 }
 
-// sandboxLocator is a recorded role process locator in its claim's pod's one container.
+// sandboxLocator is a recorded process locator in its claim's pod's one container.
 func sandboxLocator(token claim.Token, uid string) runtime.Locator {
-	role, ok := token.Role()
-	if !ok {
-		panic("test token has no role")
+	slot := slotOf(token)
+	if slot == "" {
+		panic("test token names no slot")
 	}
 	return runtime.Locator{
 		Runtime:     runtime.RuntimeSandbox,
 		Claim:       token,
 		Incarnation: runtime.SandboxIncarnation(uid, 1),
-		Sandbox:     &runtime.SandboxLocator{Namespace: testNamespace, Name: SandboxName(token), PodUID: uid, Container: podContainer(role), Generation: 1},
+		Sandbox:     &runtime.SandboxLocator{Namespace: testNamespace, Name: SandboxName(token), PodUID: uid, Container: podContainer(slot), Generation: 1},
 	}
 }
 

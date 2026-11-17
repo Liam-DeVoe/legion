@@ -81,7 +81,9 @@ import (
 // `phases.step_task`, `phases.step_place` and `pull_requests.task`, each at a default that every
 // row it finds reads as no plan (migration_20261117034837_test.go), and so do the roles a plan
 // defines (20261117201743), whose table's foreign key stands on issue_plans, so an upgrade applies
-// it after the plan's tables (migration_20261117201743_test.go).
+// it after the plan's tables (migration_20261117201743_test.go). The name of each step's agent
+// (20261117213545) adds `plan_steps.agent` and touches no outbox_kind_check; every row it finds
+// reads as its role (migration_20261117213545_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -90,7 +92,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837,
-	20261117201743,
+	20261117201743, 20261117213545,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

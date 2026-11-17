@@ -1801,6 +1801,10 @@ type Store interface {
 	// PlanRoleOf is the role named role that the plan of issue defines at the issue's current
 	// generation, and false, with no error, where it defines none of that name.
 	PlanRoleOf(ctx context.Context, tx pgx.Tx, issue, role string) (PlanRole, bool, error)
+	// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its
+	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
+	// agents from.
+	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
@@ -2275,12 +2279,12 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 // recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
 // issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
-// longer, whatever tree its claim was registered in. A claim that ends in no architect role is
+// longer, whatever tree its claim was registered in. A claim whose agent is not the architect is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
 // architect costs the read of the tree.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
-	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
 	}
 	project, err := claim.ProjectToken(issue.Project)

@@ -804,9 +804,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // list before the list's own rewrites of that check, which do not name the later kind, so the
 // row seeded of that kind fails the upgrade. So does a migration that builds on a table only a
 // version of the list creates, as 20261117201743's foreign key on issue_plans does: the case of a
-// database main migrated would apply it before 20261117034837 creates that table. Any other
-// version left out makes the cases below weaker, never red, which is why the comment says where
-// the list comes from.
+// database main migrated would apply it before 20261117034837 creates that table. So does a
+// migration that changes a table a version of the list creates, as 20261117213545 adds a column to
+// 20261117034837's plan_steps: left out, it is applied as main's, before that table exists. Any
+// other version left out makes the cases below weaker, never red, which is why the comment says
+// where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -815,6 +817,7 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261117000528: true,
 	20261117004117: true, 20261117023932: true, 20261117034837: true, 20261117201743: true,
+	20261117213545: true,
 }
 
 const idleRelease = 20261101222956

@@ -293,3 +293,73 @@ func TestATokenNamesItsRoleTheControllersIncluded(t *testing.T) {
 		}
 	}
 }
+
+// A claim is one agent of an issue, and its token ends in the agent's name, which can be a name no
+// role has (`implementer-2`). Cut gives that name whole, with the issue's part before it, and the
+// token of a role is the token of the agent named for that role.
+func TestATokenEndsInItsAgent(t *testing.T) {
+	token, err := AgentToken("legion", "INFRA-12", Agent("implementer"))
+	if err != nil || token != "legion-legion-infra-12-implementer" {
+		t.Fatalf("AgentToken = %q, %v", token, err)
+	}
+	issue, agent, ok := Token("legion-legion-infra-12-implementer-2").Cut()
+	if !ok || issue != "legion-legion-infra-12" || agent != "implementer-2" {
+		t.Fatalf("Cut = %q %q %v, want the issue part and implementer-2", issue, agent, ok)
+	}
+	same, _ := NewToken("legion", "INFRA-12", RoleTester)
+	if byAgent, _ := AgentToken("legion", "INFRA-12", Agent(RoleTester)); same != byAgent {
+		t.Fatalf("NewToken %q and AgentToken %q differ for a role", same, byAgent)
+	}
+	if _, agent, ok := ControllerToken("legion").Cut(); ok {
+		t.Errorf("Cut of the controller's token = %q, want none: it names no issue", agent)
+	}
+}
+
+// NewToken is the token of a role's agent, and it still refuses a name that is no role: its callers
+// read that refusal as "no claim of this key". AgentToken takes any name of the agent grammar. The
+// controller's token is told apart from an issue's by IsController, which reads no role.
+func TestNewTokenKeepsItsRefusalOfANameThatIsNoRole(t *testing.T) {
+	if token, err := NewToken("legion", "INFRA-12", Role("implementer-2")); err == nil || err.Error() != `claim token: "implementer-2" is not a role` {
+		t.Errorf("NewToken(implementer-2) = %q, %v; want the refusal of a name that is no role", token, err)
+	}
+	if token, err := AgentToken("legion", "INFRA-12", Agent("implementer-2")); err != nil || token != "legion-legion-infra-12-implementer-2" {
+		t.Errorf("AgentToken(implementer-2) = %q, %v; want legion-legion-infra-12-implementer-2", token, err)
+	}
+	if !ControllerToken("legion").IsController() {
+		t.Error("ControllerToken(legion).IsController() = false, want true")
+	}
+	if Token("legion-legion-infra-12-implementer").IsController() {
+		t.Error("an issue's token IsController() = true, want false")
+	}
+}
+
+// An agent's name has the role grammar of a deployment: a lowercase letter, then at most 31
+// lowercase letters, digits or dashes. AgentToken refuses any other name, and the issue and the
+// project as NewToken does.
+func TestAgentTokenRefusesANameOutsideTheAgentGrammar(t *testing.T) {
+	for _, testCase := range []struct {
+		name, project, issue string
+		agent                Agent
+		wantFragment         string
+	}{
+		{"no name", "legion", "INFRA-12", "", `""`},
+		{"a name that starts with a digit", "legion", "INFRA-12", "2-implementer", `"2-implementer"`},
+		{"an uppercase name", "legion", "INFRA-12", "Implementer", `"Implementer"`},
+		{"a name of 33 bytes", "legion", "INFRA-12", Agent("a" + strings.Repeat("b", 32)), `"a` + strings.Repeat("b", 32) + `"`},
+		{"a lowercase issue key", "legion", "infra-12", "implementer", `"infra-12"`},
+		{"a project that is not a token", "Legion", "INFRA-12", "implementer", `"Legion"`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			token, err := AgentToken(testCase.project, testCase.issue, testCase.agent)
+			if err == nil {
+				t.Fatalf("AgentToken = %q, want a refusal", token)
+			}
+			if !strings.Contains(err.Error(), testCase.wantFragment) {
+				t.Errorf("the refusal does not name %s: %v", testCase.wantFragment, err)
+			}
+		})
+	}
+	if token, err := AgentToken("legion", "INFRA-12", Agent("a"+strings.Repeat("b", 31))); err != nil {
+		t.Errorf("AgentToken of a name of 32 bytes = %q, %v; want it taken", token, err)
+	}
+}

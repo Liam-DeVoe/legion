@@ -77,7 +77,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 
 // C6: each row of "What slice 4 refuses", with its exact text and its task. Each cause gets one
 // reason, so a plan with two causes gets two. The taken plans are the subsets of today's line
-// that keep the implementer, with the owner's acceptance.
+// that keep the implementer, with the owner's acceptance, and with a key on a role but acceptance.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }
@@ -101,8 +101,6 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "task a names the role reviewer at steps 2 and 3." + yet}}},
 		{name: "acceptance with no key", plan: oneTask("a", "implementer acceptance"),
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names acceptance with no key, which asks for a fresh agent of the role acceptance." + yet}}},
-		{name: "a key", plan: oneTask("a", "implementer:cd reviewer"),
-			want: []Refusal{{Task: "a", Reason: "step 1 of task a names the key cd." + yet}}},
 		{name: "the key owner on a role but acceptance", plan: oneTask("a", "implementer:owner"),
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names the key owner." + yet}}},
 		{name: "a key on acceptance but owner", plan: oneTask("a", "implementer acceptance:r"),
@@ -127,7 +125,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		})
 	}
 
-	for _, steps := range []string{"implementer reviewer", "planner implementer tester reviewer acceptance:owner", "implementer acceptance:owner", "implementer"} {
+	for _, steps := range []string{"implementer reviewer", "planner implementer tester reviewer acceptance:owner", "implementer acceptance:owner", "implementer", "implementer:cd reviewer"} {
 		if r := Supported(oneTask("a", steps)); len(r) != 0 {
 			t.Fatalf("Supported(%s) = %+v, want none", steps, r)
 		}
@@ -143,5 +141,22 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("two tasks and prober =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// A step can name its agent by a key, and the steps of one key are one agent, so a plan whose
+// steps share a key is taken. The key owner stays the owner's alone, and the owner alone does the
+// accepting step: the key owner on a role but acceptance, and any other key on acceptance, are
+// refused, each with the sentence of a step this release does not carry out, since Legion would
+// otherwise run the step in another agent than the plan names.
+func TestAKeyOtherThanOwnerIsTaken(t *testing.T) {
+	if got := Supported(oneTask("t", "implementer:a tester:a reviewer")); len(got) != 0 {
+		t.Fatalf("Supported = %v, want none", got)
+	}
+	if got := Supported(oneTask("t", "implementer:owner reviewer")); len(got) != 1 || got[0].Reason != "step 1 of task t names the key owner."+yet {
+		t.Fatalf("Supported = %v, want the key owner refused", got)
+	}
+	if got := Supported(oneTask("t", "implementer:a acceptance:a")); len(got) != 1 || got[0].Reason != "step 2 of task t names the key a."+yet {
+		t.Fatalf("Supported = %v, want the key a on acceptance refused", got)
 	}
 }

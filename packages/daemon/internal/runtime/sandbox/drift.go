@@ -256,8 +256,8 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if err := r.checkLocator(*k.Locator); err != nil {
 		return nil, err
 	}
-	role, _ := k.Locator.Claim.Role()
-	kind := podKindFor(role)
+	slot := slotOf(k.Locator.Claim)
+	kind := podKindFor(slot)
 	if !roundCovers(kind) {
 		return nil, nil
 	}
@@ -301,7 +301,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
 		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
-	for _, moved := range r.driftedInPod(pod, role) {
+	for _, moved := range r.driftedInPod(pod, slot) {
 		drifted = append(drifted, moved.String())
 	}
 	return drifted, nil
