@@ -92,12 +92,17 @@ that is not the root's primary one.
      summary. `triage`: a person pulled it back; set nothing and name it. Any other status: someone
      else moved the root back into the workflow after the notice was sent; set nothing and name
      `ref` in your summary.
-2. **After the park.** Under the root's `Events:`, each `issue.created`, `issue.updated` and
-   `issue.closed` line ends `status <status>`: every change to the issue writes one, a rank,
-   priority, label or assignee change too, and each shows the status the issue had then. The park
-   is the oldest line of the newest unbroken run of those lines that show the root's current
-   status (an event of another type between two of them does not break the run). The author of
-   the park line parked the tree. The park is your own hold only when that line is by `session
+2. **After the park.** Under the root's `Events:`, every change to the issue writes an
+   `issue.created`, `issue.updated` or `issue.closed` line, a rank, priority, label, assignee or
+   `advances` change too. Such a line names a status, as `status <status>`, when it is an
+   `issue.created` or `issue.closed` line, or an `issue.updated` line whose change moved the status
+   or that an older Dispatch wrote, which named the status on every update. Any other
+   `issue.updated` line names the fields its change moved and no status (`advances`, `title,
+   labels`), or nothing when it moved none. The park is the oldest line of the newest unbroken run
+   of lines that name the root's current status. An `issue.updated` line that names no status is a
+   change that left the status as it was, so it does not break the run, and an event of another
+   type between two of them does not break it either. The author of the park line parked the
+   tree. The park is your own hold only when that line is by `session
    legion-daemon:<PROJECT>` and, after it and at most 10 minutes after it, `Events:` show a
    `comment.created` from a session (any controller session: its id changes when the controller
    restarts or is taken over) that begins `Parked by Legion while it waits on:`. That is the mark
@@ -114,8 +119,9 @@ that is not the root's primary one.
    <login>`), another session's, and one by `session legion-daemon:<PROJECT>` with no mark beside
    it. The daemon writes an operator's `legion status` and a park you made because a person asked
    under that same session, so the author alone does not show your own hold. A decision older than
-   the park is no reason to run: the park is the later word. When that run reaches the oldest such
-   line `Events:` shows, read the root's events through the API, which keeps more than 10: the
+   the park is no reason to run: the park is the later word. When the oldest line of that run is
+   the oldest `issue.*` line `Events:` shows, or no line `Events:` shows names a status, read the
+   root's events through the API, which keeps more than 10: the
    `curl` of [Triage a root](skill://legion-controller/references/triage.md#triage-a-root) step 2, whose
    events carry `type`, `actor`, `created_at` and `payload.status` or `payload.body`. When the run
    still reaches the oldest event you read, the park is that line or an older one, and you cannot

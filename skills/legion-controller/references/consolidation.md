@@ -52,8 +52,9 @@ A pair is settled, and is skipped rather than proposed, when the two issues alre
 was closed as a duplicate of the other, one was reopened after such a close, or one was made a
 child of the other. Read the first two from `dispatch read --issue <KEY> --all-events`'s
 `Events:`: the close's reason is the `message.created` line just before `issue.closed`, and a
-reopen is an `issue.updated` line that moves the status off `done`. No `Events:` line reports a
-parent change, so read the third from the same read's `Links:` and `Referenced by:`.
+reopen is an `issue.updated` line that moves the status off `done`. An `issue.updated` line names
+`parent` when its change moved the parent, but not which issue the parent is, so read the third
+from the same read's `Links:` and `Referenced by:`.
 
 Fold each pair you judge the same work by the duplicate rule of `skill://dispatch-first`: keep the
 issue with the spec, copy to it what only the other has, and close the other

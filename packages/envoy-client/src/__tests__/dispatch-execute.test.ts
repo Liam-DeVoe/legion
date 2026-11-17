@@ -14525,6 +14525,45 @@ describe("executeDispatchTool", () => {
               diff_truncated: false,
             },
           },
+          {
+            // A write of the issue's `advances` alone: the status it carries is the one it kept.
+            seq: 10,
+            type: "issue.updated",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:10:00Z",
+            payload: {
+              key: "DSP-42",
+              status: "backlog",
+              title: "Dispatch issue",
+              changed: ["advances"],
+            },
+          },
+          {
+            seq: 11,
+            type: "issue.updated",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:11:00Z",
+            payload: {
+              key: "DSP-42",
+              status: "needs_review",
+              title: "Dispatch issue",
+              labels: ["docs"],
+              changed: ["status", "labels"],
+            },
+          },
+          {
+            // A write that moved nothing, such as a list of `advances` sent again as it was.
+            seq: 12,
+            type: "issue.updated",
+            actor: { kind: "user", id: "sami" },
+            created_at: "2026-09-09T00:12:00Z",
+            payload: {
+              key: "DSP-42",
+              status: "needs_review",
+              title: "Dispatch issue",
+              changed: [],
+            },
+          },
         ]);
       }
       throw new Error(`unexpected request: ${target.pathname}`);
@@ -14553,6 +14592,9 @@ describe("executeDispatchTool", () => {
         "- #7 comment.anchor_refreshed · user sami · 2026-09-09T00:07:00Z · Anchor moved after the document edit.",
         `- #8 ask.anchor_refreshed · user sami · 2026-09-09T00:08:00Z · ${reopenQuestion}`,
         "- #9 artifact.human_edited · user person@example.com · 2026-09-09T00:09:00Z · spec.md v4 to v7, edited by person@example.com",
+        "- #10 issue.updated · user sami · 2026-09-09T00:10:00Z · advances",
+        "- #11 issue.updated · user sami · 2026-09-09T00:11:00Z · status needs_review, labels",
+        "- #12 issue.updated · user sami · 2026-09-09T00:12:00Z",
       ].join("\n"),
       details: { issue: "DSP-42" },
     });
