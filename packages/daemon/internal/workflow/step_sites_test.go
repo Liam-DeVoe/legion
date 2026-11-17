@@ -28,6 +28,12 @@ func stepEngine(agent func(claim.Token) StepAgent) *Engine {
 	return engine
 }
 
+// placeOf is the place of kind at step in the task default, the key an expected id is computed
+// from (StepID).
+func placeOf(kind string, step int) record.StepPlace {
+	return record.StepPlace{Task: "default", Kind: kind, Place: step}
+}
+
 // stepRoot is the root LEGION-208 standing at at, generation 1, with its open pull request #42.
 func stepRoot(t *testing.T, pool *pgxpool.Pool, at phase.Phase) record.Issue {
 	t.Helper()
@@ -182,7 +188,7 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 		return start, end, pool
 	}
 	start, end, pool := run(t, func(*pgxpool.Pool) {})
-	if want := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 1); start.ID != want {
+	if want := StepID("LEGION-208", 1, placeOf("step", 3), 1); start.ID != want {
 		t.Fatalf("the start of testing has id %s, want %s (the first start of default/step/3)", start.ID, want)
 	}
 	if end.ID != start.ID {
@@ -250,7 +256,7 @@ func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
 	if end.Role != "reviewer" || end.Type != "review" || end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleReviewer) {
 		t.Fatalf("the review's end = %+v, want the reviewer's", end)
 	}
-	if !isStart(start) || start.Step != 2 || start.Role != "implementer" || start.ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 2) {
+	if !isStart(start) || start.Step != 2 || start.Role != "implementer" || start.ID != StepID("LEGION-208", 1, placeOf("step", 2), 2) {
 		t.Fatalf("the rejection's start = %+v, want the implementer's second start of step 2", start)
 	}
 	if first := writes[1]; !isStart(first) || first.Step != 2 || first.ID == start.ID {
@@ -339,7 +345,7 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	if starts, ends := testingWrites("LEGION-208"); len(starts) != 1 || len(ends) != 1 || ends[0].ID != starts[0].ID {
 		t.Fatalf("four ends of one run of testing wrote starts %+v and ends %+v, want one start and its one end", starts, ends)
 	}
-	if starts, ends := testingWrites("LEGION-209"); len(starts) != 0 || len(ends) != 1 || ends[0].ID != StepID("LEGION-209", 3, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 0) {
+	if starts, ends := testingWrites("LEGION-209"); len(starts) != 0 || len(ends) != 1 || ends[0].ID != StepID("LEGION-209", 3, placeOf("step", 3), 0) {
 		t.Fatalf("four ends of a run no start counted wrote starts %+v and ends %+v, want one end at the count 0", starts, ends)
 	}
 	startTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -351,7 +357,7 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	onStored(t, pool, engine, "LEGION-208", startTwice)
 	onStored(t, pool, engine, "LEGION-208", endTwice)
 	starts, ends := testingWrites("LEGION-208")
-	if len(starts) != 2 || len(ends) != 2 || starts[1].ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 2) || ends[1].ID != starts[1].ID {
+	if len(starts) != 2 || len(ends) != 2 || starts[1].ID != StepID("LEGION-208", 1, placeOf("step", 3), 2) || ends[1].ID != starts[1].ID {
 		t.Fatalf("a start after the end, a second start and two ends wrote starts %+v and ends %+v, want the second run's one start and one end", starts, ends)
 	}
 }
@@ -461,7 +467,7 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				if got := issueAt(t, pool, "LEGION-208"); got != tc.want {
 					t.Fatalf("LEGION-208 stands at %s, want %s", got, tc.want)
 				}
-				run := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 4}, starts)
+				run := StepID("LEGION-208", 1, placeOf("step", 4), starts)
 				var reviewWrites, ends, late []record.StepRecord
 				reports := map[string]int{}
 				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 4) {
@@ -615,7 +621,7 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 	})
 	t.Run("a run the release before started", func(t *testing.T) {
 		writes := run(t, phase.Accepting, func(*pgxpool.Pool, *Engine) {})
-		if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, record.StepPlace{Task: "default", Kind: "step", Place: 5}, 0) {
+		if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, placeOf("step", 5), 0) {
 			t.Fatalf("the writes of LEGION-209's step 5 = %+v, want one end at the count 0", writes)
 		}
 		treeArchitects(t, writes[0])
@@ -907,7 +913,7 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 	}
 	end := writes[0]
 	assertEnd(t, end, "step", 3, 1, "passed", nil)
-	if end.ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 0) || end.StartedAt == nil || !end.StartedAt.Equal(t0) ||
+	if end.ID != StepID("LEGION-208", 1, placeOf("step", 3), 0) || end.StartedAt == nil || !end.StartedAt.Equal(t0) ||
 		end.Role != "tester" || end.Type != "testing" || end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleTester) {
 		t.Fatalf("the end = %+v, want count 0, the tester's identity and its start at %s", end, t0)
 	}
@@ -947,7 +953,7 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 				t.Fatalf("LEGION-208 stands at %s once its last child left, want done", got)
 			}
 			writes := stepWrites(t, pool, "LEGION-208")
-			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "merge", Place: 0}, 0) {
+			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, placeOf("merge", 0), 0) {
 				t.Fatalf("step rows = %+v, want the merge's one end at the count 0", writes)
 			}
 			end := writes[0]
