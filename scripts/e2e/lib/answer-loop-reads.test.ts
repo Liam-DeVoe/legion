@@ -381,6 +381,19 @@ describe("the stopped agents' conversations", () => {
     expect(run(`conversation_holds empty '"type":"compaction"'`).code).toBe(1);
   });
 
+  // Proof run 43996451813 (theorem-labs/agent-infra, at cb8eb857): A15 and A7 under postgres read
+  // "the conversation holds" as no, each beside `jq: error: writing output failed: Broken pipe`. A
+  // conversation read from the session table is one jq string; grep -q stops at its first match,
+  // and under the rig's pipefail jq's write into the closed pipe fails the whole read. A read that
+  // found its needle must not answer that it did not, however long the conversation is.
+  test("conversation_holds finds a needle early in a long conversation read from the session table", () => {
+    const rows = join(dir, "long-conversation-rows.json");
+    writeFileSync(rows, JSON.stringify([{ text: `stage4b-fixture\n${"x".repeat(1 << 20)}\n` }]));
+    const body = `store=postgres; pg_rows=$(cat ${shq(rows)})`;
+    expect(run(`${body}; conversation_holds architect stage4b-fixture`).code).toBe(0);
+    expect(run(`${body}; conversation_holds architect never-written`).code).toBe(1);
+  });
+
   test("text_compactions counts the compactions the loop's reader reads, never a snapcompact", () => {
     expect(read("text_compactions twice")).toEqual({ code: 0, text: "1" });
     // A person's bare /compact is the image-based snapcompact, and a rollover is no summary the

@@ -77,6 +77,27 @@ test("writes an envelope's dedupe key once, and each other envelope on its own l
   ]);
 });
 
+// Proof run 43996451813 (theorem-labs/agent-infra, at cb8eb857): the listener accepted twelve
+// notices on notifications.legion.alp22215.controller and the controller stand-in, registered for
+// that lane, recorded one. Each daemon keys a notice by its own outbox row (legion-outbox:<row>), and
+// the run's two daemons have a database each, so the second one's keys repeat the first one's on
+// another lane. A dedupe key names one envelope on one topic: the same key on another topic is
+// another message, and recording it is what the criteria read.
+test("records an envelope whose dedupe key another topic already used", () => {
+  const record = join(workDir(), "inbox.jsonl");
+  const write = makeRecorder(record);
+  const notice = (lane: string, message: string) =>
+    JSON.stringify({
+      topic: `notifications.legion.${lane}.controller`,
+      dedupe_key: "legion-outbox:12",
+      payload: message,
+    });
+  expect(write("rig-controller", notice("alf4242", "the first daemon's"))).toBe(true);
+  expect(write("rig-controller", notice("alp4242", "the second daemon's"))).toBe(true);
+  expect(write("rig-controller", notice("alp4242", "the second daemon's"))).toBe(false);
+  expect(readFileSync(record, "utf8").trim().split("\n")).toHaveLength(2);
+});
+
 test("records nothing for a frame that is not an envelope", () => {
   const record = join(workDir(), "inbox.jsonl");
   const write = makeRecorder(record);
