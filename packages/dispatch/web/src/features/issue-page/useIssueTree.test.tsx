@@ -2761,3 +2761,48 @@ test("a write that lands while the coverage read is invalid already reads the tr
     client.clear();
   }
 });
+
+// A tree read refused, its retries spent, stays refused while the live feed is up, until the
+// reader's Retry, an event of the issue or the feed coming back. A surface that starts reading the
+// tree afterwards - a filter pressed, which draws its slot, or any slot drawn again - is none of
+// those, so it reads nothing of its own, and the read stays refused, so the failed line stays.
+test("a surface that starts reading a refused tree read sends no read while the live feed is up", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE })
+  );
+  // The app's client (`main.tsx`): its retries and their waits.
+  const client = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+  });
+  jest.useFakeTimers();
+  const feed = liveFeedOn(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    await tick(2_000, 250);
+    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(treeReadsOf(), "the load's read and its two retries").toBe(3);
+
+    const later = renderHook(() => useIssueTree(issue), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    let pendingAt = 0;
+    for (let step = 0; step < 12; step += 1) {
+      await tick(250, 250);
+      if (client.getQueryState(issueTreeKey(KEY))?.status !== "error") pendingAt += 1;
+    }
+    expect(treeReadsOf(), "a surface that starts reading the tree reads nothing of its own").toBe(
+      3
+    );
+    expect(pendingAt, "the read stays refused, so the failed line stays drawn").toBe(0);
+    later.unmount();
+    view.unmount();
+  } finally {
+    realClock();
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
