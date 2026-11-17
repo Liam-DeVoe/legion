@@ -166,6 +166,10 @@ func TestScenarioRefusals(t *testing.T) {
 		// of ties.json is taken by the rule that the reader takes the commit of a subject with.
 		{"a commit of ties.json that holds only blanks", "carry", write("ties.json", `{" \t ":{"a-restart-loses-no-message":["go.work"]}}`),
 			"ties.json", `commit " \t ": a commit of no letter and no digit names no commit`},
+		{"ties by check, with no commit", "carry", write("ties.json", `{"a-restart-loses-no-message":["go.work"]}`),
+			"ties.json", `it is not in the form {"<commit>":{"<check id>":["<path or pattern>", …]}}: the value at "/a-restart-loses-no-message" is of another type`},
+		{"an approved spec with no list of nodes", "carry", write("approved.json", `{"nodes":null}`),
+			"approved.json", `specgraph: approved spec: it holds no "nodes" list`},
 		{"a subject with a branch and a deploy", "carry",
 			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","deploy":"d1","now":"2026-11-14T00:00:00Z"}]`),
 			"subjects.json", "subject 1: it sets both branch and deploy; a subject sets exactly one of them"},
@@ -233,20 +237,6 @@ func TestScenarioRefusals(t *testing.T) {
 		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "missing")
 		expect(t, runBinary(t, binary, "", "state", "--scenario", missing), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
-	})
-	// encoding/json/v2 words the fault of a value of another type with a modal verb that it picks at
-	// random once per process ("cannot" or "unable to", errorModalVerb), so this row reads the file,
-	// the type and the member, and not the verb.
-	t.Run("ties by check, with no commit", func(t *testing.T) {
-		t.Parallel()
-		dir := copyScenario(t, "carry")
-		writeFile(t, filepath.Join(dir, "ties.json"), []byte(`{"a-restart-loses-no-message":["go.work"]}`))
-		got := runBinary(t, binary, "", "state", "--scenario", dir)
-		prefix := "spec-check: " + filepath.Join(dir, "ties.json") + ": json: "
-		fault := ` unmarshal JSON array into Go map[string][]string within "/a-restart-loses-no-message"` + "\n"
-		if got.code != 2 || got.stdout != "" || !strings.HasPrefix(got.stderr, prefix) || !strings.HasSuffix(got.stderr, fault) || strings.Count(got.stderr, "\n") != 1 {
-			t.Errorf("exit %d, stdout %q, stderr %q: want exit 2, nothing on stdout, and one line %q…%q", got.code, got.stdout, got.stderr, prefix, fault)
-		}
 	})
 }
 
