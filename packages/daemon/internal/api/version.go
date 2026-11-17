@@ -2145,4 +2145,18 @@ package api
 // (#3659) and 155 (#4273), so this change took 156, one above the highest any open head declared
 // and the lowest free number above main's. Read the base's own number and every open pull request
 // again at the next merge rather than from this line.)
-const DaemonAPIVersion = 156
+//
+// 161: each task of an owner's plan works in a working copy of its own, and the daemon's
+// adoption names it. The worker frame `adopt-working-copy` (`shimwire.AdoptWorkingCopy`) gains
+// `branch`, the branch of the task whose working copy the shim adopts: absent for the issue's own
+// working copy, `legion/<KEY>.<task>` for another task's, and refused when it is the branch of no
+// issue or task. A shim built before it decodes the frame with no such field, which encoding/json
+// leaves unread, and adopts its own workspace. The answer to `bundle-workspace`
+// (`shimwire.BundleWorkspaceResult`) and the body the `launcher_bundle` slices carry
+// (`shimwire.WorkspaceBundle`) gain `workingCopies`, the working-copy commit of each task's
+// working copy by its branch, which the launcher of the pod that replaces a released one puts
+// back beside the issue's own; a bundle without it restores the issue's working copy alone. (This
+// entry took 161 over its base's 156, one above every number an open pull request declared when
+// it was read on 2026-11-17. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+const DaemonAPIVersion = 161

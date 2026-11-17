@@ -41,6 +41,9 @@ type Call struct {
 	Known    []runtime.Known
 	Grace    time.Duration
 	Identity runtime.GitIdentity
+	// Branch is AdoptWorkingCopy's branch: the task's whose working copy it adopts, "" for the
+	// issue's own.
+	Branch string
 	// Tree is CleanupTree's tree.
 	Tree string
 	// Issue is IssuePod's issue.
@@ -82,6 +85,10 @@ type Runtime struct {
 	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
+	// OnAdopt, when set, runs at every AdoptWorkingCopy, after the call is recorded and outside
+	// the fake's lock, with the call's locator, identity and branch: a test makes the working copy
+	// the adoption names, as a shim would. A non-nil answer is the adoption's.
+	OnAdopt func(loc runtime.Locator, id runtime.GitIdentity, branch string) error
 
 	mu           sync.Mutex
 	pending      *sync.Cond
@@ -448,11 +455,17 @@ func copyKnown(k runtime.Known) runtime.Known {
 	return k
 }
 
-func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy records the call and answers its scripted failure, if any; otherwise OnAdopt's
+// answer when it is set, run outside the lock so a hook that calls the fake does not deadlock.
+func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity, branch string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id})
-	return r.failures["AdoptWorkingCopy"]
+	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id, Branch: branch})
+	failure, hook := r.failures["AdoptWorkingCopy"], r.OnAdopt
+	r.mu.Unlock()
+	if failure != nil || hook == nil {
+		return failure
+	}
+	return hook(loc, id, branch)
 }
 
 func (r *Runtime) ProvisionsWorkspaces() bool {

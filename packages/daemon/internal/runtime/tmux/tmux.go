@@ -787,10 +787,11 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 	}
 }
 
-// AdoptWorkingCopy has the agent's shim set the author of its working copy — the shared
-// `jj metaedit --update-author` run in the pane's own workspace — over the claim's connection,
-// bounded by the adoption timeout. The recorded process must still verify: the connection is its.
-func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy has the agent's shim set the author of the working copy of the task whose branch
+// is branch, "" for the issue's own — the shared `jj metaedit --update-author` run in that working
+// copy — over the claim's connection, bounded by the adoption timeout. The recorded process must
+// still verify: the connection is its.
+func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity, branch string) error {
 	pane, inc, err := r.paneOf(loc)
 	if err != nil {
 		return err
@@ -806,7 +807,7 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	if !ok {
 		return fmt.Errorf("adopt %s's working copy: the claim has no connection to ask over", loc.Claim)
 	}
-	if err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout); err != nil {
+	if err := conn.AdoptWorkingCopy(ctx, id, branch, r.adoptTimeout); err != nil {
 		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
 	}
 	return nil

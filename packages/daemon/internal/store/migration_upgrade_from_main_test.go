@@ -83,7 +83,10 @@ import (
 // (20261117194044) stand above it and need its table: they add `plan_tasks.branch` and
 // `plan_tasks.join_conflicts` at defaults every row reads as the issue's own branch and no
 // conflicted join, create `plan_branches`, and restate the plan record's kinds with task_branch,
-// so that list is the last word of outbox_kind_check now (migration_20261117194044_test.go).
+// so that list is the last word of outbox_kind_check now (migration_20261117194044_test.go). The
+// working copies of a saved bundle (20261117204629) add `workspace_bundles.working_copies` at a
+// default that every row it finds reads as no working copy of a task
+// (migration_20261117204629_test.go), and touch no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -92,7 +95,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837,
-	20261117194044,
+	20261117194044, 20261117204629,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

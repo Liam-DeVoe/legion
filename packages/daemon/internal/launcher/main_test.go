@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // helperChildVariables are the markers this package's helper children are re-executed with: the
@@ -41,6 +42,9 @@ var helperChildVariables = []string{
 // and OMP_SESSION_STORAGE name the deployment's shared sessions database, a test of this package
 // would connect to and query the store every agent of the deployment reads and writes. Each test
 // here that needs a session database names its own (testdb.DSNFile).
+//
+// The tests run under testpg.Main, which drops the migrated template database that a test of a
+// restore through the daemon's store clones (testpg.CloneStore).
 func TestMain(m *testing.M) {
 	for _, name := range helperChildVariables {
 		if os.Getenv(name) != "" {
@@ -54,7 +58,7 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	os.Exit(m.Run())
+	os.Exit(testpg.Main("legion_launcher_test", m.Run))
 }
 
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail

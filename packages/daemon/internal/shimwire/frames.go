@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The frame type names, verbatim from the shipped protocol.
@@ -522,13 +524,18 @@ type ToolExecutionEnd struct {
 // when the shim's grace runs out. The shim acts on it and never forwards it.
 type Shutdown struct{}
 
-// AdoptWorkingCopy asks the shim to run the working-copy adoption in its own workspace under the
-// given jj identity. The daemon names the identity and the budget, never a command or a path.
+// AdoptWorkingCopy asks the shim to run the working-copy adoption under the given jj identity, in
+// the working copy of the task whose branch Branch is. The daemon names the identity, the branch
+// and the budget, never a command or a path: the shim derives the working copy's directory from
+// its own workspace and the branch. Branch "" is the issue's own working copy, the shim's own
+// workspace, and is left off the wire, so a shim built before the key reads such a frame as it
+// always has.
 type AdoptWorkingCopy struct {
 	ID        string `json:"id"`
 	JJUser    string `json:"jjUser"`
 	JJEmail   string `json:"jjEmail"`
 	TimeoutMs int    `json:"timeoutMs"`
+	Branch    string `json:"branch,omitempty"`
 }
 
 // AdoptWorkingCopyResult answers AdoptWorkingCopy (worker-shim.ts:332-341).
@@ -538,10 +545,11 @@ type AdoptWorkingCopyResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in, so the
-// daemon can keep it while the released pod, its disk and that workspace go. The daemon names the
-// issue, the largest bundle it will take and the budget, never a command or a path: the shim
-// builds the bundle with the jj and git of the workspace it already works in.
+// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in and of each
+// task's working copy beside it, so the daemon can keep it while the released pod, its disk and
+// those working copies go. The daemon names the issue, the largest bundle it will take and the
+// budget, never a command or a path: the shim builds the bundle with the jj and git of the
+// workspace it already works in.
 type BundleWorkspace struct {
 	ID        string `json:"id"`
 	Issue     string `json:"issue"`
@@ -549,22 +557,29 @@ type BundleWorkspace struct {
 	TimeoutMs int    `json:"timeoutMs"`
 }
 
-// BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
-// needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
-// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
-// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
-// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
-// is larger than one line.
+// BundleWorkspaceResult answers BundleWorkspace with the bundle and the facts a restore needs
+// beside it: the commit the working copy sat on, the heads the bundle carries, each local bookmark
+// that pointed into the saved set, and the working-copy commit of each task's working copy beside
+// the issue's own, by the task's branch. A bundle larger than the request's MaxBytes is refused
+// rather than sent, with SizeBytes naming what it would have been, so the caller can stop the
+// release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it is
+// larger than one line.
 type BundleWorkspaceResult struct {
-	ID        string            `json:"id"`
-	OK        bool              `json:"ok"`
-	Error     string            `json:"error,omitempty"`
-	SizeBytes int               `json:"sizeBytes"`
-	Bundle    []byte            `json:"bundle,omitempty"`
-	Head      string            `json:"head,omitempty"`
-	Tips      []string          `json:"tips,omitempty"`
-	Bookmarks map[string]string `json:"bookmarks,omitempty"`
-	At        time.Time         `json:"at"`
+	ID            string            `json:"id"`
+	OK            bool              `json:"ok"`
+	Error         string            `json:"error,omitempty"`
+	SizeBytes     int               `json:"sizeBytes"`
+	Bundle        []byte            `json:"bundle,omitempty"`
+	Head          string            `json:"head,omitempty"`
+	Tips          []string          `json:"tips,omitempty"`
+	Bookmarks     map[string]string `json:"bookmarks,omitempty"`
+	WorkingCopies map[string]string `json:"workingCopies,omitempty"`
+	At            time.Time         `json:"at"`
+}
+
+// Saved is the saved work the result carries, in the shape the launcher_bundle slices carry it.
+func (f BundleWorkspaceResult) Saved() WorkspaceBundle {
+	return WorkspaceBundle{Bundle: f.Bundle, Head: f.Head, Tips: f.Tips, Bookmarks: f.Bookmarks, WorkingCopies: f.WorkingCopies, At: f.At}
 }
 
 // LauncherBundle is one slice of a saved workspace bundle on its way to the launcher of the pod
@@ -650,14 +665,18 @@ type LauncherLeakCheckResult struct {
 }
 
 // WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
-// the commit the working copy sat on, the heads the bundle carries and each local bookmark that
-// pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
+// the commit the working copy sat on, the heads the bundle carries, each local bookmark that
+// pointed into the saved set, and the working-copy commit of each task's working copy, keyed by
+// the task's branch (legion/<KEY>.<part>). It is no frame of its own — it is the body a sequence
+// rebuilds. A bundle a shim of an earlier release saved names no working copy of a task, and its
+// restore puts back the issue's working copy alone.
 type WorkspaceBundle struct {
-	Bundle    []byte            `json:"-"`
-	Head      string            `json:"head"`
-	Tips      []string          `json:"tips,omitempty"`
-	Bookmarks map[string]string `json:"bookmarks,omitempty"`
-	At        time.Time         `json:"at"`
+	Bundle        []byte            `json:"-"`
+	Head          string            `json:"head"`
+	Tips          []string          `json:"tips,omitempty"`
+	Bookmarks     map[string]string `json:"bookmarks,omitempty"`
+	WorkingCopies map[string]string `json:"workingCopies,omitempty"`
+	At            time.Time         `json:"at"`
 }
 
 // RPCChunk is one slice of a logical frame too large for a single line. Data is base64 of the
@@ -899,7 +918,8 @@ func (f Hello) Validate() error {
 
 // Validate refuses an adoption request the shim would refuse. The daemon is its only sender, so
 // a malformed one is a bug to name rather than a condition to paper over
-// (worker-shim.ts:171-180).
+// (worker-shim.ts:171-180). A branch is "" or one claim.BranchTask reads as an issue's or a task's,
+// since the shim derives a directory from it.
 func (f AdoptWorkingCopy) Validate() error {
 	switch {
 	case f.ID == "":
@@ -908,6 +928,11 @@ func (f AdoptWorkingCopy) Validate() error {
 		return fmt.Errorf("%w: adopt-working-copy carries no jj identity", ErrMalformedFrame)
 	case f.TimeoutMs <= 0:
 		return fmt.Errorf("%w: adopt-working-copy timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	if f.Branch != "" {
+		if _, _, ok := claim.BranchTask(f.Branch); !ok {
+			return fmt.Errorf("%w: adopt-working-copy branch %q is no branch of an issue or of a task of one", ErrMalformedFrame, f.Branch)
+		}
 	}
 	return nil
 }

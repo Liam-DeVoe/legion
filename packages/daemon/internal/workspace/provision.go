@@ -98,7 +98,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	}
 	// Every workspace provisioning touches has its git worktree entry locked, one added before
 	// provisioning locked any included, so a bare `git worktree prune` that cannot see it skips it.
-	if err := lockGitWorktree(workspace.Clone, workspace.Dir); err != nil {
+	if err := LockGitWorktree(workspace.Clone, workspace.Dir); err != nil {
 		return Workspace{}, err
 	}
 	if err := configureRepositoryCredential(ctx, run, workspace.Clone, request.CredentialHelper); err != nil {
@@ -324,10 +324,7 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 // for the clone of the directory a process stands in. A caller's own refusals — the derivation's
 // absolute path among them — stay with that caller.
 func locationOf(dir string) (Workspace, error) {
-	stateDir := dir
-	for range layoutDepth {
-		stateDir = filepath.Dir(stateDir)
-	}
+	stateDir := stateDirOf(dir)
 	owner, name := filepath.Base(filepath.Dir(filepath.Dir(dir))), filepath.Base(filepath.Dir(dir))
 	repository, err := ghrepo.Parse("workspace repository", owner+"/"+name)
 	if err != nil {
@@ -351,4 +348,158 @@ func locationOf(dir string) (Workspace, error) {
 func located(workspace Workspace) bool {
 	want, err := locationOf(workspace.Dir)
 	return err == nil && want.Clone == workspace.Clone
+}
+
+// stateDirOf is the state directory a workspace directory dir of Location's layout sits in,
+// layoutDepth above it. It reads no file, and says nothing of whether dir is in that layout
+// (locationOf).
+func stateDirOf(dir string) string {
+	for range layoutDepth {
+		dir = filepath.Dir(dir)
+	}
+	return dir
+}
+
+// Name is the name of the working copy of the task whose branch is branch: the branch without
+// legion/, so <KEY> for the issue's own branch and <KEY>.<part> for a task's, the part being what
+// claim.BranchTask reads after the key, a slug or a slug and the number of a later give of it.
+// Location takes the name in place of an issue key, which gives the working copy's directory, the
+// name lower-cased, beside the issue's, and its bookmark, the branch itself. A branch of no issue
+// or of no task of one is refused, and so is the part `removing`: Remove renames a working copy
+// aside to its directory with removingSuffix added and deletes it there, so the issue's own
+// working copy would be renamed onto that task's, or a leftover of its removal deleted with it.
+func Name(branch string) (string, error) {
+	issue, part, ok := claim.BranchTask(branch)
+	if !ok {
+		return "", fmt.Errorf("%q is no branch of an issue or of a task of one", branch)
+	}
+	if part == "" {
+		return issue, nil
+	}
+	if "."+part == removingSuffix {
+		return "", fmt.Errorf("the working copy of branch %s would lie where the removal of the issue's own working copy renames that working copy before it deletes it", branch)
+	}
+	return issue + "." + part, nil
+}
+
+// TaskDir is the directory of the working copy of the task whose branch is branch, derived from
+// the directory of its issue's own working copy, issueWorkspace (a role's LEGION_WORKSPACE), and
+// the branch, never from a path anyone sends: issueWorkspace itself for "" and for the issue's own
+// branch, and the directory beside it that Location names for the task (Name) otherwise.
+// issueWorkspace must be a working copy Location names, and branch one of its issue's: a branch of
+// another issue is refused.
+func TaskDir(issueWorkspace, branch string) (string, error) {
+	issue, err := locationOf(issueWorkspace)
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		return issue.Dir, nil
+	}
+	task, err := taskLocation(issue, branch)
+	if err != nil {
+		return "", err
+	}
+	return task.Dir, nil
+}
+
+// taskLocation is the working copy Location names for the task whose branch is branch, of the
+// issue whose own working copy is issue: of the same clone, in the same directory of workspaces.
+// locationOf reads the issue's key from its directory, which Location lower-cases, so the key is
+// compared in lower case.
+func taskLocation(issue Workspace, branch string) (Workspace, error) {
+	name, err := Name(branch)
+	if err != nil {
+		return Workspace{}, err
+	}
+	key, _, _ := strings.Cut(name, ".")
+	if strings.ToLower(key) != filepath.Base(issue.Dir) {
+		return Workspace{}, fmt.Errorf("branch %s is of issue %s, not of the issue whose working copy is %s", branch, key, issue.Dir)
+	}
+	return Location(stateDirOf(issue.Dir), issue.Repo, name)
+}
+
+// ProvisionTask makes the working copy of the task whose branch is branch, beside its issue's own
+// working copy issueWorkspace (TaskDir), and returns it: a jj workspace of the clone the issue's is
+// a workspace of, on the task's branch as origin has it. The branch is on GitHub from the task's
+// start, made by the daemon before any step of the task starts, so ProvisionTask needs no default
+// branch, and a branch that neither the clone nor origin has is refused by name (createWorkspace)
+// rather than started anywhere else. A pane's or a pod's shim calls it, holding no credential of
+// provisioning's: the fetch goes through the clone's own origin and its credential helper, which
+// the issue's provisioning wrote, and brings that one branch.
+//
+// It runs the steps of Provision that make a workspace of a clone that is there, and none that
+// make or configure the clone: under the clone's lock across processes (CloneLock), which the
+// daemon's store lock takes too, the fetch, the workspace's registration with no files
+// (createWorkspace) and the lock of its git worktree entry; then, with the lock let go, the
+// checkout, which writes the task's working copy and nothing of the clone's. A working copy found
+// there under the lock — another process made it after its caller looked — is brought up to date
+// as Provision brings an issue's (update-stale, its git worktree entry, a checkout that never
+// finished). The issue's own branch is refused: its working copy is Provision's.
+func ProvisionTask(ctx context.Context, run Runner, issueWorkspace, branch string, log func(string)) (Workspace, error) {
+	issue, err := locationOf(issueWorkspace)
+	if err != nil {
+		return Workspace{}, err
+	}
+	task, err := taskLocation(issue, branch)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if task.Dir == issue.Dir {
+		return Workspace{}, fmt.Errorf("branch %s is the issue's own, whose working copy %s is provisioned with the issue", branch, issue.Dir)
+	}
+	if log == nil {
+		return Workspace{}, errors.New("the provision of a task's working copy names no log")
+	}
+	if _, err := guardWorkspace(task.Dir, task.Clone, false); err != nil {
+		return Workspace{}, err
+	}
+	if cloned, err := pathExists(filepath.Join(task.Clone, ".jj")); err != nil {
+		return Workspace{}, err
+	} else if !cloned {
+		return Workspace{}, fmt.Errorf("the shared clone %s is not there; the working copy of branch %s is a workspace of it, which the issue's provisioning makes", task.Clone, branch)
+	}
+
+	store := &storeLock{locker: CloneLock(task.Clone)}
+	store.lock()
+	defer store.unlock()
+	exists, err := pathExists(task.Dir)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if exists {
+		if _, err := RunCheckedIn(ctx, run, task, []string{"jj", "workspace", "update-stale"}); err != nil {
+			return Workspace{}, err
+		}
+		if err := restoreGitWorktree(ctx, run, task, log); err != nil {
+			return Workspace{}, err
+		}
+	} else {
+		// The fetch takes no snapshot of the clone's working copy (onClone), as provisioning's own
+		// fetch takes none.
+		if _, err := runCheckedOnClone(ctx, run, task.Clone, "git", "fetch", "--branch", exactName(task.Bookmark)); err != nil {
+			return Workspace{}, err
+		}
+		if err := createWorkspace(ctx, run, task, log); err != nil {
+			return Workspace{}, err
+		}
+	}
+	checkout := !exists
+	if exists {
+		whole, err := CheckedOut(ctx, run, task)
+		if err != nil {
+			return Workspace{}, err
+		}
+		checkout = !whole
+	}
+	if err := LockGitWorktree(task.Clone, task.Dir); err != nil {
+		return Workspace{}, err
+	}
+	store.unlock()
+	if checkout {
+		if _, err := runCheckedInWithin(ctx, run, task, CheckoutTimeout, []string{"jj", "sparse", "reset"}); err != nil {
+			return Workspace{}, fmt.Errorf("check out workspace %s: %w", task.Dir, err)
+		}
+	}
+	return task, nil
 }

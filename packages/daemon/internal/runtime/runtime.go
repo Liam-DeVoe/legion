@@ -86,10 +86,10 @@ type Runtime interface {
 	// issue Sandbox of a tree whose lifecycle is open or releasing: those are CleanupTree's alone; and
 	// no controller Sandbox whose claim the store holds unretired when the delete is decided.
 	ReconcileOrphans(ctx context.Context, known []Known, grace time.Duration) error
-	// AdoptWorkingCopy hands the agent's working copy the git identity its commits are authored
-	// with, in the place the working copy actually lives (which under a sandbox is not a
-	// directory the daemon can see).
-	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity) error
+	// AdoptWorkingCopy hands the working copy of the task whose branch is branch ("" for the
+	// issue's own) the git identity its commits are authored with, in the place the working copy
+	// actually lives (which under a sandbox is not a directory the daemon can see).
+	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity, branch string) error
 	// ProvisionsWorkspaces is whether the runtime provisions each claim's workspace where its
 	// process runs (a pod's init containers, on the issue's own volume). When it does, the daemon
 	// provisions and removes none on its own host.
