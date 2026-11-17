@@ -178,22 +178,33 @@ report_port() {
 
 # start_reported NAME PORT_VAR PATTERN -- COMMAND... starts COMMAND as the service NAME
 # (start_process), a server that binds a port the kernel chooses and names it in its own log, and
-# assigns PORT_VAR the port: the digits right after the first match of PATTERN (report_port), waited
-# for while NAME lives. It is how a run starts a server that takes no socket, which binds a port
-# the kernel chooses and logs it: the e2e harness's fakes bind port 0 with FAKE_ENVOY_PORT and
-# FAKE_GITHUB_PORT unset and log `fake envoy listener on 127.0.0.1:<port>`, and natsd -p -1 logs
+# assigns PORT_VAR the port: the digits right after the first match of PATTERN (report_port) in what
+# the log gained from this start on, waited for while NAME lives. Every start of NAME appends to the
+# one log, whose first match can name the port of an earlier start, so a restart through it reads
+# its own start's line, once the earlier start has stopped writing. It is how a run starts a server
+# that takes no socket, which binds a port the kernel chooses and logs it: the e2e harness's fakes
+# bind port 0 with FAKE_ENVOY_PORT and FAKE_GITHUB_PORT unset and log
+# `fake envoy listener on 127.0.0.1:<port>`, and natsd -p -1 logs
 # 'Listening for client connections on 127.0.0.1:<port>'. The locals' names are ones no caller passes.
 start_reported() {
-  local _name=$1 _port_var=$2 _pattern=$3 _pid_var _reported
+  local _name=$1 _port_var=$2 _pattern=$3 _pid_var _reported _log _from=0
   shift 3
   [ "${1:-}" = -- ] || fail "start_reported $_name: the command comes after --"
   shift
+  _log=$evidence/logs/$_name.log
+  [ ! -e "$_log" ] || _from=$(wc -c <"$_log")
   start_process "$_name" "$@"
   _pid_var=${_name}_pid
   await_start "$_name" "${!_pid_var}" 60 "$_name to name its port" \
-    report_port "$evidence/logs/$_name.log" "$_pattern"
-  _reported=$(report_port "$evidence/logs/$_name.log" "$_pattern")
+    _report_port_since "$_log" "$_from" "$_pattern"
+  _reported=$(_report_port_since "$_log" "$_from" "$_pattern")
   printf -v "$_port_var" '%s' "$_reported"
+}
+
+# _report_port_since LOG FROM PATTERN is report_port LOG PATTERN over what LOG holds past its first
+# FROM bytes.
+_report_port_since() {
+  report_port <(tail -c "+$(($2 + 1))" "$1" 2>/dev/null) "$3"
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one

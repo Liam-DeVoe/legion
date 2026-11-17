@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -124,7 +125,7 @@ func runAwait(args []string) error {
 	signalName := flags.String("signal", "", "signal to send pid when the line appears: STOP, CONT, KILL or TERM")
 	pid := flags.Int("pid", 0, "process to signal")
 	contAfter := flags.Duration("cont-after", 0, "with -signal STOP, send pid SIGCONT this long after the stop")
-	front := flags.Int("front", 0, "with -signal KILL or TERM, the leader of a held front's process group (scripts/e2e/lib/held-front.sh), killed and waited for until it has exited, before pid is signalled")
+	front := flags.Int("front", 0, "with -signal KILL or TERM, a held front's process group (scripts/e2e/lib/held-front.sh), by its leader's pid: every process of the group is killed and waited for until it has exited, before pid is signalled")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -208,15 +209,17 @@ func runAwait(args []string) error {
 // effect the next time a process runs, so only a process that the kernel holds takes longer.
 const frontGrace = 5 * time.Second
 
-// endFront ends the held front whose process group pgid leads, before the server behind it is
-// signalled (lib/held-front.sh: a front lives only while its server does). The front is the
-// leader and the process it forks for each connection. endFront stops the whole group with
-// SIGSTOP and waits until the leader is stopped: a stopped leader is in no fork, so every child it
-// forked is then listed, and it forks no more. It lists those children, sends SIGKILL to the
-// group, and waits until the leader and each child have exited. Once endFront returns, no process
-// of the front accepts on the kept port or connects to the port the server is about to release.
-// grace bounds both waits (frontGrace), and state reads a process's state (procState; a test
-// gives its own).
+// endFront ends the held front whose process group pgid names, before the server behind it is
+// signalled (lib/held-front.sh: a front lives only while its server does). The front is every
+// process of that group: the leader, the process it forks for each connection, and any such
+// process that outlived the leader. endFront stops the whole group with SIGSTOP, then lists the
+// group's processes (members) until two lists in a row name the same processes and each of them
+// reads as stopped or exited: a stopped process is in no fork and forks no more, so the second list
+// holds every process of the group, whether or not its leader still runs. It sends SIGKILL to the
+// group and waits until each listed process has exited. Once endFront returns, no process of the
+// front accepts on the kept port or connects to the port the server is about to release. grace
+// bounds both waits (frontGrace), and state reads a process's state (procState; a test gives its
+// own).
 func endFront(pgid int, grace time.Duration, state func(int) byte) error {
 	if runtime.GOOS != "linux" {
 		return errors.New("-front reads /proc, which only Linux has")
@@ -225,24 +228,30 @@ func endFront(pgid int, grace time.Duration, state func(int) byte) error {
 		return fmt.Errorf("-front %d leads no process group (it is in group %d)", pgid, group)
 	}
 	deadline := time.Now().Add(grace)
-	wait := func(pid int, what string, done func(byte) bool) error {
-		for !done(state(pid)) {
-			if time.Now().After(deadline) {
-				return fmt.Errorf("the front's process %d did not %s within %s", pid, what, grace)
-			}
-			time.Sleep(100 * time.Microsecond)
-		}
-		return nil
-	}
 	if err := syscall.Kill(-pgid, syscall.SIGSTOP); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("stop the front's process group %d: %w", pgid, err)
 	}
-	pids := []int{pgid}
-	err := wait(pgid, "stop", func(s byte) bool { return s == 'T' || gone(s) })
-	if err == nil && !gone(state(pgid)) {
-		var listed []int
-		listed, err = children("/proc", pgid)
-		pids = append(pids, listed...)
+	var listed []int
+	var err error
+	for lists := 1; ; lists++ {
+		var found []int
+		if found, err = members("/proc", pgid); err != nil {
+			break
+		}
+		running := slices.IndexFunc(found, func(pid int) bool { s := state(pid); return s != 'T' && !gone(s) })
+		if running < 0 && lists > 1 && slices.Equal(found, listed) {
+			break
+		}
+		listed = found
+		if time.Now().After(deadline) {
+			if running < 0 {
+				err = fmt.Errorf("the front's process group %d read the same in no two lists in a row within %s", pgid, grace)
+			} else {
+				err = fmt.Errorf("the front's process %d did not stop within %s", found[running], grace)
+			}
+			break
+		}
+		time.Sleep(100 * time.Microsecond)
 	}
 	// The group gets SIGKILL even when the stop wait or the list failed: a stopped process acts on
 	// no other signal that ends it, so a group left stopped would outlast a caller's SIGTERM, and
@@ -253,42 +262,101 @@ func endFront(pgid int, grace time.Duration, state func(int) byte) error {
 	if err != nil {
 		return err
 	}
-	for _, pid := range pids {
-		if err := wait(pid, "exit", gone); err != nil {
-			return err
+	for _, pid := range listed {
+		for !gone(state(pid)) {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("the front's process %d did not exit within %s", pid, grace)
+			}
+			time.Sleep(100 * time.Microsecond)
 		}
 	}
 	return nil
 }
 
-// children lists the processes that pid forked and that are still its children, from the
-// children file of each of its threads under proc (/proc). A process has one such file for each
-// thread, so finding none (a kernel built without CONFIG_PROC_CHILDREN) is an error, as is a file
-// that cannot be read: an empty list would read as a front with no connection.
-func children(proc string, pid int) ([]int, error) {
-	pattern := filepath.Join(proc, strconv.Itoa(pid), "task", "*", "children")
-	files, err := filepath.Glob(pattern)
-	if err == nil && len(files) == 0 {
-		err = fs.ErrNotExist
-	}
+// members lists, in order, the processes of the process group pgid, from the stat file of each
+// process under proc (/proc), whose fifth field is the process's group. A process that exits while
+// it is read is no member. A list read from nothing is an error, never an empty list: under a proc
+// with no process's stat at all, or with a stat that cannot be read or names no group, an empty
+// list would read as a front with no process left. A machine can run tens of thousands of
+// processes, and endFront lists them at least twice, so each stat is read into one buffer.
+func members(proc string, pgid int) ([]int, error) {
+	entries, err := os.ReadDir(proc)
 	if err != nil {
-		return nil, fmt.Errorf("list the children of the front's leader %d (%s): %w", pid, pattern, err)
+		return nil, fmt.Errorf("list the processes of the front's group %d: %w", pgid, err)
 	}
 	var pids []int
-	for _, file := range files {
-		text, err := os.ReadFile(file)
+	read := 0
+	// A stat line is about fifty numbers after a command name of at most 64 bytes.
+	buffer := make([]byte, 4096)
+	for _, entry := range entries {
+		// /proc also holds entries that are no process: self, net, sys and so on.
+		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
-			return nil, fmt.Errorf("list the children of the front's leader %d: %w", pid, err)
+			continue
 		}
-		for _, field := range strings.Fields(string(text)) {
-			child, err := strconv.Atoi(field)
-			if err != nil {
-				return nil, fmt.Errorf("list the children of the front's leader %d: %s: %w", pid, file, err)
-			}
-			pids = append(pids, child)
+		path := filepath.Join(proc, entry.Name(), "stat")
+		stat, err := readSmall(path, buffer)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list the processes of the front's group %d: %s: %w", pgid, path, err)
+		}
+		read++
+		group, ok := statGroup(stat)
+		if !ok {
+			return nil, fmt.Errorf("list the processes of the front's group %d: %s names no group: %q", pgid, path, stat)
+		}
+		if group == pgid {
+			pids = append(pids, pid)
 		}
 	}
+	if read == 0 {
+		return nil, fmt.Errorf("list the processes of the front's group %d: %s holds no process's stat", pgid, proc)
+	}
+	slices.Sort(pids)
 	return pids, nil
+}
+
+// readSmall reads the whole file at path into buffer and returns the bytes read; a file that
+// fills buffer is an error, since what it holds past buffer was not read.
+func readSmall(path string, buffer []byte) ([]byte, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+	n := 0
+	for n < len(buffer) {
+		got, err := syscall.Read(fd, buffer[n:])
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if got == 0 {
+			return buffer[:n], nil
+		}
+		n += got
+	}
+	return nil, fmt.Errorf("longer than %d bytes", len(buffer))
+}
+
+// statGroup returns the process group a /proc stat line names, its fifth field, and false when it
+// names none. The state, the parent and the group follow the command name, which /proc writes in
+// parentheses and which can itself hold spaces and parentheses.
+func statGroup(stat []byte) (int, bool) {
+	end := bytes.LastIndexByte(stat, ')')
+	if end < 0 {
+		return 0, false
+	}
+	rest, field := stat[end+1:], []byte(nil)
+	for range 3 {
+		field, rest, _ = bytes.Cut(bytes.TrimLeft(rest, " "), []byte{' '})
+	}
+	group, err := strconv.Atoi(string(bytes.TrimSpace(field)))
+	return group, err == nil
 }
 
 // procState returns the state letter /proc gives pid (R, S, T, Z, X and so on), 0 once /proc lists

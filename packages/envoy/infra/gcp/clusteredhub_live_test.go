@@ -553,9 +553,11 @@ var (
 
 // start starts the server and waits until it has logged the client, monitoring and route ports it
 // bound, then points its fronts at them; the test kills it by its PID when it ends if it is still
-// running. Each start binds three ports the kernel chooses, so a restart takes no port the server
-// gave up, which another program can hold by then, and the fronts keep the addresses every client,
-// peer and exporter was given, as a restarted pod keeps its address.
+// running, after it has stopped the fronts (stop): the test runs its cleanups last first, so the
+// stop registered here runs before the kill startServing registered. Each start binds three ports
+// the kernel chooses, so a restart takes no port the server gave up, which another program can hold
+// by then, and the fronts keep the addresses every client, peer and exporter was given, as a
+// restarted pod keeps its address.
 func (s *hubServer) start(t *testing.T) {
 	t.Helper()
 	cmd := exec.Command(s.binary, s.commandArgs()...)
@@ -579,6 +581,7 @@ func (s *hubServer) start(t *testing.T) {
 		}
 		return nil
 	})
+	t.Cleanup(s.stop)
 	s.mu.Lock()
 	s.bound = bound
 	s.mu.Unlock()
@@ -647,14 +650,54 @@ func (s *hubServer) terminate(t *testing.T) {
 	s.proc.WaitExit(t, "SIGTERM")
 }
 
-// stop points the server's fronts at nothing, before the signal that stops the server: from then on
-// each closes a new connection at once, as a stopped pod's address refuses it, so none is relayed
-// to a port the server is giving up, which another program can bind once it has. A connection the
-// fronts relay already ends when the server does.
+// stop points the server's fronts at nothing, before the signal that stops the server (kill,
+// terminate, and the kill at the test's end, start): from then on each closes a new connection at
+// once, as a stopped pod's address refuses it, so none is relayed to a port the server is giving
+// up, which another program can bind once it has. A connection the fronts relay already ends when
+// the server does.
 func (s *hubServer) stop() {
 	s.mu.Lock()
 	s.bound = hubPorts{}
 	s.mu.Unlock()
+}
+
+// TestHubServerFrontsStopBeforeItsServerAtTheEnd ends a test that started a hubServer and reads,
+// the moment the server has exited, where its fronts relay. A front that still relayed to the ports
+// the server had bound would hand a connection to a port the server gave up, which another program
+// can bind by then, until the front itself closes, after every later cleanup of the test. The
+// server is a stand-in that logs the three lines start reads, as nats-server does, for three ports
+// the test holds, since only the order of the end is under test.
+func TestHubServerFrontsStopBeforeItsServerAtTheEnd(t *testing.T) {
+	atExit := make(chan hubPorts, 1)
+	if !t.Run("a test that starts a server", func(t *testing.T) {
+		dir := t.TempDir()
+		var lines string
+		for _, what := range []string{"Listening for client connections on", "Starting http monitor on", "Listening for route connections on"} {
+			held, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = held.Close() })
+			lines += fmt.Sprintf("echo '[INF] %s %s'\n", what, held.Addr())
+		}
+		binary := filepath.Join(dir, "nats-server")
+		require.NoError(t, os.WriteFile(binary, []byte("#!/bin/sh\n"+lines+"exec sleep 600\n"), 0o700))
+		s := &hubServer{name: "stand-in", dir: dir, binary: binary}
+		s.client, s.monitor, s.route = s.front(t, &s.bound.client), s.front(t, &s.bound.monitor), s.front(t, &s.bound.route)
+		s.start(t)
+		go func() {
+			<-s.proc.Exited
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			atExit <- s.bound
+		}()
+	}) {
+		return
+	}
+	select {
+	case bound := <-atExit:
+		require.Equal(t, hubPorts{}, bound, "the fronts relayed to the ports the server had bound at the moment it exited")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the stand-in server had not exited 30 s after its test ended")
+	}
 }
 
 func (s *hubServer) url() string { return "nats://" + s.client.Addr() }
