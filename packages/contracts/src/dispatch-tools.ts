@@ -2288,6 +2288,46 @@ export const dispatchToolSpecs = [
     strict: true,
   },
   {
+    name: "dispatch_plans",
+    example: { project: "INFRA" },
+    description:
+      "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
+      "from, the rating each retro gave that plan with its reason, its time and its count of " +
+      "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
+      "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
+      "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
+      '<rating>/5 "<reason>"[, <rating>/5 "<reason>" ...] time <h>h<m>m failed steps <n>`. ' +
+      "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
+      "and the plan is the one of the issue's newest run. A rating is 1 (the plan cost the " +
+      "work) to 5 (the plan fit the work), one for each retro in the order the retros ran, and " +
+      "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
+      "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
+      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
+      "none, one with no rating prints ratings none, and one whose time is not known prints " +
+      "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
+      "time, keep the issues closed at or after since and before until.",
+    arguments: (z) => ({
+      project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
+      since: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed at or after it.")
+        .optional(),
+      until: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed before it.")
+        .optional(),
+    }),
+    // The key rides in the request path; a missing project is the schema's own refusal.
+    validation: {
+      check: (value) => {
+        const { project } = value as { readonly project?: unknown };
+        return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
+      },
+      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+    },
+    strict: true,
+  },
+  {
     name: "dispatch_inbox",
     example: {},
     description:

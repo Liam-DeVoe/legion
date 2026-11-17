@@ -431,6 +431,42 @@ function stepsBody() {
   };
 }
 
+/** `GET /api/v1/projects/{key}/plans`: one finished issue Legion ran and rated, so the record
+ *  holds the issue's whole line. */
+function plansBody() {
+  return {
+    project: "INFRA",
+    issues: [
+      {
+        issue: "INFRA-1",
+        title: "Retry failed webhook deliveries",
+        closed_at: AT,
+        plan: {
+          id: UUID,
+          issue: "INFRA-1",
+          generation: 1,
+          source: "default",
+          artifact_id: null,
+          version: null,
+          tasks: [
+            {
+              id: "default",
+              steps: ["planner", "implementer", "tester", "reviewer", "acceptance:owner"],
+            },
+          ],
+        },
+        ratings: [
+          { rating: 4, reason: "The plan fit the work.", step_id: OTHER_UUID, ended_at: AT },
+        ],
+        started_at: AT,
+        ended_at: AT,
+        duration_seconds: 5400,
+        failed_steps: 1,
+      },
+    ],
+  };
+}
+
 function architectureSource() {
   return {
     project: "CORE",
@@ -670,6 +706,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "architecture-sources") return response([architectureSource()]);
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
     if (rest === "artifacts") return response([]);
+    if (rest === "plans") return response(plansBody());
   }
   throw new Error(`unexpected request: ${route}`);
 }
