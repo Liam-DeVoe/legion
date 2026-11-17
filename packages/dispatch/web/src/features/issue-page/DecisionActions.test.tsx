@@ -538,13 +538,13 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
   }
 });
 
-// Decision 227 of dispatch://INFRA-1196/artifact/part-decisions-md: a write of the new page whose
-// answer changes what the tree draws reads the tree itself (`refreshQueries` of the tree's key, as
-// Keep does) and drops the held views, and none reaches the tree through another read's
-// invalidation alone. A Change is such a write: the tree read hangs it under its decision. TanStack
-// dispatches no `invalidate` for a read that is already invalidated (an owed refresh, a failed
-// background read), so where the comments read already is, a Change that only invalidates it
-// leaves the page's tree, and the views it holds, drawing the decision as it stood.
+// Decision 227: a write of the new page whose answer changes what the tree draws reads the tree
+// itself (`refreshQueries` of the tree's key, as Keep does) and drops the held views, and none
+// reaches the tree through another read's invalidation alone. A Change is such a write: the tree
+// read hangs it under its decision. TanStack dispatches no `invalidate` for a read that is already
+// invalidated (an owed refresh, a failed background read), so where the comments read already
+// is, a Change that only invalidates it leaves the page's tree, and the views it holds, drawing
+// the decision as it stood.
 test("a Change sent while the comments read is already invalidated reads the tree again and drops the held views", async () => {
   const client = heldReads([ONE]);
   const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));

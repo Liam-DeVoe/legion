@@ -26,11 +26,12 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * holds no decision gives none, and no error.
  *
  * The page reads the view the first time the filter is on in a load (`ViewReadProvider`). A Keep
- * drops the answer it held (`DecisionActions.tsx`), and every change of the issue marks it stale
- * and reads it again while the answer stays drawn (`subscribeTreeFreshness`). Until the view
- * answers, and where its read fails, the decisions are the decision nodes of the tree read the
- * page holds, which has the same nodes with the same members. So every decision stands in its
- * part with its state, never in the folded foot for want of a row, and the focus stays with it.
+ * or a Change drops every view the page holds (`DecisionActions.tsx`), and every change of the
+ * issue marks it stale and reads it again while the answer stays drawn
+ * (`subscribeTreeFreshness`). Until the view answers, and where its read fails, the decisions
+ * are the decision nodes of the tree read the page holds, which has the same nodes with the same
+ * members. So every decision stands in its part with its state, never in the folded foot for want
+ * of a row, and the focus stays with it.
  *
  * Until the view or the tree read has answered, and the asks read too, the view does not know
  * what the issue holds, so it says nothing of its decisions (`known`). Where neither the view

@@ -20,7 +20,7 @@ import {
 } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { issueTreeKey, issueTreeQuery, viewKey } from "./tree-read/tree-read";
+import { dropViews, issueTreeKey, issueTreeQuery } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -183,14 +183,15 @@ function DecisionControls({
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     // However the Keep ends - taken, or refused because the decision changed since - the tree is
-    // read again, and the Decisions view with it where it is open, so both draw the decision as
-    // it now stands: kept, or in its new words with Keep to press again. The tree is refreshed as
-    // the page refreshes it on an event (`subscribeTreeFreshness`'s `refreshQueries`), so a walk
-    // of its pages already in flight is waited for rather than cut off. A refusal is said below,
-    // on the decision, until the next press.
+    // read again and every view the page holds is dropped, the Decisions view's and the Spec
+    // view's among them, since each draws how the decision stands: so every one draws the
+    // decision as it now stands, kept, or in its new words with Keep to press again. The tree is
+    // refreshed by its own key as the page refreshes it on an event (`subscribeTreeFreshness`'s
+    // `refreshQueries`), so a walk of its pages already in flight is waited for rather than cut
+    // off. A refusal is said below, on the decision, until the next press.
     onSettled: () => {
       refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
-      void queryClient.resetQueries({ exact: true, queryKey: viewKey(issueKey, "decisions") });
+      dropViews(queryClient, issueKey);
     },
   });
   return (
@@ -289,11 +290,15 @@ function ChangeComposer({
       const anchor: ChangeAnchor = { artifact: documentId, block_id: decision.block_id, quote };
       return api.createComment(issueKey, { anchor, body: input.body }, bounds);
     },
-    // The change is a comment of the issue's, and the comments read is what tells the page a
-    // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
-    // the review list and draws the change under it as soon as the comment lands.
+    // The change is a comment the tree read hangs under its decision (`decision-review.ts`), so
+    // the decision says so, leaves the review list and draws the change under it once the tree
+    // is read again: the tree is read by its own key and every held view is dropped, as a Keep
+    // does, and the comments read is then invalidated too. The tree is not left to the comments
+    // read's invalidation, which reaches nothing where that read is already invalidated.
     onSuccess: () => {
       setBody("");
+      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
+      dropViews(queryClient, issueKey);
       void queryClient.invalidateQueries({ exact: true, queryKey: ["comments", issueKey] });
       onDone();
     },
