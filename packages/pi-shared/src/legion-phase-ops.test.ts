@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
 import { z } from "zod";
+import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { createLegionDaemonClient } from "./daemon-client";
 import type { HandoffReport } from "./handoff-record";
 import {
@@ -433,20 +434,14 @@ test("a rating is sent on a completion at any phase: the late retro's at merging
 
 // A rating's rule is the daemon's, and this tool states it again so that it refuses a rating by
 // the field's name before any request. Every case the daemon's golden test answered
-// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden) goes through the executor
-// as the retro's completion: the tool takes exactly the cases the daemon accepted and posts each
-// rating and reason as it was given, and refuses every other case naming a rating field, with no
-// request sent. Blank is Go's strings.TrimSpace on the daemon's side, where JavaScript's trim
-// keeps U+0085 and strips U+FEFF (`@legion/contracts/go-blank`).
+// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden), parsed with the schema the
+// contract's own test parses it with, goes through the executor as the retro's completion: the
+// tool takes exactly the cases the daemon accepted and posts each rating and reason as it was
+// given, and refuses every other case naming a rating field, with no request sent. Blank is Go's
+// strings.TrimSpace on the daemon's side, where JavaScript's trim keeps U+0085 and strips U+FEFF
+// (`@legion/contracts/go-blank`).
 test("the tool takes exactly the ratings the daemon takes, and sends a refused one nowhere", async () => {
-  const { cases } = daemonFixture("plan-rating-cases.json") as {
-    readonly cases: readonly {
-      readonly name: string;
-      readonly planRating?: number;
-      readonly planReason?: string;
-      readonly verdict: string;
-    }[];
-  };
+  const { cases } = PlanRatingCases.parse(daemonFixture("plan-rating-cases.json"));
   expect(cases.some((c) => c.verdict === "accepted")).toBe(true);
   expect(cases.some((c) => c.verdict !== "accepted")).toBe(true);
   expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));

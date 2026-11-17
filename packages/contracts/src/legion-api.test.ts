@@ -49,23 +49,9 @@ import {
   LegionWaveReleaseResponse,
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
-
-/** `plan-rating-cases.json`: a rating and a reason a retro's completion carries, either left out
- * where the case leaves it out, and the daemon's verdict on it, `accepted` or its refusal code. */
-const PlanRatingCases = z.strictObject({
-  cases: z
-    .array(
-      z.strictObject({
-        name: z.string().min(1),
-        planRating: z.number().int().optional(),
-        planReason: z.string().optional(),
-        verdict: z.union([z.literal("accepted"), z.string().startsWith("PLAN_RATING_")]),
-      })
-    )
-    .min(1),
-});
 
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
