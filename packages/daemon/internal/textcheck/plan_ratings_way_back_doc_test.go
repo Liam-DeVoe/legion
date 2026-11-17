@@ -1,7 +1,6 @@
 package textcheck
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
@@ -17,14 +16,15 @@ import (
 // operator runs is the block that test proves. The split keeps the guide out of the daemon Go
 // lane's filter, as the phase entry's way back does (way_back_doc_test.go).
 //
-// The migration is read through migrations.All, as phase_entry_migrations_doc_test.go reads them,
-// and the guide's block is the one under that heading that holds the one line only that
-// rollback's block holds (wayBackBlockOfTheGuide). The header's block is read here by a parse of
-// its own, which shares no code with internal/store's: two readers that agree with each other
-// while both drift are what a copy of a document is most at risk of.
+// The header's block is read by the one reader of a migration's way back (migrations.WayBack),
+// which internal/store's test runs, so the text held to the guide is the text that test runs, and
+// the guide's block is the one under that heading that holds the one line only that rollback's
+// block holds (wayBackBlockOfTheGuide).
 const (
-	// planRatingsMigration is the migration whose header carries the block.
+	// planRatingsMigration is the migration whose header carries the block, as the guide names it.
 	planRatingsMigration = "20261117023932_outbox_kinds_with_the_plan_record.up.sql"
+	// planRatingsVersion is planRatingsMigration's version, which migrations.WayBack reads it by.
+	planRatingsVersion = 20261117023932
 	// planRatingsWayBackSection is the heading of the guide's section that gives the way back.
 	planRatingsWayBackSection = "Rolling back the release that rates each plan"
 	// planRatingsWayBackMark is the line that deletes the plan records, which no other
@@ -48,32 +48,15 @@ func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 }
 
 // planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsMigration
-// carries: its header lines, up to the first line that is no comment, that stand indented two
-// spaces past the prose, each with the comment marker and that indent taken off. A migration that
-// is not embedded, and a header with no such lines, stop the test by name.
+// carries, read by the one reader of it (migrations.WayBack) that internal/store's test runs. A
+// migration that is not embedded, and a header with no way back, stop the test by name.
 func planRatingsWayBackOfTheHeader(t *testing.T) string {
 	t.Helper()
-	embedded, err := migrations.All()
+	block, err := migrations.WayBack(planRatingsVersion)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		t.Fatalf("read the way back %s gives from the header of %s: %v", wayBackGuide, planRatingsMigration, err)
 	}
-	at := slices.IndexFunc(embedded, func(m migrations.Migration) bool { return m.Name == planRatingsMigration })
-	if at < 0 {
-		t.Fatalf("the daemon embeds no %s, whose header carries the way back %s gives", planRatingsMigration, wayBackGuide)
-	}
-	var block []string
-	for _, line := range strings.Split(embedded[at].SQL, "\n") {
-		if !strings.HasPrefix(line, "--") {
-			break
-		}
-		if held, ok := strings.CutPrefix(line, "--   "); ok {
-			block = append(block, held)
-		}
-	}
-	if len(block) == 0 {
-		t.Fatalf("the header of %s carries no indented block: that block is the way back %s gives", planRatingsMigration, wayBackGuide)
-	}
-	return strings.Join(block, "\n")
+	return block
 }
 
 // The guide's list of the migrations recorded above the phase entry sends an operator from the

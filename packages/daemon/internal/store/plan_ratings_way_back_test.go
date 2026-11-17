@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,52 +14,25 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// planRatingsMigration is the migration whose header carries the way back of the release that rates
-// each plan. docs/kubernetes.md carries the same block under "Rolling back the release that rates
-// each plan", and internal/textcheck's TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide
-// holds the two to one text. This file reads the header alone, so the guide stays out of this
-// package's CI filter: a test that read the guide would start the whole daemon Go lane on an edit
-// of the guide alone.
-const planRatingsMigration = "20261117023932_outbox_kinds_with_the_plan_record.up.sql"
+// planRatingsVersion is the migration whose header carries the way back of the release that rates
+// each plan, 20261117023932_outbox_kinds_with_the_plan_record. docs/kubernetes.md carries the same
+// block under "Rolling back the release that rates each plan", and internal/textcheck's
+// TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text. This file
+// reads the header alone, so the guide stays out of this package's CI filter: a test that read the
+// guide would start the whole daemon Go lane on an edit of the guide alone.
+const planRatingsVersion = 20261117023932
 
-// planRatingsWayBack is the way back's block as the header of planRatingsMigration carries it, read
-// from the embedded migration (migrations.All), which is that file's bytes as the binary ships them:
-// the one run of header lines indented two spaces past the comment's own, with the comment marker
-// and the indent taken off each. A header with no such run, or with two, stops the test by name: a
+// planRatingsWayBack is the way back's block as the header of planRatingsVersion carries it, read by
+// the one reader of a migration's way back (migrations.WayBack) from the embedded migration, which is
+// that file's bytes as the binary ships them. A header with no way back stops the test by name: a
 // block this cannot find is a block it would pass while running nothing.
 func planRatingsWayBack(t *testing.T) string {
 	t.Helper()
-	all, err := migrations.All()
+	block, err := migrations.WayBack(planRatingsVersion)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		t.Fatalf("read the way back of the release that rates each plan: %v", err)
 	}
-	i := slices.IndexFunc(all, func(m migrations.Migration) bool { return m.Name == planRatingsMigration })
-	if i < 0 {
-		t.Fatalf("the embedded migrations hold no %s, whose header carries the way back this test runs", planRatingsMigration)
-	}
-	var block []string
-	ended := false
-	for _, line := range strings.Split(all[i].SQL, "\n") {
-		comment, isComment := strings.CutPrefix(line, "--")
-		if !isComment {
-			// The first line that is no comment is the migration's first statement, so the
-			// header is over.
-			break
-		}
-		held, inBlock := strings.CutPrefix(comment, "   ")
-		switch {
-		case inBlock && ended:
-			t.Fatalf("%s carries two indented blocks in its header, want the one way back", planRatingsMigration)
-		case inBlock:
-			block = append(block, held)
-		case len(block) > 0:
-			ended = true
-		}
-	}
-	if len(block) == 0 {
-		t.Fatalf("%s carries no indented block in its header: that block is the way back an operator runs", planRatingsMigration)
-	}
-	return strings.Join(block, "\n")
+	return block
 }
 
 // stepRecordBeforeTheRating is record.StepRecord as the release that records each step declares
@@ -188,7 +159,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	}
 
 	if _, err := store.Pool().Exec(ctx, planRatingsWayBack(t), pgx.QueryExecModeSimpleProtocol); err != nil {
-		t.Fatalf("run the way back %s's header carries: %v", planRatingsMigration, err)
+		t.Fatalf("run the way back the header of migration %d carries: %v", planRatingsVersion, err)
 	}
 
 	rows, err := store.Pool().Query(ctx, `select id, kind, issue, payload, attempts, next_at, last_error from outbox order by id`)
