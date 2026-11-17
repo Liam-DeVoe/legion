@@ -1,13 +1,14 @@
 package main
 
-// Red test of the acceptance of #4191 at b4a44ca71b (not a file of the branch; laid over a git
-// archive with go test -overlay). R12: "Each leg of a matrix reports its own result, and no leg
-// replaces the result of another." R7: "A step that left no result reads as unknown: silence is
-// not a pass." R9: "When a check has no result that counts after a run of its job ends, it reads
-// unknown, and Dispatch reports a fault of CI." The judge looks for a silent leg only among the job
-// runs at the subject's own commit, while the runs that count come from every commit whose results
-// carry (R8). So a matrix whose arm leg ended at c1 with no result reads unknown (ci_fault) at c1,
-// and true at m2, where c1's linux pass carries and c1's silent arm does not.
+// Red test of the acceptance of #4191 at b4a44ca71b, a file of the branch whose body is as its
+// tester wrote it. R12: "Each leg of a matrix reports its own result, and no leg replaces the
+// result of another." R7: "A step that left no result reads as unknown: silence is not a pass."
+// R9: "When a check has no result that counts after a run of its job ends, it reads unknown, and
+// Dispatch reports a fault of CI." At b4a44ca71b the judge looked for a silent leg only among the
+// job runs at the subject's own commit, while the runs that count come from every commit whose
+// results carry (R8): a matrix whose arm leg ended at c1 with no result read unknown (ci_fault) at
+// c1, and true at m2, where c1's linux pass carried and c1's silent arm did not. A silent leg now
+// counts wherever the results of its commit count.
 
 import (
 	"os"
