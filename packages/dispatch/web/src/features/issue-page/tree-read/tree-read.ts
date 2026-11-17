@@ -41,9 +41,9 @@ export type TreeFilter = "spec" | "verification" | "plan";
 export const TREE_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
 
 /** The tree read's key. It is not under `["issue", key]`, so a write that invalidates the
- *  issue's key by prefix does not reach it, and `subscribeTreeFreshness` is the one path that
- *  refreshes it: a page that reads the tree alone after a write of its own invalidates this key,
- *  `exact`, since every view's key is under it. */
+ *  issue's key by prefix does not reach it: `subscribeTreeFreshness` refreshes it, `exact` since
+ *  every view's key is under it, after a write or an event changed a query of the issue, and a
+ *  write of the page may refresh it by this key itself, through `refreshQueries`. */
 export function issueTreeKey(key: string): readonly ["issue-tree", string] {
   return ["issue-tree", key];
 }
@@ -57,8 +57,10 @@ export function viewKey(
 }
 
 /** Drops every view of issue `key` the cache holds (`resetQueries`), so a held one is gone and
- *  the one an observer has enabled is read again: what a new load of the issue does, so it draws
- *  no view older than its own tree. A write never drops them (`subscribeTreeFreshness`). */
+ *  the one an observer has enabled is read again. A new load of the issue calls it, and so does a
+ *  write of the page that refreshes the tree by its key itself, so neither draws a view older
+ *  than its tree. `subscribeTreeFreshness` drops none: it refreshes each held view through
+ *  `refreshQueries`, and the view keeps what it draws until its new answer lands. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
