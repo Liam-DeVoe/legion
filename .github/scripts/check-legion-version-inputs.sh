@@ -33,6 +33,9 @@
 #     names there and of every module that provides one of those packages, each one that exists.
 # A path covers itself and the tree under it, as a git pathspec does. An exclude, written
 # `:(exclude)X` or `:!X`, drops what it matches from every release whatever else names it.
+# A hand-written path go does not name (the notice scripts, the target lists, the listener's
+# packages/contracts/) is held for its spelling, its place in the tree and its push coverage, but
+# not for being in the list: one taken out releases nothing when it changes.
 #
 # Fails on:
 #   1. a LEGION_GO_INPUTS block that is not exactly the one `write` writes, naming every path it
