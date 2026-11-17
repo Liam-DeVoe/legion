@@ -9,11 +9,16 @@
  *  after a reload, that a count moves with no reload at all, and that two pages agree about one
  *  relation.
  */
+import { readFileSync } from "node:fs";
+
+import { PRIORITY_ID_MAX } from "@legion/contracts";
+
 import {
   claimIssue,
   createIssue,
   createPriority,
   createProject,
+  dashboardOrigin,
   endPriority,
   getIssue,
   getPriorityHistory,
@@ -25,6 +30,25 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const PRIORITIES_PATH = "/priorities";
+
+/** One case of the rule by which the server makes a priority's id from a title the create
+ *  names no id beside: the title, and the id it gives or the kind of refusal it meets. */
+type IdCase =
+  | { readonly title: string; readonly id: string }
+  | { readonly title: string; readonly refusal: "no-slug" | "none" | "any" };
+
+/** The cases of that rule, written once for the server's tests, the priorities seed and the row
+ *  below (`packages/contracts/fixtures/priority-ids.json`). The file is read by its path rather
+ *  than imported, so it stays out of this package's TypeScript program. */
+const idFixture: { readonly cases: readonly IdCase[] } = JSON.parse(
+  readFileSync(new URL("../../contracts/fixtures/priority-ids.json", import.meta.url), "utf8")
+);
+
+/** The case of that list with the longest title that gives an id. Its slug is longer than
+ *  `PRIORITY_ID_MAX`, so the id the server derives from it is the slug cut at a word's end. */
+const LONG_CASE = idFixture.cases
+  .flatMap((one) => ("id" in one ? [one] : []))
+  .reduce((longest, one) => (one.title.length > longest.title.length ? one : longest));
 
 /** The two fault tables, by the names the Issues table gives them: the `label` each fault list of
  *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
@@ -389,6 +413,50 @@ test("with no priority the page reads the server's sentence, and writes the firs
     await page.reload();
     await expectRowOrder(section(page, "Priorities"), [`P1 ${added}`]);
     await expect(page.getByText(NONE_LIVE, { exact: true })).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a priority written through the page's form, its row read, and a refused create.
+test("a long title through the New priority form lands under its cut id", async ({ browser }) => {
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await priorityPage(page);
+    await page.goto(PRIORITIES_PATH);
+
+    // The form sends the title alone, so the id is the one the server derives from it.
+    await page.getByRole("button", { exact: true, name: "New priority" }).click();
+    await page.getByLabel("Title of the new priority").fill(LONG_CASE.title);
+    await page
+      .locator('form[aria-label="New priority"]')
+      .getByRole("button", { name: "Add priority" })
+      .click();
+
+    // The table holds the whole title, and the row's link opens the page of the cut id.
+    await expectRowOrder(section(page, "Priorities"), [`P1 ${LONG_CASE.title}`]);
+    await expect(page.getByLabel("Title of P1")).toHaveValue(LONG_CASE.title);
+    const row = page.getByRole("row", { exact: true, name: `P1 ${LONG_CASE.title}` });
+    await expect(row.getByRole("link", { exact: true, name: "P1" })).toHaveAttribute(
+      "href",
+      `/priorities/${LONG_CASE.id}`
+    );
+
+    // An id the caller names is not cut: one character past the bound is refused, by the bound.
+    // `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
+    // cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin).
+    const refused = await page.request.post("/api/v1/priorities", {
+      data: { id: "n".repeat(PRIORITY_ID_MAX + 1), title: "Name the id by hand" },
+      headers: { Origin: dashboardOrigin },
+    });
+    expect(refused.status()).toBe(400);
+    const body = await refused.json();
+    expect(body.code).toBe("PRIORITY_INPUT");
+    expect(body.error).toBe(
+      `an id is at most ${PRIORITY_ID_MAX} characters, and this one is ${PRIORITY_ID_MAX + 1}`
+    );
+    expect((await listPriorities()).priorities?.map((stored) => stored.id)).toEqual([LONG_CASE.id]);
   } finally {
     await context.close();
   }
