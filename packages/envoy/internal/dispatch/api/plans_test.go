@@ -570,7 +570,9 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 // the document, the version and two tasks in the order the owner gave them, not by id; the plan write
 // answers it whole. The read lists that plan, the highest generation, though the first run's plan
 // was written after it, and both ratings whole, in the order the retros ran: each its own score,
-// reason, record and end, the two scores different, so a score read onto the other retro is seen.
+// reason, record and end, the two scores different, so a score read onto the other retro is seen,
+// and the retro that ran first holding the higher score and the reason that sorts last, so a sort
+// of the ratings by either is seen too.
 func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -592,7 +594,7 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 		started time.Time
 		rating  int
 		reason  string
-	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}}
+	}{1: {at(10), 4, "Two steps came late."}, 2: {at(100), 3, "The second plan fit."}}
 	ids := map[int]string{}
 	for generation, retro := range retros {
 		id := uuid.NewString()
@@ -611,8 +613,8 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 		t.Fatalf("the read lists the plan %+v, want the owner's plan of generation 2, %+v", plan, owners)
 	}
 	want := []model.PlanRating{
-		{Rating: 3, Reason: "The plan was late.", StepID: ids[1], EndedAt: new(at(11))},
-		{Rating: 4, Reason: "The second plan fit.", StepID: ids[2], EndedAt: new(at(101))},
+		{Rating: 4, Reason: "Two steps came late.", StepID: ids[1], EndedAt: new(at(11))},
+		{Rating: 3, Reason: "The second plan fit.", StepID: ids[2], EndedAt: new(at(101))},
 	}
 	if got := planRatingsText(read.Issues[0].Ratings); !slices.Equal(got, planRatingsText(want)) {
 		t.Fatalf("the ratings are\n%s\nwant each retro's own, in the order they ran\n%s",
