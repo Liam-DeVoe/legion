@@ -1447,8 +1447,9 @@ type ResultCommitStands struct {
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
-// (check_result_retractions): why the result is wrong, who said so and when. The result itself
-// is neither updated nor deleted, so a reader sees both records.
+// (check_result_retractions for a role's result, ci_check_result_retractions for a CI job's):
+// why the result is wrong, who said so and when. The result itself is neither updated nor
+// deleted, so a reader sees both records.
 type CheckResultRetracted struct {
 	Reason    string    `json:"reason"`
 	Actor     Actor     `json:"actor"`
@@ -1603,9 +1604,10 @@ type CheckResult struct {
 }
 
 // CheckResultRetraction is the record that says one stored result is wrong
-// (check_result_retractions). It names the result and keeps the reason and the actor. The
-// result itself is neither updated nor deleted, so a reader sees both records. One result
-// takes one retraction, which the table's key holds.
+// (check_result_retractions for a role's result, ci_check_result_retractions for a CI job's). It
+// names the result and keeps the reason and the actor. The result itself is neither updated nor
+// deleted, so a reader sees both records. One result takes one retraction, which the table's key
+// holds.
 type CheckResultRetraction struct {
 	ResultID  string    `json:"result_id"`
 	Reason    string    `json:"reason"`

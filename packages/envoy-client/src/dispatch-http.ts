@@ -1733,8 +1733,7 @@ export class DispatchClient {
    * result itself is neither changed nor deleted: a reader of the results sees the result and
    * its retraction together. The session that recorded the result, a session holding the
    * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
-   * person may each retract a role's result; nobody retracts a CI job's result, which the route
-   * answers 403 RETRACTION_FORBIDDEN.
+   * person may each retract it, a role's result or a CI job's alike.
    */
   async retractResult(
     resultID: string,

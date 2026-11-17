@@ -230,7 +230,7 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 // It reads issue_key and not check_issue_key: a result recorded on a child against a parent's
 // check belongs to the child, and both issues are of one project anyway, since an issue's parent
 // is of its own project. A CI job's result resolves too, so a caller of its project reaches the
-// retract route's own refusal of it rather than a refusal of scope.
+// retract route, which takes a CI job's result as it takes a role's.
 func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
 	return scanProjectKey(q.QueryRow(ctx, `
 		select coalesce(i.project_key, '')

@@ -25,9 +25,9 @@
 --                      no person.
 --   event_seq          the seq of the result.recorded event on the check's issue.
 -- Nothing updates or deletes a row: a result is a record of one run, and another run or another
--- attempt is another row. One writer inserts them (insertCIJobCheckResult), and no route
--- retracts one. A row goes only with its issue or its document, by the cascade check_results
--- takes too.
+-- attempt is another row. One writer inserts them (insertCIJobCheckResult), and a retraction of
+-- one is a row of its own (ci_check_result_retractions, 20261117205502). A row goes only with its
+-- issue or its document, by the cascade check_results takes too.
 --
 -- A table of its own rather than more rows of check_results, which holds what a role recorded:
 -- the release before this one reads every check_results row against a check block as a reason

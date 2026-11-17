@@ -13,10 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// results_retract.go retracts one recorded result. A retraction is a record of its own
-// (check_result_retractions): it names the result, carries the reason and the actor, and
-// updates and deletes nothing, so a reader sees the result and its retraction together. A
-// retracted result is no evidence, and the record says who said so and why.
+// results_retract.go retracts one recorded result, a role's or a CI job's. A retraction is a
+// record of its own (check_result_retractions for a role's result, ci_check_result_retractions
+// for a CI job's): it names the result, carries the reason and the actor, and updates and
+// deletes nothing, so a reader sees the result and its retraction together. A retracted result
+// is no evidence, and the record says who said so and why.
 //
 // It is taken on a closed issue, and for a check of any `when`, which is what the record route
 // refuses (ISSUE_CLOSED in results.go). A closed issue's results are the production record,
@@ -30,21 +31,35 @@ type checkResultRetractionInput struct {
 
 // retractedResult is what the write reads about the result it is asked to retract: the issue
 // the result was recorded on, whose claim is one of the three credentials that may retract it,
-// the check's issue, which the event is appended on, and the session that recorded it.
+// the check's issue, which the event is appended on, the session that recorded it, and the table
+// a retraction of it is a row of.
 type retractedResult struct {
 	IssueKey      string
 	CheckIssueKey string
 	CheckBlockID  string
 	CommitSHA     string
 	Session       string
+	Retractions   string
+}
+
+// resultTable is one table of recorded results (results_rows.go) with the table that holds their
+// retractions, whose key is a foreign key into it.
+type resultTable struct {
+	results     string
+	retractions string
+}
+
+// resultTables is each table a result's id may name a row of: a role's results, then a CI job's.
+var resultTables = [...]resultTable{
+	{results: "check_results", retractions: "check_result_retractions"},
+	{results: "ci_check_results", retractions: "ci_check_result_retractions"},
 }
 
 // POST /api/v1/results/{id}/retract  (the recording session, the claimant, or a person)
 //
-// Records that one stored result a role recorded is wrong, with the reason. Nothing about the
-// result changes: the retraction is a row of its own, and both records stay readable. The answer
-// is the retraction. A result a CI job recorded is refused to every caller
-// (refuseCIJobRetraction).
+// Records that one stored result is wrong, with the reason: a role's result, or a CI job's, by
+// the same three callers. Nothing about the result changes: the retraction is a row of its own,
+// and both records stay readable. The answer is the retraction.
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -80,8 +95,8 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// The result's row is locked before anything is judged, and the retraction is looked for in
 	// the statement after that lock. In READ COMMITTED each statement takes its own snapshot, so
 	// a second retraction that waited here reads the first one as soon as that one commits. No
-	// writer of a result ever holds this lock — nothing updates a check_results row — and the
-	// record route takes its issue rows before it inserts, so the two cannot deadlock.
+	// writer of a result ever holds this lock — nothing updates a row of either table of results —
+	// and the record route takes its issue rows before it inserts, so the two cannot deadlock.
 	result, err := lockRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -91,7 +106,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	retracted, err := resultIsRetracted(r.Context(), tx, resultID)
+	retracted, err := resultIsRetracted(r.Context(), tx, result.Retractions, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -119,7 +134,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	retraction := model.CheckResultRetraction{
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
-	if err := insertCheckResultRetraction(r.Context(), tx, &retraction); err != nil {
+	if err := insertCheckResultRetraction(r.Context(), tx, result.Retractions, &retraction); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -131,9 +146,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, retraction)
 }
 
-// refuseRetractionBy refuses every caller but the three a retraction belongs to:
+// refuseRetractionBy refuses every caller but the three a retraction belongs to, for a role's
+// result and a CI job's alike:
 //
-//   - the session that recorded the result, which check_results.session names;
+//   - the session that recorded the result, which the row's session names (a CI job's is its
+//     run's own, whose results token reaches no route but recording: RESULTS_ONLY_TOKEN);
 //   - a session holding the Dispatch claim of the issue the result was recorded on, which is
 //     issue_key and not check_issue_key: the recording issue is the one whose session wrote the
 //     result, and its claimant answers for what that session recorded;
@@ -184,51 +201,34 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 	return holder, nil
 }
 
-// lockRetractedResult reads the result a retraction names and locks its row for the length of
-// the write, so two retractions of one result are taken one after the other. A result a CI job
-// recorded is no row of check_results but of ci_check_results, and nobody retracts it, whoever
-// asks (refuseCIJobRetraction).
+// lockRetractedResult reads the result a retraction names, a role's or a CI job's
+// (resultTables), and locks its row for the length of the write, so two retractions of one
+// result are taken one after the other. An id that neither table holds is 404 RESULT_NOT_FOUND.
 func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
-	var result retractedResult
-	err := tx.QueryRow(ctx, `
-		select issue_key, check_issue_key, check_block_id, commit_sha, session
-		from check_results where id = $1
-		for update
-	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
-		&result.CommitSHA, &result.Session)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return retractedResult{}, refuseCIJobRetraction(ctx, tx, id)
+	for _, table := range resultTables {
+		result := retractedResult{Retractions: table.retractions}
+		err := tx.QueryRow(ctx, `
+			select issue_key, check_issue_key, check_block_id, commit_sha, session
+			from `+table.results+` where id = $1
+			for update
+		`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
+			&result.CommitSHA, &result.Session)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
+		}
+		return result, nil
 	}
-	if err != nil {
-		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
-	}
-	return result, nil
+	return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
 }
 
-// refuseCIJobRetraction answers a retraction of id, which check_results does not hold: 403
-// RETRACTION_FORBIDDEN where a CI job recorded it, for the session that holds the issue's claim
-// and for a person as for any other caller, and 404 RESULT_NOT_FOUND otherwise. A result is
-// appended and never edited, and a failing run stays a report after a later pass (R7); nobody
-// writes a result for work that it did not do (R12), and a retraction of the job's result would
-// change what reads pass for a check that only the job's runs prove.
-func refuseCIJobRetraction(ctx context.Context, q queryer, id string) error {
-	var recordedByCI bool
-	if err := q.QueryRow(ctx, `select exists(select 1 from ci_check_results where id = $1)`, id).Scan(&recordedByCI); err != nil {
-		return fmt.Errorf("read result %s: %w", id, err)
-	}
-	if !recordedByCI {
-		return errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
-	}
-	return errorf(http.StatusForbidden, "RETRACTION_FORBIDDEN",
-		"result %s was recorded by a CI job, and nobody retracts it: a result is appended and never edited, and nobody writes a result for work that it did not do. "+
-			"A pass and a fail of the job at one commit leave that commit unknown; a run at a new commit records a new result.",
-		id)
-}
-
-// resultIsRetracted answers whether a retraction of this result stands already.
-func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) {
+// resultIsRetracted answers whether a retraction of this result stands already in retractions,
+// the table of its retractions (resultTables).
+func resultIsRetracted(ctx context.Context, q queryer, retractions, id string) (bool, error) {
 	var retracted bool
-	err := q.QueryRow(ctx, `select true from check_result_retractions where result_id = $1`, id).Scan(&retracted)
+	err := q.QueryRow(ctx, `select true from `+retractions+` where result_id = $1`, id).Scan(&retracted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -239,10 +239,10 @@ func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) 
 }
 
 // loadCheckResultRetractions is the retraction standing against each result of one
-// Verification document's checks, by result id. One query serves the whole document, as
-// loadCheckResults does for the results themselves: a document holding twenty checks is one
-// round trip, and a retraction is read once per read of the results rather than once per
-// result.
+// Verification document's checks, a role's or a CI job's, by result id. One query serves the
+// whole document, as loadCheckResults does for the results themselves: a document holding
+// twenty checks is one round trip, and a retraction is read once per read of the results rather
+// than once per result.
 //
 // A reader of the results sees a retracted result with the reason it is wrong and the actor
 // who said so, and counts it as no evidence: no pass of a retracted result stands
@@ -254,6 +254,11 @@ func loadCheckResultRetractions(
 		select retraction.result_id, retraction.reason, retraction.actor, retraction.created_at
 		from check_result_retractions retraction
 		join check_results result on result.id = retraction.result_id
+		where result.check_artifact_id = $1::uuid
+		union all
+		select retraction.result_id, retraction.reason, retraction.actor, retraction.created_at
+		from ci_check_result_retractions retraction
+		join ci_check_results result on result.id = retraction.result_id
 		where result.check_artifact_id = $1::uuid
 	`, artifactID)
 	if err != nil {
@@ -279,15 +284,16 @@ func loadCheckResultRetractions(
 	return retractions, nil
 }
 
-// insertCheckResultRetraction writes the retraction's row and fills in the created_at the row
-// takes, which the route answers with: the pointer is the caller's own value, not a copy of it.
-func insertCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction) error {
+// insertCheckResultRetraction writes the retraction's row into retractions, the table of the
+// result's retractions (resultTables), and fills in the created_at the row takes, which the route
+// answers with: the pointer is the caller's own value, not a copy of it.
+func insertCheckResultRetraction(ctx context.Context, tx pgx.Tx, retractions string, retraction *model.CheckResultRetraction) error {
 	actorJSON, err := encodeJSON(retraction.Actor)
 	if err != nil {
 		return err
 	}
 	return tx.QueryRow(ctx, `
-		insert into check_result_retractions (result_id, reason, session, actor, event_seq)
+		insert into `+retractions+` (result_id, reason, session, actor, event_seq)
 		values ($1, $2, $3, $4, $5)
 		returning created_at
 	`, retraction.ResultID, retraction.Reason, retraction.Session, actorJSON, retraction.EventSeq,
