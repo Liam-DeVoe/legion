@@ -276,11 +276,7 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 			got, earlierStart, testerRow)
 	}
 	r.dispatch.start()
-	rebindHeldPorts(t, &r.cfg)
-	r.boot()
-	for _, c := range r.claims {
-		c.reconnect()
-	}
+	r.reboot()
 	// No delivery of the earlier release stands in the store, so the tester's claim still serves
 	// the entry it confirmed before the rollback, and the boot's admission sends it the task of the
 	// entry its row names (workflow's SendOwedEntry), which the tester works. That send starts no
@@ -541,13 +537,19 @@ func (r *stepRecordsRig) boot() {
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
 }
 
-// restart stops the daemon and boots it again on the same store, the same Dispatch and the same
-// ports. Each pane outlives the daemon, as a tmux pane does: the new daemon re-observes each live
-// claim rather than launching it again, and each pane's shim connects to it with the boot token it
-// has held since its launch, its turn and its session as they were.
+// restart stops the daemon and boots it again (reboot).
 func (r *stepRecordsRig) restart() {
 	r.t.Helper()
 	r.d.stop()
+	r.reboot()
+}
+
+// reboot boots the stopped daemon again on the same store, the same Dispatch and the same ports.
+// Each pane outlives the daemon, as a tmux pane does: the new daemon re-observes each live claim
+// rather than launching it again, and each pane's shim connects to it with the boot token it has
+// held since its launch, its turn and its session as they were.
+func (r *stepRecordsRig) reboot() {
+	r.t.Helper()
 	rebindHeldPorts(r.t, &r.cfg)
 	r.boot()
 	for _, c := range r.claims {
