@@ -154,7 +154,8 @@ export interface QueryOwner {
    *  settles, or when the second since the last fetch began ends. It announces no refresh. */
   readonly read: () => void;
   /** Lets the query go: no listener call and no read after it, and a read it asked for that is
-   *  still waiting is dropped. */
+   *  still waiting is dropped, unless another owner still holds the query or an enabled observer
+   *  renders it. */
   readonly stop: () => void;
 }
 
