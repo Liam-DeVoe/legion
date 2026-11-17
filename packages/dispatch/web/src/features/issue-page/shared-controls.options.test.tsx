@@ -84,11 +84,11 @@ import {
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
- * The options the shared controls take (dispatch://INFRA-3935 R1, R3, R4, R5 and R10): each
- * option's default is `main`'s shape, the options of the new issue page's surface change nothing
- * outside `NoTooltips`, and each shape an option draws is the one R3 to R5 describe. Each case
- * draws the controls through `draw` (`shared-controls-fixture.tsx`), every read answered by a
- * stub on `api` below.
+ * The options the shared controls take: each option's default is `main`'s shape, the options of
+ * the new issue page's surface change nothing outside `NoTooltips`, and each shape an option draws
+ * is the one the new issue page needs in its header, in a row of Details and for an author's name.
+ * Each case draws the controls through `draw` (`shared-controls-fixture.tsx`), every read answered
+ * by a stub on `api` below.
  */
 
 function specEntry(approval?: ArtifactApproval): StepEntry {
@@ -328,13 +328,13 @@ function componentsIssue(components: IssueComponents, key = "CORE-1") {
 // The cases
 // ---------------------------------------------------------------------------------------------
 
-// dispatch://INFRA-1196 R19: the link to the version an approval request asks about, which the
-// panel's old card drew, is Details' approval entry's own: inside `NoTooltips` each entry links
-// its document at the version the request names - not the document's latest - or the version a
-// review approved, opened in place of the outline. The header's copy holds that spec's R13 list
-// and nothing else, so it links nothing. dispatch://INFRA-3935 R1: `actions`, `reasons` and
-// `testId` default to the header's shape of `main`: both actions on the primary document, each
-// reason under the list, and `issue-approval-steps`.
+// So that nothing the page drew is lost, the link to the version an approval request asks about,
+// which the panel's old card drew, is Details' approval entry's own: inside `NoTooltips` each
+// entry links its document at the version the request names - not the document's latest - or the
+// version a review approved, opened in place of the outline. The header's copy holds only what
+// tells a reader to act, so it links nothing. `actions`, `reasons` and `testId` default to the
+// header's shape of `main`: both actions on the primary document, each reason under the list, and
+// `issue-approval-steps`.
 test("an approval entry links its document at the version the request asks about", () => {
   const entries = [
     specEntry({ latest_version: 2, state: "awaiting", waiting_on: "human" }),
@@ -414,11 +414,10 @@ test("an approval entry links its document at the version the request asks about
   }
 });
 
-// dispatch://INFRA-3935 R1: outside `NoTooltips` the options of the new issue page's surface draw
-// exactly what `main` draws. Each pair draws a control without the option and with it; inside
-// `NoTooltips` the same pair differs, so a pass outside is no pair that draws nothing either way.
-// The exception is `author` on a session: inside, every form of `AgentName` names a session as
-// an author is named (decision 107 of dispatch://INFRA-1196/artifact/part-decisions-md), so
+// Outside `NoTooltips` the options of the new issue page's surface draw exactly what `main` draws.
+// Each pair draws a control without the option and with it; inside `NoTooltips` the same pair
+// differs, so a pass outside is no pair that draws nothing either way. The exception is `author`
+// on a session: inside, every form of `AgentName` names a session as an author is named, so
 // `author` changes nothing there either, and the case names those pairs as the same inside.
 test("outside NoTooltips inRow, author, versions and exact change nothing", async () => {
   const waiting = waitingLiveness();
@@ -562,9 +561,8 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
   ]);
 });
 
-// dispatch://INFRA-3935 R3: the header variant of the assignee and the priority is the
-// prototype's `.person` and `.prio`, drawn over the same native select as the badge, at the
-// header line's 24 px.
+// The header variant of the assignee and the priority is the prototype's `.person` and `.prio`,
+// drawn over the same native select as the badge, at the header line's 24 px.
 test("the header variant draws the person and the priority bars over the same select", async () => {
   const expectHeaderWrapper = (wrapper: HTMLElement) => {
     expect(classOf(wrapper)).toContain("min-h-6");
@@ -642,9 +640,9 @@ test("the header variant draws the person and the priority bars over the same se
   }
 });
 
-// dispatch://INFRA-3935 R3: at the `compact` size the chip is the prototype's `.pill` and Request
-// changes its `.hbtn` (`pageHeaderControl`); Approve has that size, filled with the page's ink
-// and never the application's blue. `size` acts on every surface.
+// At the `compact` size the chip is the prototype's `.pill` and Request changes its `.hbtn`
+// (`pageHeaderControl`); Approve has that size, filled with the page's ink and never the
+// application's blue. `size` acts on every surface.
 test("the compact size draws the chip and both actions at the header's size, with Approve in the ink", () => {
   for (const surface of ["inside", "outside"] as const) {
     const view = draw(
@@ -690,11 +688,10 @@ function layoutEntries(): StepEntry[] {
   ];
 }
 
-// dispatch://INFRA-3935 R1 and R10: `layout` defaults to `block`, which is `main`'s list. The
-// list and each entry are boxes of their own that wrap within themselves, and the primary
-// document's chip and its two actions are each its entry's own item, with no box around the
-// actions. Given or not, `block` draws the same markup, with `main`'s options and with the
-// header's, on both surfaces.
+// `layout` defaults to `block`, which is `main`'s list. The list and each entry are boxes of their
+// own that wrap within themselves, and the primary document's chip and its two actions are each
+// its entry's own item, with no box around the actions. Given or not, `block` draws the same
+// markup, with `main`'s options and with the header's, on both surfaces.
 test("ApprovalSteps at its default layout draws main's list", async () => {
   const pairs: readonly (readonly [string, () => ReactNode, () => ReactNode])[] = [
     [
@@ -770,10 +767,10 @@ test("ApprovalSteps at its default layout draws main's list", async () => {
   }
 });
 
-// dispatch://INFRA-3935 R1 and R10: `keepActionsTogether` is off by default, so a caller that
-// draws the chip alone, as today's issue header, a document's header and the Inbox's reading
-// pane do, gets `main`'s markup: Approve and Request changes are each the chip's parent's own
-// item, with no box around them. Given as false, it draws the same markup, on both surfaces.
+// `keepActionsTogether` is off by default, so a caller that draws the chip alone, as today's issue
+// header, a document's header and the Inbox's reading pane do, gets `main`'s markup: Approve and
+// Request changes are each the chip's parent's own item, with no box around them. Given as false,
+// it draws the same markup, on both surfaces.
 test("ApprovalChip at its defaults draws its two actions with no box around them", async () => {
   const awaiting = doc(SPEC_ID, "spec.md", {
     latest_version: 1,
@@ -808,11 +805,10 @@ test("ApprovalChip at its defaults draws its two actions with no box around them
   }
 });
 
-// dispatch://INFRA-3935 R10, decision 86 of dispatch://INFRA-1196/artifact/part-decisions-md: at
-// `layout="contents"` neither the list nor an entry draws a box, so in part P's header line each
-// entry's name, its chip and its actions are that line's items; the actions are one box that
-// does not wrap, so Approve and Request changes never land on two lines. The list keeps its name
-// and test id, and a reason is still drawn. `layout` acts on every surface.
+// At `layout="contents"` neither the list nor an entry draws a box, so in the new issue page's
+// header line each entry's name, its chip and its actions are that line's items; the actions are
+// one box that does not wrap, so Approve and Request changes never land on two lines. The list
+// keeps its name and test id, and a reason is still drawn. `layout` acts on every surface.
 test("ApprovalSteps with layout contents adds no box of its own and keeps each entry's actions together", () => {
   for (const surface of ["inside", "outside"] as const) {
     const view = draw(
@@ -852,8 +848,8 @@ test("ApprovalSteps with layout contents adds no box of its own and keeps each e
       }
 
       // Each action is found by the words it draws, which its name begins with: inside
-      // `NoTooltips` the name goes on to say its document, since `actionsOn` names two (decision
-      // 99 of dispatch://INFRA-1196/artifact/part-decisions-md, read in `shared-writes.test.ts`).
+      // `NoTooltips` the name goes on to say its document, since `actionsOn` names two (read in
+      // `shared-writes.test.ts`).
       const groups = [spec, verification].map((entry) => {
         const approve = within(entry).getByRole("button", { name: /^Approve\b/u });
         const group = parentOf(approve);
@@ -899,8 +895,8 @@ test("ApprovalSteps with layout contents adds no box of its own and keeps each e
   }
 });
 
-// dispatch://INFRA-3935 R4: inside `NoTooltips` a control drawn as the value of a row of Details
-// draws no label of its own, since the row draws it, and says Details' words.
+// Inside `NoTooltips` a control drawn as the value of a row of Details draws no label of its own,
+// since the row draws it, and says Details' words.
 test("inRow draws no label and the words of Details", async () => {
   const waiting = waitingLiveness();
   const free: ClaimHolderLiveness = {
@@ -1090,7 +1086,7 @@ function claimShape(chip: Element): string[] {
   return shape;
 }
 
-/** The claim's markup in each state as this part drew it before a claim in a row of Details
+/** The claim's markup in each state as `ClaimChip` drew it before a claim in a row of Details
  *  became a sentence (`claimShape`): `main`'s pill outside `NoTooltips`, with `inRow` or without,
  *  and the header's pill inside it. */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
@@ -1245,11 +1241,11 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
  *  their own when they do not fit. */
 const BOX_DISPLAYS = ["flex", "inline-flex", "grid", "inline-grid"];
 
-// dispatch://INFRA-3935 R4: inside `NoTooltips` a claim in a row of Details is plain words that
-// wrap between words as a sentence does (the prototype's `.frow .fv`): no flex box moves a piece
-// that does not fit whole to a line of its own, and a space stands between each two pieces. R1:
-// outside `NoTooltips`, with `inRow` or without, and inside it as the header's pill, the claim's
-// markup is the one recorded in `RECORDED_CLAIMS`.
+// Inside `NoTooltips` a claim in a row of Details is plain words that wrap between words as a
+// sentence does (the prototype's `.frow .fv`): no flex box moves a piece that does not fit whole
+// to a line of its own, and a space stands between each two pieces. Outside `NoTooltips`, with
+// `inRow` or without, and inside it as the header's pill, the claim's markup is the one recorded
+// in `RECORDED_CLAIMS`.
 test("inRow draws the claim as a sentence that wraps between words", async () => {
   for (const state of CLAIM_STATES) {
     const read = await readClaim(state, "inside", true, (chip) => {
@@ -1304,10 +1300,9 @@ test("inRow draws the claim as a sentence that wraps between words", async () =>
   expect(drawn).toEqual(want);
 });
 
-// dispatch://INFRA-3935 R4: inside `NoTooltips` the priority's add control in a row of Details is,
-// from `md`, as tall as the controls beside it there (the repository's select, drawn in
-// `badgeSelectPageRailWrapper`), and keeps the 44 px below `md`. R1: outside, its class is
-// `main`'s.
+// Inside `NoTooltips` the priority's add control in a row of Details is, from `md`, as tall as the
+// controls beside it there (the repository's select, drawn in `badgeSelectPageRailWrapper`), and
+// keeps the 44 px below `md`. Outside, its class is `main`'s.
 test("the priority's add control has the height of its siblings in Details", async () => {
   const siblings = tokens(badgeSelectPageRailWrapper).filter((token) =>
     token.startsWith("md:min-h-")
@@ -1332,10 +1327,10 @@ test("the priority's add control has the height of its siblings in Details", asy
   }
 });
 
-// dispatch://INFRA-3935 R4: `chipClassName` is the chip's whole shape - only what holds a chip on
-// its line is kept - and the labels wrap. It acts on every surface; without it the labels keep
-// `main`'s strings. Inside `NoTooltips` what holds the chip on its line also breaks a long label
-// rather than keeping it whole (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md).
+// `chipClassName` is the chip's whole shape - only what holds a chip on its line is kept - and the
+// labels wrap. It acts on every surface; without it the labels keep `main`'s strings. Inside
+// `NoTooltips` what holds the chip on its line also breaks a long label rather than keeping it
+// whole.
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
   const mainChip =
@@ -1384,8 +1379,7 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   }
 });
 
-// dispatch://INFRA-3935 R4/R6, decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// inside `NoTooltips` a label chip stays within its line and breaks a long label anywhere, with
+// Inside `NoTooltips` a label chip stays within its line and breaks a long label anywhere, with
 // `chipClassName` and without it, because a chip that kept a 40-character label with no space
 // whole (the longest label `IssueLabels` takes) ran past Details. Outside, each chip keeps
 // `main`'s string, and the prefix it keeps before a given `chipClassName`.
@@ -1442,15 +1436,14 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
   }
 });
 
-// dispatch://INFRA-3935 R4/R6, decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// inside `NoTooltips` the control of an issue with no label says what it does, as the priority's
+// Inside `NoTooltips` the control of an issue with no label says what it does, as the priority's
 // says "Add a priority", because its row of Details already names the property and the
 // property's name in the control drew "Labels None Labels". Its accessible name there begins with
-// the words it draws and ends with B's joining word and the issue's key, as the priority's "Add a
-// priority to CORE-1" does, so a voice user says what they read (WCAG 2.5.3 Label in Name,
-// dispatch://INFRA-3935 R2); with no key given it is those words alone. Outside it says `main`'s
-// word and keeps `main`'s name, "Edit labels", key or no key (R1). Each name inside is built from
-// B's words.
+// the words it draws and ends with the joining word of `page-words.ts` and the issue's key, as the
+// priority's "Add a priority to CORE-1" does, so a voice user says what they read (WCAG 2.5.3
+// Label in Name); with no key given it is those words alone. Outside it says `main`'s word and
+// keeps `main`'s name, "Edit labels", key or no key. Each name inside is built from the words of
+// `page-words.ts`.
 test("inside NoTooltips the empty labels control says Add a label", () => {
   for (const variant of ["default", "rail"] as const) {
     for (const surface of ["inside", "outside"] as const) {
@@ -1501,14 +1494,13 @@ test("inside NoTooltips the empty labels control says Add a label", () => {
   }
 });
 
-// dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// while its labels save, the control inside `NoTooltips` draws the page's `saving_labels`
-// whatever it holds, and it stays focusable, marked busy. Its accessible name then begins with
-// those words, their ellipsis dropped, and ends with B's joining word and the issue's key
+// While its labels save, the control inside `NoTooltips` draws the page's `saving_labels` whatever
+// it holds, and it stays focusable, marked busy. Its accessible name then begins with those words,
+// their ellipsis dropped, and ends with the joining word of `page-words.ts` and the issue's key
 // ("Saving labels of CORE-1"), or is those words alone with no key given, so a voice user says
 // what they read (WCAG 2.5.3 Label in Name). Outside it draws `main`'s "Saving labels…" and keeps
-// `main`'s name, "Edit labels", in every state (R1). Each name and word inside is built from B's
-// words.
+// `main`'s name, "Edit labels", in every state. Each name and word inside is built from the words
+// of `page-words.ts`.
 test("inside NoTooltips the saving labels control is named by its visible words", () => {
   const saving = withoutEllipsis(ANSWER_LINES.saving_labels);
   for (const labels of [[], ["api"]]) {
@@ -1591,14 +1583,12 @@ async function namelessSentences(view: RenderResult): Promise<(string | undefine
   ].map((element) => element?.textContent?.split(",")[0]);
 }
 
-// dispatch://INFRA-3935 R5: inside `NoTooltips`, an author is named by a title - the agent list's,
-// else the one its write was stamped with - else the page's word for an agent, and never by the
-// short id that tells no two sessions apart; a person's act made through an agent names the
-// agent by what it is. `label`, and each sentence built of a session's name there (the
-// Unsubscribe dialog's question, a route marker's words for a screen reader), name a session as
-// every form of `AgentName` does (decision 107 of
-// dispatch://INFRA-1196/artifact/part-decisions-md). Outside, `author` names an actor as `label`
-// does, and those sentences keep `main`'s short id.
+// Inside `NoTooltips`, an author is named by a title - the agent list's, else the one its write
+// was stamped with - else the page's word for an agent, and never by the short id that tells no
+// two sessions apart; a person's act made through an agent names the agent by what it is.
+// `label`, and each sentence built of a session's name there (the Unsubscribe dialog's question, a
+// route marker's words for a screen reader), name a session as every form of `AgentName` does.
+// Outside, `author` names an actor as `label` does, and those sentences keep `main`'s short id.
 test("author names a session by its title and never by its short id", async () => {
   // The page's words for an agent nothing names, for no actor, and for an act made through an
   // agent, as the Verification document reads them.
@@ -1700,7 +1690,7 @@ test("author names a session by its title and never by its short id", async () =
     expect(named("id, nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(named("through an agent")).toBe(`alice, acting through ${AUTHOR_KIND_WORDS.agent}`);
     // Without `author` the same session reads the same: inside, every form of `AgentName` names
-    // a session nothing names by the page's word (decision 107).
+    // a session nothing names by the page's word.
     expect(named("nameless, not an author")).toBe(CONTROL_LABELS.unnamed_author);
 
     expect(authored("listed")).toBe("Implementer");
@@ -1755,9 +1745,9 @@ test("author names a session by its title and never by its short id", async () =
   }
 });
 
-// dispatch://INFRA-3935 R4 and R1: the components line reads the architecture to name a component
-// by its title only inside `NoTooltips`, in a row of Details; everywhere else an explicit set
-// names its ids, as on `main`, and reads it only once the picker opens.
+// The components line reads the architecture to name a component by its title only inside
+// `NoTooltips`, in a row of Details; everywhere else an explicit set names its ids, as on `main`,
+// and reads it only once the picker opens.
 test("outside NoTooltips an explicit component set makes no architecture read", async () => {
   const reads = async (inRow: boolean, surface: Surface) => {
     stubs.getArchitecture.mockClear();
@@ -1784,10 +1774,10 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// dispatch://INFRA-3935 R1: at its defaults each shared control draws `main`'s classes. Each
-// string below is `main`'s class, its theme's constants written out from `main`'s
-// `theme/classes.ts`, for every class the part builds from a template of its own, and `null`
-// where `main` draws the element with no class.
+// At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
+// its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
+// control builds from a template of its own, and `null` where `main` draws the element with no
+// class.
 test("the default shapes keep main's class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
@@ -2862,8 +2852,10 @@ test("the default shapes keep main's class strings", async () => {
     edges: [],
     node: graphNode({ id: "ask-1", kind: "ask" }),
   });
-
-  stubs.getArtifactText.mockRejectedValueOnce(
+  // Every read of the document's text is refused, not the first alone: a load that reads the
+  // text more than once, as one that reads it before it connects and again when it admits the
+  // document does, meets the same refusal each time.
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(409, {
       code: "DOC_SCHEMA",
       error: "The document holds a node outside its schema.",
@@ -2879,7 +2871,7 @@ test("the default shapes keep main's class strings", async () => {
     undraw(repair);
   }
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: "The stored history cannot load." })
   );
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
@@ -2906,7 +2898,7 @@ test("the default shapes keep main's class strings", async () => {
     rebuildArtifact.mockRestore();
   }
 
-  stubs.getArtifactText.mockRejectedValueOnce(
+  stubs.getArtifactText.mockRejectedValue(
     new ApiError(404, { code: "PROXY_NOT_FOUND", error: "proxy not found" })
   );
   const unloaded = draw(proofDocument(), "outside");
@@ -3129,8 +3121,7 @@ test("the default shapes keep main's class strings", async () => {
   expect(read).toEqual(want);
 });
 
-// dispatch://INFRA-3935 R1 and decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// a value that wraps inside `NoTooltips` keeps `main`'s classes outside it, the two the table
+// A value that wraps inside `NoTooltips` keeps `main`'s classes outside it, the two the table
 // above does not read among them: a labelled CopyButton's words carry no class, and a route
 // marker that names its route, as today's issue header draws it, truncates that name.
 test("outside NoTooltips a labelled CopyButton's words and a route marker's route keep main's classes", () => {
@@ -3249,9 +3240,9 @@ function pickerShown(view: RenderResult): boolean {
   );
 }
 
-// dispatch://INFRA-3935 R1, and dispatch://INFRA-1196's ruling that focus handling may only
-// improve: the add control the form replaces leaves the page, so opening the form puts the focus
-// in its first field rather than leaving it on the body. On both sides of `NoTooltips`.
+// The ruling that focus handling may only improve: the add control the form replaces leaves the
+// page, so opening the form puts the focus in its first field rather than leaving it on the body.
+// On both sides of `NoTooltips`.
 test("the priority's add control puts the focus in its form", async () => {
   const user = userEvent.setup();
   for (const surface of ["outside", "inside"] as const) {
@@ -3358,8 +3349,11 @@ test("Add in the priority's form returns the focus to its add control once its w
         await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
         // While the write is out the add control is disabled and holds no focus.
         expect(pickerShown(view)).toBe(false);
-        expect(addControlOf(view, surface)).toBeDisabled();
-        expect(document.activeElement).toBe(document.body);
+        // Inside, the case below asserts the add control while the write is out.
+        if (surface === "outside") {
+          expect(addControlOf(view, surface)).toBeDisabled();
+          expect(document.activeElement).toBe(document.body);
+        }
         const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
         if (reader === "moves on") elsewhere.focus();
         written.resolve({} as Issue);
@@ -3376,6 +3370,58 @@ test("Add in the priority's form returns the focus to its add control once its w
   }
 });
 
+// Add closes the priority's form and draws the add control in its place, disabled while Add's
+// write is out, so the focus falls to the body until the write settles. Inside `NoTooltips` the
+// add control is `aria-disabled` in place of `disabled` while the write is out, so it takes the
+// focus at once, and a press of it then opens no form. Outside `NoTooltips` it is `disabled`
+// while the write is out, as on `main`. On both sides the focus is on the add control once the
+// write settles.
+test("inside NoTooltips Add in the priority form keeps the focus on the add control while its save is out", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const written = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+    const view = draw(addablePriorityLine(surface), surface);
+    try {
+      const scope = within(view.container);
+      addControlOf(view, surface).focus();
+      await user.keyboard("{Enter}");
+      const picker = await pickerOf(view);
+      await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+      await user.selectOptions(picker, "evals-now");
+      scope.getByRole("button", { name: CONTROL_LABELS.add }).focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(pickerShown(view)).toBe(false);
+      const add = addControlOf(view, surface);
+      if (surface === "inside") {
+        await waitFor(() => expect(add.getAttribute("aria-disabled")).toBe("true"));
+        expect(add.hasAttribute("disabled")).toBe(false);
+        expect(document.activeElement).toBe(add);
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(pickerShown(view)).toBe(false);
+        expect(document.activeElement).toBe(add);
+      } else {
+        await waitFor(() => expect(add.hasAttribute("disabled")).toBe(true));
+        expect(add.hasAttribute("aria-disabled")).toBe(false);
+      }
+      written.resolve({} as Issue);
+      await waitFor(() => {
+        expect(add.hasAttribute("aria-disabled")).toBe(false);
+        expect(add.hasAttribute("disabled")).toBe(false);
+      });
+      await settleReads();
+      expect(patchIssue).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(add);
+    } finally {
+      written.resolve({} as Issue);
+      patchIssue.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
 /** A document header's approval chip, on the document as `ProofDocument` reads it: an approval
  *  invalidates that read, and the chip draws the document the read answers next. */
 function ReadApprovalChip({ id }: { id: string }): ReactNode {
@@ -3383,11 +3429,10 @@ function ReadApprovalChip({ id }: { id: string }): ReactNode {
   return read.data === undefined ? null : <ApprovalChip artifact={read.data} variant="header" />;
 }
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: Approve is disabled while its
-// write is out and leaves the page once the approval reads approved, and either drops its focus
-// to the body. Inside `NoTooltips`, once the approval lands the focus goes to the chip that
-// replaces Approve, and once the write failed it returns to Approve, drawn again. R1 of
-// dispatch://INFRA-3935: outside `NoTooltips` the chip moves no focus, and it stays on the body.
+// Approve is disabled while its write is out and leaves the page once the approval reads approved,
+// and either drops its focus to the body. Inside `NoTooltips`, once the approval lands the focus
+// goes to the chip that replaces Approve, and once the write failed it returns to Approve, drawn
+// again. Outside `NoTooltips` the chip moves no focus, and it stays on the body.
 test("inside NoTooltips Approve pressed by Enter hands its focus to what replaces it", async () => {
   const user = userEvent.setup();
   const awaiting = doc(SPEC_ID, "spec.md", {
@@ -3446,13 +3491,12 @@ test("inside NoTooltips Approve pressed by Enter hands its focus to what replace
   }
 });
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md, widened by INFRA-1196's
-// architect at 06:34Z: a dialog that drops its focus to the body is a keyboard trap broken open.
-// While the Request changes dialog's write is out, `disabled` on its text box and its button
-// drops the focus in a browser, and Tab then leaves the dialog. Inside `NoTooltips` the text box is
-// read-only and the button `aria-disabled` in their place, so the focus stays where it is and a
-// second press sends no second request. R1 of dispatch://INFRA-3935: outside `NoTooltips` both are
-// `disabled` while the write is out, as on `main`.
+// A dialog that drops its focus to the body is a keyboard trap broken open. While the Request
+// changes dialog's write is out, `disabled` on its text box and its button drops the focus in a
+// browser, and Tab then leaves the dialog. Inside `NoTooltips` the text box is read-only and the
+// button `aria-disabled` in their place, so the focus stays where it is and a second press sends
+// no second request. Outside `NoTooltips` both are `disabled` while the write is out,
+// as on `main`.
 test("inside NoTooltips the Request changes dialog keeps the focus inside it while its write is out", async () => {
   const user = userEvent.setup();
   stubs.getArtifact.mockResolvedValue(
@@ -3498,11 +3542,10 @@ test("inside NoTooltips the Request changes dialog keeps the focus inside it whi
   }
 });
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: once a change request lands,
-// its dialog closes and gives the focus back to Request changes, the button that opened it, which
-// can still be refused in that render; a `disabled` button takes no focus, and the focus falls to
-// the body. Inside `NoTooltips` the button is `aria-disabled` while the write is out, in place of
-// `disabled`, and takes the focus back. R1 of dispatch://INFRA-3935: outside `NoTooltips` it is
+// Once a change request lands, its dialog closes and gives the focus back to Request changes, the
+// button that opened it, which can still be refused in that render; a `disabled` button takes no
+// focus, and the focus falls to the body. Inside `NoTooltips` the button is `aria-disabled` while
+// the write is out, in place of `disabled`, and takes the focus back. Outside `NoTooltips` it is
 // `disabled` while the write is out, as on `main`.
 test("inside NoTooltips a change request that lands gives the focus back to Request changes", async () => {
   const user = userEvent.setup();
@@ -3571,12 +3614,12 @@ test("inside NoTooltips a change request that lands gives the focus back to Requ
   }
 });
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: where the clipboard is missing
-// (an origin that is not secure) or refuses, `copyText` copies through a temporary text box that
-// takes the focus and leaves the page, which drops the focus to the body. Inside `NoTooltips` the
-// focus returns to the copy button: at once where the clipboard is missing, on a second press made
-// while "Copied" still shows too, and once the copy settles where the clipboard refused. R1 of
-// dispatch://INFRA-3935: outside `NoTooltips` the focus stays where the copy left it, the body.
+// Where the clipboard is missing (an origin that is not secure) or refuses, `copyText` copies
+// through a temporary text box that takes the focus and leaves the page, which drops the focus to
+// the body. Inside `NoTooltips` the focus returns to the copy button: at once where the clipboard
+// is missing, on a second press made while "Copied" still shows too, and once the copy settles
+// where the clipboard refused. Outside `NoTooltips` the focus stays where the copy left it, the
+// body.
 test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
   const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
@@ -3647,11 +3690,10 @@ function ReadPriorityLine({
   );
 }
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: a priority's Remove is
-// disabled while its write is out and leaves the page with its entry once the issue reads it gone,
-// and either drops its focus to the body. Inside `NoTooltips`, once the entry is gone the focus goes
-// to the Remove of the entry after it, else of the entry before it, else to the add control, and
-// once the write failed it returns to the pressed Remove. R1 of dispatch://INFRA-3935: outside
+// A priority's Remove is disabled while its write is out and leaves the page with its entry once
+// the issue reads it gone, and either drops its focus to the body. Inside `NoTooltips`, once the
+// entry is gone the focus goes to the Remove of the entry after it, else of the entry before it,
+// else to the add control, and once the write failed it returns to the pressed Remove. Outside
 // `NoTooltips` the line moves no focus, and it stays on the body.
 test("inside NoTooltips a priority's Remove pressed by Enter hands its focus to the next priority's Remove", async () => {
   const user = userEvent.setup();
@@ -3738,10 +3780,9 @@ test("inside NoTooltips a priority's Remove pressed by Enter hands its focus to 
   }
 });
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: the Remove of an entry with
-// entries on both sides hands its focus to the Remove of the entry after it, not of the entry
-// before it. The case above presses a first and a last entry only, where the two orders agree.
-// R1 of dispatch://INFRA-3935: outside `NoTooltips` the focus stays on the body.
+// The Remove of an entry with entries on both sides hands its focus to the Remove of the entry
+// after it, not of the entry before it. The case above presses a first and a last entry only,
+// where the two orders agree. Outside `NoTooltips` the focus stays on the body.
 test("inside NoTooltips the Remove of a middle priority hands its focus to the entry after it", async () => {
   const user = userEvent.setup();
   const listed = priorities.priorities ?? [];
@@ -3791,10 +3832,9 @@ test("inside NoTooltips the Remove of a middle priority hands its focus to the e
   }
 });
 
-// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: Rebuild is refused while its
-// write is out. Inside `NoTooltips` it says so with `aria-disabled` in place of `disabled`, which
-// drops the focus in a browser, so it keeps its focus, and a press then asks nothing and sends no
-// second rebuild. R1 of dispatch://INFRA-3935: outside `NoTooltips` it is `disabled` while it
+// Rebuild is refused while its write is out. Inside `NoTooltips` it says so with `aria-disabled`
+// in place of `disabled`, which drops the focus in a browser, so it keeps its focus, and a press
+// then asks nothing and sends no second rebuild. Outside `NoTooltips` it is `disabled` while it
 // rebuilds, as on `main`.
 test("inside NoTooltips Rebuild keeps its focus while it rebuilds", async () => {
   const user = userEvent.setup();
@@ -3802,7 +3842,8 @@ test("inside NoTooltips Rebuild keeps its focus while it rebuilds", async () => 
   try {
     for (const surface of ["inside", "outside"] as const) {
       confirm.mockClear();
-      stubs.getArtifactText.mockRejectedValueOnce(
+      // Every text read is refused, however many the load makes.
+      stubs.getArtifactText.mockRejectedValue(
         new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: "The stored history cannot load." })
       );
       const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
