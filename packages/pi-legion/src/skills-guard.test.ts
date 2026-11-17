@@ -474,7 +474,9 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
 // carry the same rule; prompts_test.go pins the composed reviewer prompt. The pull request body's
 // guide records it: the `Thermo` line's pair half names the range the pair read, and a later round
 // whose difference touches no runtime code has a form of its own, since `not run (docs-only)`
-// would be false for a pull request that does touch runtime code.
+// would be false for a pull request that does touch runtime code. A range proves something only
+// on top of the round that read the code up to its start, so a later round's half never replaces
+// an earlier round's.
 test("a later review round reads from the commit its task names, and the pair reads that diff", () => {
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   expect(mergeGate).toContain(
@@ -502,6 +504,9 @@ test("a later review round reads from the commit its task names, and the pair re
   );
   expect(prBody).toContain(
     "The reviewer's pair runs at the head each round reviews, over the diff that round reads (the whole change, or the difference from the commit the round's task names as `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line, the pair half with the range the pair read."
+  );
+  expect(prBody).toContain(
+    "When a later round's pair reads only a range, the pair half of each earlier round stays in the line beside the new one, because a range is read on top of the round that read the code up to its start."
   );
   expect(prBody).toContain(
     "thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>: <verdict>."
