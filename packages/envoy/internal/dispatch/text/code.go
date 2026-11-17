@@ -18,13 +18,43 @@ type codeRange struct {
 // footnote definition - which is what the line carries before its own content. A block quote is
 // held by its `>` marker; the other two by the column their own content starts at, which the
 // lines under them carry as indentation and which is where code inside them opens from.
+//
+// listType is a list item's type, as CommonMark says two markers are of the same type: its
+// bullet, or an ordered item's `.` or `)`. A later item of the same list repeats it. It is 0 for
+// a block quote and a footnote definition. nest is how many blocks the renderer counts around
+// the container's content, which a container opened inside it on a later line counts from
+// (maxBlockNesting): a quote's own count, the count of the list an item belongs to, and, for a
+// footnote definition, which the renderer does not count, the count of the container around it.
 type container struct {
-	quote   bool
-	content int
+	quote    bool
+	content  int
+	listType byte
+	nest     int
 }
 
 // tabWidth is the stop a tab advances the column to, as CommonMark measures indentation.
 const tabWidth = 4
+
+// maxBlockNesting is how many blocks a body may open one inside another before the renderer
+// reads the next opener as the text it is: the browser editor's maxBlockNesting
+// (packages/proof-editor/src/block-nesting.ts), which is pmdoc's maxNesting
+// (packages/envoy/internal/dispatch/pmdoc/nesting.go). A refused opener's marker and the rest of
+// its line are the content of the innermost container still open, so the four columns after
+// such a marker are that content's own text and open no code block.
+//
+// It is counted as the renderer counts it. A list item that opens a list counts two, the list
+// and the item; a later item of the list open at its depth counts nothing, standing where the
+// first item did, and is never refused. A block quote counts one; a `>` that carries on a quote
+// open above it is that quote's and opens nothing. A footnote definition counts nothing: pmdoc's
+// server-side bound counts one, but the renderer reads definitions through
+// micromark-extension-gfm-footnote, which its bound does not reach, and this reader follows what
+// a reader of the text sees. A container opened after a footnote definition on the definition's
+// own line counts from 0, since the renderer takes a container with no count of its own as 0
+// there (blocksAround), and one opened inside the definition on a later line counts from the
+// container around the definition. A typed block (`:::`) counts one for the renderer but is no
+// container of this reader's, so a list or a quote inside typed blocks is counted one block less
+// per typed block than the renderer counts it.
+const maxBlockNesting = 100
 
 // leafKind is the code block the line being read stands in, if any.
 type leafKind uint8
@@ -80,7 +110,10 @@ const (
 // while a paragraph is open is that paragraph's own text, a lazy continuation line, which
 // opens nothing and leaves those containers open; any other line closes the containers it does
 // not carry. A thematic break is read too, since a line of `-`, `_` or `*` would otherwise
-// open a list item.
+// open a list item. A quote or a list opened past the renderer's bound on nesting opens
+// nothing, its marker being the line's own text as the renderer reads it (maxBlockNesting,
+// which says how blocks are counted), so a line of thousands of markers opens at most a hundred
+// containers.
 //
 // What it deliberately does not read. Each of these was measured on 2026-11-11 against three
 // parsers - goldmark 1.8.6 with the footnote, table and linkify extensions; the browser
@@ -226,8 +259,14 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 		}
 
 		// The containers this line opens of its own, each inside the last: its content is what
-		// is left after them.
+		// is left after them. around is how many blocks the renderer counts around the next of
+		// them (maxBlockNesting): at first the count of the innermost container the line
+		// carried, then that of the last one it opened.
 		depth := matched
+		around := 0
+		if matched > 0 {
+			around = stack[matched-1].nest
+		}
 		thematic := false
 		setext := false
 		for indent < end && column-col <= 3 {
@@ -241,7 +280,12 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				break
 			}
 			if body[indent] == '>' {
-				stack = append(stack[:depth], container{quote: true})
+				if around+1 > maxBlockNesting {
+					// A quote past the bound opens nothing: its `>` is the line's own text.
+					break
+				}
+				around++
+				stack = append(stack[:depth], container{quote: true, nest: around})
 				depth++
 				content, col = quoteContent(body, indent, end, column)
 				paragraph = false
@@ -259,7 +303,15 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				// note's lines as an indented code block. So the indented lines under it are
 				// the note's own text: a party written there is named to every reader of the
 				// record, and every parser measured for INFRA-1702 reads those lines as prose.
-				stack = append(stack[:depth], container{content: col + 4})
+				// The renderer counts no block for it, so a container opened inside it on a
+				// later line counts from the one around it, and one opened after it on this line
+				// counts from 0 (maxBlockNesting).
+				note := container{content: col + 4}
+				if depth > 0 {
+					note.nest = stack[depth-1].nest
+				}
+				stack = append(stack[:depth], note)
+				around = 0
 				depth++
 				content, col = past, column+(past-indent)
 				paragraph = false
@@ -270,13 +322,24 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 			// from 1 back only where the paragraph is the open tip: a line that left a
 			// container the paragraph stands in starts the next item instead, so item 2 of a
 			// numbered list ends item 1's paragraph as a bullet does.
-			itemContent, itemColumn, itemIndent, ok := listMarker(
+			itemContent, itemColumn, itemIndent, listType, ok := listMarker(
 				body, indent, end, column, paragraph && matched == len(stack),
 			)
 			if !ok {
 				break
 			}
-			stack = append(stack[:depth], container{content: itemIndent})
+			// A later item of the list open at this depth, on a line that carried every
+			// container around that list, goes on in it where its first item stood, and the
+			// renderer never refuses it; any other item opens a list of its own, which past the
+			// bound opens nothing and leaves its marker as the line's own text.
+			nest := around + 2
+			if depth == matched && depth < len(stack) && stack[depth].listType == listType {
+				nest = stack[depth].nest
+			} else if nest > maxBlockNesting {
+				break
+			}
+			around = nest
+			stack = append(stack[:depth], container{content: itemIndent, listType: listType, nest: nest})
 			depth++
 			content, col = itemContent, itemColumn
 			paragraph = false
@@ -393,12 +456,12 @@ func quoteContent(body string, marker, end, col int) (int, int) {
 // listMarker reads the list item marker standing at marker, the first character of a line's own
 // content, in column col: a `-`, `+` or `*`, or one to nine digits and a `.` or `)`, followed by
 // a space, a tab or the end of the line. It is where the item's content begins on this line, the
-// column there, and the column the item's content is indented to, which the lines under it carry
-// to stay inside it. Five columns or more of spaces after the marker are indented code inside
-// the item, so the item takes one of them and leaves the rest. A marker that cannot interrupt a
-// paragraph opens nothing while one is open: an empty item's, and an ordered one that does not
-// count from 1.
-func listMarker(body string, marker, end, col int, paragraph bool) (content, column, indent int, ok bool) {
+// column there, the column the item's content is indented to, which the lines under it carry to
+// stay inside it, and the marker's type (container.listType). Five columns or more of spaces
+// after the marker are indented code inside the item, so the item takes one of them and leaves
+// the rest. A marker that cannot interrupt a paragraph opens nothing while one is open: an empty
+// item's, and an ordered one that does not count from 1.
+func listMarker(body string, marker, end, col int, paragraph bool) (content, column, indent int, listType byte, ok bool) {
 	past := marker
 	switch body[marker] {
 	case '-', '+', '*':
@@ -409,28 +472,30 @@ func listMarker(body string, marker, end, col int, paragraph bool) (content, col
 			past++
 		}
 		if past == digits || past-digits > 9 || past >= end || (body[past] != '.' && body[past] != ')') {
-			return 0, 0, 0, false
+			return 0, 0, 0, 0, false
 		}
 		if paragraph && (past-digits != 1 || body[digits] != '1') {
-			return 0, 0, 0, false
+			return 0, 0, 0, 0, false
 		}
 		past++
 	}
+	// The bullet, or the `.` or `)` an ordered marker ends with: the last byte of either.
+	listType = body[past-1]
 	width := col + past - marker
 	spaces, spacesColumn := indentEnd(body, past, end, width)
 	if spaces >= end {
 		if paragraph {
-			return 0, 0, 0, false
+			return 0, 0, 0, 0, false
 		}
-		return past, width, width + 1, true
+		return past, width, width + 1, listType, true
 	}
 	if spaces == past {
-		return 0, 0, 0, false
+		return 0, 0, 0, 0, false
 	}
 	if spacesColumn-width > 4 && body[past] == ' ' {
-		return past + 1, width + 1, width + 1, true
+		return past + 1, width + 1, width + 1, listType, true
 	}
-	return spaces, spacesColumn, spacesColumn, true
+	return spaces, spacesColumn, spacesColumn, listType, true
 }
 
 // isThematicBreak reports whether the content of a line at from is a thematic break: three or
