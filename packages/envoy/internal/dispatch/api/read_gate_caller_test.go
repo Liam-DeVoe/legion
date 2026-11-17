@@ -62,3 +62,22 @@ func TestAGETVerifiesItsCredentialOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestWhoamiVerifiesItsCredentialOnce: GET /api/v1/whoami, a row of the caller's own class that no
+// gate resolves, verifies the caller once and reads the viewer of a credential that lists
+// projects from that one resolution (whoamiPrivateProjects), so a token's row is read once.
+//
+// Control: a whoamiPrivateProjects that resolves the request's reader afresh (resolveReader)
+// verifies the token a second time, and the count is 2.
+func TestWhoamiVerifiesItsCredentialOnce(t *testing.T) {
+	lookups := &tokenLookups{}
+	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), lookups)})
+	before := lookups.sent.Load()
+	response := seed.requestIn(t, context.WithValue(t.Context(), recordingKey{}, true), callerCarolPrivToken, http.MethodGet, "/api/v1/whoami", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"private_projects":["`+seedPrivate+`"]`) {
+		t.Fatalf("GET /api/v1/whoami with carol's token that lists PRIV = %d %s, want 200 naming PRIV private", response.Code, response.Body.String())
+	}
+	if verified := lookups.sent.Load() - before; verified != 1 {
+		t.Errorf("GET /api/v1/whoami read its personal token's row %d times, want once", verified)
+	}
+}

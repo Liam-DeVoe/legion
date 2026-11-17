@@ -126,6 +126,9 @@ var serverReads = map[string]string{
 		"no caller, and the receipt it appends is read through the event log's rule",
 	"comment_delivery.go:claimCommentDeliveryAttempt": "a mention's sender locks the comment it is already sending, which its writer " +
 		"or the delivery sweep loaded, to claim the one attempt it sends; no caller reads what it locks",
+	"issue_assignee.go:allowedLogin": "a check with no request's reader in its context - work the server does for itself - holds a " +
+		"login only to having signed in, and answers whether it may be assigned, never the person's row; every request's check " +
+		"binds the reader its gate put in the context",
 }
 
 // TestAServerWithNoStoreResolvesTheClosedViewer: a server built with no store - a router test's,
@@ -194,8 +197,10 @@ func TestEveryServerReadIsNamed(t *testing.T) {
 	t.Logf("everyReader is read at %v", uses)
 }
 
-// everyReaderUses is each function of the api package's source that names everyReader, as
-// "file:function", sorted and distinct. The declaration itself is no use.
+// everyReaderUses is each function of the api package's source that names everyReader, or spells
+// the server's own viewer itself (model.ServerViewer), as "file:function", sorted and distinct. The
+// declaration of everyReader is no use; a read that builds the server's reader inline is one, so
+// it is named as every other is.
 func everyReaderUses(t *testing.T) []string {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -218,8 +223,15 @@ func everyReaderUses(t *testing.T) []string {
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
-				if identifier, ok := node.(*ast.Ident); ok && identifier.Name == "everyReader" {
-					found[file+":"+function.Name.Name] = true
+				switch node := node.(type) {
+				case *ast.Ident:
+					if node.Name == "everyReader" {
+						found[file+":"+function.Name.Name] = true
+					}
+				case *ast.SelectorExpr:
+					if node.Sel.Name == "ServerViewer" {
+						found[file+":"+function.Name.Name] = true
+					}
 				}
 				return true
 			})

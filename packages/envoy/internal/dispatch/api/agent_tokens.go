@@ -303,11 +303,12 @@ const maxTokenProjects = 16
 // (internal/dispatch/access, the rule), so such a credential gives a token only a part of its own.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
 //
-// What the caller sees is resolved as every read resolves it (readerFor) over the caller
-// optionalActor decided, and only for a list that names a key. A key the caller does not see is
-// refused in the same words whether a hidden project holds it or none does, so the refusal says
-// nothing of a project the caller may not see. So the list a mint answers, and the one an edit
-// names, is one its caller sees whole, and needs no cut (seeToken).
+// What the caller sees is the reader the write's gate already resolved over the caller
+// optionalActor decided (resolveReader, which finds the one withinProjectScope put in the
+// request's context), and is read only for a list that names a key. A key the caller does not
+// see is refused in the same words whether a hidden project holds it or none does, so the refusal
+// says nothing of a project the caller may not see. So the list a mint answers, and the one an
+// edit names, is one its caller sees whole, and needs no cut (seeToken).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
@@ -336,7 +337,7 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.
 		return []string{}, true
 	}
-	reader, err := s.readerFor(r.Context(), caller)
+	reader, err := s.resolveReader(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return nil, false

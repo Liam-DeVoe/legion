@@ -41,16 +41,17 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 // allowedLogin canonicalises login and checks that it names a person who has signed in and whom the
 // request's reader may see (access.PersonClause, with the reader the request's check put in ctx):
 // a person a restricted member or a credential that lists projects may not see is refused exactly
-// as one who has not signed in. Without a reader in ctx - work the server does for itself - every
-// person who has signed in is one.
+// as one who has not signed in. Without a reader in ctx - work the server does for itself - it
+// reads as everyReader, so every person who has signed in is one.
 func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
 	canonical := model.CanonicalLogin(login)
 	var known bool
 	if canonical != "" {
-		viewer := refs.VisibilityArg(model.Actor{Viewer: model.ServerViewer})
-		if reader, ok := readerFromContext(ctx); ok {
-			viewer = refs.VisibilityArg(reader)
+		reader, ok := readerFromContext(ctx)
+		if !ok {
+			reader = everyReader
 		}
+		viewer := refs.VisibilityArg(reader)
 		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1 and `+
 			access.PersonClause("people.email", "$2")+`)`, canonical, viewer).Scan(&known); err != nil {
 			// The error reaches a log line, so it names no person (TestAnAssigneeReadFailureNamesNoPerson).
@@ -228,7 +229,7 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := newWhoamiAgent(actor, memberKind, scopes)
-	if answer.PrivateProjects, err = s.whoamiPrivateProjects(r, answer.Projects); err != nil {
+	if answer.PrivateProjects, err = s.whoamiPrivateProjects(r.Context(), actor, answer.Projects); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read which of the credential's projects are private: %w", err))
 		return
 	}
@@ -311,19 +312,21 @@ func whoamiProjects(credential *model.Credential) []string {
 // as private (KF4): every key but those of a public project its viewer sees, read in one statement
 // over the list and intersected with Viewer.Sees, so a key the credential no longer sees answers
 // private whatever its project's visibility, and the answer tells nothing of a project the caller
-// cannot see. A list of none answers nil; with no store every key answers private (fail closed).
-func (s *server) whoamiPrivateProjects(r *http.Request, projects []string) ([]string, error) {
+// cannot see. The viewer is resolved from actor, the caller whoami already resolved, so the
+// credential is verified once. A list of none answers nil; with no store every key answers
+// private (fail closed).
+func (s *server) whoamiPrivateProjects(ctx context.Context, actor model.Actor, projects []string) ([]string, error) {
 	if len(projects) == 0 {
 		return nil, nil
 	}
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return projects, nil
 	}
-	reader, err := s.resolveReader(r)
+	reader, err := s.readerFor(ctx, actor)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(),
+	rows, err := s.deps.Store.Pool.Query(ctx,
 		`select key from projects where key = any($1) and visibility = 'public'`, projects)
 	if err != nil {
 		return nil, err
