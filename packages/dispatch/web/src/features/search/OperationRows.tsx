@@ -300,8 +300,10 @@ export function useGoingOperations({
   const proposal = decision === undefined ? undefined : current?.proposal;
   const settings = useQuery({ ...goingSettingsQuery(), enabled: decision !== undefined });
   // A setting that could not be read is no reason to hold the write: Dispatch refuses a write
-  // sent at once while the setting is on, and the line says so.
-  const confirmWrites = settings.isError ? false : settings.data?.confirm_writes;
+  // sent at once while the setting is on, and the line says so. A setting the page holds is
+  // kept when a later read of it fails - the refusal that set it showed it is on (`goingWrite`).
+  const confirmWrites =
+    settings.isError && settings.data === undefined ? false : settings.data?.confirm_writes;
   const [stage, setStage] = useWordsState<Stage>(words);
   const turn = useTurn(runId);
   // The lines of the turn that count as run: every one but a write Dispatch refused because the
@@ -561,7 +563,9 @@ export function useGoingOperations({
             offer={offerOf(proposal, stage.action)}
             onCancel={() => setStage({ kind: "idle", words })}
             onConfirm={() => run(stage.action, "confirmed", stage.fills)}
-            runs={runIndexes(offerOf(proposal, stage.action), "confirmed")}
+            runs={runIndexes(offerOf(proposal, stage.action), "confirmed").filter(
+              (index) => !ranInvocations.has(`${stage.action}:${index}`)
+            )}
           />
         ) : null}
         {withheldBeside.length === 0 ? null : (

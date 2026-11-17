@@ -598,6 +598,89 @@ test("a write Dispatch refused because the person's setting asks first keeps its
   }
 });
 
+test("a turn whose first write landed and whose second was refused for the setting confirms the second alone", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    await waitFor(() => expect(settings).toHaveBeenCalledTimes(1));
+    // The setting was turned on in another tab between the turn's two requests.
+    settings.mockResolvedValue({ confirm_writes: true });
+    written.mockImplementation(async (_run, input) => {
+      if (input.approved === "auto" && input.invocation === 1) {
+        throw new ApiError(409, {
+          code: "GOING_CONFIRMATION_REQUIRED",
+          error: "your setting asks you to confirm every write of the bar",
+        });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
+      ).toEqual([null, "GOING_CONFIRMATION_REQUIRED"])
+    );
+    const row = await screen.findByRole("option", { name: /^Run issue update on LEGION-4/ });
+    await user.click(within(row).getByRole("button", { name: "Run" }));
+
+    const step = await screen.findByTestId("going-confirm-step");
+    const listed = within(step).getAllByTestId("going-write-line");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toHaveTextContent("LEGION-4");
+    await user.click(within(step).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(sent().slice(2)).toEqual([
+        { approved: "confirmed", invocation: 1, offer: "dispatch_issue_update" },
+      ])
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("a read of the setting that fails after the refusal still asks first, since the refusal showed the setting on", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    await waitFor(() => expect(settings).toHaveBeenCalledTimes(1));
+    settings.mockRejectedValue(new ApiError(503, { code: "UNAVAILABLE", error: "down" }));
+    written.mockImplementation(async (_run, input) => {
+      if (input.approved === "auto") {
+        throw new ApiError(409, {
+          code: "GOING_CONFIRMATION_REQUIRED",
+          error: "your setting asks you to confirm every write of the bar",
+        });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
+      ).toEqual(["GOING_CONFIRMATION_REQUIRED", "GOING_CONFIRMATION_REQUIRED"])
+    );
+    // The page has read the setting again and been refused.
+    await waitFor(() => expect(settings.mock.calls.length).toBeGreaterThan(1));
+    const row = await screen.findByRole("option", {
+      name: /^Run issue update on LEGION-3 and LEGION-4/,
+    });
+    await user.click(within(row).getByRole("button", { name: "Run" }));
+
+    await screen.findByTestId("going-confirm-step");
+    expect(sent().slice(2)).toEqual([]);
+  } finally {
+    bar.unmount();
+  }
+});
+
 /** The decision's update of LEGION-3, which the words named, beside one of LEGION-4 that only an
  *  item's stored text asked for: the proposal marks it not automatic. */
 const injected: GoingProposalEvent = {

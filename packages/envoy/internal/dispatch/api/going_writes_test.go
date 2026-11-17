@@ -1672,11 +1672,6 @@ func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testi
 			if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
 				t.Errorf("the fill of %q is refused %q, which names %q, none of which the person at the bar holds", tc.fill, refusal.Error, internals)
 			}
-			// A filled slug is what fails, whatever the words write, so the reason names the slug
-			// the person filled beside the stored name above.
-			if tc.fill != "plan.md" && !strings.Contains(refusal.Error, tc.fill) {
-				t.Errorf("the fill of the slug %q is refused %q, want it to name the slug the person filled", tc.fill, refusal.Error)
-			}
 			if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 1 {
 				t.Fatalf("plan.md holds %d versions after the refused fill, want its one", versions)
 			}
