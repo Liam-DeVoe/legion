@@ -171,9 +171,10 @@ func SessionReplySubject(inbox, sessionID string) string {
 //
 // sessionID must be one subject token: no dot, no wildcard (* or >) and no whitespace, the rule
 // SessionConsumerName holds a session's id to. SessionReplies does not check it, so its caller
-// must: a wildcard in the id would admit every session's replies, and a dot or whitespace would
-// write an entry that names no reply subject SessionReplySubject makes. A grant built from an id
-// a client supplied checks it first, as the NATS auth service's session grant does.
+// must: an id of * admits every session's replies, and since the entry ends in >, the entry of an
+// id also admits the replies of every id that extends it by a dot (a's entry admits a.b's, and
+// a.b's admits a.b.c's), so no session id may hold a dot. An id such as a* is one plain token and
+// admits nothing extra.
 func SessionReplies(sessionID string) string {
 	return nats.InboxPrefix + "*." + sessionID + ".>"
 }

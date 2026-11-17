@@ -35,13 +35,12 @@ async function waitFor(holds: () => boolean, within: number, what: string): Prom
 
 // The shared consumer delivery is the one place both plugins answer the listener's relay frames
 // and connection probe (pi-envoy's and claude-envoy's `publish` is `connection.publish(reply, …)`).
-// Here it runs on a real nats.js connection authenticated as a session user whose grant is the
-// one the NATS auth service gives a session (natsgrant.Session): publish
-// its replies under `_INBOX.*.<session id>.>` alone. Every answer to a frame or probe asked on a
-// reply subject naming the session reaches the requester; the same answers on the shapes the
-// listener asked on before - its reply inbox and a counter, and a plain inbox for the probe - are
-// refused by the server and reach nobody, which is the control that the grant is enforced and
-// that the watcher hears what the session publishes.
+// Here it runs on a real nats.js connection authenticated as a session user whose grant is a
+// session's own: publish its replies under `_INBOX.*.<session id>.>` (`bus.SessionReplies`) alone.
+// Every answer to a frame or probe asked on a reply subject naming the session reaches the
+// requester; the same answers on the shapes the listener asked on before - its reply inbox and a
+// counter, and a plain inbox for the probe - are refused by the server and reach nobody, which is
+// the control that the grant is enforced and that the watcher hears what the session publishes.
 //
 // Docker-backed: CI runs this package's tests with LEGION_E2E=1 after pulling the image.
 describe.skipIf(process.env.LEGION_E2E !== "1")("a session's replies under its own grant", () => {

@@ -300,13 +300,16 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // RequestCore sends a core NATS request on subject carrying header and no body, and returns its
 // one reply, which it takes on the reply subject reply names. It is the request the listener's
 // connection probe makes (cmd/listener): one on a session's relay subject (DeliverSubject)
-// carrying the Envoy-Probe header, on a reply subject only that session may answer
+// carrying the Envoy-Probe header, on a reply subject that names that session
 // (SessionReplySubject), whose answer says whether a plugin of that session still subscribes the
-// subject. Its publish is confirmed as requestConfirmed's is (publishConfirmed), so a request the
-// server refuses under the connection's publish permissions returns ErrPublishDenied at once; one
-// publishConfirmed cannot confirm for another reason still waits for its reply, and returns that
-// reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders, as
-// requestConfirmed maps it, and a ctx with no deadline waits storedMessageWait.
+// subject. Among sessions on a grant of their own (SessionReplies), only that session may answer
+// it; a holder of the shared session user or of a host user reads every relay subject and may
+// publish to every _INBOX. subject, so it still can. Its publish is confirmed as
+// requestConfirmed's is (publishConfirmed), so a request the server refuses under the
+// connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
+// confirm for another reason still waits for its reply, and returns that reason if ctx ends
+// first. A no-responders status reply is nats.ErrNoResponders, as requestConfirmed maps it, and a
+// ctx with no deadline waits storedMessageWait.
 //
 // The reply is taken over a channel subscription of this request's own, not conn.SubscribeSync
 // as requestConfirmed takes it: that call sizes its channel at nats.Options.SubChanLen, 65,536
