@@ -8,7 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
-import type { TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { chipWords } from "../node-row-chip";
@@ -19,7 +19,7 @@ import {
   LENS_WORDS,
   NODE_TYPE_NAMES,
 } from "../page-words";
-import { node } from "../spec-filter/spec-fixtures";
+import { node, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
@@ -27,7 +27,7 @@ import { lensChainQuery } from "./lens-reads";
 
 /**
  * What a lens's row draws of its chain, and the lines a lens, a risk, a constrained statement and
- * a constraint draw under their words (dispatch://INFRA-4065 R2, R3, R5, R6, R7).
+ * a constraint draw under their words.
  *
  * The chain is read through the page's own client (`lens-reads.ts`, `api.getLenses`), answered at
  * `fetch` by the suite's network (`answerRequests`), so a request the row sends is one the test
@@ -44,9 +44,12 @@ const FURTHER = "dispatch://lens/0c6f1d2e-5555-4a6b-9c1d-5e2f3a4b5c65";
 const ELSEWHERE = "dispatch://lens/0c6f1d2e-6666-4a6b-9c1d-5e2f3a4b5c66";
 const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 
-/** The statement both lenses read, and its first line as the tree drew it. */
-const STATEMENT = "dispatch://CORE-1/spec#b-r1";
-const STATEMENT_LINE = "Store the notices for a day";
+/** The statement both lenses read: its words, longer than one line, and the one line its row
+ *  draws of them, which the chain names it by. */
+const STATEMENT = statementRef("r1");
+const STATEMENT_WORDS =
+  "Store the notices for a day in the store the listener writes, and drop each one that is older than a day when the next notice of its issue arrives";
+const STATEMENT_LINE = drawnLine(firstLineOf(STATEMENT_WORDS));
 
 function facts(partial: Partial<LensFacts>): LensFacts {
   return { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [], ...partial };
@@ -54,8 +57,8 @@ function facts(partial: Partial<LensFacts>): LensFacts {
 
 /** Every lens of the tree the focused pre-mortem stands in, by address. */
 const PLACES: ReadonlyMap<string, LensPlace> = new Map([
-  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onLine: STATEMENT_LINE }],
-  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onLine: STATEMENT_LINE }],
+  [TRADE_OFF, { id: "lens/1111", kindWords: "trade-off analysis", onLine: STATEMENT_WORDS }],
+  [PREMORTEM, { id: "lens/2222", kindWords: "pre-mortem", onLine: STATEMENT_WORDS }],
 ]);
 
 /** The pre-mortem on the statement, triggered by the trade-off analysis. */
@@ -207,13 +210,13 @@ function chainEntries(view: RenderResult) {
 }
 
 /** Lets whatever a press or a focus would send go out and be answered. */
-async function settle(): Promise<void> {
+async function letRequestsSettle(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 50);
   await act(() => promise);
 }
 
-// R2, R6: the lens read is sent at a press of the control alone, never at the focus, which `j`
+// The lens read is sent at a press of the control alone, never at the focus, which `j`
 // gives every row; once in a load, so a second press, and a press on the row focused again,
 // draw the held answer and send nothing.
 test("the chain is read at a press and not at the focus", async () => {
@@ -233,7 +236,7 @@ test("the chain is read at a press and not at the focus", async () => {
     expect(control.textContent).toBe(LENS_WORDS.show_chain);
     expect(control.hasAttribute("data-page-chrome")).toBe(true);
     expect(control.tabIndex, "the control is in the tab order").toBe(-1);
-    await settle();
+    await letRequestsSettle();
     expect(asked, "the focus sent the lens read").toEqual([]);
     expect(chainStatus(first)).toBeNull();
 
@@ -246,7 +249,7 @@ test("the chain is read at a press and not at the focus", async () => {
     expect(showChain(first), "the control went with the answer").toBe(control);
 
     await user.click(control);
-    await settle();
+    await letRequestsSettle();
     expect(asked, "a second press sent the lens read again").toEqual([PREMORTEM]);
     expect(chainAddresses(first)).toEqual([TRADE_OFF, PREMORTEM]);
   } finally {
@@ -262,7 +265,7 @@ test("the chain is read at a press and not at the focus", async () => {
     await user.click(control);
     expect(chainStatus(again)).toBeNull();
     expect(chainAddresses(again)).toEqual([TRADE_OFF, PREMORTEM]);
-    await settle();
+    await letRequestsSettle();
     expect(asked, "a press on the row focused again sent the lens read").toEqual([PREMORTEM]);
   } finally {
     again.unmount();
@@ -284,7 +287,7 @@ test("the chain is read at a press and not at the focus", async () => {
   }
 });
 
-// R2: the answer holds the chain this lens stands in and the chains of the lenses invoked on
+// The answer holds the chain this lens stands in and the chains of the lenses invoked on
 // it, which are its rows; only the first is drawn, in the answer's order, each lens by its
 // kind's words as held - the tree's, else the read's, else the page's word - and by the first
 // line of the row it stands under where the tree drew it.
@@ -324,7 +327,7 @@ test("only the chain that holds the lens is drawn", async () => {
   }
 });
 
-// R2: a chain the read cut at its depth names the lens it stopped at, last, by a chip of its
+// A chain the read cut at its depth names the lens it stopped at, last, by a chip of its
 // kind's words cut as the tag is, linked to its row where the tree drew one.
 test("a stopped_at ends the chain with More lenses past this one", async () => {
   const user = userEvent.setup();
@@ -340,12 +343,14 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
       await waitFor(() => expect(chainAddresses(view)).toEqual([TRADE_OFF, PREMORTEM]));
       const last = view.container.querySelector("[data-lens-chain]")?.lastElementChild;
       const label = last?.firstElementChild;
+      const name = last?.querySelector("[data-node-chip] [data-chip-name]");
       return {
         href: last?.querySelector("[data-node-chip] a")?.getAttribute("href") ?? null,
         label: label?.textContent,
         labelMarked: label?.hasAttribute("data-page-chrome"),
         more: last?.hasAttribute("data-lens-chain-more"),
-        words: last?.querySelector("[data-node-chip] [data-chip-name]")?.textContent,
+        words: name?.textContent,
+        wordsMarked: name?.hasAttribute("data-author-text") ? "author" : "page",
       };
     } finally {
       view.unmount();
@@ -356,7 +361,7 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
   const further = new Map(PLACES).set(FURTHER, {
     id: "lens/5555",
     kindWords: furtherKind,
-    onLine: STATEMENT_LINE,
+    onLine: STATEMENT_WORDS,
   });
   expect(await drawnEnd(further)).toEqual({
     href: "/issues/CORE-1?node=lens%2F5555",
@@ -364,19 +369,22 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
     labelMarked: true,
     more: true,
     words: chipWords(kindWords(furtherKind)),
+    wordsMarked: "author",
   });
-  // A lens the tree drew no row for is named by the page's word for a lens, with no link.
+  // A lens the tree drew no row for is named by the page's word for a lens, marked as the
+  // page's, with no link.
   expect(await drawnEnd(PLACES)).toEqual({
     href: null,
     label: LENS_WORDS.more_lenses,
     labelMarked: true,
     more: true,
     words: kindWords(NODE_TYPE_NAMES.lens),
+    wordsMarked: "page",
   });
 });
 
-// R2: a read that fails says so in the page's words, and a lens that is no longer there says
-// what R4's 404 says. Every attempt is answered.
+// A read that fails says so in the page's words, and a lens that is no longer there says
+// what an invocation's 404 says. Every attempt is answered.
 test("a failed or 404 chain read says so", async () => {
   const user = userEvent.setup();
   const said = async (status: number, error: string) => {
@@ -408,9 +416,10 @@ test("a failed or 404 chain read says so", async () => {
   });
 });
 
-// R2, dispatch://INFRA-1196 decision 98: a chain once drawn stays drawn when its read is sent
-// again and fails, as it is when something refreshes every read the page holds (`write-store.ts`
-// does for a landing no surface waits on); the failure is said only where no answer is held.
+// A chain once drawn stays drawn when its read is sent again and fails, as it is when something
+// refreshes every read the page holds (`write-store.ts` does for a landing no surface waits on):
+// a failed refresh over a held answer blanks nothing, and the failure is said only where no
+// answer is held.
 test("a chain drawn stays drawn when a read again fails", async () => {
   const user = userEvent.setup();
   let failing = false;
@@ -495,7 +504,7 @@ function AddressQuery(): ReactNode {
 }
 
 describe("the lines under a row", () => {
-  // R2, R7: each chip names its lens, linked to its row where the tree drew one.
+  // Each chip names its lens, linked to its row where the tree drew one.
   test("a lens draws the lenses that triggered it and the lenses it triggered", () => {
     const drawn = node({
       id: "lens/2222",
@@ -523,7 +532,7 @@ describe("the lines under a row", () => {
     ]);
   });
 
-  // R3: a risk's early warning, then the checks that prevent it, or the one line saying none
+  // A risk's early warning, then the checks that prevent it, or the one line saying none
   // does, and never both.
   test("a risk names the checks that prevent it, or says that none does", () => {
     const prevented = risk({
@@ -562,7 +571,7 @@ describe("the lines under a row", () => {
     ]);
   });
 
-  // R3, R7: a press on a chip goes to its target's address and focuses the target's row where
+  // A press on a chip goes to its target's address and focuses the target's row where
   // the tree draws it, at every press: the address puts the focus on its node once, and no more
   // after the reader's first act, so a second press on the same chip, after the reader went back
   // to the risk, focuses the check's row all the same. The chip names the check by its id in the
@@ -616,7 +625,7 @@ describe("the lines under a row", () => {
     }
   });
 
-  // R5: a statement names each constraint it is held to; one of the issue's is a row and its
+  // A statement names each constraint it is held to; one of the issue's is a row and its
   // chip a link, and one of the catalogue has no row, so its chip is words with no link.
   test("a statement names its constraints, the issue's linked and the catalogue's as words", () => {
     const drawn = node({
@@ -667,7 +676,7 @@ describe("the lines under a row", () => {
     ]);
   });
 
-  // R1, R3: an open body draws a lens's kind's words whole, which its tag cuts, and a risk's
+  // An open body draws a lens's kind's words whole, which its tag cuts, and a risk's
   // prevention; a closed one draws neither.
   test("an open body adds a lens's kind's words whole and a risk's prevention", () => {
     const lens = node({

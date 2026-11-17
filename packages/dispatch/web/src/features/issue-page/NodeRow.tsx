@@ -34,7 +34,7 @@ import { agentRoleWord } from "./agent-role";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
-import { bringOnScreen, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import { bringOnScreen } from "./identity-block";
 import {
   drawnLine,
   firstLineOf,
@@ -178,8 +178,10 @@ export function NodeRow({
   ownAnswer: boolean;
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
-   *  every row does but the outline's first row as the page opens on it with no question waiting
-   *  on the reader: that row stays where it stands until the reader acts (R8, `IssueTree.tsx`). */
+   *  every row does but two of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, which stays where it stands until the reader acts (R8), and
+   *  the row the reader is editing, which the editor's own caret keeps in view while it grows
+   *  (decision 123). Both are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -231,6 +233,8 @@ export function NodeRow({
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
   // drawing of a node is cut, so a heading never runs into the paragraph after it.
   const first = firstLineOf(lineWords(node));
+  // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place.
+  const noVerdict = node.type === "lens" && node.text === "";
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
   const count =
@@ -309,7 +313,7 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              {node.type === "lens" && node.text === "" ? (
+              {noVerdict ? (
                 <span data-node-first-line="" {...pageChrome}>
                   {LENS_WORDS.no_verdict}
                 </span>
@@ -334,7 +338,7 @@ export function NodeRow({
               {editing !== undefined ? (
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
-                node.type === "lens" && node.text === "" ? (
+                noVerdict ? (
                   <p className="break-words" {...pageChrome}>
                     {LENS_WORDS.no_verdict}
                   </p>
@@ -540,10 +544,6 @@ export function useRowOnScreen(
   return press;
 }
 
-/** The view row's height while it stays at the top of the screen, which `slots/view-row.tsx`
- *  publishes on the document element under this name, and `0px` while it scrolls away. */
-const VIEW_ROW_HEIGHT_PROPERTY = "--issue-view-row-height";
-
 /** How far below what stays a row that lay under it is placed, as `bringOnScreen` places a
  *  target below the band: enough that it does not sit flush against it. */
 const BELOW_WHAT_STAYS = 8;
@@ -552,24 +552,18 @@ const BELOW_WHAT_STAYS = 8;
  * Scrolls `element`, which `bringOnScreen` has placed, down below everything that stays at the
  * top of the screen above the rows where its top still lies under it (decision 113 of
  * dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
- * `scroll-padding-top`, which `styles.css` makes the larger of the header's band
- * (`IDENTITY_HEIGHT_PROPERTY`) and the view row while it stays (`VIEW_ROW_HEIGHT_PROPERTY`), so
- * this reads the same two properties. `bringOnScreen` clears the band, so only a view row taller
- * than the band leaves more to clear: at 760 px and below, where the view row stays, under a
- * header that publishes no band.
+ * `scroll-padding-top`, which `styles.css` keeps equal to it, so this reads the padding itself
+ * and no height of its own. `bringOnScreen` clears the header's band alone, which at 760 px and
+ * below, under a header that publishes no band, leaves the view row that stays over the row.
+ * Where the page sets no padding (`auto`), there is nothing more to clear.
  *
  * A row in Details' drawer is brought into the drawer's own scroll box, which stands over the
  * page and nothing of the page's top covers, so it is left where `bringOnScreen` put it.
  */
 function belowWhatStays(element: HTMLElement): void {
   if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) return;
-  const published = getComputedStyle(document.documentElement);
-  const height = (property: string) => {
-    const value = Number.parseFloat(published.getPropertyValue(property));
-    return Number.isFinite(value) ? value : 0;
-  };
-  const stays = height(VIEW_ROW_HEIGHT_PROPERTY);
-  if (stays <= height(IDENTITY_HEIGHT_PROPERTY)) return;
+  const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
+  if (!Number.isFinite(stays)) return;
   const top = element.getBoundingClientRect().top;
   if (top < stays) window.scrollBy({ top: top - stays - BELOW_WHAT_STAYS });
 }
@@ -939,9 +933,9 @@ export function NodeOptions({
  * Settle (`SettleAct`) carries `data-row-act` but needs no writer: a cookie proves a person.
  *
  * In the outline, after Copy reference and its answer, a node of this issue that the invoke
- * route takes draws the Lens act and its menu of lens kinds (`lenses/LensMenu.tsx`,
- * dispatch://INFRA-4065 R4), offered through the context `TreeRows.tsx` provides. It writes as
- * the reader, whether or not a writer is, and carries `data-row-lens` rather than `data-row-act`.
+ * route takes draws the Lens act and its menu of lens kinds (`lenses/LensMenu.tsx`), offered
+ * through the context `TreeRows.tsx` provides. It writes as the reader, whether or not a writer
+ * is, and carries `data-row-lens` rather than `data-row-act`.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
@@ -1327,6 +1321,10 @@ export function KeepOpen({
       <button
         className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
         onClick={onPin}
+        // A press leaves the focus where it is, as the row's other press controls do: "Let
+        // close" on a row that does not hold the focus would take it, close the body under the
+        // pointer and drop the focus to the page (decision 141).
+        onMouseDown={(event) => event.preventDefault()}
         tabIndex={tabStops ? undefined : -1}
         type="button"
         {...pageChrome}

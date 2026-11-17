@@ -1642,9 +1642,9 @@ function Statement({
           </p>
         )}
         <Because decision={decision} statement={statement} />
-        {/* The constraints the statement names, as the outline draws them (dispatch://INFRA-4065
-            R5): out of the tab order, as the row's other controls are. */}
-        <LensLines body={false} node={statement.node} tabStops={false} />
+        {/* The constraints the statement names, as the outline draws them: out of the tab
+            order, as the row's other controls are. */}
+        <LensLines body={false} node={node} tabStops={false} />
         {report === undefined ? null : (
           <p
             className={`text-xs leading-5 ${pageMutedText}`}

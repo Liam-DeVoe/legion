@@ -116,8 +116,8 @@ func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
 		t.Fatalf("read the backend the record runs on: %v", err)
 	}
 	records := []fallbackRecord{
-		{held: fallbackCopy{commentID: comment, destination: contracts.AgentSubject(reached), eventID: created, claim: at}, settled: true, published: true},
-		{held: fallbackCopy{commentID: comment, destination: contracts.AgentSubject(missed), eventID: created, claim: at}, failed: true},
+		{held: fallbackCopy{commentID: comment, destination: contracts.LegacyAgentSubject(reached), eventID: created, claim: at}, settled: true, published: true},
+		{held: fallbackCopy{commentID: comment, destination: contracts.LegacyAgentSubject(missed), eventID: created, claim: at}, failed: true},
 	}
 	done := make(chan error, 1)
 	go func() {

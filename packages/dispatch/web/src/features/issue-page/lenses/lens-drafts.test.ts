@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import type { LensInvoked } from "@legion/contracts";
 
-import type { Actor, Artifact, DisplayTree } from "../../../api/types";
+import type { Artifact, DisplayTree } from "../../../api/types";
+import { buildDispatchReference } from "../../refs/routes";
 import { issueAddress, pathToTarget } from "../issue-address";
 import {
   buildIssueTree,
@@ -12,27 +14,25 @@ import {
   type TreeNode,
 } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
-import { artifact, issueDetails } from "../spec-filter/spec-fixtures";
+import { artifact, issueDetails, READER_ACTOR, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { check } from "../verification-filter/verification-fixtures";
 import { kindWords, type LensFacts } from "./lens-drafts";
-import { type LensInvoked, lensReadId } from "./lens-reads";
+import { lensReadId } from "./lens-reads";
 
 /**
- * The rows of lenses, findings, risks and constraints, drafted from part T's tree read by
- * `lensDrafts` and `lensChips` (dispatch://INFRA-4065 R1, R2, R3, R5, R7, R8). Each case writes
- * the answer as T's own cases write it (`tree-read/tree-nodes.test.ts`), from the contract's
- * prose (dispatch://INFRA-1253 R8): every node with its `parent`, in the read's walk order, a
- * typed block with the `document` it is written in, the catalogue's nodes as context, and the
- * tuples between them. The tree is built by `buildIssueTree`, as the page builds it; a case that
- * asks what was drafted reads the drafts `treeDraftsFrom` makes of the same answer.
+ * The rows of lenses, findings, risks and constraints, drafted from the tree read by
+ * `lensDrafts` and `lensChips`. Each case writes the answer as the tree read's own cases write
+ * it (`tree-read/tree-nodes.test.ts`), from the contract's prose: every node with its `parent`,
+ * in the read's walk order, a typed block with the `document` it is written in, the catalogue's
+ * nodes as context, and the tuples between them. The tree is built by `buildIssueTree`, as the
+ * page builds it; a case that asks what was drafted reads the drafts `treeDraftsFrom` makes of
+ * the same answer.
  */
 
 const KEY = "CORE-1";
-
-const ALICE: Actor = { id: "alice", kind: "user" };
 
 const SPEC = artifact("artifact-spec", "spec", true);
 const PLAN = artifact("artifact-plan", "plan-md");
@@ -93,7 +93,12 @@ function bare(
   parent: string | null,
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
-  return node(id, supertag, parent, { author: ALICE, text: "", text_tree: undefined, ...extra });
+  return node(id, supertag, parent, {
+    author: READER_ACTOR,
+    text: "",
+    text_tree: undefined,
+    ...extra,
+  });
 }
 
 /** A lens on `parent`, invoked at `madeAt`. */
@@ -115,7 +120,7 @@ function finding(
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
   return node(id, supertag, parent, {
-    author: ALICE,
+    author: READER_ACTOR,
     text: `**${words}**`,
     text_tree: reading(words),
     ...extra,
@@ -157,7 +162,7 @@ function tuple(kind: string, from: string, to: string): TreeTuple {
   return { from, kind, to };
 }
 
-/** What `buildIssueTree` hands `treeDraftsFrom`, as T's cases build it. */
+/** What `buildIssueTree` hands `treeDraftsFrom`, as the tree read's own cases build it. */
 function naming(reads: IssueTreeReads): TreeWords {
   const chipLine = (tree: DisplayTree): string =>
     drawnLine(firstLineOf(lineWords({ text: "", tree })));
@@ -165,8 +170,8 @@ function naming(reads: IssueTreeReads): TreeWords {
 }
 
 /** The tree `buildIssueTree` builds from `tree`, and the drafts `treeDraftsFrom` makes of it, on
- *  J's issue holding the three documents the cases write their blocks in, unless a case gives
- *  reads of its own. */
+ *  the spec fixtures' issue (`spec-filter/spec-fixtures.ts`) holding the three documents the
+ *  cases write their blocks in, unless a case gives reads of its own. */
 function drawn(
   tree: TreeAnswer,
   reads: IssueTreeReads = { issue: { ...issueDetails(), artifacts: [SPEC, PLAN, VERIFICATION] } }
@@ -230,7 +235,7 @@ const FIRST = "c3000000-0000-4000-8000-000000000003";
 const SECOND = "b2000000-0000-4000-8000-000000000002";
 const THIRD = "a1000000-0000-4000-8000-000000000001";
 
-// R1: a node's lenses stand one level under it, after its ranked children, in the read's order,
+// A node's lenses stand one level under it, after its ranked children, in the read's order,
 // which is the order they were invoked in, though their ids sort the other way; a lens's
 // findings in the order they were written; a lens on the issue at the top level.
 test("a lens hangs under its parent, after its other children, in invocation order", () => {
@@ -265,14 +270,14 @@ test("a lens hangs under its parent, after its other children, in invocation ord
   expect(
     statement.children.slice(2).map((row) => [row.type, row.readId, row.at, row.author])
   ).toEqual([
-    ["lens", FIRST, "2026-11-05T09:00:00Z", ALICE],
-    ["lens", SECOND, "2026-11-05T10:00:00Z", ALICE],
-    ["lens", THIRD, "2026-11-05T11:00:00Z", ALICE],
+    ["lens", FIRST, "2026-11-05T09:00:00Z", READER_ACTOR],
+    ["lens", SECOND, "2026-11-05T10:00:00Z", READER_ACTOR],
+    ["lens", THIRD, "2026-11-05T11:00:00Z", READER_ACTOR],
   ]);
 });
 
-// R1: on an issue the conversion has not reached, a lens stands under the row its parent's id
-// gives that parent: a typed block's `document` makes it F's `<slug>#b-<id>`.
+// On an issue the conversion has not reached, a lens stands under the row its parent's id
+// gives that parent: a typed block's `document` makes it `<slug>#b-<id>` (`blockNodeId`).
 test("a lens is found by its parent's id on an unconverted issue", () => {
   const tree = answer(
     [
@@ -293,7 +298,7 @@ test("a lens is found by its parent's id on an unconverted issue", () => {
   ]);
 });
 
-// R1, R8: a finding is a block whose read parent is a lens, by either spelling of its kind; its
+// A finding is a block whose read parent is a lens, by either spelling of its kind; its
 // words are its reading's, and its address is its lens's with its block id. A block under
 // anything else is no finding. A lens's read id may carry its kind, which its address does not
 // repeat.
@@ -352,7 +357,7 @@ test("a finding is a block whose parent is a lens", () => {
   expect(idsOf(root)).not.toContain("stray");
 });
 
-// R2: a lens's row carries a chip for each lens its `triggered_by` names and for each lens whose
+// A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose
 // `triggered_by` names it, only for a lens the read holds, named by its kind's words as its tag
 // is, linked where a step drafted it, and with that lens's state and visibility. Every lens
 // shares one map of every lens of the answer, which a focused lens's chain reads.
@@ -395,7 +400,7 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
   ]);
   expect(second.triggered).toEqual([]);
   expect(first.triggeredBy).toEqual([]);
-  expect(first.triggered).toEqual([
+  expect(first.triggered).toStrictEqual([
     {
       address: `dispatch://lens/${SECOND}`,
       id: SECOND,
@@ -410,7 +415,6 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
       words: chipWords(kindWords(PRE_MORTEM_WORDS)),
     },
   ]);
-  expect(first.triggered.map((chip) => Object.hasOwn(chip, "id"))).toEqual([true, false]);
   expect(first.lenses).toBe(second.lenses);
   expect([...(first.lenses ?? new Map()).entries()]).toEqual([
     [
@@ -429,7 +433,7 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
   ]);
 });
 
-// R3, R8: a risk's row draws its heading, its early warning and its prevention, each read to
+// A risk's row draws its heading, its early warning and its prevention, each read to
 // plain words, and a chip for each check its `prevented_by` names, named by that check's line
 // in the tree (`chipWords(lineWords(node))`) and linked to its row; a risk no check prevents has
 // none.
@@ -490,7 +494,7 @@ test("a check's chip takes its words from its node", () => {
   expect(factsOf(rowOf(root, "risk-a")).preventedBy).toEqual([]);
 });
 
-// R5, R8: each constraint of the issue is a row at the top level, in the read's order, its
+// Each constraint of the issue is a row at the top level, in the read's order, its
 // words a standard's or a measurement's, its reference or its place on its own line, each read
 // to plain words; a statement with a `constrained_by` tuple carries a chip for each, linked to
 // its row.
@@ -529,14 +533,14 @@ test("a constraint is a top-level row and its statement carries its chip", () =>
       "constraint",
       "RFC 9110",
       "dispatch://constraint/d4000000-0000-4000-8000-000000000004",
-      ALICE,
+      READER_ACTOR,
       "2026-11-05T09:00:00Z",
     ],
     [
       "constraint",
       "p99 write latency: 41 ms",
       `dispatch://constraint/${measured}`,
-      ALICE,
+      READER_ACTOR,
       "2026-11-05T10:00:00Z",
     ],
   ]);
@@ -565,7 +569,7 @@ test("a constraint is a top-level row and its statement carries its chip", () =>
   });
 });
 
-// R1: a lens on an ask's block stands under the ask, which INFRA-1950 stores it under the
+// A lens on an ask's block stands under the ask, which the server stores it under the
 // block of; a lens on a node no step drafts - a paragraph of the spec, a document - is not drawn,
 // and neither is anything under it.
 test("a lens on an ask's block stands under the ask, and one on no drafted parent is not drawn", () => {
@@ -578,7 +582,7 @@ test("a lens on an ask's block stands under the ask, and one on no drafted paren
         bare("lost-risk", "risk", SECOND, { attributes: { heading: "Unseen." } }),
         node("doc-1", "document", KEY),
         lens(THIRD, "doc-1"),
-        node("q1", "ask", KEY, { author: ALICE }),
+        node("q1", "ask", KEY, { author: READER_ACTOR }),
         node("q1-words", "paragraph", "q1"),
         lens(FIRST, "q1-words"),
         finding("kept-finding", FIRST, "The question has two answers."),
@@ -597,16 +601,16 @@ test("a lens on an ask's block stands under the ask, and one on no drafted paren
   }
 });
 
-// R1: a lens on a comment's or a message's block stands under that item, however deep the block
+// A lens on a comment's or a message's block stands under that item, however deep the block
 // it reads sits in the item's words.
 test("a lens on a comment's block stands under the comment", () => {
   const { root } = drawn(
     answer(
       [
-        node("c1", "comment", KEY, { author: ALICE }),
+        node("c1", "comment", KEY, { author: READER_ACTOR }),
         node("c1-words", "paragraph", "c1"),
         lens(FIRST, "c1-words"),
-        node("m1", "message", KEY, { author: ALICE }),
+        node("m1", "message", KEY, { author: READER_ACTOR }),
         node("m1-list", "list", "m1"),
         node("m1-item", "paragraph", "m1-list"),
         lens(SECOND, "m1-item"),
@@ -621,7 +625,7 @@ test("a lens on a comment's block stands under the comment", () => {
   expect(childIds(root)).toEqual(["c1", "m1"]);
 });
 
-// R5: a catalogue constraint the read brings in as context, and a constraint under anything but
+// A catalogue constraint the read brings in as context, and a constraint under anything but
 // the issue, draws no row; a statement's chip names a catalogue constraint by its words, cut as
 // a tag is, and links nothing. A lens kind is no row either.
 test("a catalogue constraint is no row and its chip has no link", () => {
@@ -656,16 +660,15 @@ test("a catalogue constraint is no row and its chip has no link", () => {
     false,
     false,
   ]);
-  expect(chip).toEqual({
+  expect(chip).toStrictEqual({
     address: `dispatch://constraint/${catalogue}`,
     state: "live",
     visibility: "project",
     words: chipWords(standard),
   });
-  expect(chip === undefined ? true : Object.hasOwn(chip, "id")).toBe(false);
 });
 
-// R7: `?node=` with the id the 201 of an invocation gives (`lensReadId`) opens the path to that
+// `?node=` with the id the 201 of an invocation gives (`lensReadId`) opens the path to that
 // lens's row, and the row's reference, which Copy reference copies, is the lens's address. A
 // statement's and a check's read ids, which their tree ids (`<slug>#b-<id>`) are not, open the
 // paths to their rows alike: the links of a risk's Prevented by chip and of a statement's address.
@@ -677,7 +680,7 @@ test("a lens row is reached by its ?node= id", () => {
     findings: [],
     id: FIRST,
     kind: TRADE_OFF.id,
-    on: `dispatch://${KEY}/spec#b-r1`,
+    on: statementRef("r1"),
     state: "live",
     triggered_by: null,
     verdict: null,
@@ -717,8 +720,8 @@ test("a lens row is reached by its ?node= id", () => {
   }
 });
 
-// t3's copy line in `assemble`: each draft's lens facts are the tree node's, whole - a lens's,
-// a risk's, a constraint's and a statement's chips alike.
+// `assemble` copies each draft's lens facts onto its tree node whole - a lens's, a risk's, a
+// constraint's and a statement's chips alike.
 test("a draft's lens facts reach the tree whole", () => {
   const constraint = "d4000000-0000-4000-8000-000000000004";
   const { drafts, root } = drawn(
@@ -747,6 +750,14 @@ test("a draft's lens facts reach the tree whole", () => {
     )
   );
   const ids = [blockNodeId("spec", "r1"), FIRST, SECOND, "risk-1", constraint];
+  // The results read holds no row for the check, so its chip's address is its block's in the
+  // document the read says it is written in, as the check's own row has it.
+  const checkAddress = buildDispatchReference({
+    block: { id: "c1" },
+    key: KEY,
+    kind: "artifact",
+    slug: VERIFICATION.slug,
+  });
 
   for (const id of ids) {
     const facts = drafts.get(id)?.lens;
@@ -754,12 +765,13 @@ test("a draft's lens facts reach the tree whole", () => {
     expect(rowOf(root, id).lens).toEqual(facts);
   }
   expect(rowOf(root, blockNodeId("verification-md", "c1")).lens).toBeUndefined();
+  expect(rowOf(root, blockNodeId("verification-md", "c1")).reference).toBe(checkAddress);
   expect(rowOf(root, "risk-1").lens).toEqual({
     ...NO_FACTS,
     earlyWarning: "Writes queue.",
     preventedBy: [
       {
-        address: "c1",
+        address: checkAddress,
         id: "c1",
         state: "live",
         visibility: "project",

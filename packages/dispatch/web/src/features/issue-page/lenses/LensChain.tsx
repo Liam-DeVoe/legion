@@ -1,26 +1,24 @@
-import type { LensChain as ChainRead } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
+import type { LensChain as ChainRead, NodeLenses } from "@legion/contracts";
+import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { ApiError } from "../../../api/client";
 import { pageFailedText, pageQuietText } from "../../../theme/classes";
-import type { TreeNode } from "../issue-tree";
-import { chipWords } from "../node-row-chip";
+import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { NodeMarks, useNodeStatesByReference } from "../node-states/NodeMarks";
 import { marksAt } from "../node-states/node-states";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPE_NAMES } from "../page-words";
-import { kindWords, type LensChip, type LensFacts } from "./lens-drafts";
+import { filled, type LensChip, type LensFacts, lensChipWords } from "./lens-drafts";
 import { lensChainQuery } from "./lens-reads";
 import { NodeLink } from "./NodeLink";
 
 /**
- * The chain a focused lens stands in (dispatch://INFRA-4065 R2, R6): the lenses that triggered
- * it and the lenses it triggered, from the lens read at the lens's own address. It is drawn only
- * for a lens that has a trigger chip, and the read is sent only once the reader presses
- * `LENS_WORDS.show_chain`: the focus alone sends nothing, because `j` passes every row. The read
- * is held once in a load (`lensChainQuery`), so a later press draws the held answer and sends
- * nothing.
+ * The chain a focused lens stands in: the lenses that triggered it and the lenses it triggered,
+ * from the lens read at the lens's own address. It is drawn only for a lens that has a trigger
+ * chip, and the read is sent only once the reader presses `LENS_WORDS.show_chain`: the focus
+ * alone sends nothing, because `j` passes every row. The read is held once in a load
+ * (`lensChainQuery`), so a later press draws the held answer and sends nothing.
  *
  * Of the answer's chains it draws the one that holds this lens, in the answer's order. The
  * others are the chains of the lenses invoked on this lens, which are its rows. Each entry names
@@ -70,30 +68,56 @@ function Chain({
           {LENS_WORDS.show_chain}
         </button>
       </p>
-      {/* An answer once held stays drawn through a later read that fails - a refresh of every
-          read the page holds sends this one again - since TanStack keeps the answer and sets the
-          error beside it (dispatch://INFRA-1196 decision 98). The failure is said only where no
-          answer is held and no read is out, as the menu says its catalogue's. */}
-      {!pressed ? null : read.data !== undefined ? (
-        <ChainEntries
-          chain={read.data.chains?.find((each) =>
-            (each.lenses ?? []).some((entry) => entry.address === address)
-          )}
-          lens={lens}
-          tabStops={tabStops}
-        />
-      ) : read.isError && !read.isFetching ? (
-        <p className={pageFailedText} role="status" {...pageChrome}>
-          {read.error instanceof ApiError && read.error.status === 404
-            ? LENS_ANSWERS.gone
-            : LENS_ANSWERS.chain_failed}
-        </p>
-      ) : (
-        <p role="status" {...pageChrome}>
-          {LENS_ANSWERS.loading_chain}
-        </p>
-      )}
+      {pressed ? (
+        <ChainAnswer address={address} lens={lens} read={read} tabStops={tabStops} />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * What the lens read of `address` says once the control is pressed: the chain that holds the
+ * lens, where an answer is held; else, where no read is out, that the read failed or that the
+ * lens is gone (404); else that the chain is being read. An answer once held stays drawn through
+ * a later read that fails - a refresh of every read the page holds sends this one again - since
+ * TanStack keeps the answer and sets the error beside it, and a failed refresh over a held
+ * answer blanks nothing, as the menu says its catalogue's.
+ */
+function ChainAnswer({
+  address,
+  lens,
+  read,
+  tabStops,
+}: {
+  address: string;
+  lens: LensFacts;
+  read: UseQueryResult<NodeLenses>;
+  tabStops: boolean;
+}): ReactNode {
+  if (read.data !== undefined) {
+    return (
+      <ChainEntries
+        chain={read.data.chains?.find((each) =>
+          (each.lenses ?? []).some((entry) => entry.address === address)
+        )}
+        lens={lens}
+        tabStops={tabStops}
+      />
+    );
+  }
+  if (read.isError && !read.isFetching) {
+    return (
+      <p className={pageFailedText} role="status" {...pageChrome}>
+        {read.error instanceof ApiError && read.error.status === 404
+          ? LENS_ANSWERS.gone
+          : LENS_ANSWERS.chain_failed}
+      </p>
+    );
+  }
+  return (
+    <p role="status" {...pageChrome}>
+      {LENS_ANSWERS.loading_chain}
+    </p>
   );
 }
 
@@ -120,7 +144,9 @@ function ChainEntries({
           const place = lens.lenses?.get(entry.address);
           const placed = place?.kindWords;
           const held = filled(placed) ? placed : entry.kind?.words;
-          const onLine = place?.onLine;
+          // The line of the row the lens stands under, cut as that row draws its one line, so
+          // the chain names the row by the words a reader sees on it.
+          const onLine = filled(place?.onLine) ? drawnLine(firstLineOf(place.onLine)) : undefined;
           return (
             <li
               className="flex min-w-0 flex-wrap items-baseline gap-x-2"
@@ -165,19 +191,9 @@ function ChainEntries({
   );
 }
 
-/** The chip of the lens a chain stopped at, named as a chip names any lens - by its kind's words,
- *  capitalised and cut as the tag is - and linked to its row where the tree drew one. */
+/** The chip of the lens a chain stopped at, named as a chip names any lens (`lensChipWords`) and
+ *  linked to its row where the tree drew one. */
 function stoppedChip(address: string, lens: LensFacts): LensChip {
   const place = lens.lenses?.get(address);
-  const held = place?.kindWords;
-  return {
-    address,
-    id: place?.id,
-    words: chipWords(kindWords(filled(held) ? held : NODE_TYPE_NAMES.lens)),
-  };
-}
-
-/** Whether a stored string has words to draw. */
-function filled(text: string | undefined): text is string {
-  return text !== undefined && text !== "";
+  return { address, id: place?.id, ...lensChipWords(place?.kindWords) };
 }

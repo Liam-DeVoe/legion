@@ -4,21 +4,20 @@ import { pageQuietText } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_WORDS } from "../page-words";
-import { kindWords, type LensChip } from "./lens-drafts";
+import { filled, kindWords, type LensChip } from "./lens-drafts";
 import { NodeLink } from "./NodeLink";
 
 /** What a line is marked with (`data-lens-line`): the `LENS_WORDS` key of its label, and for a
  *  line with no label, what it draws. */
-type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
+export type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
 
 /**
- * The lines a row draws under its words from its lens facts (dispatch://INFRA-4065 R1, R2, R3,
- * R5), each only where it has something:
+ * The lines a row draws under its words from its lens facts, each only where it has something:
  *
  * - a lens: the lenses that triggered it, then the lenses it triggered, each as a chip;
  * - a risk: its early warning, then the checks that prevent it, or the one line saying none does;
- * - a statement a constraint names: those constraints, as chips, in the outline and in J's Spec
- *   view alike;
+ * - a statement a constraint names: those constraints, as chips, in the outline and in the Spec
+ *   view (`spec-filter/SpecFilterBody.tsx`) alike;
  * - a constraint: a standard's reference, or where a measurement was taken.
  *
  * With `body` the row also draws a lens's kind's words whole, which its tag cuts, and a risk's
@@ -109,11 +108,6 @@ export function LensLines({
     }
   }
   return lines.length === 0 ? null : lines;
-}
-
-/** Whether a stored string has words to draw. */
-function filled(text: string | undefined): text is string {
-  return text !== undefined && text !== "";
 }
 
 /** One line: its label, where `LENS_WORDS` holds one for it, then what it holds. Styled as the

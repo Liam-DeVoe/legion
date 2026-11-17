@@ -22,6 +22,7 @@ import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
+import { PRESS_ENDS, usePressFocus } from "./press-focus";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import {
   DRAWN_LEVELS,
@@ -33,7 +34,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
-import { useNodeEditing } from "./useNodeEditing";
+import { READER_ACTS, useNodeEditing } from "./useNodeEditing";
 import { useTreeKeymap } from "./useTreeKeymap";
 
 /**
@@ -315,56 +316,15 @@ export function IssueTree({
     },
     [holdRow, setFocusedNode]
   );
-  // R7 under a press. A press focuses what it lands on as it goes down, before it ends, so the
-  // row taking the focus would open its body and draw its acts, and the row the focus left would
-  // close its own, while the press is held: the tree would grow and shrink under the pointer.
-  // `NodeRow.tsx`'s `useRowOnScreen` holds its own placing for a press, but Chromium's scroll
-  // anchoring holds nothing, and moves the page as the tree changes. Measured at 1440 by 900 on
-  // part G's c-row-layout: a body closing with the page scrolled to its foot clamped the scroll
-  // 46 px up, and the pressed row's body opening gave the page the room to go back, which the
-  // anchoring took between the press's mousedown and its mouseup - the picture in the pressed
-  // comment rose 46 px, the click went to the words around it, and no picture opened. So the
-  // focus a press gives a row is taken once the press is over - after its mouseup and the click
-  // that follows it, in a task of its own - and only while that row still holds the focus; a
-  // key's move takes it at once. A tap on a phone sends the same mousedown, mouseup and click.
-  const press = useRef<{
-    ending?: number;
-    focus?: { readonly node: TreeNode; readonly row: string };
-    held: boolean;
-  }>({ held: false });
-  const focusRow = useCallback(
-    (row: string, node: TreeNode) => {
-      if (press.current.held) press.current.focus = { node, row };
-      else takeFocus(row, node);
-    },
-    [takeFocus]
+  // R7 under a press: the focus a press gives a row is taken once the press is over, and only
+  // while that row still holds the focus; a key's move takes it at once (`usePressFocus`).
+  const press = usePressFocus<{ readonly node: TreeNode; readonly row: string }>(
+    ({ node, row }) => takeFocus(row, node),
+    ({ row }) =>
+      body.current
+        ?.querySelector(`[data-node-row][data-row-key="${CSS.escape(row)}"]`)
+        ?.contains(document.activeElement) === true
   );
-  useEffect(() => {
-    const held = press.current;
-    const end = () => {
-      held.held = false;
-      const pending = held.focus;
-      held.focus = undefined;
-      if (pending === undefined) return;
-      const row = body.current?.querySelector(
-        `[data-node-row][data-row-key="${CSS.escape(pending.row)}"]`
-      );
-      if (row?.contains(document.activeElement) === true) takeFocus(pending.row, pending.node);
-    };
-    const ended = () => {
-      if (!held.held) return;
-      window.clearTimeout(held.ending);
-      held.ending = window.setTimeout(end, 0);
-    };
-    const listening = new AbortController();
-    for (const type of PRESS_ENDS) {
-      window.addEventListener(type, ended, { capture: true, signal: listening.signal });
-    }
-    return () => {
-      listening.abort();
-      window.clearTimeout(held.ending);
-    };
-  }, [takeFocus]);
   // The focus leaving the tree lets go of the row it left: its body, its focused look and its
   // own placing on screen, the opening's row and what a key reported. By Tab or a script it goes
   // at once, and for a press on something else of the page once that press has ended and its
@@ -787,11 +747,8 @@ export function IssueTree({
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onBlur={releaseFocus}
-        // A press in the tree, whose focus the row takes once the press is over (`focusRow`).
-        onMouseDown={() => {
-          window.clearTimeout(press.current.ending);
-          press.current.held = true;
-        }}
+        // A press in the tree, whose focus the row takes once the press is over (`press`).
+        onMouseDown={press.onMouseDown}
         ref={body}
         role="tree"
       >
@@ -807,7 +764,7 @@ export function IssueTree({
               editing={editing}
               focused={focused}
               isClosed={isClosed}
-              onFocus={focusRow}
+              onFocus={(row, node) => press.focus({ node, row })}
               onOpenDeeper={openDeeper}
               onOvertaken={toggleOvertaken}
               onPin={pin}
@@ -846,16 +803,6 @@ export function IssueTree({
     </div>
   );
 }
-
-/** A reader's own acts, any of which ends the page's own placing of the focus: a key, a press,
- *  a wheel and a touch. */
-export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
-
-/** What ends a press in the tree: its mouseup, which the click follows in the same task; the
- *  drag a press on a picture or a link starts instead, which sends no mouseup; a pointer the
- *  browser cancelled; and a key, since a press released outside the window sends no mouseup,
- *  and a key's move must never wait on a press that is over. */
-const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to
  *  their newest node where it looked, in milliseconds: the line's send has landed and its read
@@ -955,8 +902,8 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * rose by the body's height, and the click that ends the press landed on something else or on
  * nothing, so the control never fired. A press that leaves the focus on no control is such a
  * leave too: Safari focuses no button a press lands on. The press ends as the tree's own press
- * does (`PRESS_ENDS`). Escape anywhere on the page lets go of the row at once while a press keeps
- * it, and the focus back in the tree by the time the press has ended keeps it.
+ * does (`press-focus.ts`'s `PRESS_ENDS`). Escape anywhere on the page lets go of the row at once
+ * while a press keeps it, and the focus back in the tree by the time the press has ended keeps it.
  *
  * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
@@ -986,7 +933,7 @@ export function useReleaseFocus({
   leave.current = onLeave;
   // What the press under way went down on, from its mousedown - whose default is what moves the
   // focus, for a mouse and for a tap's mouse events alike - until the task after it ends, as the
-  // tree's own press is held (`PRESS_ENDS`); null while no press is under way. The blur it
+  // tree's own press is held (`usePressFocus`); null while no press is under way. The blur it
   // causes reads it to tell a press from Tab or a script's blur.
   const press = useRef<{ ending?: number; target: EventTarget | null }>({ target: null });
   useEffect(() => {
