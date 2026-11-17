@@ -36,26 +36,41 @@ type stepPut struct {
 	Write dispatch.StepWrite
 }
 
-// stepRecordDispatch is Dispatch as a step record meets it: what each PUT of a record gets back,
-// each PUT received, and the status writes the issue's board lane made. A hold that is not nil
-// keeps every PUT of a record waiting until it closes, as a Dispatch that hangs on the route. It is
-// read while a lane runs, which outboxDispatch, whose other methods it keeps, is not made for.
+// stepRecordDispatch is Dispatch as the record lane meets it (record.LaneRecord): what each PUT of
+// a step record or a plan gets back, each PUT received, and the status writes the issue's board
+// lane made. A hold that is not nil keeps every PUT of a record waiting until it closes, as a
+// Dispatch that hangs on the route. It is read while a lane runs, which outboxDispatch, whose other
+// methods it keeps, is not made for.
 type stepRecordDispatch struct {
 	*outboxDispatch
 	mu sync.Mutex
-	// answer is what the PUT numbered n, counting from zero, gets back; nil is the record Dispatch
-	// stored.
+	// answer is what the PUT numbered n, counting from zero over both routes, gets back; nil is
+	// the record Dispatch stored.
 	answer   func(n int) error
 	hold     chan struct{}
 	puts     []stepPut
+	plans    []planPut
 	statuses []string
 }
 
 func (d *stepRecordDispatch) PutStep(ctx context.Context, key, id string, write dispatch.StepWrite) error {
 	d.mu.Lock()
 	d.puts = append(d.puts, stepPut{Issue: key, ID: id, Write: write})
-	n, answer, hold := len(d.puts)-1, d.answer, d.hold
+	n, answer, hold := len(d.puts)+len(d.plans)-1, d.answer, d.hold
 	d.mu.Unlock()
+	return recordPutAnswer(ctx, n, answer, hold)
+}
+
+func (d *stepRecordDispatch) PutPlan(ctx context.Context, key, id string, plan dispatch.PlanWrite) error {
+	d.mu.Lock()
+	d.plans = append(d.plans, planPut{Issue: key, ID: id, Plan: plan})
+	n, answer, hold := len(d.puts)+len(d.plans)-1, d.answer, d.hold
+	d.mu.Unlock()
+	return recordPutAnswer(ctx, n, answer, hold)
+}
+
+// recordPutAnswer is what the PUT numbered n gets back from answer, once hold, if not nil, closes.
+func recordPutAnswer(ctx context.Context, n int, answer func(int) error, hold chan struct{}) error {
 	if hold != nil {
 		select {
 		case <-hold:
@@ -88,6 +103,12 @@ func (d *stepRecordDispatch) received() []stepPut {
 	return slices.Clone(d.puts)
 }
 
+func (d *stepRecordDispatch) receivedPlans() []planPut {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.plans)
+}
+
 func (d *stepRecordDispatch) statusWrites() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -107,8 +128,8 @@ func stepRecordOf() record.StepRecord {
 		EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}
 }
 
-// stepRecordRig is one issue's step record row, drained by hand (RunOnce) on a clock the test
-// holds, with the runner's log captured.
+// stepRecordRig is one issue's row on the record lane, a step record or a plan, drained by hand
+// (RunOnce) on a clock the test holds, with the runner's log captured.
 type stepRecordRig struct {
 	t      *testing.T
 	pool   *store.Pool

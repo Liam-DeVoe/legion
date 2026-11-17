@@ -1,17 +1,14 @@
 package daemon
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // planRecordID is the id of the plan every plan record here writes, a version 5 id of the form the
@@ -28,47 +25,6 @@ type planPut struct {
 	Plan  dispatch.PlanWrite
 }
 
-// recordDispatch is Dispatch as the record lane meets it: what each PUT of a plan or a step record
-// gets back, and each PUT received. It is read while a lane runs, which outboxDispatch, whose
-// other methods it keeps, is not made for.
-type recordDispatch struct {
-	*outboxDispatch
-	mu sync.Mutex
-	// answer is what the PUT numbered n, counting from zero over both routes, gets back; nil is
-	// the write Dispatch stored.
-	answer func(n int) error
-	plans  []planPut
-	steps  []stepPut
-}
-
-func (d *recordDispatch) PutPlan(_ context.Context, key, id string, plan dispatch.PlanWrite) error {
-	d.mu.Lock()
-	d.plans = append(d.plans, planPut{Issue: key, ID: id, Plan: plan})
-	n, answer := len(d.plans)+len(d.steps)-1, d.answer
-	d.mu.Unlock()
-	if answer == nil {
-		return nil
-	}
-	return answer(n)
-}
-
-func (d *recordDispatch) PutStep(_ context.Context, key, id string, write dispatch.StepWrite) error {
-	d.mu.Lock()
-	d.steps = append(d.steps, stepPut{Issue: key, ID: id, Write: write})
-	n, answer := len(d.plans)+len(d.steps)-1, d.answer
-	d.mu.Unlock()
-	if answer == nil {
-		return nil
-	}
-	return answer(n)
-}
-
-func (d *recordDispatch) received() ([]planPut, []stepPut) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Clone(d.plans), slices.Clone(d.steps)
-}
-
 // planRecordOf is the default plan of the run 2 of the issue.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
@@ -80,39 +36,6 @@ func ratingRecordOf() record.StepRecord {
 	return record.StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
 		Agent: "legion-legion-legion-1-implementer", Generation: 2,
 		PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}
-}
-
-// recordRig is one issue's row of the record lane, drained by hand (RunOnce) on a clock the test
-// holds, with the runner's log captured.
-type recordRig struct {
-	t      *testing.T
-	pool   *store.Pool
-	runner *outbox
-	client *recordDispatch
-	clock  *heldClock
-	logs   *syncBuffer
-}
-
-func newRecordRig(t *testing.T, payload record.OutboxPayload, answer func(int) error) *recordRig {
-	t.Helper()
-	pool := isolatedOutboxPool(t)
-	logs := &syncBuffer{}
-	client := &recordDispatch{outboxDispatch: &outboxDispatch{}, answer: answer}
-	rig := &recordRig{t: t, pool: pool, client: client, clock: microClock(), logs: logs}
-	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client,
-		log: slog.New(slog.NewJSONHandler(logs, nil)), now: rig.clock.Now}
-	enqueueOutbox(t, pool, record.NewStore(), mustOutboxRow(t, stepIssue, payload, rig.clock.Now()))
-	return rig
-}
-
-// run drains every row due now, then moves the clock past the longest backoff, so a row the run
-// retried is due at the next run.
-func (r *recordRig) run() {
-	r.t.Helper()
-	if err := r.runner.RunOnce(context.Background()); err != nil {
-		r.t.Fatalf("drain the outbox: %v", err)
-	}
-	r.clock.advance(2 * retryBackoff(6))
 }
 
 // A plan record is written once, under the row's issue and the plan's own id, with the run, the
@@ -137,12 +60,12 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newRecordRig(t, tc.plan, nil)
+			rig := newStepRecordRigOf(t, tc.plan, nil)
 			rig.run()
 			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
 				t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
 			}
-			plans, steps := rig.client.received()
+			plans, steps := rig.client.receivedPlans(), rig.client.received()
 			want := planPut{Issue: stepIssue, ID: planRecordID, Plan: tc.want}
 			if len(plans) != 1 || len(steps) != 0 || !reflect.DeepEqual(plans[0], want) {
 				t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, steps, want)
@@ -155,12 +78,12 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 // rating, its reason and the run's identity, which the client sends to the record's rating route
 // (dispatch.HTTPClient.PutStep).
 func TestTheRetrosRatingReachesDispatch(t *testing.T) {
-	rig := newRecordRig(t, ratingRecordOf(), nil)
+	rig := newStepRecordRigOf(t, ratingRecordOf(), nil)
 	rig.run()
 	if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
 		t.Fatalf("rows left after Dispatch took the rating = %d, want none", left)
 	}
-	_, steps := rig.client.received()
+	steps := rig.client.received()
 	want := stepPut{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 0, Kind: "retro",
 		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2,
 		PlanRating: &dispatch.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}}
@@ -189,7 +112,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 		{name: "the rating route", payload: ratingRecordOf(), dropped: stepRefusedLine},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			rig := newRecordRig(t, route.payload, answersInTurn(notFound, notFound))
+			rig := newStepRecordRigOf(t, route.payload, answersInTurn(notFound, notFound))
 			rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			for attempt := 1; attempt <= 2; attempt++ {
 				rig.run()
@@ -201,7 +124,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
 				t.Fatalf("rows left after Dispatch took the write = %d, want none", left)
 			}
-			plans, steps := rig.client.received()
+			plans, steps := rig.client.receivedPlans(), rig.client.received()
 			if len(plans)+len(steps) != 3 {
 				t.Fatalf("PUTs = %d plans and %d step writes, want three of one: two the old router refused, one stored", len(plans), len(steps))
 			}
@@ -271,12 +194,12 @@ func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		{name: "409 PLAN_OTHER_ISSUE", err: &dispatch.Error{Status: http.StatusConflict, Code: dispatch.PlanOtherIssue, Message: "the plan belongs to LEGION-9"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newRecordRig(t, planRecordOf(), answersInTurn(tc.err))
+			rig := newStepRecordRigOf(t, planRecordOf(), answersInTurn(tc.err))
 			rig.run()
 			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
 				t.Fatalf("rows left after Dispatch refused the plan = %d, want none", left)
 			}
-			if plans, _ := rig.client.received(); len(plans) != 1 {
+			if plans := rig.client.receivedPlans(); len(plans) != 1 {
 				t.Fatalf("PUTs of the plan = %d, want the one Dispatch refused", len(plans))
 			}
 			logs := rig.logs.String()
