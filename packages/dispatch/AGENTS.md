@@ -1144,7 +1144,11 @@ or when the event feed refreshes every query - but the feed's first `events_star
 the one moment the server may have restarted with a broker configured, asks it once more over the
 held answer (`reaskHeldCredentialList`, from `api/event-feed.ts`); a rotation, which no restart
 caused, asks nothing. Nothing blinks while it is out, and a list that comes back makes it an
-ordinary query. `features/inbox/Inbox.no-broker.test.tsx` holds both.
+ordinary query. `features/inbox/Inbox.no-broker.test.tsx` holds both. A restricted member, whom
+Dispatch refuses that list, never asks it (`credentialPendingQuery(restricted)`); their Settings
+learns whether there is a broker from the grants list's `404 FEATURE_OFF` instead, which it does
+not ask again on a refresh either, and which `reaskHeldCredentialList` asks again after a gap
+(`SettingsPage.tsx`, `__tests__/event-feed-socket.test.tsx`).
 `CredentialRequestsSection.tsx`
 mounts in `features/inbox/Inbox.tsx`, above the ask sections and outside its
 roving-focus/`ViewportAnchor` mechanism (it is not an ask row): each pending row shows a kind
