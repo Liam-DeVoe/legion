@@ -2,7 +2,9 @@ package admit
 
 import (
 	"context"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -485,11 +487,6 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// reversedVersions are the version rows the two ways back delete between them, so that the
-// roll-forward applies each of those migrations again. No other row is theirs to delete: a
-// migration above them stands through its own release's rollback where that rollback needs no
-// statement for it (docs/kubernetes.md), so the highest version the store reports after the two
-// blocks depends on what main carries above them, and only these rows' absence is the blocks'.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
@@ -497,8 +494,48 @@ const (
 	entryVerbatimVersion  = 20261114061900
 )
 
-var reversedVersions = []int64{
-	phaseEntryVersion, stalledNoticesVersion, architectUpgradeVersion, claimHandshakeVersion, entryVerbatimVersion,
+// wayBackVersionDelete is one statement of a way back that deletes a version row, the form each
+// block of a migration's header writes it in.
+var wayBackVersionDelete = regexp.MustCompile(`(?m)^delete from schema_version where version = (\d+);$`)
+
+// leftStandingVersion is the version the store reports once the ways back have run: the highest
+// embedded migration (migrations.All) whose version row none of them deletes, each deleted row
+// read from the block's own statements. It is computed rather than written down because every
+// migration added later that no block touches stands above the last one that did, as
+// docs/kubernetes.md says of a migration added after the blocks: written down, it was the newest
+// migration of the day it was written, and the next migration made it false. A block that deletes
+// no version row fails the test, since the ways back would then have nothing to say about the
+// version, and so would this.
+func leftStandingVersion(t *testing.T, wayBacks ...string) int {
+	t.Helper()
+	deleted := map[int]bool{}
+	for _, wayBack := range wayBacks {
+		statements := wayBackVersionDelete.FindAllStringSubmatch(wayBack, -1)
+		if len(statements) == 0 {
+			t.Fatalf("the way back deletes no version row, so no version can be said to stand after it:\n%s", wayBack)
+		}
+		for _, statement := range statements {
+			version, err := strconv.Atoi(statement[1])
+			if err != nil {
+				t.Fatalf("read the version the way back deletes in %q: %v", statement[0], err)
+			}
+			deleted[version] = true
+		}
+	}
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	standing := 0
+	for _, migration := range all {
+		if !deleted[migration.Version] && migration.Version > standing {
+			standing = migration.Version
+		}
+	}
+	if standing == 0 {
+		t.Fatalf("the ways back delete every one of the %d embedded migrations", len(all))
+	}
+	return standing
 }
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
@@ -516,8 +553,8 @@ var reversedVersions = []int64{
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it holds no version row of the migrations the two blocks reverse (reversedVersions),
-// no marks' table, no handshake column and no column of the mark.
+// release's: it reports that release's own version and holds no marks' table, no handshake column
+// and no column of the mark.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -590,10 +627,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if unsent != 0 {
 					t.Fatalf("the two ways back left %d unsent architect wakes, want none: the older release refuses their kind", unsent)
 				}
-				var standing []int64
-				if err := pool.QueryRow(ctx, `select coalesce(array_agg(version order by version), '{}')::bigint[]
-					from schema_version where version = any($1::bigint[])`, reversedVersions).Scan(&standing); err != nil {
-					t.Fatalf("read the reversed migrations' version rows after the way back: %v", err)
+				version, err := st.SchemaVersion(ctx)
+				if err != nil {
+					t.Fatalf("read the version the store reports after the way back: %v", err)
 				}
 				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
@@ -609,10 +645,12 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if len(standing) > 0 || marksTable || handshakeColumn || markColumn {
-					t.Fatalf("after the two ways back the version rows %v of the migrations they reverse stand, the marks' table "+
-						"stands: %v, a handshake column stands: %v, and the phases row's mark stands: %v; want none of them, "+
-						"so the roll-forward runs those migrations again", standing, marksTable, handshakeColumn, markColumn)
+				standing := leftStandingVersion(t, wayBack, headerWayBack(t, phaseEntryVersion))
+				t.Logf("the highest embedded migration neither way back deletes is %d", standing)
+				if version != standing || marksTable || handshakeColumn || markColumn {
+					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
+						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
+						version, marksTable, handshakeColumn, markColumn, standing)
 				}
 			}
 

@@ -8,18 +8,18 @@ import (
 
 // mergeHoldsChangedVersion is the version of the migration this file tests, so the test can
 // migrate through everything before it whatever lands beside it.
-const mergeHoldsChangedVersion = 20261115103123
+const mergeHoldsChangedVersion = 20261117113130
 
 // A merge-holds change is the row that tells the merger of an issue in merging that the project's
 // merge holds document changed (record.MergeHoldsChanged). The outbox refuses a kind its
 // constraint does not name, so the row could not be queued before this migration, and the
 // transaction that applied the document's event would fail with it: the negative control is that
-// refusal, read before the migration, on a database that already carries the merge-queue list
-// (20261114031356), which this version stands above. After it the row is queued, and so is every
+// refusal, read before the migration, on a database that already carries the role-holders list
+// (20261116165926), which this version stands above. After it the row is queued, and so is every
 // kind the constraint already named, since the migration rewrites the list whole and a kind left
 // out would stop its own effect. A kind that is none is still refused, and so is a kind of the
 // merge the daemon no longer submits.
-func TestTheOutboxTakesTheMergeHoldsKindWith20261115103123(t *testing.T) {
+func TestTheOutboxTakesTheMergeHoldsKindWith20261117113130(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, mergeHoldsChangedVersion-1)
@@ -41,7 +41,7 @@ func TestTheOutboxTakesTheMergeHoldsKindWith20261115103123(t *testing.T) {
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "merge_holds_changed",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "merge_holds_changed",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

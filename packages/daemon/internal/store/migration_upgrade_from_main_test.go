@@ -50,11 +50,9 @@ import (
 // last of them is the last word of outbox_kind_check: the upgrade applies it after 20261029120800
 // has deleted main's merge-lane rows, and it names every other kind main's daemon writes
 // (mainsOutboxKinds), with update_ask and the two merge-queue kinds besides, which main's daemon
-// never writes. dispatch://INFRA-2709's kind list with the merge holds change (20261115103123)
-// stands above it and takes that place: it names the same kinds and merge_holds_changed.
-// dispatch://INFRA-2709's two rewrites of claims_suspended_by_check (20261115060739,
+// never writes. This change's two rewrites of claims_suspended_by_check (20261115060739,
 // 20261115083448) stand above main's newest too, and no row of this test reaches that check. So
-// does dispatch://INFRA-2709's delete of the queued controller notices of the two kinds the daemon
+// does this change's delete of the queued controller notices of the two kinds the daemon
 // no longer writes (20261115121838), which takes no row of this test either, since each controller
 // notice here carries no kind. And so is dispatch://INFRA-3146's `phases.entry_moved_back`
 // (20261113090512), which stands between INFRA-2981's two and adds one column beside the phase
@@ -74,6 +72,10 @@ import (
 // as one of main's own. It creates experiment_assignments and fills it from the issues' memory
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
+// The kind list with the role-holders publication (20261116165926) stands above all of these but
+// one, and names every kind the merge-queue list names and its own. This change's kind list with
+// the merge holds change (20261117113130) stands above it and is applied last: it is the last word
+// of outbox_kind_check, and it names the same kinds and merge_holds_changed.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -81,7 +83,8 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261115060739, 20261115083448, 20261115103123, 20261115121838,
+	20261114061900, 20261115060739, 20261115083448, 20261115121838, 20261116165926,
+	20261117113130,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -91,10 +94,10 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and dispatch://INFRA-2709's
-// 20261115060739, 20261115083448, 20261115103123 and 20261115121838, which is why the loop below
-// holds the list rather than counting it, so that a version added above any of them is named here
-// rather than read as main's.
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
+// publication's 20261116165926, and this change's 20261115060739, 20261115083448, 20261115121838
+// and 20261117113130, which is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
