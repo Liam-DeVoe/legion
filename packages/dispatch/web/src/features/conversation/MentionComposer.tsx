@@ -189,6 +189,43 @@ function seededDraft(
   return [prefix, body].filter((part) => part !== "").join(" ");
 }
 
+/** A mention the issue page's line wrote into its draft for a reply's target: the party, and the
+ *  link written for it (`partyMention`). */
+interface SeededMention {
+  readonly target: string;
+  readonly text: string;
+}
+
+/** The mentions `seededDraft` writes in front of `draft` for `mentions` on the issue page's line,
+ *  whose channel - an issue - has no mention of its own to take out (`ownTarget`): one for each
+ *  party the draft does not name already, as the link that names it. */
+function mentionsSeeded(
+  mentions: readonly { readonly target: string; readonly title: string }[],
+  draft: string
+): SeededMention[] {
+  const named = new Set(draftParties(draft).targets);
+  return mentions.flatMap((mention) => {
+    const text = named.has(mention.target)
+      ? undefined
+      : partyMention(mention.target, mention.title);
+    return text === undefined ? [] : [{ target: mention.target, text }];
+  });
+}
+
+/** `draft` with each of `seeds` taken out, its separating space with it, where the party's first
+ *  mention is still the link as it was written. A seeded mention the reader changed is theirs
+ *  now and stays, as does every mention and word they wrote. */
+function withoutSeeds(draft: string, seeds: readonly SeededMention[]): string {
+  let body = draft;
+  for (const seed of seeds) {
+    const span = partyMentionSpan(body, seed.target);
+    if (span === undefined || body.slice(span.start, span.end) !== seed.text) continue;
+    const cut = body.slice(span.end, span.end + 1) === " " ? span.end + 1 : span.end;
+    body = body.slice(0, span.start) + body.slice(cut);
+  }
+  return body;
+}
+
 export function hasUnsavedInput(
   body: string,
   replacement: string,
@@ -277,7 +314,8 @@ export interface OutlineKind {
  * picker - is its own, as on every surface that draws it, save the one refusal the host words
  * (`statementTwice`) and what it says of a file uploading into the draft (`uploading`,
  * `uploadedUnanswered`), and it is drawn in the page's colours. A new target keeps the words the
- * line holds, since the line is the page's one draft.
+ * line holds, since the line is the page's one draft, and takes out of them the mentions the last
+ * target's reply wrote there, where the reader left them as written.
  */
 export interface OutlineLook {
   /** A statement of the issue's own documents the line comments on, by the document and the
@@ -512,6 +550,9 @@ export function MentionComposer({
   const previousReply = useRef<string | undefined>(undefined);
   // Whether this mount took a held send's draft, which the reply prefill must not replace.
   const mountedHeld = useRef(outgoing.held !== undefined);
+  // The mentions the reply prefill wrote into the issue page's line for its current target, which
+  // the next target, or none, takes back out of the draft (`withoutSeeds`).
+  const replySeeds = useRef<readonly SeededMention[]>([]);
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
@@ -645,6 +686,14 @@ export function MentionComposer({
     // A mount that took a held send's draft keeps it: the prefill is for a new reply.
     const tookHeldDraft = mountedHeld.current;
     mountedHeld.current = false;
+    // The issue page's line keeps its draft through a change of target, so a target that moves
+    // on or ends first takes back out the mentions its prefill wrote: a reply under one entry, or
+    // a comment on the issue, never reaches a party only the last entry's reply named.
+    if (outlined && replyTo?.id !== previousReply.current && replySeeds.current.length > 0) {
+      const kept = withoutSeeds(previousBody.current, replySeeds.current);
+      replySeeds.current = [];
+      if (kept !== previousBody.current) replaceDraft({ body: kept });
+    }
     if (replyTo === null) {
       previousReply.current = undefined;
       return;
@@ -671,10 +720,12 @@ export function MentionComposer({
     );
     // The issue page's line is the page's one draft at every width, so a new target keeps the
     // words the reader has typed there, the reply's mentions written in front of them as a
-    // channel's seed is written into a live draft; every other surface's reply is a draft of its
-    // own, which starts from the seed alone.
+    // channel's seed is written into a live draft, and remembers which mentions it wrote for the
+    // next target to take out; every other surface's reply is a draft of its own, which starts
+    // from the seed alone.
     const typed = outlined && previousBody.current.trim() !== "" ? previousBody.current : "";
     replaceDraft({ body: seededDraft(deduplicated, typed, owner) });
+    if (outlined) replySeeds.current = mentionsSeeded(deduplicated, typed);
     takeFocus();
   }, [outlined, owner, replaceDraft, replyTo, standing]);
 

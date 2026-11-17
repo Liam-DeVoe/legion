@@ -75,6 +75,14 @@ const SPEC_SOURCE = { id: "artifact-spec", issue: KEY, kind: "artifact" } as con
  *  name (`plannerAgent`). */
 const PLANNER_MENTION = "[@Old](dispatch://agent/planner-session)";
 
+/** The session the registry lists as Planner (`plannerAgent`), as the author of a comment. */
+const PLANNER: Actor = { id: "planner-session", kind: "session" };
+
+/** The mention the box writes for the planner when the reader replies to its comment: the same
+ *  address, worded as the page names an author, by the title the registry lists. The reference
+ *  picker writes the same link for a pick of the planner. */
+const PLANNER_SEED = PLANNER_MENTION.replace("[@Old]", "[@Planner]");
+
 /** The reads the box and the writer draw from, under the keys the outline reads them by: each
  *  case's own, and what a stub below answers when a write makes the page read one again. */
 interface Reads {
@@ -612,6 +620,126 @@ test("a Reply on another row keeps the reply typed in the box", async () => {
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(targetWords()).toContain("Earlier words"));
   expect(writeField().value).toBe("My reply to bob");
+});
+
+/** The page with the planner's comment after the outline's others, in the outline and in the
+ *  comments read: a Reply on it starts the box with a mention of the planner. */
+function renderWithPlannerComment() {
+  reads.comments.push(commentRecord("comment-3", PLANNER, "The relay is fixed"));
+  const root = outline();
+  return renderPage(
+    {},
+    {
+      ...root,
+      children: [...root.children, commentNode("comment-3", PLANNER, "The relay is fixed")],
+    }
+  );
+}
+
+/** Replies to the planner's comment, which writes the planner's mention into the empty box. */
+async function replyToPlanner(user: UserEvent, page: DrawnPage): Promise<void> {
+  await page.press(user, "comment-3", "r");
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe(PLANNER_SEED);
+}
+
+// The reviewer's finding 5942007779: a Reply on an agent's comment writes the agent's mention into
+// the box, which is how the reply reaches the agent. The box keeps its draft through a new target,
+// so the next target takes that mention back out: a reply under a person's comment is not
+// delivered to the agent the reader no longer replies to.
+test("a Reply on a person's comment after one on an agent's takes the agent's mention out of the send", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "Thanks"))
+  );
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  const draft = writeField().value;
+  await user.keyboard("Thanks{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  // The request is what would reach the agent: a reply under bob's comment, delivered to nobody.
+  const [key, input] = createComment.mock.calls[0] ?? [];
+  expect(key).toBe(KEY);
+  expect(input).toEqual({ body: "Thanks", reply_to: "comment-1" });
+  expect(draft).toBe("");
+});
+
+// The same finding: the line's control that writes on the issue instead, Escape, and `r` on a
+// statement each end the reply to the agent's comment, and the agent's mention ends with it.
+test("ending a reply to an agent's comment takes the agent's mention out of the box", async () => {
+  const user = userEvent.setup();
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe("");
+
+  await replyToPlanner(user, page);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(writeField().value).toBe("");
+
+  await replyToPlanner(user, page);
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(targetWords()).toContain("The page draws one box."));
+  expect(writeField().value).toBe("");
+});
+
+// The same finding: the words the reader typed after the agent's mention are theirs, and stay when
+// the reader turns the box to a person's comment; the mention the box wrote goes.
+test("a Reply on a person's comment keeps the words typed after an agent's mention, and takes the mention out", async () => {
+  const user = userEvent.setup();
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  await user.keyboard(" please look again");
+  expect(writeField().value).toBe(`${PLANNER_SEED} please look again`);
+
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  expect(writeField().value).toBe("please look again");
+});
+
+// The same finding: a mention of the agent the reader wrote themself is their own aim, and stays
+// through a new target, while the one the box wrote goes. Once the draft names the agent, a Reply
+// on the agent's comment writes no mention of its own, so the next target takes none out.
+test("a mention of the agent the reader wrote stays when the box turns to a person's comment", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "cc"))
+  );
+  const page = renderWithPlannerComment();
+  await replyToPlanner(user, page);
+  // The reader picks the planner after their own word, which writes the link the box wrote.
+  await user.keyboard(" cc ");
+  await user.paste(PLANNER_SEED);
+
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+
+  await page.press(user, "comment-3", "r");
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+
+  // The reply reaches the agent the reader named.
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  expect(createComment.mock.calls[0]?.[1]).toEqual({
+    body: `cc ${PLANNER_SEED}`,
+    delivery: "steer",
+    reply_to: "comment-1",
+  });
 });
 
 // R5: an answer sends the options picked and the reader's words, and a change of the reader's own
