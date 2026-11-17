@@ -2299,6 +2299,11 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 			expected := want
 			if tc.spec.Role == claim.RoleController {
 				expected = slices.DeleteFunc(slices.Clone(want), func(key string) bool { return key == "initContainers" })
+				if tc.controllerAccount != "" {
+					// The case's controller_service_account names the controller pod's account.
+					expected = append(expected, "serviceAccountName")
+					slices.Sort(expected)
+				}
 			}
 			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
 				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
@@ -2537,8 +2542,9 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 					continue
 				}
 				t.Run(name, func(t *testing.T) {
-					// The case's enrollment alone: its sandbox, gVisor's, is the block's here.
-					r.agentSecrets = tc.agentSecrets
+					// The case's enrollment and controller account alone: its sandbox, gVisor's, is
+					// the block's here.
+					r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 					checkGolden(t, name, manifestOf(t, r, tc.spec))
 					template := r.podTemplate(launchOf(t, r, tc.spec))
 					if got := renderedSandbox(t, template); got != SandboxGVisor {
@@ -2831,6 +2837,8 @@ func TestOnlyAMicroVMPodCarriesTheSandboxLabel(t *testing.T) {
 // sandbox block renders, byte for byte.
 func TestTheControllerPodStaysGVisorInAMicroVMProject(t *testing.T) {
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
+	// The controller golden's controller_service_account, as its manifest case sets it.
+	r.pod.ControllerServiceAccount = goldenControllerAccount
 	l := launchOf(t, r, controllerSpec(t))
 	template := r.podTemplate(l)
 	if got := renderedSandbox(t, template); got != SandboxGVisor {
