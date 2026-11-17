@@ -52,6 +52,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -67,6 +69,8 @@ import {
   pgConnectionsVariable,
   pgImageVariable,
   type StackDatabase,
+  socketDirectory,
+  socketFile,
   stackPostgres,
 } from "../harness-postgres";
 import {
@@ -384,9 +388,16 @@ function containersOf(run: string): string[] {
   });
 }
 
+/** How long a row's removal waits for a removal of the same container that another start of the
+ *  machine has in progress, the bound a start itself waits it out with (`dockerMs` of
+ *  e2e/harness-postgres-marks.ts): a daemon that answers removes a container in well under a
+ *  second. */
+const removalInProgressMs = 60_000;
+
 /** Removes each container of `ids`, by its id, and once it has tried them all throws naming each
  *  removal that failed, with what Docker said: one failed removal keeps no other container. A
- *  container that is gone already is no failure (`docker rm --force`). */
+ *  container that is gone already is no failure (`docker rm --force`), nor is one that another
+ *  start of the machine is removing, once Docker no longer lists it. */
 function removeIds(ids: readonly string[]): void {
   const failed: string[] = [];
   for (const id of ids) {
@@ -394,7 +405,14 @@ function removeIds(ids: readonly string[]): void {
       encoding: "utf8",
       timeout: 120_000,
     });
-    if (run.status !== 0) failed.push(`${id}: ${run.stderr.trim() || run.error?.message}`);
+    if (run.status === 0) continue;
+    const said = run.stderr.trim() || run.error?.message || `exit ${run.status}`;
+    if (/removal of container \S+ is already in progress/.test(said)) {
+      const deadline = Date.now() + removalInProgressMs;
+      while (containerExists(id) && Date.now() < deadline) Bun.sleepSync(200);
+      if (!containerExists(id)) continue;
+    }
+    failed.push(`${id}: ${said}`);
   }
   if (failed.length > 0)
     throw new Error(`docker rm --force --volumes failed: ${failed.join("; ")}`);
@@ -472,11 +490,21 @@ for (const provider of [
         // names one, that names a program of the planter's and a directory outside its run.
         const beside = mkdtempSync(join(tmp, runDirectoryPrefix));
         hostile = plantHostileMark(beside, tmp, owners().gone);
-        [killed, kept, unjudged] = await Promise.all([
+        // Each stack that started is recorded before a start that failed is thrown, so the
+        // `finally` stops it and removes what it made.
+        const [a, b, c] = await Promise.allSettled([
           startStack(env, runs.killed),
           startStack(env, runs.kept),
           startUnjudged(env, named, runs.unjudged, beside),
         ]);
+        killed = a.status === "fulfilled" ? a.value : undefined;
+        kept = b.status === "fulfilled" ? b.value : undefined;
+        unjudged = c.status === "fulfilled" ? c.value : undefined;
+        if (killed === undefined || kept === undefined || unjudged === undefined) {
+          throw [a, b, c].flatMap((result) =>
+            result.status === "rejected" ? [result.reason] : []
+          )[0];
+        }
         expect([answers(killed.url), answers(kept.url), answers(unjudged.url)]).toEqual([
           true,
           true,
@@ -584,7 +612,9 @@ async function startUnjudged(
       },
     };
   }
-  const own = mkdtempSync(join(beside, "pg-9-"));
+  // In the run directory, or in /tmp where a long TMPDIR leaves no room there for the socket's
+  // path, as the provider puts each of its own.
+  const own = socketDirectory(beside, "pg-9", join("s", socketFile));
   const sockets = join(own, "s");
   mkdirSync(sockets, { mode: 0o700 });
   const name = `dispatch-e2e-pg-${run}-9`;
@@ -617,15 +647,23 @@ async function startUnjudged(
     const logs = spawnSync("docker", ["logs", id], { encoding: "utf8", timeout: 120_000 });
     return `${logs.stdout}${logs.stderr}`.includes("init process complete");
   };
+  // The container by the id Docker made it under, and then its socket directory, which is in /tmp
+  // and not in the row's TMPDIR where that TMPDIR is long.
+  const stop = async () => {
+    await removeAll(
+      () => removeIds([id]),
+      () => rmSync(own, { recursive: true, force: true })
+    );
+  };
   const deadline = Date.now() + stackMs;
   while (!(initialised() && answers(url))) {
     if (Date.now() > deadline) {
-      removeIds([id]);
+      await stop();
       throw new Error(`the container ${name} did not serve within ${stackMs / 1000} s`);
     }
     await sleep(500);
   }
-  return { url, named: `container ${id.slice(0, 12)}`, stop: () => removeIds([id]) };
+  return { url, named: `container ${id.slice(0, 12)}`, stop };
 }
 
 /** Runs each removal of a row's `finally`, every one even where another fails, and throws naming
@@ -977,6 +1015,57 @@ test.skipIf(skipBinaries)(
   300_000
 );
 
+// A developer may rename the run directory of a stack killed hard, to keep its logs. Its postmaster
+// runs on from the new name, and the marks there name the old one, so no start can trust them: the
+// next start leaves that Postgres and names it on a line, whether the new name is one the pool
+// gives (its listing of TMPDIR reads it) or not (the kernel shows the postmaster serving from it,
+// `servedElsewhere` of e2e/harness-postgres-marks.ts).
+for (const renamed of ["kept-run", `${runDirectoryPrefix}kept`] as const) {
+  test.skipIf(skipBinaries)(
+    `binaries provider: the next start leaves and names the Postgres of a stack killed hard whose run directory was renamed to ${renamed}`,
+    async () => {
+      const named = requirePostgres([pgBinVariable]);
+      const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
+      const env = childEnv(tmp, named);
+      const moved = join(identityOf(tmp), renamed);
+      let stack: Stack | undefined;
+      let postmaster: { pid: number; start: string } | undefined;
+      try {
+        stack = await startStack(env, `renamed-${runTag}`);
+        kill(stack.child);
+        expect(await exited(stack.child, childMs, "the killed stack")).toBe(137);
+        renameSync(stack.dir, moved);
+        // The precondition: the dead stack's postmaster runs on, from the renamed directory.
+        const data = join(moved, "worker-0", "pgdata");
+        const pid = Number.parseInt(readFileSync(join(data, "postmaster.pid"), "utf8"), 10);
+        postmaster = { pid, start: startTimeOf(pid) };
+        expect(readlinkSync(`/proc/${pid}/cwd`)).toBe(data);
+
+        const start = await startPool(env);
+        expect(start.stdout).toContain(refused);
+        // R3: no start can show whose it is, so it stays, by its pid and its start (its socket
+        // moved with the directory, out of the URL its stack printed), and a line names it.
+        expect(startTimeOf(pid)).toBe(postmaster.start);
+        expect(linesWith(start.stderr, moved).length, start.stderr).toBeGreaterThan(0);
+      } finally {
+        if (stack !== undefined) kill(stack.child);
+        if (postmaster !== undefined && startTimeOf(postmaster.pid) === postmaster.start) {
+          spawnSync(
+            join(named.value, "pg_ctl"),
+            ["-D", join(moved, "worker-0", "pgdata"), "-m", "immediate", "-w", "stop"],
+            { timeout: 120_000 }
+          );
+        }
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+    // The row drives one stack's Postgres start, an initdb and a readiness wait of at most
+    // `stackMs`, its kill, one start of the pool, waited for at most `childMs`, and the stop of
+    // the postmaster it left; 1,500 s holds both waits at their bounds.
+    1_500_000
+  );
+}
+
 test.skipIf(skipImage)(
   "image provider: a removal that fails is one line and fails no start, and two starts at once that find one dead container both go on",
   async () => {
@@ -1246,13 +1335,23 @@ test.skipIf(skipImage)(
     const shells: ShellStack[] = [];
     const made: string[] = [];
     try {
-      const [shellGone, poolGone, runs] = await Promise.all([
+      // Each shell stack that started is recorded before a start that failed is thrown, so the
+      // `finally` kills its shell and removes its container.
+      const results = await Promise.allSettled([
         startShellStack(env, named.value, names.shellGone),
         startShellStack(env, named.value, names.poolGone),
         startShellStack(env, named.value, names.runs),
       ]);
-      shells.push(shellGone, poolGone, runs);
-      made.push(shellGone.id, poolGone.id, runs.id);
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          shells.push(result.value);
+          made.push(result.value.id);
+        }
+      }
+      const [shellGone, poolGone, runs] = shells;
+      if (shells.length < results.length || !shellGone || !poolGone || !runs) {
+        throw results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))[0];
+      }
       // A shell stack's mark of another boot, which no start can judge.
       const work = mkdtempSync(join(tmp, "shell-work-"));
       const mark = {

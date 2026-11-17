@@ -10,6 +10,8 @@
  */
 import net from "node:net";
 
+import { netCallAddress } from "./net-call-address";
+
 const NATS_DEFAULT_PORT = 4222;
 const rival = Number(process.env.NATS_DEFAULT_PORT_RIVAL);
 if (!Number.isInteger(rival) || rival <= 0 || rival > 65_535) {
@@ -18,13 +20,9 @@ if (!Number.isInteger(rival) || rival <= 0 || rival > 65_535) {
   );
 }
 
-/** Whether `first`, the first argument of a bind or a dial, names port 4222: as a number or a
- *  string, or as the `port` of an options object. */
-function namesDefaultPort(first: unknown): boolean {
-  const port = typeof first === "object" && first !== null && "port" in first ? first.port : first;
-  return (
-    (typeof port === "number" || typeof port === "string") && Number(port) === NATS_DEFAULT_PORT
-  );
+/** Whether `args`, the arguments of a bind or a dial, name port 4222 (`netCallAddress`). */
+function namesDefaultPort(args: readonly unknown[]): boolean {
+  return netCallAddress(args)?.port === NATS_DEFAULT_PORT;
 }
 
 function addressInUse(): Error {
@@ -39,7 +37,7 @@ function addressInUse(): Error {
 const { listen } = Bun;
 Object.assign(Bun, {
   listen(...args: unknown[]): unknown {
-    if (namesDefaultPort(args[0])) throw addressInUse();
+    if (namesDefaultPort(args)) throw addressInUse();
     return Reflect.apply(listen, Bun, args);
   },
 });
@@ -47,7 +45,7 @@ Object.assign(Bun, {
 const serverListen = net.Server.prototype.listen;
 Object.assign(net.Server.prototype, {
   listen(this: net.Server, ...args: unknown[]): net.Server {
-    if (!namesDefaultPort(args[0])) return Reflect.apply(serverListen, this, args);
+    if (!namesDefaultPort(args)) return Reflect.apply(serverListen, this, args);
     process.nextTick(() => this.emit("error", addressInUse()));
     return this;
   },
@@ -55,8 +53,8 @@ Object.assign(net.Server.prototype, {
 
 /** The dial's arguments with a dial of port 4222 sent to the rival; every other dial unchanged. */
 function toRival(args: unknown[]): unknown[] {
+  if (!namesDefaultPort(args)) return args;
   const [first, ...rest] = args;
-  if (!namesDefaultPort(first)) return args;
   if (typeof first === "object" && first !== null) {
     return [{ ...first, host: "127.0.0.1", port: rival }, ...rest];
   }

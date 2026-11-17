@@ -33,7 +33,9 @@ trap cleanup EXIT
 
 # moto binds a port the kernel chooses (-p 0) and names it in its `Running on` line, so no port is
 # free between its choice and moto's bind: a port read from a probe socket that was closed first
-# is any program's to take before moto binds it.
+# is any program's to take before moto binds it. The log is made before moto starts: the
+# background shell opens it only after its fork, and the first read below can come before that.
+: >"$work/moto.log"
 MOTO_ACCOUNT_ID=111122223333 uvx --from 'moto[server]==5.2.5' moto_server -H 127.0.0.1 -p 0 >"$work/moto.log" 2>&1 &
 moto_pid=$!
 

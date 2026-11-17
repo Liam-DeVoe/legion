@@ -95,6 +95,7 @@ import { version as packageVersion } from "../package.json" with { type: "json" 
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import { netCallAddress } from "../test/net-call-address";
 import { runSessionPod } from "../test/session-pod-report";
 import {
   type BranchEntry,
@@ -790,14 +791,10 @@ async function dialsDuring(body: () => Promise<void>): Promise<readonly Dial[]> 
   const dials: Dial[] = [];
   const { createConnection, connect } = net;
   const standIn = ((...args: Parameters<typeof net.createConnection>) => {
-    const [first, second] = args as unknown[];
-    const dial =
-      typeof first === "object" && first !== null
-        ? (first as { port?: number | string; host?: string })
-        : { port: first as number | string, host: typeof second === "string" ? second : "" };
-    if (dial.port !== undefined && /^\d+$/.test(String(dial.port))) {
-      dials.push({ port: Number(dial.port), host: dial.host ?? "" });
-      if (Number(dial.port) === NATS_DEFAULT_PORT) {
+    const dial = netCallAddress(args);
+    if (dial !== undefined) {
+      dials.push(dial);
+      if (dial.port === NATS_DEFAULT_PORT) {
         const socket = new net.Socket();
         queueMicrotask(() =>
           socket.destroy(

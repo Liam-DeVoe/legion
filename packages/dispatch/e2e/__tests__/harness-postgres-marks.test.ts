@@ -415,7 +415,7 @@ test.skipIf(!onLinux)(
       expect(
         holding(
           lines,
-          `${left.data} (postmaster ${left.postmaster.pid} serves it from a run directory of another TMPDIR, and no mark there names it)`
+          `${left.data} (postmaster ${left.postmaster.pid} serves it from a run directory this start does not list, and no mark there names it)`
         )
       ).toHaveLength(1);
     } finally {

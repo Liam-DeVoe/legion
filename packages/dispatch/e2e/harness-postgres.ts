@@ -236,7 +236,7 @@ async function ready(
 }
 
 /** Postgres's socket file in its socket directory, for the port every stack's server keeps, 5432. */
-const socketFile = ".s.PGSQL.5432";
+export const socketFile = ".s.PGSQL.5432";
 /** The longest unix socket path the kernel takes: Linux's `sun_path` holds 108 bytes with the
  *  terminating zero (docs/testing.md, "Unix sockets in Go tests"), and libpq refuses a longer
  *  one. */
@@ -254,7 +254,7 @@ const hostListSeparator = ",";
  *  connection. The caller removes it. A run killed hard (SIGKILL) removes nothing, and one made
  *  in /tmp is then outside the run's own directory, so the mark of its server names it for the
  *  next start to remove (`e2e/harness-postgres-marks.ts`). */
-function socketDirectory(dir: string, name: string, longest: string): string {
+export function socketDirectory(dir: string, name: string, longest: string): string {
   for (const base of [dir, shortTemporaryDirectory]) {
     if (base.includes(hostListSeparator)) continue;
     // mkdtemp appends six characters to the prefix it is given.

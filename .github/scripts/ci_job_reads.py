@@ -2133,6 +2133,10 @@ GATES = [
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),
         ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:172 runs it over the checkout"),
+        ("scripts/e2e/lib/leftovers.sh", "scripts/e2e/stage1-skeleton.sh:141 sources it, and :179 runs its "
+                                         "remove_leftover_postgres"),
+        ("packages/dispatch/e2e/postgres-mark.ts", "scripts/e2e/lib/leftovers.sh:24,32 runs it with bun"),
+        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:18-25 imports it"),
         ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:229 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
         ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:230 copies its name and version with jq "
@@ -2144,7 +2148,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
+      + setup_bun("daemon-go")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2223,6 +2228,10 @@ GATES = [
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
+        ("packages/dispatch/e2e/postgres-mark.ts", f"{at('test', 'bun test scripts/e2e/lib')}: scripts/e2e/lib/leftovers.test.ts:83-84 "
+                                                   "runs lib/leftovers.sh's mark and removal, which run it with bun (leftovers.sh:24,32)"),
+        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:18-25 imports it"),
+        ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/leftovers.test.ts:35,60 reads it, a shell stack's start"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
@@ -2574,6 +2583,8 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        ("scripts/e2e/lib/leftovers.sh", "packages/dispatch/e2e/__tests__/harness-postgres-leftover.test.ts:1183,1195 sources it "
+                                         "in the shell stack the visual job's image rows start, and runs its removal"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),

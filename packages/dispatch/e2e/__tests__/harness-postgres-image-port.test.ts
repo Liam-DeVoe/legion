@@ -15,6 +15,10 @@
  *
  *  The row finds Docker's last choice with a probe container, holds the next 64 loopback ports
  *  as any other program could, and starts one stack's Postgres from the image. It must serve.
+ *  Where another program holds those ports already, as a second run of this row does, the probe
+ *  cannot start, Docker's next ports are taken without the row, and the stack's Postgres must
+ *  serve all the same. The probe is removed by the id its `docker create` printed, whatever
+ *  happens.
  *  A developer's run without DISPATCH_E2E_PG_IMAGE skips it and says so on one line; a CI run
  *  never skips it, and fails naming the variable where the job sets none
  *  (`e2e/__tests__/postgres-provider.ts`). The `visual` job of
@@ -22,7 +26,7 @@
  *  job, which runs this directory with no provider, leaves it out (`postgres-provider.test.ts`). */
 
 import { expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,31 +42,44 @@ test.skipIf(
   async () => {
     const { value: image } = requirePostgres([pgImageVariable]);
     // The probe has no name of the row's: Docker names it, and the row removes it by the id its
-    // `docker run` printed, which no other run's container can have.
+    // `docker create` printed, which no other run's container can have. It is created first and
+    // started after, so its id is the row's before its start can fail.
     const probe = execFileSync(
       "docker",
-      ["run", "--detach", "--entrypoint", "sleep", "--publish", "127.0.0.1::5432", image, "60"],
+      ["create", "--entrypoint", "sleep", "--publish", "127.0.0.1::5432", image, "60"],
       { encoding: "utf8" }
     ).trim();
-    let last: number;
+    let last: number | undefined;
     try {
-      const published = execFileSync("docker", ["port", probe, "5432/tcp"], { encoding: "utf8" });
-      last = Number(/^127\.0\.0\.1:(\d+)$/m.exec(published)?.[1]);
-    } finally {
-      execFileSync("docker", ["rm", "--force", probe]);
-    }
-    expect(Number.isInteger(last) && last > 0).toBe(true);
-
-    // Another program on the machine: it listens on each of the next 64 ports it can bind.
-    const held: { stop(closeActiveConnections?: boolean): void }[] = [];
-    for (let port = last + 1; port <= last + 64 && port <= 65535; port++) {
-      try {
-        held.push(Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }));
-      } catch {
-        // Taken already by someone else, which Docker cannot bind either.
+      const start = spawnSync("docker", ["start", probe], { encoding: "utf8" });
+      if (start.status === 0) {
+        const published = execFileSync("docker", ["port", probe, "5432/tcp"], {
+          encoding: "utf8",
+        });
+        last = Number(/^127\.0\.0\.1:(\d+)$/m.exec(published)?.[1]);
+        expect(Number.isInteger(last) && last > 0).toBe(true);
+      } else if (!/address already in use/.test(start.stderr)) {
+        // Docker binds the ports past its last choice and fails the start when they are taken,
+        // which is the case below; any other failure is the row's.
+        throw new Error(`docker start ${probe}: ${start.stderr || start.error?.message}`);
       }
+    } finally {
+      execFileSync("docker", ["rm", "--force", "--volumes", probe]);
     }
-    expect(held.length).toBeGreaterThanOrEqual(10);
+
+    // Another program on the machine: it listens on each of the next 64 ports it can bind. Where
+    // the probe could not start, another program holds them already.
+    const held: { stop(closeActiveConnections?: boolean): void }[] = [];
+    if (last !== undefined) {
+      for (let port = last + 1; port <= last + 64 && port <= 65535; port++) {
+        try {
+          held.push(Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }));
+        } catch {
+          // Taken already by someone else, which Docker cannot bind either.
+        }
+      }
+      expect(held.length).toBeGreaterThanOrEqual(10);
+    }
 
     const dir = mkdtempSync(join(tmpdir(), "pg-image-port-"));
     try {

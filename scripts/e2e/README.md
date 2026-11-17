@@ -36,10 +36,10 @@ A new script's section, and its item in the index list below, go next to the scr
 Every `docker run` in these scripts sets a CPU and a memory limit inline, and its container is removed when the run ends (an `EXIT` trap's `docker rm -f -v`, or `--rm`):
 the proofs run on a shared devbox, where an unbounded container takes cores and memory from every other run there.
 Most drivers name a container for the pid of the driver that started it, and the kernel hands a pid out again.
-Stage 3, the controller-start and parked-decision proofs, and pi-legion's skill-scenario rig name theirs with random bytes and remove each by the id its `docker create` printed (`start_container`, [`lib/rig.sh`](#librigsh)).
+Stage 3 and the controller-start and parked-decision proofs name theirs with that pid and random bytes after it, since a run in another pid namespace on one Docker daemon can share the pid, pi-legion's skill-scenario rig names its own with a hash of its work directory, and each of those removes its containers by the id its `docker create` printed (`start_container`, [`lib/rig.sh`](#librigsh)).
 Stage 4b's teardown removes by label rather than by name:
 every container it starts carries that run's own id as the docker label `legion.dev/e2e-run`, and the teardown removes a name only while the container at it carries that id (`remove_run_container`, `lib/stage4b-run-containers.test.ts`).
-What an earlier run left stays for [`lib/leftovers.sh`](#libleftoverssh) to name to the operator.
+What an earlier run left stays for [`lib/leftovers.sh`](#libleftoverssh) to name to the operator, but for a Postgres, which the next start of a test stack removes once its driver is gone.
 Every scratch Postgres keeps its data directory on `tmpfs`, so no run leaves a volume behind, and tmpfs is charged to the container's memory.
 Every scratch Postgres gets `--cpus 2 --memory 2g`, except the session databases of Stage 4a and Stage 4b, which get `--cpus 2 --memory 4g`:
 they hold every pod's Oh My Pi session for the whole run, hours for Stage 4b.
@@ -6072,11 +6072,26 @@ refuse_leftovers legion-e2e3
 ```
 
 Everything a run starts carries its driver's pid:
-each container is named `<prefix>-<role>-<pid>`, and every process of the run holds its work directory, `/tmp/<prefix>.<pid>.<random>`, in its argv, its working directory (an agent) or its environment (a bridge handed the run's state directories).
+each container is named `<prefix>-<role>-<pid>`, or `<prefix>-<role>-<pid>-<random>` with 16 random hex digits where two pid namespaces on one Docker daemon could share the pid, and every process of the run holds its work directory, `/tmp/<prefix>.<pid>.<random>`, in its argv, its working directory (an agent) or its environment (a bridge handed the run's state directories).
 The check fails, through the caller's `fail`, naming each container and process whose driver is no longer alive and the command that removes it (`docker rm -f -v <name>`, `kill <pid>`).
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
+
+A Postgres container is not the check's.
+Every shell stack that starts one marks it as the browser pool marks its own (`packages/dispatch/e2e/harness-postgres-marks.ts`), and before it starts it removes the Postgres of each test stack that is gone, the pool's among them, by the one removal every start of a test stack runs:
+
+```sh
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+docker run -d --name "$pg_container" --label "$pg_mark" …
+```
+
+`postgres_mark RUN CONTAINER` prints the `--label` that marks the container as the Postgres of the run whose work directory is `RUN`, owned by the calling shell (`$$`), whose death ends the run.
+`remove_leftover_postgres` removes each Postgres whose mark names a process that is gone, leaves one whose process runs, and names on stderr, one line per kind, each one it leaves, such as a mark of another boot or pid namespace, which it cannot judge.
+Both run `bun packages/dispatch/e2e/postgres-mark.ts`, which imports Node's built-in modules alone, so they need Bun and no `bun install`; with no `bun` on `PATH` they fail with a line that names it.
+`refuse_leftovers` leaves a marked container to that removal.
+`scripts/e2e/lib/leftovers.test.ts` holds each shell stack's start that starts a Postgres to the two calls.
 
 ## lib/operator-dispatch.sh
 

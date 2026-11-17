@@ -953,6 +953,14 @@ jobs:
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
               - 'scripts/e2e/lib/built-from.sh'
+              # The removal of the Postgres of each test stack that is gone, which the proof's start
+              # runs through the Bun .github/actions/setup-bun installs (stage1-skeleton.sh:179),
+              # and the module that command imports.
+              - 'scripts/e2e/lib/leftovers.sh'
+              - 'packages/dispatch/e2e/postgres-mark.ts'
+              - 'packages/dispatch/e2e/harness-postgres-marks.ts'
+              - '.bun-version'
+              - '.github/actions/setup-bun/**'
               - 'packages/pi-legion/package.json'
               - 'packages/pi-envoy/package.json'
               - 'deploy/kubernetes/daemon/controller.yaml.example'
@@ -1687,6 +1695,12 @@ jobs:
               - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
               - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
               - 'packages/envoy-client/test/fake-dispatch.ts'
+              # scripts/e2e/lib/leftovers.test.ts runs the mark and the removal of a shell stack's
+              # Postgres, which lib/leftovers.sh runs through this command and the module it
+              # imports, and holds the skill scenarios' batch, a shell stack's start, to them.
+              - 'packages/dispatch/e2e/postgres-mark.ts'
+              - 'packages/dispatch/e2e/harness-postgres-marks.ts'
+              - 'packages/pi-legion/scripts/skill-scenarios/rig.sh'
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
@@ -2496,6 +2510,9 @@ jobs:
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
+              # The visual job's image rows of e2e/__tests__/harness-postgres-leftover.test.ts
+              # start a shell stack that marks its Postgres, and run its removal, through this.
+              - 'scripts/e2e/lib/leftovers.sh'
               # e2e/harness-postgres.ts sizes each stack's Postgres from
               # `go run ./internal/dispatch/store/cmd/connections`, which dispatch-browser.yaml's
               # binaries job runs for the shard and alone jobs and its visual job runs for itself;

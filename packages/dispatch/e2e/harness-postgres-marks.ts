@@ -36,10 +36,11 @@
  *  reads the directories a removal acts on, with no link in them.
  *
  *  WHERE A START LOOKS. Three places: each run directory of its own `tmpdir()`; each container
- *  Docker lists with the label; and each run directory of another `TMPDIR` that the kernel shows a
- *  postmaster of this user serving from (`servedElsewhere`), which is how most leftovers are found
- *  on a machine where each session has a `TMPDIR` of its own. A run directory of another
- *  `TMPDIR` whose postmaster has already ended holds no running server, and no start finds it.
+ *  Docker lists with the label; and each other run directory that the kernel shows a postmaster of
+ *  this user serving from (`servedElsewhere`), which is how most leftovers are found on a machine
+ *  where each session has a `TMPDIR` of its own, and how a run directory someone renamed, or the
+ *  stack of another PID namespace, is found. A run directory of another `TMPDIR` whose postmaster
+ *  has already ended holds no running server, and no start finds it.
  *
  *  WHEN AN OWNER IS GONE. Only for a mark of this process's own boot, PID namespace, time
  *  namespace and user, which is where `/proc/<pid>` names the owner's process, where its start
@@ -872,23 +873,29 @@ function absent(path: string): boolean {
 }
 
 /** How a postmaster's working directory, its data directory, names the run directory it serves
- *  from: the run directory, then its stack's place in it. */
-const servedFrom = new RegExp(`^(.+/${runDirectoryPrefix}[^/]+)/(?:worker-\\d+|template)/pgdata$`);
+ *  from: the run directory, then its stack's place in it. A run directory someone renamed after
+ *  its stack started has another name than the pool gives one, and is found all the same. */
+const servedFrom = /^(.+)\/(?:worker-\d+|template)\/pgdata$/;
 
-/** A postmaster the kernel shows serving from a run directory outside this start's TMPDIR. */
+/** A postmaster the kernel shows serving from a run directory that this start's listing of its
+ *  TMPDIR does not read. */
 interface Served {
   readonly run: string;
   readonly data: string;
   readonly pid: number;
 }
 
-/** Each postmaster of the user `uid` that serves from a run directory outside `real`, this start's
- *  TMPDIR, as the kernel shows it: a process of that user (the owner of `/proc/<pid>`) whose
- *  program is a `postgres`, whose working directory has the shape of a stack's data directory in
- *  a run directory (`servedFrom`), and which that directory's `postmaster.pid` names, as it names
- *  a postmaster and none of its children. That shape only finds a candidate: the mark in that run
- *  directory, its owner and the postmaster's own `/proc` facts decide (`sweepRun`). A process
- *  that ends while it is read is not listed. */
+/** Each postmaster of the user `uid` that serves from a run directory that the listing of `real`,
+ *  this start's TMPDIR, does not read, as the kernel shows it: a process of that user (the owner of
+ *  `/proc/<pid>`) whose program is a `postgres`, whose working directory has the shape of a
+ *  stack's data directory in a run directory (`servedFrom`), and which that directory's
+ *  `postmaster.pid` names, as it names a postmaster and none of its children. That file holds
+ *  the pid the postmaster's own PID namespace gives it, the last of its `NSpid`, which is its pid
+ *  here where it runs in this start's PID namespace. The run directories of `real` that the pool
+ *  named are the listing's; one of another name there, a run directory renamed after its stack
+ *  started, is found here. That shape only finds a candidate: the mark in that run directory, its
+ *  owner and the postmaster's own `/proc` facts decide (`sweepRun`). A process that ends while it
+ *  is read is not listed. */
 function servedElsewhere(real: string, uid: number): Served[] {
   let pids: string[];
   try {
@@ -903,8 +910,11 @@ function servedElsewhere(real: string, uid: number): Served[] {
       if (basename(readlinkSync(`/proc/${pid}/exe`)) !== "postgres") continue;
       const data = readlinkSync(`/proc/${pid}/cwd`);
       const run = servedFrom.exec(data)?.[1];
-      if (run === undefined || dirname(run) === real) continue;
-      if (Number.parseInt(readUnlinked(join(data, "postmaster.pid")), 10) === Number(pid)) {
+      if (run === undefined) continue;
+      if (dirname(run) === real && basename(run).startsWith(runDirectoryPrefix)) continue;
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
+      const own = /^NSpid:.*?(\d+)[ \t]*$/m.exec(status)?.[1] ?? pid;
+      if (Number.parseInt(readUnlinked(join(data, "postmaster.pid")), 10) === Number(own)) {
         served.push({ run, data, pid: Number(pid) });
       }
     } catch {
@@ -1051,8 +1061,8 @@ async function sweepRun(
   return read;
 }
 
-/** Sweeps each run directory of `parent`, this start's TMPDIR, and each run directory elsewhere
- *  that a postmaster of this user serves from (`servedElsewhere`), by the same steps
+/** Sweeps each run directory of `parent`, this start's TMPDIR, that the pool named, and each other
+ *  run directory that a postmaster of this user serves from (`servedElsewhere`), by the same steps
  *  (`sweepRun`), and names each such postmaster that no mark of its run directory names. */
 async function removeRunDirectories(
   parent: string,
@@ -1083,7 +1093,7 @@ async function removeRunDirectories(
     if (read === undefined) continue;
     for (const postmaster of served.filter((each) => each.run === run && !read.has(each.data))) {
       left.unjudged.push(
-        `${postmaster.data} (postmaster ${postmaster.pid} serves it from a run directory of another TMPDIR, and no mark there names it)`
+        `${postmaster.data} (postmaster ${postmaster.pid} serves it from a run directory this start does not list, and no mark there names it)`
       );
     }
   }
