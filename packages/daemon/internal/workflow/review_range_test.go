@@ -301,6 +301,14 @@ func reviewedTwice(t *testing.T, apply func(string, intake.Fact) intake.Result, 
 	}
 }
 
+// reviewRoundTwo is reviewRoundOne taken into its second review round (reviewedTwice).
+func reviewRoundTwo(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.Fact) intake.Result) {
+	t.Helper()
+	pool, engine, apply := reviewRoundOne(t)
+	reviewedTwice(t, apply, pool)
+	return pool, engine, apply
+}
+
 // outboxRan takes every supervise row out of the outbox, as the outbox does once it has run them,
 // so the start a test makes next is the only one there.
 func outboxRan(t *testing.T, pool *pgxpool.Pool) {
@@ -454,8 +462,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("a move back for a head that conflicts with its base", func(t *testing.T) {
-		pool, engine, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, engine, apply := reviewRoundTwo(t)
 		applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
 			Base: "main", HeadSHA: headOne, Mergeable: record.MergeabilityConflicting})
 		if got := issuePhase(t, pool); got != phase.Implementing {
@@ -470,8 +477,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("the retry of a held reviewing phase", func(t *testing.T) {
-		pool, _, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, _, apply := reviewRoundTwo(t)
 		held := issueRecord(t, pool, "LEGION-208")
 		held.Phase, held.Hold = phase.Held, &record.Hold{From: phase.Reviewing}
 		seedIssue(t, pool, *held)
@@ -483,8 +489,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("a ready worker's catch-up", func(t *testing.T) {
-		pool, engine, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, engine, _ := reviewRoundTwo(t)
 		row := reviewerRow(t, pool)
 		outboxRan(t, pool)
 		token := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleReviewer, "")
@@ -500,8 +505,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("the boot's resume", func(t *testing.T) {
-		pool, engine, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, engine, _ := reviewRoundTwo(t)
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -514,8 +518,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("the silence repair", func(t *testing.T) {
-		pool, engine, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, engine, _ := reviewRoundTwo(t)
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -528,8 +531,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("an owed entry whose row names no task", func(t *testing.T) {
-		pool, engine, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, engine, _ := reviewRoundTwo(t)
 		if _, err := pool.Exec(context.Background(), "update phases set entry_task = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
 			t.Fatalf("take the task off the reviewer's row: %v", err)
 		}
@@ -543,8 +545,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		}
 	})
 	t.Run("a carried hand-over's promotion", func(t *testing.T) {
-		pool, engine, apply := reviewRoundOne(t)
-		reviewedTwice(t, apply, pool)
+		pool, engine, _ := reviewRoundTwo(t)
 		before := reviewerRow(t, pool)
 		// The carried orphan's re-admission raises its generation and keeps its phase and its rows.
 		// This stands in for admission's re-admission, which this package cannot drive; admit's
