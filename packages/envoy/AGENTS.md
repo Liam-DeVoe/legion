@@ -3270,6 +3270,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Every JSON file of the scenario goes through the strict reader that `compare` uses, and the spec files of each commit through `Validate`, as `tree` judges them, with the file and line of the first problem.
   Beyond what `ReadApproved` refuses, the reader refuses in `approved.json` only a loop of parent and support relations (R5), since the person approves a level before the checks of its statements exist.
   `ties.json` holds the tie of each check by commit, `{"<commit>":{"<check id>":["<path or pattern>", …]}}` (`specgraph.ReadCommitTies`), and the reader refuses a commit there of no letter and no digit, as it refuses such a commit of a subject.
+  A value of another type there, such as ties by check alone, is refused with that form and the place of the value: `it is not in the form <form>: the value at "<JSON pointer>" is of another type`.
   The statement, check and wait lines have no `spec-check: ` prefix: each starts with its fixed word and passes through `runnerlog.Printable`.
   `TestScenarios` runs the built binary on each scenario and compares its stdout with `want.txt` byte for byte.
   No flag of a test writes `want.txt`, so a difference is a fault of the code or a question about the spec.

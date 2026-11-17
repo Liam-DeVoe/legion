@@ -133,7 +133,8 @@
 // ties.json holds the tie of each check at each commit, and a result at one commit counts at another
 // only when the check's tie is known at both commits and no path that changed between them is
 // covered by the tie at either commit; the reader refuses a commit of ties.json of no letter and no
-// digit, as it refuses such a commit of a subject.
+// digit, as it refuses such a commit of a subject, and names the form that ties.json needs when a
+// value in it is of another type, such as ties by check alone.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on

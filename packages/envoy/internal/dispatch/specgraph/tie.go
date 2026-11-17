@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -41,16 +42,29 @@ func NewTie(paths []string) (Tie, error) {
 // commit that it does not hold.
 type CommitTies map[string]map[string]Tie
 
-// ReadCommitTies reads ties in the form of a scenario's ties.json,
-// {"<commit>":{"<check id>":["<path or pattern>", …]}}, each tie as NewTie takes it. It reads the
-// JSON with decodeJSON, the package's one reader of a JSON file of a format, so it refuses what
-// that reader refuses. It refuses a commit of no letter and no digit (hasWord), as the scenario
-// reader refuses such a commit of a subject, since it names no commit, and it names the commit and
-// the check of a tie that NewTie refuses.
+// commitTiesForm is the form of a scenario's ties.json, which ReadCommitTies reads.
+const commitTiesForm = `{"<commit>":{"<check id>":["<path or pattern>", …]}}`
+
+// ReadCommitTies reads ties in the form of a scenario's ties.json (commitTiesForm), each tie as
+// NewTie takes it. It reads the JSON with decodeJSON, the package's one reader of a JSON file of a
+// format, so it refuses what that reader refuses, but a value of another type, such as an array
+// in the place of a commit's object, which is ties by check alone, it names by the form and the
+// place of the value, "it is not in the form <form>: the value at <JSON pointer> is of another
+// type", since the Go type that encoding/json/v2 names says nothing to the writer of the file. It
+// refuses a commit of no letter and no digit (hasWord), as the scenario reader refuses such a
+// commit of a subject, since it names no commit, and it names the commit and the check of a tie
+// that NewTie refuses.
 func ReadCommitTies(r io.Reader) (CommitTies, error) {
 	var paths map[string]map[string][]string
 	if err := decodeJSONFrom(r, &paths); err != nil {
-		return nil, err
+		var semantic *json.SemanticError
+		switch {
+		case !errors.As(err, &semantic) || semantic.GoType == nil:
+			return nil, err
+		case semantic.JSONPointer == "":
+			return nil, fmt.Errorf("it is not in the form %s", commitTiesForm)
+		}
+		return nil, fmt.Errorf("it is not in the form %s: the value at %q is of another type", commitTiesForm, semantic.JSONPointer)
 	}
 	ties := make(CommitTies, len(paths))
 	for _, commit := range slices.Sorted(maps.Keys(paths)) {
