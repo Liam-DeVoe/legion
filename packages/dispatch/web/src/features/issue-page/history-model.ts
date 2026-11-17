@@ -69,7 +69,8 @@ export type HistoryEntry =
       readonly id: string;
       readonly at: string;
       readonly author: Actor;
-      /** The files the run uploaded, oldest first, each by its own address. */
+      /** The files the run uploaded, newest first, each by its own address; the run is named
+       *  (`id`) by its newest upload. */
       readonly files: readonly UploadedFile[];
       readonly seq: number;
     }
@@ -188,9 +189,18 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         run.author.kind === event.actor.kind &&
         run.author.id === event.actor.id &&
         Date.parse(event.created_at) - Date.parse(run.at) <= UPLOAD_RUN_MS;
+      // The run is named by its newest upload and lists its files newest first, as the history
+      // lists every entry: an older page that extends the run adds files under the ones the
+      // reader is on and leaves its name, so the entry is neither moved nor drawn anew (R3).
       if (near && run !== undefined) {
-        const files = [...run.entry.files, upload];
-        const grown = { ...run.entry, at: event.created_at, files, seq: event.seq };
+        const files = [upload, ...run.entry.files];
+        const grown = {
+          ...run.entry,
+          at: event.created_at,
+          files,
+          id: `uploads:${event.id}`,
+          seq: event.seq,
+        };
         entries[run.index] = grown;
         run = { ...run, entry: grown };
       } else {

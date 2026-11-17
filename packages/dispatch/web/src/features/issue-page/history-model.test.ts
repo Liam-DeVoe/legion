@@ -149,22 +149,32 @@ test("one author's uploads within a minute are one entry that opens each file", 
     { artifact: file("late", "file", "late.txt") },
     PERSON
   );
-  const entries = flat(
-    buildHistory({
-      artifacts: shots,
-      asks: [],
-      comments: [],
-      events: [...uploads, later],
-      lastReadSeq: 0,
-      messages: [],
-      today: "2026-11-15",
-    })
-  );
+  const history = (events: typeof uploads) =>
+    flat(
+      buildHistory({
+        artifacts: shots,
+        asks: [],
+        comments: [],
+        events,
+        lastReadSeq: 0,
+        messages: [],
+        today: "2026-11-15",
+      })
+    );
+  const entries = history([...uploads, later]);
 
+  // Newest first, as the history lists every entry.
   const runs = entries.flatMap((entry) =>
     entry.kind === "uploads" ? [entry.files.map((one) => one.name)] : []
   );
-  expect(runs).toEqual([["late.txt"], ["shot-1.png", "shot-2.png", "shot-3.png"]]);
+  expect(runs).toEqual([["late.txt"], ["shot-3.png", "shot-2.png", "shot-1.png"]]);
+  // A run named by its newest upload keeps its name when an older page adds its oldest one.
+  const runOf = (drawn: typeof entries) =>
+    drawn.find((entry) => entry.kind === "uploads" && entry.files.length > 1)?.id;
+  expect(
+    runOf(history([...uploads.slice(1), later])),
+    "an older page that extends a run of uploads renamed the run"
+  ).toBe(runOf(entries));
 });
 
 test("a thread agents wrote among themselves is one entry with its replies, until a person writes", () => {

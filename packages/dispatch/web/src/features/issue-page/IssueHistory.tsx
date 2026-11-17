@@ -328,9 +328,20 @@ export function IssueHistory({
     pressed.current = undefined;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
+    // The page it read lands under every control drawn before it, so a new control under them,
+    // where Load older stood, takes the focus before one drawn anew above them - an entry the
+    // page extended and the list drew again - and that one before Load older or the heading.
+    const before = press.kind === "older" ? press.before : new Set<Element>();
+    const lastBefore = [...before].filter((control) => control.isConnected).at(-1);
+    const added = controlsOfList().filter((control) => !before.has(control));
+    const below = added.find(
+      (control) =>
+        lastBefore === undefined ||
+        (lastBefore.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    );
     const target =
       press.kind === "older"
-        ? (controlsOfList().find((control) => !press.before.has(control)) ?? loadOlder.current)
+        ? (below ?? added[0] ?? loadOlder.current)
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
   });
@@ -550,6 +561,8 @@ function Entry({
   // Each file of a run is one event's upload, so each has that event's Pin and Unpin, as every
   // line of the history has its event's (R2): the run's line says who uploaded, and each file
   // stands under it on a line of its own, beside its pin, as an event's words stand beside theirs.
+  // Each file is an entry the reader's place is held by (`ViewportAnchor`), so an older page
+  // that adds files under the one they read leaves it where it was (R3).
   if (entry.kind === "uploads") {
     return (
       <li
@@ -566,7 +579,11 @@ function Entry({
           {entry.files.map((file) => {
             const isPinned = pinned(file.id);
             return (
-              <li className="flex min-w-0 items-center gap-x-2" key={file.id}>
+              <li
+                className="flex min-w-0 items-center gap-x-2"
+                data-history-entry={`file:${file.id}`}
+                key={file.id}
+              >
                 <span className="min-w-0 flex-1 break-words">
                   {file.slug === undefined ? (
                     file.name
