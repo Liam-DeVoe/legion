@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import { projectDefaultAssigneesQuery } from "../../api/queries";
-import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
+import type { InboxRow, IssueDetails } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
-import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import { inboxKey, showInProjectLists, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {
   /** The server's reason after a refused save (an unlisted login), until the next attempt. */
@@ -41,9 +41,7 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
     queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
       current === undefined ? undefined : { ...current, assignee }
     );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, assignee } : issue))
-    );
+    showInProjectLists(queryClient, issueKey, { assignee });
     // Every row the update moves is of this issue, so of its project: the person a row nobody
     // handed on waits on now is the new assignee, else that project's default where the client
     // holds the defaults read, looked up once.

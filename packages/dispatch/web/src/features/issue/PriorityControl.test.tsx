@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { projectDonePageQuery, projectOpenCountQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
@@ -247,6 +248,50 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt);
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(select().value).toBe("0");
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// The project listing's prefix holds three shapes: a listing, a page of done issues
+// (`projectDonePageQuery`) and Open's count, a number (`projectOpenCountQuery`). A pick shows on the
+// issue's row of the listing and of the page, leaves a page without that row as it was, and leaves
+// the count alone; a failed save puts each one back.
+test("a pick shows in a page of Done as in a listing, leaves Open's count alone, and a failure puts both back", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { queryClient, unmount, user } = renderControl();
+  const pageKey = projectDonePageQuery("CORE", { offset: 0, size: 50 }).queryKey;
+  const otherPageKey = projectDonePageQuery("CORE", { offset: 50, size: 50 }).queryKey;
+  const countKey = projectOpenCountQuery("CORE").queryKey;
+  const page = { issues: [otherSummary, summary], limit: 50, offset: 0, total: 52 };
+  const otherPage = { issues: [otherSummary], limit: 50, offset: 50, total: 52 };
+  queryClient.setQueryData(pageKey, page);
+  queryClient.setQueryData(otherPageKey, otherPage);
+  queryClient.setQueryData(countKey, 47);
+  try {
+    await user.selectOptions(select(), "2");
+    await waitFor(() => expect(select().value).toBe("2"));
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 2 },
+      otherSummary,
+    ]);
+    expect(queryClient.getQueryData(pageKey)).toEqual({
+      ...page,
+      issues: [otherSummary, { ...summary, priority: 2 }],
+    });
+    expect(queryClient.getQueryData(otherPageKey)).toBe(otherPage);
+    expect(queryClient.getQueryData(countKey)).toBe(47);
+
+    act(() => {
+      save.reject(new Error("offline"));
+    });
+    await screen.findByRole("alert");
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
+    expect(queryClient.getQueryData(pageKey)).toEqual(page);
+    expect(queryClient.getQueryData(otherPageKey)).toEqual(otherPage);
+    expect(queryClient.getQueryData(countKey)).toBe(47);
   } finally {
     unmount();
     patchIssue.mockRestore();

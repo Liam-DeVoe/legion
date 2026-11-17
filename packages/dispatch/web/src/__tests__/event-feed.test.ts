@@ -23,7 +23,9 @@ import {
   prioritySummaryQuery,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
+  projectDonePageQuery,
   projectIssuesQuery,
+  projectOpenCountQuery,
   projectsQuery,
   userStateQuery,
 } from "../api/queries";
@@ -1649,6 +1651,29 @@ test("a priority.updated of a deleted priority refetches no issue read that does
     "priorityHistory",
     "prioritySummary",
   ]);
+});
+
+// The project listing's prefix also holds a page of done issues (`projectDonePageQuery`) and
+// Open's count, a number (`projectOpenCountQuery`). A delete reads again a page whose `issues` hold
+// an issue advancing the priority, and leaves a page that holds none, and the count, as they are.
+test("a priority.updated of a deleted priority reads again a page of Done that holds an issue advancing it", () => {
+  const queryClient = new QueryClient();
+  const page = (id: string, offset: number) => ({
+    issues: [{ advances: [{ id, inherited: false }], key: `CORE-${offset + 1}` }],
+    limit: 50,
+    offset,
+    total: 51,
+  });
+  const holding: QueryKey = projectDonePageQuery("CORE", { offset: 0, size: 50 }).queryKey;
+  const other: QueryKey = projectDonePageQuery("CORE", { offset: 50, size: 50 }).queryKey;
+  const count: QueryKey = projectOpenCountQuery("CORE").queryKey;
+  queryClient.setQueryData(holding, page("linkage-closure", 0));
+  queryClient.setQueryData(other, page("oss-verify", 50));
+  queryClient.setQueryData(count, 47);
+  refreshQueries(queryClient, eventRefreshTargets(priorityWrite("deleted"), "alice"));
+  expect(queryClient.getQueryState(holding)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(other)?.isInvalidated).toBe(false);
+  expect(queryClient.getQueryState(count)?.isInvalidated).toBe(false);
 });
 
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here

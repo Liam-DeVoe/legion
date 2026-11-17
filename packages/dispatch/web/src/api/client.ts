@@ -43,6 +43,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  IssueSummaryPage,
   NewIssueSettings,
   TargetCandidate,
   UserIssueState,
@@ -1093,6 +1094,20 @@ export class DispatchApiClient {
     const answer = await this.read("/api/v1/issues", {}, query);
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
+
+  /** One page of the issue list with the count of every issue its narrowings match (`total`),
+   *  which `listIssues` drops: Open's tab count read off a one-row page, and the Done view's page
+   *  ordered by close (`sort`). Its `issues` is never null. An older server that answers the
+   *  plain list is read as one page of everything it answered. */
+  async listIssuePage(query: Query<"/api/v1/issues", "get">): Promise<IssueSummaryPage> {
+    const answer = await this.read("/api/v1/issues", {}, query);
+    if (Array.isArray(answer)) {
+      return { issues: answer, total: answer.length, limit: answer.length, offset: 0 };
+    }
+    const { issues, total, limit, offset } = answer;
+    return { issues: issues ?? [], total, limit, offset };
+  }
+
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
    *  keeps there: the same search either way, from the same handler. `project`, `status`,
    *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
@@ -1656,6 +1671,19 @@ export class DispatchApiClient {
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
   putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  }
+
+  /** One page of the rows behind an eval's numbers
+   *  (`GET /api/v1/projects/{key}/evals/{slug}/items`): the Issues tab reads the issue rows of
+   *  `legion-work-time`, each carrying a closed issue's stored Legion facts as its `cols`. A
+   *  window spans at most 84 days, and a page holds at most 200 rows. A slug the project's evals
+   *  do not hold is `404 EVAL_NOT_FOUND`, a failed read like any other refusal. */
+  listEvalItems(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get">
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}/items", { key: project, slug }, query);
   }
 
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named

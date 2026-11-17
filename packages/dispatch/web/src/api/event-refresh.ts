@@ -791,7 +791,8 @@ function issueWriteTargets(
  * - every read that holds an issue advancing it, by its own relation or one it inherits
  *   (`advances` lists both): an issue read (`["issue", key]`; an issue's references or its
  *   collaborators under that prefix carry no `advances`), and a list of issue rows (every
- *   `["issues", ...]` listing and the Agents page's issue picker). That is the parked fault list
+ *   `["issues", ...]` listing, the `issues` of a page of one, which Done reads, and the Agents
+ *   page's issue picker). That is the parked fault list
  *   (`advances=any`), whose rows under this priority alone leave it and whose other rows drop
  *   it, every other issue listing that draws the row, and above all each open issue read, whose
  *   header would otherwise keep naming the priority and send it back in the next whole-set write
@@ -810,8 +811,18 @@ function priorityWriteTargets(
     typeof row === "object" &&
     row !== null &&
     ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
-  const when: RefreshCheck = (data) =>
-    Array.isArray(data) ? data.some(advancesIt) : advancesIt(data);
+  const when: RefreshCheck = (data) => {
+    if (Array.isArray(data)) return data.some(advancesIt);
+    if (
+      typeof data === "object" &&
+      data !== null &&
+      "issues" in data &&
+      Array.isArray(data.issues)
+    ) {
+      return data.issues.some(advancesIt);
+    }
+    return advancesIt(data);
+  };
   targets.push(
     { queryKey: ["issues", "advances", id] },
     { queryKey: ["issues", "advances", "none"] },

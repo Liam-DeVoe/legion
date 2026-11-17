@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
-import type { IssueDetails, IssueSummary } from "../../api/types";
-import { type IssueFieldWrite, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import type { IssueDetails } from "../../api/types";
+import { type IssueFieldWrite, showInProjectLists, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**
  * The one way the SPA writes an issue's own repository (owner/name, or null to inherit its
@@ -16,9 +16,7 @@ export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
     queryClient.setQueryData<IssueDetails>(["issue", issueKey], (current) =>
       current === undefined ? undefined : { ...current, ...fields }
     );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, ...fields } : issue))
-    );
+    showInProjectLists(queryClient, issueKey, fields);
   };
   return useIssueFieldWrite<string | null>(issueKey, {
     label: (repo) => `${issueKey} on ${repo ?? "its project's repository"}`,

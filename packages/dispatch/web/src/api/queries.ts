@@ -10,6 +10,12 @@ import {
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
+import {
+  type ClosedWindow,
+  type ItemsWindow,
+  LEGION_WORK_TIME,
+  readLegionItems,
+} from "../features/project/issues-legion";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
@@ -20,8 +26,12 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   InboxRow,
   IssueDetails,
+  IssueSummary,
+  IssueSummaryPage,
+  LegionBoardResponse,
   MyRepliesResponse,
 } from "./types";
 
@@ -286,6 +296,50 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
 ];
 
 /**
+ * A listing's structural sharing, by issue key rather than by place. TanStack's own
+ * (`replaceEqualDeep`) pairs a new read's issues with the cached ones by index, so one issue that
+ * moves up a listing hands every issue it passed a new object, though none of them changed.
+ * Paired by key, each issue the read did not change keeps the object the page already holds, so
+ * a memoised Board card of it draws nothing again; a read that changed nothing keeps the cached
+ * list itself.
+ */
+function shareIssuesByKey(cached: unknown, next: unknown): unknown {
+  // A listing query holds the issues `listIssues` answers, and nothing before its first answer.
+  const held = cached as readonly IssueSummary[] | undefined;
+  const read = next as readonly IssueSummary[];
+  if (held === undefined) return read;
+  const byKey = new Map(held.map((issue) => [issue.key, issue]));
+  let same = held.length === read.length;
+  const shared = read.map((issue, index) => {
+    const before = byKey.get(issue.key);
+    const kept = before === undefined ? issue : replaceEqualDeep(before, issue);
+    if (kept !== held[index]) same = false;
+    return kept;
+  });
+  return same ? held : shared;
+}
+
+/** `shareIssuesByKey` for a page of a listing (`listIssuePage`): its `issues` paired by key, and
+ *  the cached page itself where its issues and its numbers (`total`, `limit`, `offset`) are the
+ *  same. The issues are not handed to `replaceEqualDeep` again, which would pair them by place. */
+function sharePageByKey(cached: unknown, next: unknown): unknown {
+  // A page query holds the pages `listIssuePage` answers, and nothing before its first answer.
+  const held = cached as IssueSummaryPage | undefined;
+  const read = next as IssueSummaryPage;
+  if (held === undefined) return read;
+  const issues =
+    read.issues === null
+      ? null
+      : (shareIssuesByKey(held.issues ?? undefined, read.issues) as IssueSummary[]);
+  const same =
+    issues === held.issues &&
+    read.total === held.total &&
+    read.limit === held.limit &&
+    read.offset === held.offset;
+  return same ? held : { ...read, issues };
+}
+
+/**
  * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
  * the filter strip and the issue header's label picker. Every observer sets the query's function,
  * so each one takes it from here. A fetch that starts while a board move on the project is
@@ -294,6 +348,7 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  */
 export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
+    structuralSharing: shareIssuesByKey,
     queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
@@ -302,6 +357,93 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
       });
+    },
+  });
+
+const HOUR_MS = 3_600_000;
+
+/** What `GET /api/v1/issues` is asked for a Closed window: `closed_since` at its first moment and
+ *  `closed_before` at its end, each where the window has it, and nothing for no window. `hourly`
+ *  starts a rolling window at the start of the hour its first moment falls in, so the read and
+ *  its key hold for an hour; the rows it reads before the window's own first moment are the
+ *  browser's to leave out. */
+function closedRange(window: ClosedWindow | undefined, hourly: boolean) {
+  const from = window?.from ?? null;
+  const to = window?.to ?? null;
+  const since =
+    from !== null && hourly && window?.rolling ? Math.floor(from / HOUR_MS) * HOUR_MS : from;
+  return {
+    ...(since === null ? {} : { closed_since: new Date(since).toISOString() }),
+    ...(to === null ? {} : { closed_before: new Date(to).toISOString() }),
+  };
+}
+
+/** Every done issue of a project that a Closed window holds, or every done issue where the view
+ *  names no window: what a view that lists done rows reads when the browser sorts, narrows and
+ *  pages them. A rolling window is read from the start of the hour of its first moment
+ *  (`closedRange`). Under the project listing's prefix, so the events that read the listing
+ *  again read this again too, and a board move waits as it does there. */
+export const projectDoneIssuesQuery = (project: string, window: ClosedWindow | undefined) => {
+  const range = closedRange(window, true);
+  return queryOptions({
+    structuralSharing: shareIssuesByKey,
+    queryKey: [
+      ...projectIssuesQueryKey(project, []),
+      "done",
+      range.closed_since ?? "",
+      range.closed_before ?? "",
+    ],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      return api.listIssues({ project, status: ["done"], ...range });
+    },
+  });
+};
+
+/** One page of a project's done issues, newest close first, with the count of every done issue
+ *  the window holds (`total`): what Done reads while it is sorted by Closed and narrowed by
+ *  nothing but a Closed window. `size` is the page's rows and `offset` the rows before it. The
+ *  read sends the window's own first moment, so its rows and its `total` are the window's. For a
+ *  rolling window that moment moves with the clock the caller reads, and each new moment is a new
+ *  read. Under the project listing's prefix, as `projectDoneIssuesQuery`. */
+export const projectDonePageQuery = (
+  project: string,
+  page: { readonly offset: number; readonly size: number; readonly window?: ClosedWindow }
+) => {
+  const range = closedRange(page.window, false);
+  return queryOptions({
+    structuralSharing: sharePageByKey,
+    queryKey: [
+      ...projectIssuesQueryKey(project, []),
+      "done-page",
+      range.closed_since ?? "",
+      range.closed_before ?? "",
+      page.size,
+      page.offset,
+    ],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      return api.listIssuePage({
+        project,
+        status: ["done"],
+        sort: "-closed_at",
+        limit: page.size,
+        offset: page.offset,
+        ...range,
+      });
+    },
+  });
+};
+
+/** How many open issues a project has: the `total` of a one-row page of its open listing, which
+ *  Open's tab counts by on a view that reads no open listing (Done). Under the project listing's
+ *  prefix, so a live event on an issue reads it again. */
+export const projectOpenCountQuery = (project: string) =>
+  queryOptions({
+    queryKey: [...projectIssuesQueryKey(project, []), "open-count"],
+    queryFn: async (context) => {
+      await boardMovesSettled(context, project);
+      return (await api.listIssuePage({ project, open: true, limit: 1 })).total;
     },
   });
 
@@ -353,6 +495,7 @@ export const advancesIssuesParams = (listing: AdvancesListing, open = false) => 
  *  and every listing whose rows advance it (`priorityWriteTargets`, `api/event-refresh.ts`). */
 export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
   queryOptions({
+    structuralSharing: shareIssuesByKey,
     // Typed as widely as the project listing's key (`projectIssuesQueryKey`), so the table that
     // reads one or the other sees one options type rather than two that differ by their key.
     queryKey: [
@@ -411,16 +554,17 @@ const LIVE = {
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
 
-/** The body each delivery view's kind is answered with: the GET route's it mirrors. */
+/** The body each live view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
+  readonly legion: LegionBoardResponse;
+  readonly evals: EvalListResponse;
 }
 
-/** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
- *  other kinds this page does not read. */
+/** The live view's answer, which is the body of the GET route its kind mirrors, for every kind
+ *  the socket serves. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -484,4 +628,34 @@ export const legionDaemonQuery = (project: string) =>
   queryOptions({
     queryKey: ["legion-daemon", project],
     queryFn: () => api.getLegionDaemon(project),
+  });
+
+/** A project's Legion board, live (`GET /api/v1/projects/{key}/legion/board`): one subscription
+ *  per project, since the board has no window and the project is all it reads. Its snapshot and
+ *  each delta carry the ten columns of cards in the board's order, with the Queue column in the
+ *  daemon's own order, the header (capacity, the queue's length, the last read and whether it
+ *  failed), and the `issues` map of stored facts by issue key, so a daemon read or a facts write
+ *  of an issue the board shows reaches the page at once. TanStack Query's own sharing keeps what
+ *  a frame did not change. The generated types let `columns`, each column's `cards` and `issues`
+ *  be null, so every reader of them reads them null-safe. The Issues tab subscribes it only for a
+ *  project whose daemon setting names a daemon (`legionDaemonQuery`). */
+export const legionBoardQuery = (project: string) => {
+  const view = { kind: "legion", project } as const;
+  return queryOptions({
+    ...LIVE,
+    queryKey: ["legion", "board", view],
+    queryFn: (context) => subscribeLive(context, view),
+  });
+};
+
+/** The Legion facts of a project's closed issues that closed in `windows`, by issue key: every
+ *  issue row of `legion-work-time`'s items route over those windows, read page by page
+ *  (`readLegionItems`). A closed row the board's `issues` map does not hold takes its facts from
+ *  here (`legionFactsOf`). The read keeps the app's shared retry rule (`queryRetry`), and a
+ *  refusal, `404 EVAL_NOT_FOUND` among them, is a failed read, never facts of no Legion work. */
+export const legionItemsQuery = (project: string, windows: readonly ItemsWindow[]) =>
+  queryOptions({
+    queryKey: ["legion", "items", project, windows],
+    queryFn: () =>
+      readLegionItems(windows, (query) => api.listEvalItems(project, LEGION_WORK_TIME, query)),
   });

@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
-import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
-import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import type { InboxRow, IssueDetails, IssuePriority } from "../../api/types";
+import { inboxKey, showInProjectLists, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssuePriorityWrite {
   /** True after a save failed until the next attempt starts. */
@@ -27,9 +27,7 @@ export function useIssuePriority(issueKey: string): IssuePriorityWrite {
     queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
       current === undefined ? undefined : { ...current, priority }
     );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, priority } : issue))
-    );
+    showInProjectLists(queryClient, issueKey, { priority });
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
       current?.map((row) => (row.issue_key === issueKey ? { ...row, priority } : row))
     );

@@ -1,4 +1,4 @@
-import { type QueryKey, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 
 import { issuePatchRequest } from "../../api/client";
@@ -27,8 +27,38 @@ interface Snapshot {
   lists: [QueryKey, IssueSummary[] | undefined][];
 }
 
-export const projectListsKey = ["issues", "project"] as const;
+const projectListsKey = ["issues", "project"] as const;
 export const inboxKey = inboxQuery().queryKey;
+
+/** Shows `patch` on the issue `issueKey` in every project issue read the cache holds. The reads
+ *  under `projectListsKey` take three shapes: a listing (`IssueSummary[]`), a page of one
+ *  (`{ issues, total, limit, offset }`, which Done reads), and Open's count, a number. A listing
+ *  and a page's `issues` show the patch on the issue's row, and the page keeps its other fields.
+ *  A read that does not hold the issue, the count among them, is left as it is: the updater
+ *  answers `undefined`, which TanStack Query writes nothing for. */
+export function showInProjectLists(
+  queryClient: QueryClient,
+  issueKey: string,
+  patch: Partial<IssueSummary>
+): void {
+  const shown = (issues: readonly IssueSummary[]) =>
+    issues.some((issue) => issue.key === issueKey)
+      ? issues.map((issue) => (issue.key === issueKey ? { ...issue, ...patch } : issue))
+      : undefined;
+  queryClient.setQueriesData<unknown>({ queryKey: projectListsKey }, (current) => {
+    if (Array.isArray(current)) return shown(current);
+    if (
+      typeof current === "object" &&
+      current !== null &&
+      "issues" in current &&
+      Array.isArray(current.issues)
+    ) {
+      const issues = shown(current.issues);
+      return issues === undefined ? undefined : { ...current, issues };
+    }
+    return undefined;
+  });
+}
 
 /**
  * The optimistic write engine behind every single-field issue write (priority, assignee). The
