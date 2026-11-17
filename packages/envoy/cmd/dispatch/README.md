@@ -2311,22 +2311,37 @@ It creates a table, an index and two functions and touches no row, and the relea
 
 Migrations `20261117025901_comments_refs_forms_trigger`, `20261117025902_asks_refs_forms_trigger`, `20261117025903_messages_refs_forms_trigger` and `20261117025904_artifact_versions_refs_forms_trigger` attach those functions on the writes `20261103205038`-`20261103205041` owe `refs_grammar_owed` for, with the same predicates, each in its own migration so each transaction holds one table's `SHARE ROW EXCLUSIVE` alone:
 a build that predates these forms re-reads the whole text on each such write, which deletes their rows.
+The asks trigger also owes every write of an ask's `options` and of its `answer`, which `20261103205039` does not watch:
+they are the ask's other parts, which such a build re-indexes on that write, its answer's one row write (`update asks set state = 'answered', answer = …`) included.
 The asks' scope triggers have no counterpart here.
-A write this release makes settles its own row in the write's transaction (`refs.replaceRefs`), so only a write of an earlier build is left owed.
+A write this release makes settles its own row in the write's transaction once it has indexed the source's whole text (`refs.replaceRefs`, `refs.IndexAskParts`), so only a write of an earlier build is left owed.
 Each touches no row; each census answers `0`.
 
 Migration `20261117025905_refs_forms_seed` owes that index to every text already stored: each comment, each ask, each issue message and each document with a markdown version.
 Those triggers are live by then, so a write that lands while it runs is owed by its trigger, and a row a trigger has already written keeps its `enqueued_at`.
-It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions`, which no write waits behind, and writes only `refs_forms_owed`.
+It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions` and writes only `refs_forms_owed`.
+A write of a text already stored still waits until the seed commits, since its trigger's insert meets the `(kind, id)` key the seed has inserted and not yet committed, and a writer touching two stored sources in the reverse of the seed's order (comments, asks, messages, documents) can deadlock with it (`40P01`), which the migration runner does not retry.
 Its census answers `0`: the one table it writes is `20261117025900`'s, which holds no row at deploy, and the rows it inserts are new work owed, not a rewrite.
 
 Migration `20261117025906_refs_forms_delete_trigger` owes `refs_forms_owed` every source whose edges a delete from `refs` removes, through one statement trigger over the deleted rows (`refs_forms_owe_deleted`), which owes each source of the statement once and keeps a row already owed as it stands.
 An older build re-indexes text without writing its source row
 — its drain of a `refs_grammar_owed` `scope` row, and its block-index pass of a document left owed one —
 and no source trigger sees that, while its delete drops the edges of these forms all the same.
-Every path of this release that deletes from `refs` settles the row after its delete, in the same transaction (`refs.replaceRefs`, a gone source's re-index, `refs.ForgetDocument`, and `rebuild-refs`, which settles the rows of the sources its orphan sweep found gone), so only a delete by a build that does not settle it leaves its source owed.
 Only the four source kinds are owed, and only a `from_id` in the canonical lowercase spelling a source's `id::text` writes; a synthetic source's id owes nothing and is passed over rather than refused.
 It holds `refs`' lock alone for its short transaction and touches no row; its census answers `0`.
+
+Migrations `20261117025907_block_refs_refs_forms_delete_trigger`, `20261117025908_comment_block_refs_refs_forms_delete_trigger`, `20261117025909_message_block_refs_refs_forms_delete_trigger` and `20261117025910_ask_block_refs_refs_forms_delete_trigger` owe the same on a delete from each block table, through a statement trigger of the same shape on each:
+`block_refs` owes its document, `comment_block_refs` its comment, `message_block_refs` its issue message and `ask_block_refs` its ask.
+Such a build's re-index drops the edges a block holds with a delete of its own, which deletes no `refs` row where the text names the target elsewhere too
+— a bare `CORE-1` in one block and `dispatch://CORE-1/plan` in another keep the refs edge, which the bare key still finds, while the second block loses its own —
+and its re-index of an ask's parts on a resolution writes no column the asks trigger watches.
+A delete that cascades from the owner's own delete owes nothing: the owner is gone, and owes no text.
+Each holds its table's lock alone for its short transaction and touches no row; each census answers `0`.
+
+This release settles a source's row only in a transaction that indexed the source's whole text, its blocks too, after every delete that index made:
+`refs.replaceRefs` after the block index the same write made before it, an ask's parts index after its question (`refs.IndexAskParts`, which reconciles the question's references itself on a write that holds the parts alone, as an answer, a resolution and the block index of an owed ask do), a gone source's re-index and `refs.ForgetDocument` after their delete, and `rebuild-refs`' orphan sweep, which deletes the edges of every gone source and then what the queue holds for every gone source, in one transaction.
+A write that leaves the source's blocks for later settles nothing of this queue: `rebuild-refs`' re-index of each source, and a document version with no rendering, leave the source owed until this release's own block index of it, which a process of the previous release may otherwise take and write without these forms.
+So only a delete by a build that does not settle the queue, or a write of this release that left the blocks to its block index, leaves a source owed.
 The server drains the queue itself, in a duty of its own (`docs.Service.RunRefsFormsReconciliation`, lease `refs-forms`, `packages/envoy/AGENTS.md`), so the edges of these forms in text stored before this release, or rewritten by the release before it, appear with no edit and no command run.
 
 Migration `20261102110000_artifact_document_roles` gives `artifacts` a nullable `role`, `verification` for the document an issue holds as `verification.md` and `plan` for its `plan.md`, null for every other document.

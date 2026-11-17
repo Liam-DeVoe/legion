@@ -5,13 +5,21 @@
 -- trigger migrations before the seed watch: its drain of a refs_grammar_owed `scope` row re-indexes
 -- each comment, ask and issue message of a document's scope that writes a `#id`
 -- (refs.ReindexScopeSource), and its block-index pass re-indexes a document this build left owed a
--- block index (docs.Service.indexOwedDocument), each from text no write changed. Its delete is the
--- one statement each of those re-indexes makes, so a trigger on it sees them all.
--- Every path of this build that deletes from refs settles the source's row after its delete, in
--- the same transaction - a write's index and every re-index through refs.replaceRefs, a gone
--- source's re-index (refs.reindexText), a document's removal (refs.ForgetDocument) and
--- rebuild-refs' orphan sweep (refs.RebuildAll) - so only a delete of a build that does not settle
--- this table stays owed.
+-- block index (docs.Service.indexOwedDocument), each from text no write changed. Each of those
+-- re-indexes drops a refs edge of these forms with a delete from refs, so a trigger on it sees them
+-- all. Its block re-index drops the edges the blocks hold with a delete of its own, which deletes
+-- no refs row where the text still names the target elsewhere; the four migrations after this one
+-- owe the same on a delete from each block table (20261117025907-20261117025910).
+-- This build settles a source's row only once it has indexed the whole text, its blocks too, in
+-- the transaction that settles it, after every delete that index made: refs.replaceRefs settles
+-- after the block re-index the same write made before it, an ask's parts settle after its question
+-- (refs.IndexAskParts), a gone source's re-index (refs.reindexText) and a document's removal
+-- (refs.ForgetDocument) settle after their delete, and rebuild-refs' orphan sweep settles the
+-- sources it found gone in the sweep's own transaction (refs.RebuildAll). A write that leaves the
+-- source's blocks for later - rebuild-refs' re-index of each source, a document version with no
+-- rendering - settles nothing of this table, and the source stays owed until this build's own
+-- block index of it. So only a delete by a build that does not settle this table, or one this
+-- build's whole index has not yet followed, leaves its source owed.
 --
 -- A statement trigger over the deleted rows rather than a row trigger: a write's re-index deletes
 -- its edges in one statement (refs.replaceRefs), and the source it owes is the same for every row

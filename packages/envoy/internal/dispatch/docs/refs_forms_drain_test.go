@@ -2,10 +2,13 @@ package docs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -32,10 +35,11 @@ func formsOwedRows(t *testing.T, database *store.Store) map[string]time.Time {
 	return owed
 }
 
-// reconcileRefsForms runs one pass of the forms drain.
+// reconcileRefsForms runs one pass of a forms drain from the start of the queue, as a loop that
+// has found no document live ahead before runs its first.
 func reconcileRefsForms(t *testing.T, service *Service) RefsFormsTick {
 	t.Helper()
-	tick, err := service.ReconcileRefsForms(context.Background())
+	tick, err := service.ReconcileRefsForms(context.Background(), refs.Owed{}, newFormsLiveAhead())
 	if err != nil {
 		t.Fatalf("forms drain pass: %v", err)
 	}
@@ -51,36 +55,43 @@ func citesIssue(t *testing.T, database *store.Store, fromKind, fromID, key strin
 }
 
 // createIndexedNotes writes document notes of CORE-1 as a build that predates the forms writes and
-// indexes it: the live text the server serves, version 1 holding that text, its settlement done
-// and its block index recorded at version 1, with no edge of the tab address it writes, since that
-// build's grammar reads none. Its version's own trigger owes it to the forms queue.
+// indexes it (createIndexedDocument).
 func createIndexedNotes(t *testing.T, database *store.Store, service *Service, markdown string) string {
 	t.Helper()
+	return createIndexedDocument(t, database, service, "notes", markdown)
+}
+
+// createIndexedDocument writes document slug of CORE-1 as a build that predates the forms writes
+// and indexes it: the live text the server serves, version 1 holding that text, its settlement done
+// and its block index recorded at version 1, with no edge of the tab address it writes, since that
+// build's grammar reads none. Its version's own trigger owes it to the forms queue.
+func createIndexedDocument(t *testing.T, database *store.Store, service *Service, slug, markdown string) string {
+	t.Helper()
 	ctx := context.Background()
-	var notes string
+	var document string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
-		values ('CORE-1', 'CORE', 'notes', 'notes.md', 'doc', '{"kind":"user","id":"alice"}')
+		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', '{"kind":"user","id":"alice"}')
 		returning id::text
-	`).Scan(&notes); err != nil {
-		t.Fatalf("create the notes: %v", err)
+	`, slug).Scan(&document); err != nil {
+		t.Fatalf("create %s: %v", slug, err)
 	}
-	seedServiceText(t, service, notes, markdown)
-	live, _, err := service.TextWithBlocks(ctx, notes)
+	seedServiceText(t, service, document, markdown)
+	live, _, err := service.TextWithBlocks(ctx, document)
 	if err != nil {
-		t.Fatalf("read the notes: %v", err)
+		t.Fatalf("read %s: %v", slug, err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, created_at, authors)
 		values ($1, 1, $2, $3, '[{"kind":"user","id":"alice"}]')
-	`, notes, live, refsGrammarWritten); err != nil {
-		t.Fatalf("write version 1 of the notes: %v", err)
+	`, document, live, refsGrammarWritten); err != nil {
+		t.Fatalf("write version 1 of %s: %v", slug, err)
 	}
-	settle(t, database, notes)
-	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, notes); err != nil {
+	settle(t, database, document)
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, document); err != nil {
 		t.Fatalf("index the version as the earlier release does: %v", err)
 	}
-	return notes
+	return document
 }
 
 // Every text a build that predates an issue's tab addresses and a document's dashboard URLs
@@ -157,7 +168,7 @@ func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T
 	passed := make(chan RefsFormsTick, 1)
 	failed := make(chan error, 1)
 	go func() {
-		tick, err := service.ReconcileRefsForms(ctx)
+		tick, err := service.ReconcileRefsForms(ctx, refs.Owed{}, newFormsLiveAhead())
 		if err != nil {
 			failed <- err
 			return
@@ -299,5 +310,123 @@ func TestTheFormsDrainsIndexSettlesAfterItsOwnDelete(t *testing.T) {
 	}
 	if grammar != 0 {
 		t.Fatalf("the whole grammar's queue still owes the notes after this build indexed them")
+	}
+}
+
+// A row the drain leaves owed never holds back the rows past it: more documents than one pass
+// indexes (blockIndexDocumentBatch), each holding an element this build cannot read
+// (ErrDocNewerContent) and so left owed by every pass, were owed before a document the drain can
+// index, and that document is indexed by the second pass. Each pass starts past the last row the
+// one before it took (refs.ListOwedAfter), so the first ends at the document past its bound and
+// the second starts there, and a pass that reaches the end of the queue starts the next walk at its
+// start, where the stuck documents are listed, and left owed, again.
+func TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	stuck := make([]string, blockIndexDocumentBatch+1)
+	for index := range stuck {
+		stuck[index] = createIndexedDocument(t, database, service, fmt.Sprintf("stuck-%d", index), "The plan: dispatch://CORE-2/plan.\n")
+		if err := service.InjectUnknownElementForTest(ctx, stuck[index]); err != nil {
+			t.Fatalf("write an element this build does not know into %s: %v", stuck[index], err)
+		}
+		if err := service.Evict(ctx, stuck[index]); err != nil {
+			t.Fatalf("evict %s: %v", stuck[index], err)
+		}
+		if _, _, err := service.TextWithBlocks(ctx, stuck[index]); !errors.Is(err, ErrDocNewerContent) {
+			t.Fatalf("read %s: %v, want ErrDocNewerContent", stuck[index], err)
+		}
+	}
+	readable := createIndexedDocument(t, database, service, "readable", "The plan: dispatch://CORE-2/plan.\n")
+	// The stuck documents were owed first, one second apart, and the readable one after them all.
+	owedFrom := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for index, document := range append(slices.Clone(stuck), readable) {
+		if _, err := database.Pool.Exec(ctx, `update refs_forms_owed set enqueued_at = $2 where kind = 'artifact' and id = $1::uuid`,
+			document, owedFrom.Add(time.Duration(index)*time.Second)); err != nil {
+			t.Fatalf("order the owed documents: %v", err)
+		}
+	}
+	liveAhead := newFormsLiveAhead()
+	pass := func(after refs.Owed) RefsFormsTick {
+		t.Helper()
+		tick, err := service.ReconcileRefsForms(ctx, after, liveAhead)
+		if err != nil {
+			t.Fatalf("forms drain pass: %v", err)
+		}
+		return tick
+	}
+
+	first := pass(refs.Owed{})
+	if !first.Full || first.Documents != 0 || first.Cursor.ID != stuck[blockIndexDocumentBatch-1] {
+		t.Fatalf("first pass = %#v, want it to stop after the %d documents it may take, at %s", first, blockIndexDocumentBatch, stuck[blockIndexDocumentBatch-1])
+	}
+	if citesIssue(t, database, "artifact", readable, "CORE-2") {
+		t.Fatalf("the readable document was indexed by a pass that stopped before it")
+	}
+	second := pass(first.Cursor)
+	if second.Documents != 1 || second.Full || second.Cursor != (refs.Owed{}) {
+		t.Fatalf("second pass = %#v, want it to start past the first one's last row, index the readable document and reach the end of the queue", second)
+	}
+	assertRef(t, database, "artifact", readable, "issue", "CORE-2", refsGrammarWritten)
+	owed := formsOwedRows(t, database)
+	if _, held := owed["artifact "+readable]; held || len(owed) != len(stuck) {
+		t.Fatalf("the forms queue holds %v, want the %d stuck documents alone", owed, len(stuck))
+	}
+	if again := pass(second.Cursor); !again.Full || again.Documents != 0 || again.Cursor.ID != stuck[blockIndexDocumentBatch-1] {
+		t.Fatalf("the next walk's first pass = %#v, want it to start over at the stuck documents", again)
+	}
+}
+
+// The drain remembers the documents it found live ahead, as the block index does: one listed again
+// at the same version, with the same pending-settlement mark and no room resident, is counted live
+// ahead without being read, so it is not indexed at the version its live text is ahead of even
+// once that version holds the live text. A new version has the next pass read it again, index it
+// and settle its row, and the memo forgets it.
+func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	notes := createOwedDocument(t, database, service, "CORE-1", "", "notes", "The plan: dispatch://CORE-2/plan.\n", "Old text.\n")
+	closeDocumentRoom(t, service, notes)
+	liveAhead := newFormsLiveAhead()
+	pass := func() RefsFormsTick {
+		t.Helper()
+		tick, err := service.ReconcileRefsForms(ctx, refs.Owed{}, liveAhead)
+		if err != nil {
+			t.Fatalf("forms drain pass: %v", err)
+		}
+		return tick
+	}
+	live, _, err := service.TextWithBlocks(ctx, notes)
+	if err != nil {
+		t.Fatalf("read the notes: %v", err)
+	}
+
+	if first := pass(); first.LiveAhead != 1 || first.Documents != 0 || len(liveAhead.documents) != 1 {
+		t.Fatalf("first pass = %#v remembering %v, want the notes live ahead and remembered", first, liveAhead.documents)
+	}
+	// Version 1 now holds the live text, which a read would index.
+	if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = $2 where artifact_id = $1 and number = 1`, notes, live); err != nil {
+		t.Fatalf("store the live text as version 1: %v", err)
+	}
+	if second := pass(); second.LiveAhead != 1 || second.Documents != 0 || second.OwedTexts != 1 {
+		t.Fatalf("second pass = %#v, want the notes counted live ahead unread and still owed", second)
+	}
+	if citesIssue(t, database, "artifact", notes, "CORE-2") {
+		t.Fatalf("the notes were indexed by a pass that remembered them live ahead")
+	}
+
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1, 2, $2, '[{"kind":"user","id":"alice"}]')
+	`, notes, live); err != nil {
+		t.Fatalf("write version 2: %v", err)
+	}
+	if third := pass(); third.Documents != 1 || third.LiveAhead != 0 || third.OwedTexts != 0 {
+		t.Fatalf("third pass = %#v, want the notes read again, indexed and settled", third)
+	}
+	if !citesIssue(t, database, "artifact", notes, "CORE-2") {
+		t.Fatalf("the notes hold %#v after the pass that indexed them, want an edge to CORE-2", refsFrom(t, database, "artifact", notes))
+	}
+	if len(liveAhead.documents) != 0 || len(liveAhead.rows) != 0 {
+		t.Fatalf("the drain still remembers %v, want nothing", liveAhead.documents)
 	}
 }

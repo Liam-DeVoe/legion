@@ -911,7 +911,10 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // (refs.SettleOwed): a row this index did not run for - a document another process indexed first,
 // one whose live text is ahead, one whose latest version moved - is left owed, and so is one a
 // write moved meanwhile, with nothing written for it. The index then settles every queue the
-// document is in again, after its own delete from refs (refs.replaceRefs).
+// document is in again, after its own deletes from block_refs and from refs (refs.IndexBlocks,
+// then refs.replaceRefs), each of which owes the forms queue the document it rewrites (migrations
+// 20261117025906 and 20261117025907). So a document rebuild-refs left owed is settled by this
+// build's block index of it, which writes its blocks, and not before.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, settle *refs.Owed) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil

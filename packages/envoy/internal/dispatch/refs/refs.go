@@ -49,7 +49,10 @@ type Target struct {
 //
 // The source is r's own: a write that holds another text of the same source - an ask's parts
 // beside its question (IndexAskParts) - passes the one reader to both, so the database answers
-// once per kind for the write rather than once per text.
+// once per kind for the write rather than once per text. The reader records that this write
+// reconciled the source's own references, and the index of the parts that follows settles what
+// the forms queue holds for the source after its own delete (RefsFormsOwed): those parts are the
+// rest of the ask's text, and this call settles the whole grammar's queue alone.
 func ReplaceCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -57,10 +60,11 @@ func ReplaceCounted(
 	body string,
 ) (model.ReferenceChanges, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil, false)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
+	r.reconciled = true
 	return CountedChanges(ctx, tx, changed)
 }
 
@@ -74,10 +78,11 @@ func ReplaceCountedEdit(
 	previous, body string,
 ) (model.ReferenceChanges, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil, false)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
+	r.reconciled = true
 	return CountedChanges(ctx, tx, append(changed, editedHeadTargets(previous, body, r.serverURL, found)...))
 }
 
@@ -106,6 +111,11 @@ func editedHeadTargets(previous, body, serverURL string, found []text.Ref) []Tar
 // the ones whose edges the version inserted or deleted, and so is each of moved, the targets the
 // same write moved elsewhere - the version's blocks and their mentions (IndexBlocks) - so its event
 // names them all.
+//
+// The blocks and the excerpts are cut from the one rendering, so a version with excerpts has had
+// its blocks indexed in tx before this call (docs' indexRenderedVersion), and one without has
+// left them to the block index (docs' indexUnrenderedVersion): only the first settles what the
+// forms queue holds for the document (replaceRefs).
 func ReplaceDocumentCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -116,7 +126,7 @@ func ReplaceDocumentCounted(
 	moved []Target,
 	excerpts map[Target]model.GraphExcerpt,
 ) (model.ReferenceChanges, error) {
-	changed, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt)
+	changed, err := replaceRefs(ctx, tx, "artifact", artifactID, found, &versionAt, excerpts != nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -143,10 +153,16 @@ func ReplaceDocumentCounted(
 // an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
 // edge.
 //
-// It settles what the source owes the re-index queues (settleOwed): this text has now been read
-// with the whole grammar, so a write this build makes costs the drains nothing and only an older
-// build's write stays owed.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, error) {
+// It settles what the source owes the re-index queues (settleOwed): the whole grammar's always,
+// since this text has now been read with the whole grammar, and the forms queue only when whole
+// says the write indexed the source's blocks in tx before this call, so the text it read is the
+// source's whole text and every delete that index made, its blocks' included, came before this
+// settle (RefsFormsOwed). A write that leaves the blocks for later - rebuild-refs, a document
+// version with no rendering - passes false and leaves the source owed until this build's own
+// block index of it, and so does one that indexes them after this call - an ask, whose parts
+// follow its question and settle the forms queue themselves (IndexAskParts). So a write this
+// build makes costs the drains nothing, and only an older build's write stays owed.
+func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, whole bool) ([]Target, error) {
 	kinds, ids := refTargets(found)
 	changed, err := scanTargets(tx.Query(ctx, `
 		delete from refs
@@ -173,33 +189,59 @@ func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found 
 		}
 		changed = append(changed, added...)
 	}
-	if err := settleOwed(ctx, tx, fromKind, fromID); err != nil {
+	settle := grammarQueue
+	if whole {
+		settle |= formsQueue
+	}
+	if err := settleOwed(ctx, tx, fromKind, fromID, settle); err != nil {
 		return nil, err
 	}
 	return changed, nil
 }
 
-// settleOwed deletes the rows one source owes the re-index queues - refs_grammar_owed and
-// refs_forms_owed - in the write's own transaction, which holds that source's row: every write of
-// the text was committed before this transaction read it, so whatever enqueued_at a row holds, the
-// text this write indexed is the text the row is owed for. It is the queues' four source kinds
-// that are settled this way - artifact, ask, comment and message, which are the from_kind of every
-// refs row too, so one statement serves them all. The fifth kind of the whole grammar's queue,
-// `scope`, names a document whose sources are owed a re-index, not a source whose refs this
-// writes, and only the scope drain settles it. A from_id that is no uuid (a test's synthetic
-// source) owes nothing, since the queues key their id as one.
+// owedQueues is a set of the re-index queues a write settles (settleOwed).
+type owedQueues uint8
+
+const (
+	// grammarQueue is refs_grammar_owed (RefsGrammarOwed), which a write settles once it has read
+	// the source's own text with the whole grammar.
+	grammarQueue owedQueues = 1 << iota
+	// formsQueue is refs_forms_owed (RefsFormsOwed), which a write settles only once it has
+	// indexed the source's whole text, its blocks too, after every delete that index made.
+	formsQueue
+)
+
+// settleOwed deletes the rows one source owes the re-index queues of queues, in the write's own
+// transaction, which holds that source's row: every write of the text was committed before this
+// transaction read it, so whatever enqueued_at a row holds, the text this write indexed is the
+// text the row is owed for. It is the queues' four source kinds that are settled this way -
+// artifact, ask, comment and message, which are the from_kind of every refs row too, so one
+// statement serves them all. The fifth kind of the whole grammar's queue, `scope`, names a
+// document whose sources are owed a re-index, not a source whose refs this writes, and only the
+// scope drain settles it. A from_id that is no uuid (a test's synthetic source) owes nothing,
+// since the queues key their id as one.
 //
 // A build older than a queue's table settles nothing of it, so a text it indexes stays owed in
 // that table until a build that reads its grammar indexes it (RefsFormsOwed).
-func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string) error {
+func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string, queues owedQueues) error {
 	id, ok := canonicalUUID(fromID)
 	if !ok {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `
-		with grammar as (delete from refs_grammar_owed where kind = $1 and id = $2::uuid)
-		delete from refs_forms_owed where kind = $1 and id = $2::uuid
-	`, fromKind, id); err != nil {
+	var statement string
+	switch queues {
+	case grammarQueue:
+		statement = `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`
+	case formsQueue:
+		statement = `delete from refs_forms_owed where kind = $1 and id = $2::uuid`
+	case grammarQueue | formsQueue:
+		statement = `
+			with grammar as (delete from refs_grammar_owed where kind = $1 and id = $2::uuid)
+			delete from refs_forms_owed where kind = $1 and id = $2::uuid`
+	default:
+		return nil
+	}
+	if _, err := tx.Exec(ctx, statement, fromKind, id); err != nil {
 		return fmt.Errorf("settle the index owed by %s %s: %w", fromKind, fromID, err)
 	}
 	return nil

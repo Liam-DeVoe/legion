@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -38,6 +39,12 @@ import (
 // referenceServerURL is DISPATCH_SERVER_URL for the document rows: the origin the reference
 // fixtures' dashboard links name (text/testdata), so both builds read those links as references.
 const referenceServerURL = "https://dispatch.test"
+
+// referenceEnv is what both builds' processes start with in the document rows, and a restart of
+// either takes again: DISPATCH_SERVER_URL at referenceServerURL.
+func referenceEnv() map[string]string {
+	return map[string]string{"DISPATCH_SERVER_URL": referenceServerURL}
+}
 
 // documentSide is one build as a writer or a reader of documents: its process, the corpus and
 // reference fixtures of its own tree, its block manifest, and what its page presents on a
@@ -430,11 +437,15 @@ func corpusFiles(t *testing.T, dir string) []string {
 // next version, and the approval is carried to it. A body holding every reference form of X's
 // text/testdata that Y's own table holds too keeps its refs rows after Y rewrites it, but for the
 // edges a Y from before the unknown-kind guard drops, which it logs (requireRefsKept); a body
-// holding the forms only X's table holds has every row X wrote back within two block-index
-// intervals of Y's rewrite (requireWriterOnlyReferencesBack).
+// holding the forms only X's table holds has every row X wrote back, its blocks' edges included,
+// within two block-index intervals of Y's rewrite (requireWriterOnlyReferencesBack). Where Y reads
+// no tab address and X does, each trigger that owes X a document Y re-indexed is shown needed on
+// its own: a version Y writes, Y's rebuild-refs' delete from refs, and Y's block index's delete from
+// block_refs (requireEachTriggerOwesTheDocument), a row that stops and restarts both processes and
+// so runs last.
 func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 	builds := newTwoBuilds(t)
-	env := map[string]string{"DISPATCH_SERVER_URL": referenceServerURL}
+	env := referenceEnv()
 	builds.startPrevious(t, env)
 	builds.startCurrent(t, env)
 	sides := builds.documentSides(t)
@@ -771,20 +782,39 @@ func nestsPastTheBound(body string) bool {
 // documentRefs is every refs row the document is the source of, as `kind id`, sorted.
 func documentRefs(t *testing.T, builds *twoBuilds, artifactID string) []string {
 	t.Helper()
-	rows, err := builds.database.Pool.Query(context.Background(), `
+	return queryRows(t, builds, "read the document's refs", `
 		select to_kind || ' ' || to_id from refs
 		where from_kind = 'artifact' and from_id = $1
 		order by 1
 	`, artifactID)
+}
+
+// documentBlockEdges is the target of every edge the document's blocks hold (block_refs), as
+// `kind id`, once per edge, sorted. A block's id is left out, so the list reads the same however a
+// build numbers the blocks of one text, and still counts an edge one block lost while another
+// kept its own to the same target.
+func documentBlockEdges(t *testing.T, builds *twoBuilds, artifactID string) []string {
+	t.Helper()
+	return queryRows(t, builds, "read the document's block edges", `
+		select to_kind || ' ' || to_id from block_refs
+		where artifact_id = $1::uuid
+		order by 1
+	`, artifactID)
+}
+
+// queryRows is the one text column query answers for args, in the order it answers them.
+func queryRows(t *testing.T, builds *twoBuilds, what, query string, args ...any) []string {
+	t.Helper()
+	rows, err := builds.database.Pool.Query(context.Background(), query, args...)
 	if err != nil {
-		t.Fatalf("read the document's refs: %v", err)
+		t.Fatalf("%s: %v", what, err)
 	}
 	defer rows.Close()
-	refs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	read, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("read the document's refs: %v", err)
+		t.Fatalf("%s: %v", what, err)
 	}
-	return refs
+	return read
 }
 
 // referencesSettle is how long the references row waits after Y's edit before it reads the refs
@@ -797,10 +827,13 @@ const referencesSettle = 4 * time.Second
 // checks each body's refs rows:
 //   - the forms Y's tables hold too, after the rewrite and after it settled, as this row always
 //     has (requireRefsKept);
-//   - the forms only X's table holds, every row X wrote back within two block-index intervals of
-//     Y's rewrite (requireWriterOnlyReferencesBack), where Y may drop the rows of those forms on
-//     its rewrite. When Y's tables hold every form of X's, as the current build's hold the previous
-//     build's, that body is empty and skipped.
+//   - the forms only X's table holds, every row X wrote, its blocks' edges included, back within
+//     two block-index intervals of Y's rewrite (requireWriterOnlyReferencesBack), where Y may drop
+//     the rows of those forms on its rewrite. When Y's tables hold every form of X's, as the
+//     current build's hold the previous build's, that body is empty and skipped.
+//
+// Then, where Y is the previous build and reads no tab address while X does, it shows each trigger
+// that owes X a document Y re-indexed needed on its own (requireEachTriggerOwesTheDocument).
 //
 // This changes main's row, which held one body of every form to requireRefsKept. No old binary can
 // keep an edge of a form it cannot parse: its rewrite re-extracts the body and deletes every edge
@@ -811,7 +844,7 @@ const referencesSettle = 4 * time.Second
 // read here while both builds' loops run, with no hook a real deploy lacks.
 func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	shared, writerOnly := referencesMarkdown(t, writer.fixtures, reader.fixtures)
-	_, artifactID := createDocument(t, writer.process, project, "Every reference form", shared)
+	key, artifactID := createDocument(t, writer.process, project, "Every reference form", shared)
 	written := documentRefs(t, builds, artifactID)
 	if len(written) == 0 {
 		t.Fatalf("the %s wrote no refs rows for the body holding every reference form of its text/testdata", writer.name)
@@ -826,6 +859,14 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 		return
 	}
 	requireWriterOnlyReferencesBack(t, builds, writer, reader, project, writerOnly)
+	switch {
+	case reader.process != builds.previous():
+		t.Logf("the %s is not the previous build, whose rebuild-refs the trigger rows run", reader.name)
+	case !readsTabAddresses(t, writer.fixtures) || readsTabAddresses(t, reader.fixtures):
+		t.Logf("the tab addresses are not a form only the %s reads: no trigger row", writer.name)
+	default:
+		requireEachTriggerOwesTheDocument(t, builds, writer, reader, project, key)
+	}
 }
 
 // writerOnlyReferencesBack is how long after the reader's rewrite every row of the forms only the
@@ -835,15 +876,16 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 const writerOnlyReferencesBack = 2 * docs.BlockIndexReconcileInterval
 
 // requireWriterOnlyReferencesBack creates markdown, the forms only the writer's table holds, on the
-// writer, appends a paragraph on the reader, and fails unless the document's refs rows are the ones
-// the writer wrote again within writerOnlyReferencesBack of that rewrite: every row back, and no
-// row of a kind the writer wrote that it did not write, which would mean the writer's index of the
-// reader's text read one form as another target. Until then the reader's rewrite may have dropped
-// rows of the kinds it extracts, which is logged; the first read is taken after referencesSettle,
-// so a settlement that rewrites the document after the edit has dropped them too.
+// writer, appends a paragraph on the reader, and fails unless the document's edges are the ones
+// the writer wrote again within writerOnlyReferencesBack of that rewrite: every refs row back, and
+// no row of a kind the writer wrote that it did not write, which would mean the writer's index of
+// the reader's text read one form as another target, and its blocks' edges as the writer wrote
+// them. Until then the reader's rewrite may have dropped rows of the kinds it extracts, which is
+// logged; the first read is taken after referencesSettle, so a settlement that rewrites the
+// document after the edit has dropped them too.
 func requireWriterOnlyReferencesBack(t *testing.T, builds *twoBuilds, writer, reader documentSide, project, markdown string) {
 	_, artifactID := createDocument(t, writer.process, project, "Every reference form only the writer reads", markdown)
-	written := documentRefs(t, builds, artifactID)
+	written, writtenBlocks := documentRefs(t, builds, artifactID), documentBlockEdges(t, builds, artifactID)
 	rewritten := time.Now()
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	if lost, _ := refRowsMoved(documentRefs(t, builds, artifactID), written); len(lost) > 0 {
@@ -853,20 +895,182 @@ func requireWriterOnlyReferencesBack(t *testing.T, builds *twoBuilds, writer, re
 	time.Sleep(referencesSettle)
 	deadline := rewritten.Add(writerOnlyReferencesBack)
 	for {
-		got := documentRefs(t, builds, artifactID)
+		got, blocks := documentRefs(t, builds, artifactID), documentBlockEdges(t, builds, artifactID)
 		lost, added := refRowsMoved(got, written)
-		if len(lost) == 0 && len(added) == 0 {
-			t.Logf("all %d refs rows the %s wrote of the forms only it reads were back %s after the %s's rewrite",
-				len(written), writer.name, time.Since(rewritten).Round(time.Second), reader.name)
+		if len(lost) == 0 && len(added) == 0 && slices.Equal(blocks, writtenBlocks) {
+			t.Logf("all %d refs rows and %d block edges the %s wrote of the forms only it reads were back %s after the %s's rewrite",
+				len(written), len(writtenBlocks), writer.name, time.Since(rewritten).Round(time.Second), reader.name)
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s after the %s rewrote the body of the forms only the %s reads, its refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s",
+			t.Fatalf("%s after the %s rewrote the body of the forms only the %s reads, its refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s\nits blocks hold the edges\n%s\nwhere the %s wrote\n%s",
 				writerOnlyReferencesBack, reader.name, writer.name, len(lost), len(written), writer.name, refRowsText(lost),
-				len(added), writer.name, refRowsText(added), refRowsText(got))
+				len(added), writer.name, refRowsText(added), refRowsText(got), refRowsText(blocks), writer.name, refRowsText(writtenBlocks))
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// readsTabAddresses reports whether a build's text table holds the row naming an issue's plan tab,
+// the form the trigger rows write (formsOnlyMarkdown): a build whose table holds it reads it.
+func readsTabAddresses(t *testing.T, fixtures string) bool {
+	t.Helper()
+	for _, row := range readReferenceTables(t, fixtures).texts {
+		if strings.Contains(row.Body, "dispatch://CORE-45/plan") {
+			return true
+		}
+	}
+	return false
+}
+
+// formsOnlyMarkdown is a document whose every reference is a form a build that reads no tab
+// address cannot read: issue key's plan tab and its verification tab as dispatch:// addresses, a
+// paragraph each. Such a build writes no edge for it, and its re-index of a text the writer indexed
+// deletes every edge the writer wrote.
+func formsOnlyMarkdown(key string) string {
+	return "# Forms only the writer reads\n\nThe plan: dispatch://" + key + "/plan.\n\nThe verification: dispatch://" + key + "/verification.\n"
+}
+
+// issueTwiceMarkdown names issue key twice, as a bare key in one paragraph and as its plan tab in
+// another. A build that reads no tab address keeps the document's refs row to the issue, which the
+// bare key still finds, and its block index drops the second paragraph's edge alone.
+func issueTwiceMarkdown(key string) string {
+	return "# The issue twice\n\nThe issue is " + key + ".\n\nIts plan: dispatch://" + key + "/plan.\n"
+}
+
+// documentEdgesWritten is a document's refs rows and its blocks' edges as the writer indexed them.
+type documentEdgesWritten struct {
+	id           string
+	refs, blocks []string
+}
+
+// writtenEdges reads document artifactID's edges as they stand, which the caller has just had the
+// writer index.
+func writtenEdges(t *testing.T, builds *twoBuilds, artifactID string) documentEdgesWritten {
+	t.Helper()
+	written := documentEdgesWritten{id: artifactID, refs: documentRefs(t, builds, artifactID), blocks: documentBlockEdges(t, builds, artifactID)}
+	if len(written.refs) == 0 || len(written.blocks) == 0 {
+		t.Fatalf("the writer indexed document %s to refs rows %v and block edges %v, want both", artifactID, written.refs, written.blocks)
+	}
+	return written
+}
+
+// back reports whether the document's edges are the ones the writer wrote.
+func (written documentEdgesWritten) back(t *testing.T, builds *twoBuilds) bool {
+	t.Helper()
+	return slices.Equal(documentRefs(t, builds, written.id), written.refs) &&
+		slices.Equal(documentBlockEdges(t, builds, written.id), written.blocks)
+}
+
+// formsOwed reports whether refs_forms_owed holds document artifactID.
+func formsOwed(t *testing.T, builds *twoBuilds, artifactID string) bool {
+	t.Helper()
+	var owed bool
+	if err := builds.database.Pool.QueryRow(context.Background(), `
+		select exists (select 1 from refs_forms_owed where kind = 'artifact' and id = $1::uuid)
+	`, artifactID).Scan(&owed); err != nil {
+		t.Fatalf("read whether %s is owed: %v", artifactID, err)
+	}
+	return owed
+}
+
+// triggerRowsBack is how long the trigger rows give the writer to write a document's edges back:
+// the rewrite row's two drain intervals and two more, since after the previous build's rebuild-refs
+// the writer's first passes take every text that rebuild re-indexed and every document it marked
+// owed a block index.
+const triggerRowsBack = 4 * docs.BlockIndexReconcileInterval
+
+// requireEachTriggerOwesTheDocument shows each trigger that owes the writer (X, this build) a
+// document the reader (Y, the previous build, which reads no tab address) re-indexed needed on its
+// own, each through a re-index the other two do not see:
+//   - A version Y writes (migration 20261117025904): Y creates a document holding forms only X
+//     reads, so no edge of them exists for Y to delete, and only its version owes it. X's edges for
+//     that text, its own and its blocks', must appear within triggerRowsBack.
+//   - Y's rebuild-refs' delete from refs (20261117025906): with both processes stopped, so nothing
+//     else re-indexes or drains, Y's rebuild-refs re-indexes every source's references alone,
+//     writing no version and no block edge, and the document holding forms only X reads must be
+//     owed when it returns.
+//   - Y's block index's delete from block_refs (20261117025907): a document naming one issue as a
+//     bare key in one block and as its plan tab in another keeps its refs row through that
+//     rebuild, so it is not owed, and Y alone, started again, indexes the blocks rebuild-refs
+//     marked owed with no version, dropping the second block's edge; the document must then be
+//     owed.
+//
+// X, started again, must then write both documents' edges back within triggerRowsBack. A run with
+// any one of the three triggers removed fails its own step, where today's rewrite row passes with
+// either of the first two removed. The rows stop and restart both builds' processes, and so run
+// last.
+func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, reader documentSide, project, key string) {
+	_, twin := createDocument(t, writer.process, project, "Forms only the writer reads, written by it", formsOnlyMarkdown(key))
+	onlyForms := writtenEdges(t, builds, twin)
+	_, issueTwice := createDocument(t, writer.process, project, "The issue twice", issueTwiceMarkdown(key))
+	twice := writtenEdges(t, builds, issueTwice)
+
+	// A version alone: the reader creates the same text the writer indexed in twin.
+	_, readerWrote := createDocument(t, reader.process, project, "Forms only the writer reads, written by the reader", formsOnlyMarkdown(key))
+	versionOwed := documentEdgesWritten{id: readerWrote, refs: onlyForms.refs, blocks: onlyForms.blocks}
+	waitUntil(t, triggerRowsBack, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
+		func() bool { return versionOwed.back(t, builds) })
+
+	// Nothing runs from here until the reader starts again: the settlements of the writer's two
+	// documents have written their versions, and the reader holds no room of them.
+	time.Sleep(referencesSettle)
+	waitUntil(t, writerOnlyReferencesBack, "the "+writer.name+"'s documents to owe nothing",
+		func() bool { return !formsOwed(t, builds, twin) && !formsOwed(t, builds, issueTwice) })
+	stop(t, reader.process)
+	stop(t, writer.process)
+	if formsOwed(t, builds, twin) || formsOwed(t, builds, issueTwice) {
+		t.Fatalf("a document the %s wrote was owed once both processes stopped", writer.name)
+	}
+
+	output := builds.rebuildRefsOnPrevious(t)
+	t.Logf("the %s's rebuild-refs: %s", reader.name, strings.TrimSpace(output))
+	if !formsOwed(t, builds, twin) {
+		t.Fatalf("after the %s's rebuild-refs deleted the edges of the forms only the %s reads, the document is not owed: its refs rows are %v",
+			reader.name, writer.name, documentRefs(t, builds, twin))
+	}
+	if formsOwed(t, builds, issueTwice) {
+		t.Fatalf("after the %s's rebuild-refs the document naming its issue twice is owed, though its refs rows %v keep the edge the bare key finds",
+			reader.name, documentRefs(t, builds, issueTwice))
+	}
+
+	reader.process = builds.startPrevious(t, referenceEnv())
+	waitUntil(t, triggerRowsBack, "the "+reader.name+"'s block index to index the document naming its issue twice", func() bool {
+		var version *int
+		if err := builds.database.Pool.QueryRow(context.Background(),
+			`select version from document_block_versions where artifact_id = $1::uuid`, issueTwice).Scan(&version); err != nil {
+			t.Fatalf("read the block index of %s: %v", issueTwice, err)
+		}
+		return version != nil
+	})
+	if !formsOwed(t, builds, issueTwice) {
+		t.Fatalf("after the %s's block index dropped a block's edge of the document naming its issue twice, the document is not owed: its blocks hold %v",
+			reader.name, documentBlockEdges(t, builds, issueTwice))
+	}
+
+	writer.process = builds.startCurrent(t, referenceEnv())
+	waitUntil(t, triggerRowsBack, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
+		func() bool { return onlyForms.back(t, builds) && twice.back(t, builds) })
+}
+
+// rebuildRefsOnPrevious runs the previous build's `envoy-dispatch rebuild-refs` against the pair's
+// database, as an operator runs it during a roll, and returns what it printed.
+func (b *twoBuilds) rebuildRefsOnPrevious(t *testing.T) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	home := t.TempDir()
+	cmd := exec.CommandContext(ctx, b.build.path("envoy-dispatch"), "rebuild-refs")
+	cmd.Dir = home
+	cmd.Env = []string{
+		"HOME=" + home, "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
+		"DATABASE_URL=" + b.databaseURL(t), "DISPATCH_SERVER_URL=" + referenceServerURL,
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the previous build's rebuild-refs: %v\n%s", err, output)
+	}
+	return string(output)
 }
 
 // refRowsMoved is what got lacks of written, and what it holds of a kind written holds a row of

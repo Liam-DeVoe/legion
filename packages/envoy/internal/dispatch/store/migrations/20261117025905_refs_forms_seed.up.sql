@@ -9,7 +9,11 @@
 -- Those triggers are live by now, so a write that lands while this runs is owed by its trigger,
 -- and a row a trigger already wrote keeps its enqueued_at.
 -- Reads comments, asks, messages, artifacts and artifact_versions (ACCESS SHARE) and writes only
--- refs_forms_owed (0126's and 20261103205042's precedent).
+-- refs_forms_owed (0126's and 20261103205042's precedent). A write of a text already stored still
+-- waits until the seed commits: its trigger's insert meets the (kind, id) key this statement has
+-- inserted and not yet committed. A writer that touches two stored sources in the reverse of this
+-- statement's order (comments, asks, messages, documents) can deadlock with it (40P01), which the
+-- migration runner does not retry.
 insert into refs_forms_owed (kind, id)
 select 'comment', id from comments
 union all

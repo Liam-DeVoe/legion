@@ -9,8 +9,9 @@ import (
 )
 
 // beforeRefsForms is the last migration before the forms queue: 20261117025900_refs_forms_owed
-// through 20261117025906_refs_forms_delete_trigger apply after it. lastRefsFormsTrigger is the
-// last of the source triggers (20261117025901-20261117025904) that the seed runs after.
+// through 20261117025910_ask_block_refs_refs_forms_delete_trigger apply after it.
+// lastRefsFormsTrigger is the last of the source triggers (20261117025901-20261117025904) that
+// the seed runs after.
 const (
 	beforeRefsForms      = 20261115182525
 	lastRefsFormsTrigger = 20261117025904
@@ -110,7 +111,8 @@ func TestTheRefsFormsSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 // What a build that predates the forms writes during the roll is owed a re-index by the source
 // triggers, on the writes refs_grammar_owed's triggers owe it for, whatever its text says: a
 // comment, an ask and an issue message on insert and on an edit of the text or of the columns that
-// say which document a `#id` in it resolves against, and a document version its document. An
+// say which document a `#id` in it resolves against, an ask on a write of its options or its
+// answer too, which are its parts, and a document version its document. An
 // image's version, a direct message, an update of a column the index does not read, an anchor
 // refresh and an ask's question-block settlement owe nothing of their own - the last owes no
 // `scope` row either, since these forms change no `#id` - beyond the ask itself, whose
@@ -156,6 +158,21 @@ func TestTheRefsFormsTriggersOweWhatAnyBuildWrites(t *testing.T) {
 	if at := readOwedForms(t, store)[comment]; !at.After(past) {
 		t.Fatalf("an edited owed comment kept enqueued_at %v, want it moved past %v", at, past)
 	}
+
+	// An ask's options and its answer are parts an older build re-indexes on their write - the
+	// answer through the one row write its transition makes - so each owes the ask; the options and
+	// the answer written back as they stand owe nothing.
+	drain()
+	write("edit the ask's options alone", `update asks set options = '[{"label":"dispatch://CORE-1/plan"}]' where id = $1`, fixture.ask)
+	assertOwedForms(t, store, ask)
+	drain()
+	write("answer the ask as a transition does", `
+		update asks set state = 'answered', answer = '{"user":"bob","selected":["dispatch://CORE-1/plan"],"at":"2026-01-01T00:00:00Z"}'
+		where id = $1`, fixture.ask)
+	assertOwedForms(t, store, ask)
+	drain()
+	write("write the options and the answer back as they stand", `update asks set options = options, answer = answer where id = $1`, fixture.ask)
+	assertOwedForms(t, store)
 
 	// The anchor's artifact_id is a column an older build's index reads, so moving it owes the
 	// row; the anchor refreshes a settlement makes - a moved quote, an orphan mark, the block id -
@@ -290,9 +307,11 @@ func TestTheRefsFormsDeleteTriggerOwesEverySourceADeleteTouches(t *testing.T) {
 	assertOwedForms(t, store, owedSource{"ask", fixture.ask})
 }
 
-// The drain's read, exactly as refs.ListOwed runs it on refs.RefsFormsOwed, goes through the
+// The drain's reads, exactly as refs.ListOwedAfter runs them on refs.RefsFormsOwed, go through the
 // queue's own index in the order the index holds: no sort, so the limit cuts the backlog before it
-// is read rather than after, which matters where the seed gives every row one enqueued_at.
+// is read rather than after, which matters where the seed gives every row one enqueued_at. The read
+// past a cursor bounds that index scan with the cursor (an index condition, not a filter), so a
+// pass deep into the backlog starts where the last one ended rather than reading every row before.
 func TestTheRefsFormsDrainReadsItsIndexInOrder(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -303,5 +322,13 @@ func TestTheRefsFormsDrainReadsItsIndexInOrder(t *testing.T) {
 	plan := explainWithoutSeqScan(t, store, read)
 	if !strings.Contains(plan, "refs_forms_owed_enqueued") || strings.Contains(plan, "Sort") {
 		t.Errorf("the owed read's plan does not read refs_forms_owed_enqueued in order:\n%s", plan)
+	}
+	const past = `select o.kind, o.id::text, o.enqueued_at from refs_forms_owed o
+		where (o.enqueued_at, o.kind, o.id) > ('2026-01-01T00:00:00Z'::timestamptz, 'comment', '00000000-0000-4000-8000-000000000000'::uuid)
+		order by o.enqueued_at, o.kind, o.id limit 200`
+	plan = explainWithoutSeqScan(t, store, past)
+	if !strings.Contains(plan, "refs_forms_owed_enqueued") || strings.Contains(plan, "Sort") ||
+		!strings.Contains(plan, "Index Cond") || strings.Contains(plan, "Filter") {
+		t.Errorf("the read past a cursor does not start at the cursor in refs_forms_owed_enqueued:\n%s", plan)
 	}
 }
