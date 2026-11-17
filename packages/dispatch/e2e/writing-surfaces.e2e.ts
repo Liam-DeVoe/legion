@@ -5,7 +5,7 @@ import {
 } from "@legion/contracts";
 
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { agentRow, getSentMessages } from "./agents";
+import { agentRow } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
@@ -35,6 +35,9 @@ import {
   expectDeliveryClaim,
   expectHint,
   expectIssueRows,
+  expectSend,
+  heldRow,
+  heldRows,
   keyboardOnly,
   NO_MATCH,
   OFF_ISSUE_PERSON,
@@ -45,6 +48,7 @@ import {
   type SendBox,
   seedArchitecture,
   seedWritingBoxes,
+  startHolding,
   walkBox,
 } from "./writing-boxes";
 
@@ -64,9 +68,12 @@ import {
  *
  * INFRA-1702's `c-delivery-unchanged` is held in the same rows: each box whose write delivers is
  * sent through its own send control, which its driver hands to `expectRow`, and the fake Envoy
- * listener takes one frame for the party picked in it (`expectDeliveryClaim`). A send can close
+ * listener takes exactly one frame for the party picked in it, in the mode the composer's rule
+ * gives, read again once the server has settled the delivery (`expectSend`). A send can close
  * the box or end the reply a later step starts, so each driver that goes on after one waits for
- * the send to land first, and says what it waits on.
+ * the send to land first, and says what it waits on. Each row a driver holds is recorded
+ * (`heldRows`), and every box's test ends by holding that record to the box's covered rows of
+ * the list, so a row with no driver fails as a box with no driver does.
  *
  * `e2e/writing-boxes.ts` holds the world and the checks; this file holds how each box is
  * reached. Two boxes draw the picker in an editor of their own rather than in the shared text
@@ -197,7 +204,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // is pressed only then, so the landing cannot take back the reply it starts.
       await expect(field).toHaveValue(SESSION_MENTION);
       // The reply under the message the row shows goes to that thread's target.
-      await row.getByRole("button", { name: "Reply" }).first().click();
+      await row.getByRole("button", { exact: true, name: "Reply" }).first().click();
       await expectRow(page, field, "agents-row-composer", "message-reply");
     },
   },
@@ -256,7 +263,6 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // And that row's `delivers`, which no state of the field draws, is driven instead: a
       // question back with a party picked in it is a comment on the ask, so the party is told,
       // and the fake listener takes one frame for it carrying the body the reader wrote.
-      const before = (await getSentMessages()).length;
       await keyboardOnly(field);
       await pickReference(field, `@${QUERY}`, new RegExp(`^${SESSION.title}`));
       await field.press("End");
@@ -264,10 +270,9 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await field.pressSequentially(back);
       const body = `${SESSION_MENTION}${back}`;
       await expect(field).toHaveValue(body);
-      await card.getByRole("button", { exact: true, name: "Ask back" }).click();
-      await expect
-        .poll(async () => (await getSentMessages()).slice(before))
-        .toMatchObject([{ message: body, target_session: SESSION.session_id }]);
+      await expectSend("ask-answer", "ask-back", body, () =>
+        card.getByRole("button", { exact: true, name: "Ask back" }).click()
+      );
     },
   },
   "ask-decline-note": {
@@ -460,6 +465,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expect(documentEditor(other)).toContainText(`Ask @${SESSION.title}`);
       await expect(documentEditor(other)).not.toContainText("](dispatch://agent/");
       await other.close();
+      // The editor draws no party list, so the stored text and the other reader are its claim.
+      heldRow("document-body", "document-text");
     },
   },
   "inbox-thread-reply": {
@@ -547,8 +554,12 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await card.getByRole("button", { name: "Expand thread" }).click();
       const thread = page.getByRole("dialog", { name: "Thread" });
       await expect(thread).toBeVisible();
-      await thread.getByRole("button", { name: "Reply" }).first().click();
-      const field = commentField(page);
+      // The thread's own Reply, named exactly: the card's reply composer the thread opens with
+      // has a `Cancel reply` control, which a substring match takes first, and which closes the
+      // thread, leaving the conversation's composer at the foot of the page as the one `Comment`
+      // box a page-wide read finds. Reply docks the thread's composer, this box, in the dialog.
+      await thread.getByRole("button", { exact: true, name: "Reply" }).click();
+      const field = thread.getByRole("textbox", { exact: true, name: "Comment" });
       await expect(field).toBeVisible();
       await walkBox(field, world);
       await expectRow(page, field, "phone-thread-composer", "comment", () =>
@@ -602,11 +613,18 @@ for (const box of coveredBoxes()) {
     const world = await seedWritingBoxes();
     await driver.seed?.(world);
     const alice = await asUser(browser, "alice");
+    startHolding();
     try {
       const page = await alice.newPage();
       await driver.drive(page, world);
     } finally {
       await alice.close();
     }
+    // Every covered row of the box, a delivering one included, is one its driver held.
+    expect(heldRows(), `${box}: the rows its driver held`).toEqual(
+      rowsOfBox(box)
+        .map((row) => `${box}/${row.write}`)
+        .sort()
+    );
   });
 }

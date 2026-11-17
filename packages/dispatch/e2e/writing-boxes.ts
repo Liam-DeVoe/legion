@@ -16,6 +16,7 @@ import {
   createIssueArtifact,
   createMessage,
   createProject,
+  getComment,
   putArchitectureSource,
   syncArchitectureSource,
 } from "./api";
@@ -373,6 +374,75 @@ async function framesSince(
   });
 }
 
+/** The rows of the list the running test's driver has held: a row whose write delivers once its
+ *  send made its one frame (`expectSend`), every other row once its box was seen to tell nobody
+ *  (`expectDeliveryClaim`) or, for a box that draws no party list, once its driver read what its
+ *  write does (`heldRow`). Each box's test compares them with that box's covered rows of the list
+ *  once its driver is done, so a row the list gains that no driver holds fails, and so does a
+ *  delivering row whose hint alone a driver checks. The set is the worker's, so each test starts
+ *  it afresh (`startHolding`). */
+const held = new Set<string>();
+
+/** Empties the record of held rows, for a test about to drive a box. */
+export function startHolding(): void {
+  held.clear();
+}
+
+/** The rows held since `startHolding`, as `<box>/<write>`, sorted. */
+export function heldRows(): string[] {
+  return [...held].sort();
+}
+
+/** Holds a row of a box that draws no party list, whose driver reads what its write does itself:
+ *  the document body, whose pick is read in the document's stored text. A row whose write
+ *  delivers is held only by the frame its send makes, so this refuses one. */
+export function heldRow(box: DispatchWritingBox, write: DispatchWriting): void {
+  if (dispatchWritingBox(box, write).delivers) {
+    throw new Error(`${box} writing ${write} delivers, so only the frame its send makes holds it`);
+  }
+  held.add(`${box}/${write}`);
+}
+
+/** The comment a frame of the fake listener's delivers, from the `delivery.comment_id` of its
+ *  payload (`comment_delivery.go`). */
+function commentOfFrame(sent: Record<string, unknown> | undefined): string {
+  const payload = typeof sent?.payload === "string" ? JSON.parse(sent.payload) : undefined;
+  const id = payload?.delivery?.comment_id;
+  if (typeof id !== "string") throw new Error(`a frame names no comment: ${JSON.stringify(sent)}`);
+  return id;
+}
+
+/** Sends a delivering box's write with `send`, its own control, and holds the send to exactly one
+ *  frame: for the session picked, carrying `body`, in `PLAIN_MODE`. The first poll waits for that
+ *  frame. The server sends after it has answered the write, so the comment the frame names is
+ *  then read until its one delivery has settled as `sent` (`CommentDelivery.State`), and only
+ *  then are the frames read once more: a duplicate that lands after the first frame fails too,
+ *  which a poll that passes the moment one frame is there would let through. */
+export async function expectSend(
+  box: DispatchWritingBox,
+  write: DispatchWriting,
+  body: string,
+  send: SendBox
+): Promise<void> {
+  const one = [{ message: body, mode: PLAIN_MODE, target_session: SESSION.session_id }];
+  const message = `${box} writing ${write}: the frames its send made`;
+  const before = (await getSentMessages()).length;
+  await send();
+  await expect.poll(() => framesSince(before), { message }).toEqual(one);
+  const comment = commentOfFrame((await getSentMessages())[before]);
+  const settled = async () =>
+    ((await getComment(comment)).comment.deliveries ?? []).map((sent) => sent.state);
+  await expect
+    .poll(settled, {
+      message: `${box} writing ${write}: how comment ${comment}'s delivery settled`,
+    })
+    .toEqual(["sent"]);
+  expect(await framesSince(before), `${message}, read again once its delivery settled`).toEqual(
+    one
+  );
+  held.add(`${box}/${write}`);
+}
+
 /** What a box does with a picked party, which is its row's own `delivers`. A box that does not
  *  deliver lists nobody under the field. A box that delivers lists the party there, and its own
  *  send then reaches that party: the fake Envoy listener takes one frame, for the session picked,
@@ -383,7 +453,8 @@ async function framesSince(
  *  told while neither reader of a comment reads `suggestion.replace_with`. So a delivering row
  *  needs `send`, and a delivering row the list gains with a driver that hands none fails here
  *  rather than passing unsent. A delivering box's send may close it, so the box is left as the
- *  send leaves it, and its driver goes on from there. */
+ *  send leaves it, and its driver goes on from there. A row is held once its claim is checked
+ *  (`heldRows`). */
 export async function expectDeliveryClaim(
   field: Locator,
   box: DispatchWritingBox,
@@ -405,6 +476,7 @@ export async function expectDeliveryClaim(
   if (sends === null) {
     await expect(targets).toHaveCount(0);
     await field.fill("");
+    held.add(`${box}/${write}`);
     return;
   }
   await expect(targets).toHaveText(`session:${SESSION.session_id}`);
@@ -412,14 +484,7 @@ export async function expectDeliveryClaim(
   await field.pressSequentially(DELIVERED_WORDS);
   const body = `${SESSION_MENTION}${DELIVERED_WORDS}`;
   await expect(field).toHaveValue(body);
-  const before = (await getSentMessages()).length;
-  await sends();
-  // `toEqual` holds the array to its length, so a second frame fails as a missing one does.
-  await expect
-    .poll(() => framesSince(before), {
-      message: `${box} writing ${write}: the frames its send made`,
-    })
-    .toEqual([{ message: body, mode: PLAIN_MODE, target_session: SESSION.session_id }]);
+  await expectSend(box, write, body, sends);
 }
 
 /** Everything the box itself is held to, which is every claim but the hint: the three doors,
