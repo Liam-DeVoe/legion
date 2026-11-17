@@ -192,7 +192,10 @@ export function VerificationFilterBody({
   // view as it came, whatever the lines hold.
   const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
   const holdsWords = useHoldsWords();
-  const unfolded = view;
+  // A result the words filter kept of a check that serves no statement and folds to the issue's
+  // line is drawn with that check, in the check's place under that line (`withLooseChecks`).
+  const lifted = useMemo(() => withLooseChecks(view, whole), [view, whole]);
+  const unfolded = lifted.view;
   // An address that names an overtaken node, or a node under one, opens each line the path to it
   // runs through, as the words filter opens the lines that hold its matches: once for each node
   // an address names, once the view holds it, so a line the reader closes after that stays
@@ -309,11 +312,14 @@ export function VerificationFilterBody({
   };
   /** The line of overtaken nodes under the node `id`, as its row draws it, where `id` is the
    *  issue's and it holds any row, or a statement's that holds an overtaken check. The issue's
-   *  counts the overtaken nodes its rows fold with, each once (`foldedWith`). */
+   *  counts the overtaken nodes its rows fold with, each once: the topmost one each row stands at
+   *  or under (`TreeNode.closedBy`), the row itself where the tree gives it none. */
   const lineOf = (id: string): OvertakenFoldState | undefined => {
     const held =
       id === view.id
-        ? new Set([...shownOvertaken, ...looseOvertaken].map(({ node }) => foldedWith(node))).size
+        ? new Set(
+            [...shownOvertaken, ...looseOvertaken].map(({ node }) => node.closedBy ?? node.id)
+          ).size
         : fold.held.get(id);
     return held === undefined || held === 0
       ? undefined
@@ -547,7 +553,13 @@ export function VerificationFilterBody({
                   {looseOvertaken.map((check) => (
                     <Check
                       check={check}
-                      earlierOpen={false}
+                      // Where a result the words kept of it is not its latest, its earlier results
+                      // are drawn open, so that result is on screen.
+                      earlierOpen={
+                        lifted.kept
+                          .get(check.node.id)
+                          ?.some((result) => result !== check.latest?.id) === true
+                      }
                       key={check.node.id}
                       lined
                       loose={true}
@@ -691,16 +703,6 @@ function foldsToIssueLine(node: TreeNode): boolean {
   return isOvertaken(node) || node.closed === true;
 }
 
-/** The overtaken node a row of the issue's line folds with, by its id, which the line counts
- *  once however many of its rows fold with it: the row itself where it is overtaken and stands
- *  under no overtaken parent, and else the parent the view draws as its parent line. The view
- *  draws nothing above that parent, so a row under a parent that is not overtaken itself but
- *  stands under an overtaken node is counted by that parent. */
-function foldedWith(node: TreeNode): string {
-  const line = node.parentLine;
-  return line !== undefined && (isOvertaken(line) || !isOvertaken(node)) ? line.id : node.id;
-}
-
 /** The id of a check's row under a statement. A check that serves two statements is drawn
  *  under each, so its node's id names two rows, and the statement's id beside it names one. */
 function checkRowId(statement: string, check: string): string {
@@ -745,6 +747,42 @@ function foldOvertaken(
     };
   });
   return { held, view: held.size === 0 ? view : { ...view, children } };
+}
+
+/**
+ * `view` with each result the words filter lifted to its top with a check that serves no
+ * statement as its parent line (`presets.ts`), where that check folds to the issue's line
+ * (`foldsToIssueLine`), drawn as that check, as the view with no words (`whole`) holds it: once,
+ * at the place of its first such result, with every result of its own, so it is drawn under that
+ * line as it is with no words, holding the result. The query's reading reads only a check's own
+ * results (`statement-state.ts`), so the result would be drawn as a row of no kind among the top
+ * rows, under no line and without its check. `kept` holds the results the words kept of each
+ * such check, by the check's id. `view` itself where it lifted no such result.
+ */
+function withLooseChecks(
+  view: TreeNode,
+  whole: TreeNode
+): { readonly kept: ReadonlyMap<string, readonly string[]>; readonly view: TreeNode } {
+  const kept = new Map<string, string[]>();
+  if (view === whole) return { kept, view };
+  const folded = new Map(
+    whole.children
+      .filter((child) => child.type === "check" && foldsToIssueLine(child))
+      .map((check) => [check.id, check])
+  );
+  const children: TreeNode[] = [];
+  for (const child of view.children) {
+    const line = child.type === "result" ? child.parentLine : undefined;
+    const check = line === undefined ? undefined : folded.get(line.id);
+    const results = check === undefined ? undefined : kept.get(check.id);
+    if (check === undefined) children.push(child);
+    else if (results !== undefined) results.push(child.id);
+    else {
+      kept.set(check.id, [child.id]);
+      children.push(check);
+    }
+  }
+  return { kept, view: kept.size === 0 ? view : { ...view, children } };
 }
 
 /** The id of the line of overtaken nodes under the node `id` among the tree's rows (`rows`),

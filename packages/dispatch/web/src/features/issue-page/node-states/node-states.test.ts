@@ -73,7 +73,18 @@ import { type PresetSignal, presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
 import { ShortcutHelpOpener } from "../shortcut-help-opener";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
-import { answerNode, coverageRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
+import {
+  answerNode,
+  coverageRead,
+  issueDetails,
+  decision as specDecision,
+  decisionNode as specDecisionNode,
+  issueTree as specIssueTree,
+  shaped as specShaped,
+  statementRef as specStatementRef,
+  specViewAnswer,
+  statement,
+} from "../spec-filter/spec-fixtures";
 import { pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import {
@@ -1236,6 +1247,76 @@ test("the Verification view draws a result of an overtaken check the words match
   }
 });
 
+// Under Verification a words match on a result of an overtaken check that serves no statement is
+// drawn with that check under the issue's line, as the check is with no words, and the words draw
+// that line open: the view lifts the result to its top, with the check as its parent line, and the
+// body draws the check that holds it in its place. Where the result the words kept is not the
+// check's latest, the check draws its earlier results open, so the result is on screen. With the
+// check live the result is drawn among the other rows, and no line is drawn.
+test("the Verification view draws a result of an overtaken check that serves no statement under the issue's line", () => {
+  const passed = checkThat("c-one", true);
+  // The check, with one failed result for each of `observed`, each recorded after the one before.
+  const seenWith = (observed: readonly string[]): CheckBlock => ({
+    ...checkThat("c-two", false),
+    results: observed.map((words, place) =>
+      result({
+        check_block_id: "c-two",
+        created_at: `2026-11-14T01:0${place}:00Z`,
+        failed: 1,
+        id: `result-c-two-${place}`,
+        observed: words,
+        verdict: "fail",
+      })
+    ),
+  });
+  const seen = seenWith(["zebrafinch seen"]);
+  const seenId = checkNode(seen).id;
+  const issueWith = (loose: CheckBlock): TreeNode =>
+    node(KEY, "issue", [
+      statementNode("r1", "The page draws the checks.", [checkNode(passed)]),
+      checkNode(loose),
+    ]);
+  const overtaken = drawVerification(
+    stamped(issueWith(seen), { [seenId]: { life: "overtaken" } }),
+    [passed, seen],
+    "zebrafinch"
+  );
+  try {
+    const line = theLine(overtaken.container);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    const check = rowOf(overtaken.container, seenId);
+    expect(check !== null && line.contains(check)).toBe(true);
+    expect(check?.textContent).toContain("zebrafinch seen");
+    expect(overtaken.container.querySelector("[data-verification-other]")).toBeNull();
+  } finally {
+    overtaken.unmount();
+  }
+
+  const earlier = seenWith(["zebrafinch seen", "nothing seen"]);
+  const kept = drawVerification(
+    stamped(issueWith(earlier), { [seenId]: { life: "overtaken" } }),
+    [passed, earlier],
+    "zebrafinch"
+  );
+  try {
+    const check = rowOf(kept.container, seenId);
+    expect(check !== null && theLine(kept.container).contains(check)).toBe(true);
+    expect(check?.textContent).toContain("zebrafinch seen");
+  } finally {
+    kept.unmount();
+  }
+
+  const live = drawVerification(issueWith(seen), [passed, seen], "zebrafinch");
+  try {
+    expect(live.container.querySelector("[data-verification-other]")?.textContent).toContain(
+      "zebrafinch seen"
+    );
+    expect(live.container.querySelector("[data-overtaken-line]")).toBeNull();
+  } finally {
+    live.unmount();
+  }
+});
+
 /** An issue of one statement whose second check a later one took the place of, and the checks
  *  the results read answers for it: the live one, then the overtaken one. */
 function statementWithOvertakenCheck() {
@@ -1735,6 +1816,37 @@ test("the keys from a Spec decision cell stop on the overtaken line", async () =
     await waitFor(() => expect(document.activeElement).toBe(line));
   } finally {
     view.unmount();
+  }
+});
+
+// Under Spec a decision at or under an overtaken node shaped nothing that still stands: the run
+// of the statement it shaped is drawn as a run no decision shaped, with no decision in its cell.
+// With the decision live the cell draws it.
+test("the Spec view draws no overtaken decision beside the statement it shaped", () => {
+  const D1 = "decisions-md#b-d1";
+  const rootWith = (states: Readonly<Record<string, NodeStates>>): TreeNode => ({
+    ...stamped(specIssueTree([statement("r1"), specDecisionNode("d1")]), states),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        specDecision("d1", { links: [specShaped(specStatementRef("r1"))] }),
+      ]),
+    },
+  });
+  const overtaken = drawSpec(rootWith({ [D1]: { life: "overtaken" } }));
+  try {
+    const cell = cellBeside(overtaken.container, "spec#b-r1");
+    expect(cell).not.toHaveAttribute("data-decision-id");
+    expect(cell.querySelector("[data-spec-said]")).toBeNull();
+  } finally {
+    overtaken.unmount();
+  }
+
+  const live = drawSpec(rootWith({}));
+  try {
+    expect(cellBeside(live.container, "spec#b-r1")).toHaveAttribute("data-decision-id", D1);
+  } finally {
+    live.unmount();
   }
 });
 
@@ -2433,6 +2545,106 @@ test("a statement under an overtaken question a view draws no row for draws no N
     control.unmount();
   }
   expect([closedIn(live, "spec"), closedIn(live, "verification")]).toEqual([false, false]);
+});
+
+// Under Spec the words filter lifts a match under the line of a parent the view's answer holds,
+// where the outline holds that parent under an overtaken question the view draws nothing of. The
+// match stands under that parent all the same: it is closed, as it is with no words and in the
+// outline, so it draws no "No check" and folds to its group's line, which the words draw open.
+test("a words match lifted under a parent the outline holds under an overtaken node is closed", async () => {
+  const R3 = "spec#b-r3";
+  const outline = outlineOf([
+    readBlock("r1", "requirement", "spec", 0, { text: "The page draws r1." }),
+    readNode("ask-1", "ask", { state: "overtaken" }),
+    readBlock("r2", "requirement", "spec", 1, { parent: "ask-1", text: "The page draws r2." }),
+    readBlock("r3", "requirement", "spec", 2, { parent: "r2", text: "A zebra crosses r3." }),
+  ]);
+  const spec = readAnswer([
+    readBlock("r1", "requirement", "spec", 0, { mark: "query", text: "The page draws r1." }),
+    readBlock("r2", "requirement", "spec", 1, {
+      mark: "query",
+      parent: "ask-1",
+      parent_line: { id: "ask-1", line: "Words of ask-1.", supertag: "ask" },
+      text: "The page draws r2.",
+    }),
+    readBlock("r3", "requirement", "spec", 2, {
+      mark: "query",
+      parent: "r2",
+      text: "A zebra crosses r3.",
+    }),
+  ]);
+  const root = { ...outline, views: { spec } };
+  const r3Under = (query: string) => readNodeOf(presetView(root, "spec", query).root, "r3");
+  expect(readNodeOf(outline, "r3")?.closed).toBe(true);
+  expect(r3Under("")?.closed).toBe(true);
+  expect(r3Under("zebra")?.parentLine?.id).toBe("spec#b-r2");
+  expect(r3Under("zebra")?.closed).toBe(true);
+
+  const view = drawSpec(root, { query: "zebra" });
+  try {
+    await waitFor(() => expect(rowOf(view.container, R3)).not.toBeNull());
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
+    expect(rowOf(view.container, R3)).not.toHaveAttribute("data-spec-mark");
+    expect(view.container.querySelector('[data-spec-mark="no_check"]')).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Under Verification the issue's line counts each overtaken node its rows fold with once: the
+// topmost one each stands at or under, as the tree holds it. Two statements under two live
+// questions of one overtaken comment fold with that comment alone, though each carries its own
+// question as its parent line, so the line says "1 overtaken".
+test("the Verification issue's line counts the overtaken node its statements stand under once", () => {
+  const asked = (id: string) => ({ id, line: `Words of ${id}.`, supertag: "ask" });
+  const outline = outlineOf([
+    readBlock("r1", "requirement", "spec", 0),
+    readBlock("c1", "check", "verification-md", 0, { parent: "r1" }),
+    readNode("com-1", "comment", { state: "overtaken" }),
+    readNode("ask-1", "ask", { parent: "com-1" }),
+    readNode("ask-2", "ask", { parent: "com-1" }),
+    readBlock("r3", "requirement", "spec", 1, { parent: "ask-1" }),
+    readBlock("c3", "check", "verification-md", 1, { parent: "r3" }),
+    readBlock("r4", "requirement", "spec", 2, { parent: "ask-2" }),
+    readBlock("c4", "check", "verification-md", 2, { parent: "r4" }),
+  ]);
+  const verification = readAnswer([
+    readBlock("r1", "requirement", "spec", 0, { mark: "context" }),
+    readBlock("c1", "check", "verification-md", 0, { mark: "query", parent: "r1" }),
+    readBlock("r3", "requirement", "spec", 1, {
+      mark: "context",
+      parent: "ask-1",
+      parent_line: asked("ask-1"),
+    }),
+    readBlock("c3", "check", "verification-md", 1, { mark: "query", parent: "r3" }),
+    readBlock("r4", "requirement", "spec", 2, {
+      mark: "context",
+      parent: "ask-2",
+      parent_line: asked("ask-2"),
+    }),
+    readBlock("c4", "check", "verification-md", 2, { mark: "query", parent: "r4" }),
+  ]);
+  const root = { ...outline, views: { verification } };
+  const drawn = drawVerification(root, []);
+  try {
+    expect(linesOf(drawn.container).map((line) => line.textContent)).toEqual([
+      `1 ${CONTROL_LABELS.overtaken_count}`,
+    ]);
+  } finally {
+    drawn.unmount();
+  }
+
+  // Each statement folds with the comment, which the tree read gives as the topmost overtaken
+  // node it stands under, in the outline and in the view alike.
+  const comment = readNodeOf(outline, "com-1")?.id;
+  expect(comment).toBeDefined();
+  expect(readNodeOf(outline, "r3")?.closedBy).toBe(comment);
+  const view = presetView(root, "verification", "").root;
+  expect(["r3", "r4"].map((id) => readNodeOf(view, id)?.parentLine?.id)).toEqual([
+    "ask-1",
+    "ask-2",
+  ]);
+  expect(["r3", "r4"].map((id) => readNodeOf(view, id)?.closedBy)).toEqual([comment, comment]);
 });
 
 /** Where the page's address stands, drawn by a probe that runs `useOvertakenTarget` as the

@@ -256,6 +256,12 @@ export function SpecFilterBody({
       }),
     [decisions, nameOf, nodeIdOf, reader, results, root, view]
   );
+  // The id of each node of the tree at or under an overtaken node: a decision among them is drawn
+  // beside no run (`withoutClosedDecisions`).
+  const closedIds = useMemo(
+    () => new Set(nodesInOrder(root).flatMap((node) => (node.closed === true ? [node.id] : []))),
+    [root]
+  );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const setFocusedNode = useSetFocusedNode();
@@ -683,6 +689,7 @@ export function SpecFilterBody({
       >
         {groups.map((group) => (
           <Group
+            closed={closedIds}
             context={context}
             focused={focused}
             group={group}
@@ -905,6 +912,40 @@ function openedRows(
   return { holding, lines, rows: [...rows, ...others.map(rowOf)] };
 }
 
+/**
+ * `group` with no decision at or under an overtaken node (`closed`, the ids of the tree's closed
+ * nodes, matched against the node the decision's cell is drawn as): a later node took its place,
+ * so it shaped nothing that still stands. A statement it headed is headed by the next decision
+ * that shaped it, or by none, and no statement names it among the others that shaped it; the
+ * statements are run again by the decision that now heads each, as `specDecidedBy` runs them, so
+ * the run is drawn as a run no decision shaped where none is left. `group` itself where no
+ * decision of it is closed.
+ */
+function withoutClosedDecisions(group: SpecGroup, closed: ReadonlySet<string>): SpecGroup {
+  const isClosed = (decision: SpecDecision): boolean => closed.has(decision.node ?? decision.id);
+  const holds = group.runs.some(
+    (run) =>
+      (run.decision !== undefined && isClosed(run.decision)) ||
+      run.statements.some((statement) => statement.alsoShapedBy.some(isClosed))
+  );
+  if (!holds) return group;
+  const runs: { decision?: SpecDecision; statements: SpecStatement[] }[] = [];
+  for (const run of group.runs) {
+    for (const statement of run.statements) {
+      const ties = [
+        ...(run.decision === undefined ? [] : [run.decision]),
+        ...statement.alsoShapedBy,
+      ].filter((made) => !isClosed(made));
+      const decision = ties.at(0);
+      const kept: SpecStatement = { ...statement, alsoShapedBy: ties.slice(1) };
+      const last = runs.at(-1);
+      if (last !== undefined && last.decision?.id === decision?.id) last.statements.push(kept);
+      else runs.push({ ...(decision === undefined ? {} : { decision }), statements: [kept] });
+    }
+  }
+  return { ...group, runs };
+}
+
 /** How far below the view's column heads a statement or cell is put where it has to be scrolled
  *  to: the clearance `bringOnScreen` leaves below the band (`identity-block.ts`'s private
  *  `CLEARANCE`), which this part imports once that module exports it (decision 94). */
@@ -1112,6 +1153,7 @@ function dotted(parts: readonly LinePart[]): ReactNode {
 /** The statements under one parent: that parent's own line as the group's heading, then one row
  *  of the grid per run of statements one decision shaped. */
 function Group({
+  closed,
   context,
   focused,
   group,
@@ -1127,6 +1169,8 @@ function Group({
   tabStop,
   underLine,
 }: {
+  /** The ids of the tree's nodes at or under an overtaken node, whose decisions draw no cell. */
+  closed: ReadonlySet<string>;
   context: ReadonlySet<string>;
   focused: string | undefined;
   group: SpecGroup;
@@ -1165,6 +1209,9 @@ function Group({
   // The marks of the node the statements hang under, which its heading's line carries: each of
   // its statements names it by that line.
   const parentLine = group.runs[0]?.statements[0]?.node.parentLine;
+  // A decision at or under an overtaken node shaped nothing that still stands: no cell draws it,
+  // and no statement names it.
+  group = withoutClosedDecisions(group, closed);
   // Each statement at or under an overtaken node folds out of its run: the line drawn after the
   // group's other statements holds it, with every other statement that folds with the same
   // overtaken node, and draws them under it, run by run as their decisions shaped them, once it is
@@ -1254,6 +1301,7 @@ function Group({
       )}
       {line?.row.open === true && line.runs.length > 0 ? (
         <Group
+          closed={closed}
           context={context}
           focused={focused}
           group={{ runs: line.runs }}

@@ -2,6 +2,7 @@ import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
+import { isOvertaken } from "./tree-fold";
 import { statesOfRead } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -110,7 +111,7 @@ function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
   const parents = new Set<string>();
   for (const node of tree?.nodes ?? []) {
     const under = node.parent !== null && parents.has(node.parent);
-    if (!under && statesOfRead(node).life !== "overtaken") continue;
+    if (!under && !isOvertaken(statesOfRead(node))) continue;
     parents.add(node.id);
     closed.add(nodeKey(node));
   }

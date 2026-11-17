@@ -217,6 +217,11 @@ export interface TreeNode {
   /** The node's life, where it has one (`NodeLife`): what its row draws in its state line, and
    *  every chip and parent line naming it after its name. */
   readonly life?: NodeLife;
+  /** The id of the topmost overtaken node this one stands at or under (`closed`), its own id
+   *  where it is that node: what a line of overtaken nodes counts once, however many of its rows
+   *  fold with it. A view's row takes it from the view's own tree, and from the outline's above
+   *  a parent the view draws as its parent line. Absent on every node that is not closed. */
+  readonly closedBy?: string;
   /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
    *  a statement a constraint names; absent on every other node. */
   readonly lens?: LensFacts;
