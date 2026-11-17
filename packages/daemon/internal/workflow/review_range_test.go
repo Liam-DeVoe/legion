@@ -133,6 +133,60 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 	}
 }
 
+// A review that decides nothing leaves the commit an earlier deciding review recorded where it
+// stands, as it leaves an empty one empty (TestAReviewThatDecidesNothingRecordsNoCommit): each case
+// starts in round 2, after the reviewer's request for changes of round 1 recorded headOne and the
+// implementer's push moved the pull request to headTwo, and the review it applies names a head
+// other than headOne. A path that cleared the commit would read none, and one that moved it would
+// read the head that review names.
+func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testing.T) {
+	later := reviewTestedAt.Add(2 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		review intake.PullRequestReview
+		// leave puts the issue where the review finds it, after round 2 began.
+		leave func(t *testing.T, pool *pgxpool.Pool)
+	}{
+		{name: "a comment", review: reviewAt(2, "commented", headTwo, later)},
+		{name: "a review its footer's head refuses", review: func() intake.PullRequestReview {
+			r := reviewAt(2, "changes_requested", headTwo, later)
+			r.Body = reviewBody("the review", headEarlier)
+			return r
+		}()},
+		{name: "a review outside reviewing", review: reviewAt(2, "approved", headTwo, later), leave: func(t *testing.T, pool *pgxpool.Pool) {
+			standsIn(t, pool, phase.Testing, "testing")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+			backToReviewing(t, apply, 2)
+			if got := issuePhase(t, pool); got != phase.Reviewing {
+				t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
+			}
+			if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
+				t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s, the head round 1's review read", got, headOne)
+			}
+			if tc.leave != nil {
+				tc.leave(t, pool)
+			}
+			apply("review", tc.review)
+			row := reviewerRow(t, pool)
+			if row.Decision != nil && row.Decision.State != "" {
+				t.Fatalf("the reviewer's row holds the decision %+v, want none: the review decides nothing", row.Decision)
+			}
+			if row.ReviewedHead != headOne {
+				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s, the one round 1's review recorded: the review decided nothing",
+					row.ReviewedHead, headOne)
+			}
+		})
+	}
+}
+
 // A person's review decides a round as it always has, on the commit_id its webhook carried, and
 // the round's decision is the person's. The commit the reviewer's next round is told is still the
 // one the reviewer's own last deciding review read: the reviewer never read the person's.
