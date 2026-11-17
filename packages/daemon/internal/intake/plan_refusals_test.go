@@ -57,6 +57,9 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 		{"a plan of an issue whose owner does it alone", PlanNotTaken("LEGION-208", "planning", "c", "owner-alone"), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant c of the experiment planning, whose owner does the whole issue itself in one step. " +
 				"Legion takes no plan from its owner for this issue."}},
+		{"a stop of a task of an issue whose group runs the default steps", TaskNotStopped("LEGION-208", "planning", "b", "default"), Refusal{Status: http.StatusConflict,
+			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
+				"Legion takes no plan from its owner for this issue, so it stops none of its tasks."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got == nil || !reflect.DeepEqual(*tc.got, tc.want) {

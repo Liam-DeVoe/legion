@@ -1026,7 +1026,8 @@ func (PlanGiven) isFact() {}
 
 // TaskStopped is the owner's stop_task of one task of a recorded issue (api's stopTask), by the
 // claim of the architect whose grant asked for it. The workflow stops the task in the fact's own
-// transaction, or answers TaskNotFound or TaskDone; a stop of a task already stopped changes
+// transaction, or answers TaskNotFound, TaskDone, or TaskNotStopped for an issue whose
+// experiment's group takes no plan from its owner; a stop of a task already stopped changes
 // nothing and is no refusal. Each request is its own fact, so a task the owner stops, starts
 // again with a later version and stops once more is stopped twice.
 type TaskStopped struct {
@@ -1478,6 +1479,15 @@ func InGroup(issue, experiment, variant, group string) string {
 func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: InGroup(issue, experiment, variant, group) +
 		" Legion takes no plan from its owner for this issue."}
+}
+
+// TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, which was
+// drawn into variant of experiment, whose arm's `plan` (group) is `default` or `owner-alone`. An
+// owner stops a task that it wrote (R16), and Legion took no plan from this issue's owner, so the
+// owner wrote none of its tasks; the code is the one register_plan answers for the same issue.
+func TaskNotStopped(issue, experiment, variant, group string) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: InGroup(issue, experiment, variant, group) +
+		" Legion takes no plan from its owner for this issue, so it stops none of its tasks."}
 }
 
 // PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is

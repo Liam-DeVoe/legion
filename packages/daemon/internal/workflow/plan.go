@@ -517,6 +517,11 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // states itself and would fail the whole fact, and before the linger a root's leave begins, since
 // the task's own state is the truer answer. A stop in a lingering tree changes nothing and says
 // so.
+//
+// An owner stops a task that it wrote (R16), so the stop of a task of an issue whose group takes
+// no plan from its owner (groupOf, takesNoPlan) is answered PLAN_NOT_TAKEN before anything else is
+// read: Legion took no plan from that owner, so it wrote none of the issue's tasks. The task goes
+// on as it stood.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -524,6 +529,13 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	}
 	if issue == nil {
 		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
+	}
+	group, err := e.groupOf(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if takesNoPlan(group) {
+		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group.Experiment, group.Variant, group.Plan)}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {

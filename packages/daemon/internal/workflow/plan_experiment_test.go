@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -232,7 +233,8 @@ func TestAPlanNotTakenIsAnsweredTheSameWhenGivenAgain(t *testing.T) {
 
 // An issue of no group runs as built (R20): an issue the daemon recorded before any experiment
 // set how an issue is done holds no row, and one whose rows name no plan — the `memory`
-// experiment's alone here — is of no group either. Each takes the plan its owner gives.
+// experiment's alone here — is of no group either. Each takes the plan its owner gives, and its
+// owner stops a task of it.
 func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -252,6 +254,52 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 			firstStep(t, pool, engine, root.Key)
 
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+			if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop of a = %+v, want it taken", result.Refusal)
+			}
+			if got := walkStandingOf(t, pool, engine, root.Key, root.Generation).state; got != record.TaskStopped {
+				t.Fatalf("task a after its owner's stop is %s, want stopped", got)
+			}
 		})
 	}
+}
+
+// An owner can stop a task that it wrote (R16), and the owner of an issue whose group runs the
+// project's default steps wrote none: Legion took no plan from it. Its stop_task is answered 409
+// PLAN_NOT_TAKEN with the sentence that names the group, and the task goes on running. The
+// control is the same issue drawn into the arm whose owner gives the plan, whose owner gave none:
+// it runs the default task, and its owner's stop of that task is taken.
+func TestTheGroupDefaultStopsNoTask(t *testing.T) {
+	t.Run("the group default refuses the stop, and the task runs on", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", "b", "default")
+		firstStep(t, pool, engine, root.Key)
+
+		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, plan.DefaultTask))
+		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
+			" Legion takes no plan from its owner for this issue, so it stops none of its tasks."}
+		if !reflect.DeepEqual(result.Refusal, want) {
+			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
+		}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); got.state != record.TaskRunning || got.phase != phase.Planning {
+			t.Fatalf("%s after the refused stop stands at %+v, want default running at planning", root.Key, got)
+		}
+	})
+
+	t.Run("the control: the group owner stops its task", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", "a", "owner")
+		firstStep(t, pool, engine, root.Key)
+
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
+			t.Fatalf("the owner's stop of default = %+v, want it taken", result.Refusal)
+		}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation).state; got != record.TaskStopped {
+			t.Fatalf("default after its owner's stop is %s, want stopped", got)
+		}
+	})
 }
