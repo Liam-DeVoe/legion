@@ -14,8 +14,8 @@ import { everythingOpened, rowKeyOf } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
 
 /**
- * The conversation's rows, the first body of the new issue page (dispatch://INFRA-1196 part G,
- * R8; decision 4 of dispatch://INFRA-1196/artifact/part-decisions-md): every node under the
+ * The conversation's rows, the first body of the new issue page (part G, R8; decision 4 of the
+ * parts): every node under the
  * issue's own node of the tree (`useIssueTree.ts`), each drawn by `NodeRow`, every branch
  * unfolded at load, and no row for the issue, whose key and title the header draws.
  *

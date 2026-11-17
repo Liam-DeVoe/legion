@@ -832,7 +832,7 @@ const EVERY_QUESTION_MAP: RefreshTarget = { queryKey: ["references", "questions"
  * The batched read the new issue page's names come from (`referenceTargetsQuery`): the words
  * shown for every `dispatch://` address one page holds - an issue's title, a document's name, a
  * block's excerpt, an ask's question, a comment's or a message's first words - in one answer
- * (dispatch://INFRA-1196 part G, R12). Its key is the set of addresses it asked for and names no
+ * (part G, R12). Its key is the set of addresses it asked for and names no
  * issue, so there is no narrower target than the prefix: a retitled issue, an edited block or a
  * reworded ask moves the words of a page whose addresses reach it, whichever issue the event is
  * on. Only the new page reads it, and the server resolves every address of the set before it can
