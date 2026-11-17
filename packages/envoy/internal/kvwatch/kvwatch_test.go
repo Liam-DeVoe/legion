@@ -1648,84 +1648,141 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 // is still a recreated bucket. The stale-watch discard compares creation times, so it must only
 // apply against a live, healthy watcher; otherwise every Rewatch would discard itself and the
 // cache would keep the deleted bucket's keys.
+//
+// nats-server v2.15.1 stamps a restored stream with the time of the restore (restoreStream), so the
+// stream the server restores here is newer than the live one. The test's reads therefore go through
+// kvwatch.WatchOn, the install a Rewatch makes once it has opened its handle, on a handle that reads
+// the restored stream with the first bucket's creation time (createdAs), as a restore that keeps the
+// snapshot's creation time reports it. Every request the test makes itself waits through the shared
+// wait (testwait.Context), not a bound of nats.go's own.
 func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.T) {
-	_, uri := testnats.Start(t)
-	conn := testnats.Connect(t, uri)
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	const stream = "KV_" + testBucketName
+	ctx := testwait.Context(t)
+	// The first bucket lives, and is deleted, on a server of its own. nats-server's file store
+	// answers a stream delete once it has renamed the stream's directory to "."+name, and removes
+	// that directory in a goroutine of its own (filestore.go, fileStore.Delete). A second delete of
+	// the same name on the same server, while that removal runs, fails its own rename, leaves the
+	// deleted stream's messages where the restore then makes its stream, and still answers
+	// success; the restore then fails on those messages. On the restoring server below, the live
+	// bucket's delete is the only delete of the name.
+	_, snapshotURI := testnats.Start(t)
+	snapshotConn := testnats.Connect(t, snapshotURI)
+	t.Cleanup(snapshotConn.Close)
+	snapshotStreams, err := jetstream.New(snapshotConn)
 	if err != nil {
-		t.Fatalf("jetstream: %v", err)
+		t.Fatalf("jetstream on the snapshot's server: %v", err)
 	}
-	// accountKeeper exists so the account is never emptied by the deletes below. nats-server
-	// schedules the removal of the account's streams directory, in the background, on every stream
-	// delete, not only on the last one; that removal is an os.Remove, which fails on a directory that
-	// is not empty. Without the keeper, each delete below leaves the directory empty — once the
-	// deleted stream's renamed copy, which goes in a goroutine of its own, is gone — so the removal
-	// it schedules can succeed, and the restore after the second delete races it and fails. With
-	// the keeper's stream in it, the directory is never empty, so every scheduled removal fails and
-	// leaves it in place.
-	const accountKeeper = "kvwatch-test-account-keeper"
-	if _, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: accountKeeper}); err != nil {
-		t.Fatalf("create the account keeper bucket: %v", err)
-	}
-	const stream = "KV_kvwatch-test"
-	old, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
+	first, err := snapshotStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: testBucketName})
 	if err != nil {
 		t.Fatalf("create the first bucket: %v", err)
 	}
-	if _, err := old.Put("restored-key", []byte("1")); err != nil {
+	if _, err := first.Put(ctx, "restored-key", []byte("1")); err != nil {
 		t.Fatalf("put restored-key: %v", err)
 	}
-	snap := snapshotStream(t, conn, stream)
-
-	// Delete and create the bucket again: a newer stream the watcher installs.
-	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
+	firstStream, err := snapshotStreams.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("read the first bucket's stream: %v", err)
+	}
+	firstCreated := firstStream.CachedInfo().Created
+	snap := snapshotStream(t, snapshotConn, stream)
+	if err := snapshotStreams.DeleteKeyValue(ctx, testBucketName); err != nil {
 		t.Fatalf("delete the first bucket: %v", err)
 	}
-	live := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
-	if _, err := live.Put("live-key", []byte("1")); err != nil {
+
+	// The restoring server, and on it the live bucket: a newer stream the watcher installs.
+	_, uri := testnats.Start(t)
+	conn, live := bucket(t, uri)
+	streams := live.Streams()
+	// accountKeeper exists so the account is never emptied by the delete below. nats-server
+	// schedules the removal of the account's streams directory, in the background, on every stream
+	// delete, not only on the last one; that removal is an os.Remove, which fails on a directory that
+	// is not empty. Without the keeper, the delete below leaves the directory empty — once the
+	// deleted stream's renamed copy, which goes in a goroutine of its own, is gone — so the removal
+	// it schedules can succeed, and the restore after the delete races it and fails. With the
+	// keeper's stream in it, the directory is never empty, so every scheduled removal fails and
+	// leaves it in place.
+	const accountKeeper = "kvwatch-test-account-keeper"
+	if _, err := streams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: accountKeeper}); err != nil {
+		t.Fatalf("create the account keeper bucket: %v", err)
+	}
+	if _, err := live.WatchHandle().Put(ctx, "live-key", []byte("1")); err != nil {
 		t.Fatalf("put live-key: %v", err)
 	}
 	into := newSeen()
-	w := kvwatch.New("probe cache", wrap(t, conn, live), into)
+	// No stream probe: a probe that found the restored stream would read it again through the live
+	// bucket's handle, at the restore's own creation time, before the reads below.
+	w := kvwatch.New("probe cache", live, into, kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	testwait.Eventually(t, "the live bucket's key", func() bool { return into.has("live-key") })
+	testwait.Eventually(t, "the live bucket's read to complete", w.Following)
+	if !into.has("live-key") {
+		t.Fatal("the live bucket's read completed without live-key")
+	}
 
 	keeperPresent := false
-	for name := range js.StreamNames() {
+	names := streams.StreamNames(ctx)
+	for name := range names.Name() {
 		keeperPresent = keeperPresent || name == "KV_"+accountKeeper
+	}
+	if err := names.Err(); err != nil {
+		t.Fatalf("list the streams: %v", err)
 	}
 	if !keeperPresent {
 		t.Fatal("the account keeper bucket is gone before the delete: the delete would empty the account and the restore would race the streams-directory removal")
 	}
+	// The live stream's creation time, read before its delete: after the restore, a read through
+	// the live bucket's handle reads the restored stream, which has the same name.
+	liveStream, err := streams.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("read the live bucket's stream: %v", err)
+	}
+	liveCreated := liveStream.CachedInfo().Created
 	// Delete it and restore the older snapshot in its place.
-	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
+	if err := streams.DeleteKeyValue(ctx, testBucketName); err != nil {
 		t.Fatalf("delete the live bucket: %v", err)
 	}
 	restoreStream(t, conn, stream, snap)
+	older := bus.NewKeyValue(live.Legacy(), live.WatchHandle(), createdAs{JetStream: streams, created: firstCreated})
+	olderState, err := older.ReadStreamState(ctx)
+	if err != nil || !olderState.Created.Before(liveCreated) {
+		t.Fatalf("the restored stream reads created %v (%v) through the handle the reads use, and the live bucket's stream was created %v; want the restored stream older",
+			olderState.Created, err, liveCreated)
+	}
 
 	if err := w.Check(); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
+	if w.Err() == nil {
+		t.Fatal("Check recorded no error after the restore: the rule under test holds only while Check's error is recorded")
+	}
+	// While Check's error is recorded, a watch onto the older stream installs at once: a read of a
+	// recreated bucket begins before WatchOn returns. A watch that discarded itself against the
+	// older stream begins no read.
+	begun := len(into.reads())
+	if err := kvwatch.WatchOn(w, older); err != nil {
+		t.Fatalf("the watch onto the restored bucket: %v", err)
+	}
+	if reads := into.reads(); len(reads) != begun+1 || !reads[begun].Recreated {
+		t.Fatalf("the watch onto the restored bucket left the reads begun at %+v; want one more, of a recreated bucket: the watch was discarded against the older stream while Check's error was recorded",
+			reads)
+	}
 	// The listener's self-health rebuild rewatches a copy that needs a read on every tick of its
-	// own, so the wait does the same: it rewatches whenever the copy is waiting for one, and ends
-	// when the read of the restored bucket has completed. A watch that discarded itself against
-	// the older stream would leave the copy needing a read for ever, and the wait would say so.
+	// own, so the wait does the same: it reads the restored bucket again whenever the copy is
+	// waiting for a read, and ends when the read of the restored bucket has completed.
 	testwait.Eventually(t, "the restored bucket's read to complete", func() bool {
 		if w.Following() {
 			return true
 		}
 		if w.NeedsRead() {
-			if err := w.Rewatch(context.Background(), conn); err != nil {
-				t.Fatalf("the self-health rebuild's Rewatch: %v", err)
+			if err := kvwatch.WatchOn(w, older); err != nil {
+				t.Fatalf("the self-health rebuild's read of the restored bucket: %v", err)
 			}
 		}
 		_ = w.Check()
 		return w.Following()
 	})
 	if w.Err() != nil || !into.has("restored-key") || into.has("live-key") || w.Epoch() == 0 {
-		t.Fatalf("after the Rewatches onto the restored bucket: Err=%v, restored-key=%v, live-key=%v, Epoch=%d; "+
+		t.Fatalf("after the reads of the restored bucket: Err=%v, restored-key=%v, live-key=%v, Epoch=%d; "+
 			"want the restored bucket's key only, read as a new epoch", w.Err(), into.has("restored-key"), into.has("live-key"), w.Epoch())
 	}
 }
@@ -1737,16 +1794,18 @@ type snapshot struct {
 	chunks        [][]byte
 }
 
-// snapshotStream snapshots stream through the raw JetStream API, which nats.go does not wrap.
+// snapshotStream snapshots stream through the raw JetStream API, which nats.go does not wrap. Each
+// request and each chunk waits through the shared wait (testwait.Context).
 func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	t.Helper()
+	ctx := testwait.Context(t)
 	inbox := natsgo.NewInbox()
 	chunks, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		t.Fatalf("snapshot %s: subscribe: %v", stream, err)
 	}
 	req, _ := json.Marshal(map[string]any{"deliver_subject": inbox, "no_consumers": true})
-	msg, err := conn.Request("$JS.API.STREAM.SNAPSHOT."+stream, req, 5*time.Second)
+	msg, err := conn.RequestWithContext(ctx, "$JS.API.STREAM.SNAPSHOT."+stream, req)
 	if err != nil {
 		t.Fatalf("snapshot %s: request: %v", stream, err)
 	}
@@ -1760,7 +1819,7 @@ func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	}
 	snap := snapshot{config: resp.Config, state: resp.State}
 	for {
-		m, err := chunks.NextMsg(5 * time.Second)
+		m, err := chunks.NextMsgWithContext(ctx)
 		if err != nil {
 			t.Fatalf("snapshot %s: chunk %d: %v", stream, len(snap.chunks), err)
 		}
@@ -1774,12 +1833,17 @@ func snapshotStream(t *testing.T, conn *natsgo.Conn, stream string) snapshot {
 	}
 }
 
-// restoreStream restores snap as stream through the raw JetStream API. The restored stream keeps
-// the snapshot's creation time.
+// restoreStream restores snap as stream through the raw JetStream API, each request waiting through
+// the shared wait (testwait.Context), and fails the test unless the server answers the end of the
+// data with no error: a restore that fails can still leave a stream behind (nats-server v2.15.1
+// stream_backup.go, RestoreStreamV2 makes the stream it built active on its way out). nats-server
+// v2.15.1 gives the restored stream the time of the restore as its creation time, not the
+// snapshot's.
 func restoreStream(t *testing.T, conn *natsgo.Conn, stream string, snap snapshot) {
 	t.Helper()
+	ctx := testwait.Context(t)
 	req, _ := json.Marshal(map[string]any{"config": snap.config, "state": snap.state})
-	msg, err := conn.Request("$JS.API.STREAM.RESTORE."+stream, req, 5*time.Second)
+	msg, err := conn.RequestWithContext(ctx, "$JS.API.STREAM.RESTORE."+stream, req)
 	if err != nil {
 		t.Fatalf("restore %s: request: %v", stream, err)
 	}
@@ -1791,11 +1855,49 @@ func restoreStream(t *testing.T, conn *natsgo.Conn, stream string, snap snapshot
 		t.Fatalf("restore %s: %v %s", stream, err, msg.Data)
 	}
 	for i, chunk := range snap.chunks {
-		if _, err := conn.Request(resp.DeliverSubject, chunk, 5*time.Second); err != nil {
+		if _, err := conn.RequestWithContext(ctx, resp.DeliverSubject, chunk); err != nil {
 			t.Fatalf("restore %s: chunk %d: %v", stream, i, err)
 		}
 	}
-	if _, err := conn.Request(resp.DeliverSubject, nil, 10*time.Second); err != nil {
+	end, err := conn.RequestWithContext(ctx, resp.DeliverSubject, nil)
+	if err != nil {
 		t.Fatalf("restore %s: end of data: %v", stream, err)
 	}
+	var done struct {
+		Error *struct{ Description string } `json:"error"`
+	}
+	if err := json.Unmarshal(end.Data, &done); err != nil {
+		t.Fatalf("restore %s: read the server's answer to the end of the data, %s: %v", stream, end.Data, err)
+	}
+	if done.Error != nil {
+		t.Fatalf("restore %s: the server did not restore the snapshot: %s", stream, end.Data)
+	}
+}
+
+// createdAs is a bucket's jetstream context whose every stream read reports the stream's creation
+// time as created, as a server that keeps it across a restore of a snapshot reports it: the rest of
+// what the read reports, its sequences among it, is the server's.
+type createdAs struct {
+	jetstream.JetStream
+	created time.Time
+}
+
+func (s createdAs) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	stream, err := s.JetStream.Stream(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return createdStream{Stream: stream, created: s.created}, nil
+}
+
+// createdStream is a stream read whose cached information reports created as its creation time.
+type createdStream struct {
+	jetstream.Stream
+	created time.Time
+}
+
+func (s createdStream) CachedInfo() *jetstream.StreamInfo {
+	info := *s.Stream.CachedInfo()
+	info.Created = s.created
+	return &info
 }
