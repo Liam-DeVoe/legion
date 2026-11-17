@@ -372,9 +372,14 @@ func seedScopedNodes(t *testing.T, tx pgx.Tx) scopedSeed {
 			ToKind: graphstore.KindSession, ToID: session, At: time.Now(), Who: model.Actor{Kind: "session", ID: session}, Asserted: true}
 	}
 	writeSeedNodes(t, tx, nodes, []graphstore.Tuple{held("r_priv", "ses_priv"), held("r_pub", "ses_pub")})
+	// The pairs of a filled deployment: session_projects_filled holds its row, so an open viewer's
+	// session arm reads the pairs (access.TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished).
 	if _, err := tx.Exec(context.Background(), `insert into session_projects (session_id, project_key) values ('ses_priv', $1), ('ses_pub', $2)`,
 		seededPrivate, seededPublic); err != nil {
 		t.Fatalf("record the projects each session acted in: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), `insert into session_projects_filled default values`); err != nil {
+		t.Fatalf("record that the sessions' projects are filled: %v", err)
 	}
 	return seeded
 }
