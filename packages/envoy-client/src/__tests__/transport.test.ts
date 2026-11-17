@@ -347,7 +347,7 @@ describe("EnvoyClient", () => {
     // `notifications.x.y` is under no stream subject this build compiles: only a newer build's
     // `notifications.x.>` captures it, which the listener reads off the deployed stream and this
     // client cannot. `notifications.team` is under none in any build. Both bases go: the listener
-    // judges them, keeps the one a deployed subject captures, and warns about the other.
+    // judges them, keeps both, and warns about each one that no deployed subject captures.
     const newer = "notifications.x.y.>";
     const team = "notifications.team.>";
     const recorded = recordFetch([

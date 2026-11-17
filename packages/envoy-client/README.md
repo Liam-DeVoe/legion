@@ -154,9 +154,12 @@ it expands for the same reason. For a topic no deployed stream subject captures 
 answers a warning in the words of `@legion/contracts`'s `uncapturedTopicWarning`, which
 `packages/contracts/scripts/gen-go.ts` emits as `contracts.UncapturedTopicWarning`. A host's
 subscribe tool shows its caller the listener's warnings through
-`warningsForNamedTopics(warnings, named)`: every warning but the uncaptured-topic warning of a
-topic the caller did not name, such as the base a named `X.>` adds or a topic the session already
-followed. That topic stays registered, and the listener still logs its warning.
+`warningsForNamedTopics(answer, named)`: every warning but the uncaptured-topic warning of a
+topic the caller did not name in this call, such as the base a named `X.>` adds or another topic
+the session follows. That topic stays registered, and the listener still logs its warning. The
+function reads a warning as the uncaptured-topic warning only when it is the exact text
+`uncapturedTopicWarning` builds for its topic and the answer's `session_id`. A host registers on
+every subscribe call, so a caller that names a followed topic again is shown its warning again.
 
 ## NATS connection
 

@@ -12,8 +12,9 @@ body: |-
   Each `X.>` follow now also registers `X`. While no stream subject captures `X`, the listener
   returns a warning for it, but the tool result does not show that warning. The result shows the
   uncaptured-topic warning only for a topic that the caller named in that call. It does not show
-  it for a topic that the plugin added or that the session already followed. The listener still
-  logs each warning.
+  it for a topic that the plugin added, or for another topic that the session follows. `follow`
+  registers also when it adds no topic. Thus a caller that names a followed topic again sees its
+  warning again. The listener still logs each warning.
 
   No listener that this plugin needs refuses such a registration. The oldest is the listener with
   #2446, `legion-envoy-v27.1.0`, which stores the topic

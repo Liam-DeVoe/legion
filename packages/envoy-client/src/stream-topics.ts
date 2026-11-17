@@ -4,6 +4,7 @@ import {
   ROLE_TOPIC_PREFIX,
   uncapturedTopicWarning,
 } from "@legion/contracts";
+import type { Interest } from "./transport";
 
 /** The topic a failed delivery's report goes to is this prefix followed by the original topic. */
 export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
@@ -118,46 +119,33 @@ export function registrationTopics(
   ];
 }
 
-/** Stands for the session id in `uncapturedTopicWarning`'s text; no warning holds it. */
-const WARNING_SESSION_SENTINEL = "\u0000";
-
 /**
- * Whether `warning` is the listener's uncaptured-topic warning for `topic`: the text
- * `uncapturedTopicWarning` builds for that topic, whatever session id it names.
- */
-function isUncapturedTopicWarning(warning: string, topic: string): boolean {
-  const [head = "", tail = ""] = uncapturedTopicWarning(topic, WARNING_SESSION_SENTINEL).split(
-    WARNING_SESSION_SENTINEL
-  );
-  return (
-    warning.length > head.length + tail.length && warning.startsWith(head) && warning.endsWith(tail)
-  );
-}
-
-/**
- * The listener's warnings a host's subscribe tool shows its caller, out of all those it answered
- * the registration with: every warning but the uncaptured-topic warning for a topic the caller did
- * not name in this call. A registration carries topics nobody named there: the base `X` that
- * `expandSubscriptionTopics` adds for a named `X.>`, and every topic the session already follows.
- * Each stays registered, so that nothing stored on it is lost once a stream subject captures it,
- * and the listener still logs its warning. The caller is shown only the warnings for what it named.
+ * The listener's warnings a host's subscribe tool shows its caller, out of all those the listener
+ * answered the registration with (`answer`): every warning but the uncaptured-topic warning for a
+ * topic the caller did not name in this call. A registration carries topics the caller did not
+ * name there: the base `X` that `expandSubscriptionTopics` adds for a named `X.>`, and every other
+ * topic the session follows. Each stays registered, so that nothing stored on it is lost once a
+ * stream subject captures it, and the listener still logs its warning. The caller is shown only
+ * the warnings for what it named. A host registers on every subscribe call, also when the call
+ * adds no topic, so a caller that names a followed topic again is shown its warning again.
  *
  * A warning names its topic first, and a NATS subject holds no space, so the text before the first
- * space is the topic, and the warning is that topic's uncaptured-topic warning only when it is the
- * whole text `uncapturedTopicWarning` builds for it. The listener's answer carries no structured
- * field to match on. Every other warning (a private stream subject, a GitHub topic's spelling or
- * wiring) is shown whatever it names. A listener built before `uncapturedTopicWarning` words its
- * warning otherwise, and that warning is shown too.
+ * space is the topic. The warning is that topic's uncaptured-topic warning only when it is the
+ * exact text `uncapturedTopicWarning` builds for that topic and the answer's `session_id`, which is
+ * the session the listener builds it for. The listener's answer carries no structured field to
+ * match on. Every other warning (a private stream subject, a GitHub topic's spelling or wiring) is
+ * shown whatever it names. A listener built before `uncapturedTopicWarning` words its warning
+ * otherwise, and that warning is shown too.
  */
 export function warningsForNamedTopics(
-  warnings: readonly string[],
+  answer: Pick<Interest, "session_id" | "warnings">,
   named: readonly string[]
 ): string[] {
-  return warnings.filter((warning) => {
+  return (answer.warnings ?? []).filter((warning) => {
     const space = warning.indexOf(" ");
     if (space <= 0) return true;
     const topic = warning.slice(0, space);
-    return named.includes(topic) || !isUncapturedTopicWarning(warning, topic);
+    return named.includes(topic) || warning !== uncapturedTopicWarning(topic, answer.session_id);
   });
 }
 

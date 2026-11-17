@@ -1736,8 +1736,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // stream subject that is not this session's (`registrationTopics`), a topic no stream
       // subject this build was compiled with captures included: the listener judges capture on
       // the deployed stream's subjects. Its warnings are handed back for the tool to show, less
-      // the uncaptured-topic warning of a topic the caller did not name: the base an `X.>` adds,
-      // or a topic the session already followed. The listener still logs each of them.
+      // the uncaptured-topic warning of a topic the caller did not name in this call: the base an
+      // `X.>` adds, or another topic the session follows. The listener still logs each of them.
+      // The call registers even when it adds no topic, so a caller that names a followed topic
+      // again is shown its warning again, as pi-envoy's `envoy_subscribe` shows it.
       if (shuttingDown) return { added: [], warnings: [] }
       const fresh: string[] = []
       for (const topic of expandSubscriptionTopics(topics)) {
@@ -1753,7 +1755,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         // from this follow on, never the stream's older ones (`setFollowed`).
         await ledger.followedChanged()
       }
-      return { added: fresh, warnings: warningsForNamedTopics(registered.warnings ?? [], topics) }
+      return { added: fresh, warnings: warningsForNamedTopics(registered, topics) }
     },
     async unfollow(topics) {
       const requested = topics.length === 0 ? [...userTopics] : expandSubscriptionTopics(topics)

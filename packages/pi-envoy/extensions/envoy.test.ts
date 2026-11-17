@@ -11303,8 +11303,8 @@ console.log(JSON.stringify(args));
   // No topic is judged uncaptured here on the stream subjects this build was compiled with: the
   // listener judges that on the deployed stream's, which during a roll hold a newer build's too,
   // so every followed topic is registered (`registrationTopics`). The caller is shown the
-  // listener's uncaptured-topic warning only for a topic it named: not for the base an `X.>` adds
-  // (`expandSubscriptionTopics`), nor for a topic the session already followed
+  // listener's uncaptured-topic warning only for a topic it named in this call: not for the base an
+  // `X.>` adds (`expandSubscriptionTopics`), nor for another topic the session follows
   // (`warningsForNamedTopics`). `notifications.x.y` stands for a topic only a newer build's
   // subject captures (`notifications.x.>`, which this build does not compile).
   test("registers a topic no compiled stream subject captures, however it was followed, and shows the listener's warning only for a topic the caller named", async () => {
@@ -11406,6 +11406,55 @@ console.log(JSON.stringify(args));
         "notifications.lxspec.probe",
       ])
     );
+  });
+
+  // The tool registers on every call, also one that adds no topic, so a caller that names again an
+  // uncaptured topic its session already follows is shown that topic's warning again, as
+  // claude-envoy's `follow` shows it: the warning goes with each topic the caller names.
+  test("shows the listener's warning again for an uncaptured topic the caller names again", async () => {
+    const session = "ses_uncaptured_again";
+    const topic = "notifications.lxspec.probe";
+    const warning = uncapturedTopicWarning(topic, session);
+    const registrations: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).pathname !== "/v1/interests/subscribe") {
+        return responseWithRegistration(input, init, []);
+      }
+      const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+        readonly dir: string;
+        readonly topics: readonly string[];
+      };
+      registrations.push([...body.topics]);
+      return response({
+        session_id: session,
+        machine_id: "test",
+        dir: body.dir,
+        topics: body.topics,
+        warnings: body.topics.includes(topic) ? [warning] : [],
+        delivery: consumerDelivery(session, { streamID: TEST_STREAM_ID }),
+      });
+    };
+    // A module instance of its own, as every row here loads one: the extension keeps its
+    // session's state.
+    const { default: envoyExtension } = await import("./envoy.ts?uncaptured-subscribe-again");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext(session));
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+
+    const first = await subscribeTool.execute("", { topics: [topic] });
+    expect(first.details).toMatchObject({ added: [topic], warnings: [warning] });
+    const registered = registrations.length;
+
+    const again = await subscribeTool.execute("", { topics: [topic] });
+
+    expect(again.isError).toBeFalsy();
+    expect(again.details).toEqual({ added: [], already: [topic], warnings: [warning] });
+    expect(again.content[0]?.text).toBe(`Subscribed: (none new)\nWarnings: ${warning}`);
+    // The listener answered the warning because the call registered again.
+    expect(registrations).toHaveLength(registered + 1);
+    expect(registrations.at(-1)).toContain(topic);
   });
 
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {

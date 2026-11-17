@@ -650,10 +650,10 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
 // No topic is judged uncaptured here on the stream subjects this build was compiled with: the
 // listener judges that on the deployed stream's, which during a roll hold a newer build's too, so
 // every followed topic is registered (`registrationTopics`). The caller of the `envoy_subscribe`
-// tool is shown the listener's uncaptured-topic warning only for a topic it named: not for the
-// base an `X.>` adds (`expandSubscriptionTopics`), nor for a topic the session already followed
-// (`warningsForNamedTopics`). `notifications.x.y` stands for a topic only a newer build's subject
-// captures (`notifications.x.>`, which this build does not compile).
+// tool is shown the listener's uncaptured-topic warning only for a topic it named in this call: not
+// for the base an `X.>` adds (`expandSubscriptionTopics`), nor for another topic the session
+// follows (`warningsForNamedTopics`). `notifications.x.y` stands for a topic only a newer build's
+// subject captures (`notifications.x.>`, which this build does not compile).
 test("registers a topic no compiled stream subject captures, however it was followed, and shows the listener's warning only for a topic the caller named", async () => {
   const calls: string[] = []
   const nats = new FakeNats(calls)

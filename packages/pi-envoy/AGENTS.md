@@ -611,9 +611,11 @@ consumer's filter, and the consumer would move past every message stored on it. 
 keeps a topic no stream subject captures yet in the row and in the filter, and warns
 (`uncapturedTopicWarning` in `@legion/contracts`). `envoy_subscribe` follows every topic its
 caller names and shows the listener's warnings in its result (`Warnings: ...`, and
-`details.warnings`), less the uncaptured-topic warning of each topic the caller did not name: the
-base a named `X.>` adds, and every topic the session already followed (`warningsForNamedTopics`).
-A heartbeat's warnings are shown nowhere. Which subjects a restore follows
+`details.warnings`), less the uncaptured-topic warning of each topic the caller did not name in
+this call: the base a named `X.>` adds, and every other topic the session follows
+(`warningsForNamedTopics`). The tool registers on every call, also one that adds no topic, so a
+caller that names a followed topic again is shown its warning again. A heartbeat's warnings are
+shown nowhere. Which subjects a restore follows
 again is the sibling rule `replayFollowedSubjects`. The listener filters the session's consumer on
 the registered subjects, so a followed topic that got there is one the consumer can deliver once
 a stream subject captures it. A topic followed

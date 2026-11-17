@@ -82,8 +82,10 @@ the row and in the consumer's filter, with a warning (`uncapturedTopicWarning` i
 `@legion/contracts`). `follow`, which is the `envoy_subscribe` tool's call and nothing else,
 follows every topic its caller names and answers the listener's warnings for its registration
 (`FollowResult`), which the tool returns beside the session's interest as `warnings`. It leaves
-out the uncaptured-topic warning of each topic the caller did not name: the base a named `X.>`
-adds, and every topic the session already followed (`warningsForNamedTopics`).
+out the uncaptured-topic warning of each topic the caller did not name in this call: the base a
+named `X.>` adds, and every other topic the session follows (`warningsForNamedTopics`). `follow`
+registers even when it adds no topic, so a caller that names a followed topic again is shown its
+warning again.
 
 `runEnvoyChannelServer` dials NATS with the shared options of
 `@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a ping every 10 s and the

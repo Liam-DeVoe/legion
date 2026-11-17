@@ -13,9 +13,12 @@ body: |-
 
   Each `X.>` follow now also registers `X`. While no stream subject captures `X`, it is a filter
   subject that receives nothing, and the listener returns a warning for it. The new
-  `warningsForNamedTopics` removes the uncaptured-topic warning of each topic that the caller did
-  not name. A subscribe tool shows the other warnings. It finds the topic of a warning by the text
-  of `uncapturedTopicWarning`, because the answer of the listener has no structured field for it.
+  `warningsForNamedTopics` takes the answer of the registration and the topics that the caller
+  named. It removes the uncaptured-topic warning of each topic that the caller did not name in
+  that call. A subscribe tool shows the other warnings. The function compares each warning with
+  the text that `uncapturedTopicWarning` builds for its topic and the `session_id` of the answer.
+  It removes a warning only when the two texts are the same, because the answer of the listener
+  has no structured field for it.
 
   No listener that a plugin of this release needs refuses such a registration. The oldest is the
   listener with #2446, `legion-envoy-v27.1.0`. It stores the topic and filters the consumer only

@@ -152,8 +152,6 @@ describe("the topics a registration carries", () => {
         "notifications.x.>",
         "notifications.team",
         "notifications.lxspec.probe.all",
-        // Still left out: another session's private subject, whatever the stream captures.
-        "notifications.agent.ses-other",
       ])
     ).toEqual([
       OWN,
@@ -174,31 +172,43 @@ describe("the topics a registration carries", () => {
 });
 
 describe("the warnings a subscribe tool shows", () => {
-  const base = uncapturedTopicWarning("notifications.y.z", "ses-1");
-  const named = uncapturedTopicWarning("notifications.lxspec.probe", "ses-1");
-  const restored = uncapturedTopicWarning("notifications.team", "ses-1");
+  const session = "ses-1";
+  const base = uncapturedTopicWarning("notifications.y.z", session);
+  const named = uncapturedTopicWarning("notifications.lxspec.probe", session);
+  const followed = uncapturedTopicWarning("notifications.team", session);
   const privateSubject =
     "notifications.agent.ses-other was not registered: it reaches a private stream subject";
   const wiring =
     "no GitHub event for acme/site in the stream's retention window; is the App installed there?";
+  const answered = (...warnings: string[]) => ({ session_id: session, warnings });
 
   test("leave out the uncaptured-topic warning of a topic the caller did not name", () => {
     // `notifications.y.z` is the base the client added for `notifications.y.z.>`, and
-    // `notifications.team` a topic the session already followed: both stay registered, and the
-    // caller, who named neither, is not shown their warnings.
+    // `notifications.team` a topic the session follows that the caller did not name in this call:
+    // both stay registered, and the caller, who named neither, is not shown their warnings.
     expect(
-      warningsForNamedTopics(
-        [base, named, restored],
-        ["notifications.y.z.>", "notifications.lxspec.probe"]
-      )
+      warningsForNamedTopics(answered(base, named, followed), [
+        "notifications.y.z.>",
+        "notifications.lxspec.probe",
+      ])
     ).toEqual([named]);
   });
 
   test("show the warning of a base the caller named itself, and every warning of another kind", () => {
-    expect(warningsForNamedTopics([base], ["notifications.y.z"])).toEqual([base]);
-    expect(warningsForNamedTopics([privateSubject, wiring], ["notifications.y.z.>"])).toEqual([
-      privateSubject,
-      wiring,
-    ]);
+    expect(warningsForNamedTopics(answered(base), ["notifications.y.z"])).toEqual([base]);
+    expect(
+      warningsForNamedTopics(answered(privateSubject, wiring), ["notifications.y.z.>"])
+    ).toEqual([privateSubject, wiring]);
+    expect(warningsForNamedTopics({ session_id: session }, ["notifications.y.z.>"])).toEqual([]);
+  });
+
+  test("show a warning that is not the uncaptured-topic text for the answer's session, word for word", () => {
+    // The sentence for another session, or a sentence in other words: neither is the warning the
+    // listener builds for this answer, so neither is taken for it.
+    const otherSession = uncapturedTopicWarning("notifications.y.z", "ses-2");
+    const otherWords = "notifications.y.z is registered, but nothing captures it";
+    expect(
+      warningsForNamedTopics(answered(otherSession, otherWords), ["notifications.y.z.>"])
+    ).toEqual([otherSession, otherWords]);
   });
 });

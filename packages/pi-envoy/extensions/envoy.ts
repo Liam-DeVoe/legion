@@ -2135,7 +2135,7 @@ export default function envoyExtension(pi: PiApi): void {
   // subject.
   const followed = new Set<string>();
 
-  // Follows `topic`; answers whether anything was added, so a caller registers only a change.
+  // Follows `topic`; answers whether it added any subject.
   const follow = (topic: string): boolean => {
     let added = false;
     for (const subject of expandSubscriptionTopics([topic])) {
@@ -4715,34 +4715,34 @@ export default function envoyExtension(pi: PiApi): void {
           // judges capture on the deployed stream's subjects. Its answer names, in a warning,
           // each topic it keeps that nothing captures yet and each topic it leaves out. The
           // result below shows the caller those warnings, except the uncaptured-topic warning
-          // of a topic the caller did not name: the base an `X.>` adds, or a topic the session
-          // already followed (`warningsForNamedTopics`).
+          // of a topic the caller did not name in this call: the base an `X.>` adds, or another
+          // topic the session follows (`warningsForNamedTopics`). The tool registers on every
+          // call, also one that adds no topic, so a caller that names a followed topic again is
+          // shown its warning again, as claude-envoy's `follow` shows it.
           const added: string[] = [];
           const already: string[] = [];
           for (const topic of requested) {
             (follow(topic) ? added : already).push(topic);
           }
-          let warnings: readonly string[] | undefined;
+          let warnings: readonly string[] = [];
           let registrationError: string | undefined;
+          try {
+            warnings = warningsForNamedTopics(await registerSession(), named);
+          } catch (error) {
+            registrationError = messageFor(error);
+          }
           if (added.length > 0) {
-            try {
-              warnings = warningsForNamedTopics((await registerSession()).warnings ?? [], named);
-            } catch (error) {
-              registrationError = messageFor(error);
-            }
             // A new follow is stamped now, so the session's consumer relays what is published
             // from here on and nothing the stream stored before it.
             await ledgerFollowedChanged();
           }
           const subscribed = `Subscribed: ${added.join(", ") || "(none new)"}`;
           return toolSuccess(
-            warnings === undefined || warnings.length === 0
-              ? subscribed
-              : `${subscribed}\nWarnings: ${warnings.join("; ")}`,
+            warnings.length === 0 ? subscribed : `${subscribed}\nWarnings: ${warnings.join("; ")}`,
             {
               added,
               already,
-              ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }),
+              ...(warnings.length === 0 ? {} : { warnings }),
               ...(registrationError === undefined ? {} : { registrationError }),
             }
           );
@@ -5011,7 +5011,7 @@ function namedTopicsFor(parameters: Record<string, unknown>): readonly string[] 
 
 function topicsFor(
   parameters: Record<string, unknown>,
-  fallback: readonly string[] = []
+  fallback: readonly string[]
 ): readonly string[] {
   const named = namedTopicsFor(parameters);
   return named === undefined ? fallback : expandSubscriptionTopics(named);

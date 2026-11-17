@@ -368,8 +368,9 @@ export type Subject =
  * judge no topic on the stream subjects they were built with: they send every followed topic
  * (`registrationTopics` in `@legion/envoy-client`). pi-envoy's `envoy_subscribe` and
  * claude-envoy's `follow` show the caller this warning only for a topic it named, and not for one
- * the plugin added, such as the base of a named `X.>` (`warningsForNamedTopics`, which matches a
- * warning to its topic by this text: the topic first, then the sentence around the session id).
+ * the plugin added, such as the base of a named `X.>` (`warningsForNamedTopics`). That filter
+ * reads a warning as this one only when it is the exact text this builder makes for its topic and
+ * the answer's `session_id`, so a plugin built on other words shows every such warning.
  */
 export function uncapturedTopicWarning(topic: string, sessionID: string): string {
   return `${topic} is registered, but no stream subject captures it yet, so nothing is delivered to ${sessionID} on it until one does; to hear what agents publish, follow a notifications.team.<name> topic`;
