@@ -1,6 +1,13 @@
+import type { Fragment, Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
+import type * as ProseMirrorState from "@milkdown/kit/prose/state";
+import type { EditorState, Plugin, Transaction } from "@milkdown/kit/prose/state";
+import type { EditorView } from "@milkdown/kit/prose/view";
+import type * as YProseMirror from "y-prosemirror";
+
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
+import { importWhenOnline } from "../shell/DeploymentResilience";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
 /**
@@ -11,8 +18,9 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
  * `caretInBlock` places the caret at the start of that node's own block, and `holdEditorAtBlock`
  * opens the editor's box at that block. The caret is a DOM selection inside the editor and
  * nothing else: the editor's own observer reads the selection back as the document's, so this
- * touches neither the room nor the editor. While the row holds the editor, `confineKey`,
- * `confineInput` and `selectionIntoBlock` keep the reader's keys and selection inside that block.
+ * touches neither the room nor the editor. While the row holds the editor, `holdEditsToBlock`
+ * keeps every edit the editor makes inside that block, and `confineKey` and `selectionIntoBlock`
+ * keep the reader's caret there.
  *
  * The editor is the document's whole editor, its box opened at the node's block, and the keys
  * the editor answers for a whole document reached past that block: measured on a preview,
@@ -20,7 +28,7 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
  * `## YSummary`, scrolled out of the box above the row; Up after Left put the caret before a
  * heading above the statement. An edit of text the reader cannot see is the loss the caret
  * placed at the top of the document was, so the row's editor keeps its selection, and every
- * key, inside the node's block. Free editing of the whole document stays on the document page.
+ * edit, inside the node's block. Free editing of the whole document stays on the document page.
  *
  * `focusBlock` on the editor handle is neither: it scrolls the block into the middle of the
  * screen - the page as well as the box - and pulses it, which is what a link into a document
@@ -114,44 +122,61 @@ const PASSING_KEYS: Readonly<Record<string, true>> = {
   Tab: true,
 };
 
-/** The mark of a typed block's own box (`doc/typed-block-drawing.ts`): the schema makes each
- *  such block isolating (`@legion/proof-editor`'s `block-schema.ts`), so no split, join or lift
- *  the editor makes crosses its sides. */
-const TYPED_BLOCK_ATTRIBUTE = "data-proof-block-type";
-
-/** The platforms ProseMirror reads as a Mac (`prosemirror-keymap`), and the keys its keymap
- *  takes there with Ctrl for Backspace and Delete (`prosemirror-commands`' `macBaseKeymap`). */
-const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
-const MAC_CTRL_DELETES: Readonly<Record<string, string | undefined>> = {
-  d: "Delete",
-  h: "Backspace",
+/** The keys held with Ctrl or Meta that the editor answers with an edit, or the browser does, by
+ *  `event.key` in lower case: select-all, the marks (bold, italic, code, a browser's underline),
+ *  cut and paste, undo and redo, a Mac's Ctrl+D and Ctrl+H, a list item's sink and lift, the
+ *  deletes of a word and Enter's way out of a code block (`prosemirror-commands`' base keymaps,
+ *  `@milkdown/preset-commonmark`, `@milkdown/plugin-history`, `@milkdown/plugin-collab`). Every
+ *  block shortcut holds Alt as well (`Mod-Alt-0` to `Mod-Alt-8`, `Mod-Alt-c`). */
+const EDITING_CHORDS: Readonly<Record<string, true>> = {
+  "[": true,
+  "]": true,
+  a: true,
+  b: true,
+  backspace: true,
+  d: true,
+  delete: true,
+  e: true,
+  enter: true,
+  h: true,
+  i: true,
+  u: true,
+  v: true,
+  x: true,
+  y: true,
+  z: true,
 };
+
+/** The platforms ProseMirror reads as a Mac (`prosemirror-keymap`). */
+const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 
 /** A place in the page, as each end of a selection is one. */
 type Point = readonly [node: Node, offset: number];
 
 /**
- * Keeps a key pressed in the editor in `host` inside `blockId`'s block, before the editor acts
- * on it: called on the key in the capture phase, so before ProseMirror's own listener on the
- * editable, which acts on a key on its keydown - its keymap edits through its own selection,
- * and a key it leaves to the browser moves the DOM's - and ignores a key whose default is
- * prevented (`prosemirror-view`'s `eventBelongsToView`). A key is refused (`preventDefault`)
- * where it would take the caret or an edit out of the block:
+ * Keeps a key pressed in the editor in `host` from taking its caret out of `blockId`'s block,
+ * before the editor acts on it: called on the key in the capture phase, so before ProseMirror's
+ * own listener on the editable, which acts on a key on its keydown - its keymap moves its own
+ * selection, and a key it leaves to the browser moves the DOM's - and ignores a key whose default
+ * is prevented (`prosemirror-view`'s `eventBelongsToView`). Every edit is held to the block by
+ * the editor itself (`holdEditsToBlock`), which refuses a move of its selection out of the block
+ * too; but by then the browser has moved the page's caret, and scrolled the box to it, and the
+ * editor writes its own selection back over that caret a task later. So a key is refused
+ * (`preventDefault`) where it would take the caret out of the block:
  *
- * - any key but those that move the focus or end the editing (`PASSING_KEYS`) while the
- *   selection is not inside the block, or the editor draws no such block: before the caret is
- *   placed, or a Tab into the editable before the block is drawn, no key edits the document;
+ * - every key that could edit (`couldEdit`) while the selection is not inside the block, or the
+ *   editor draws no such block: before the caret is placed, or a Tab into the editable before the
+ *   block is drawn, no key edits the document, while the browser's own keys - find, print, the
+ *   address bar, a function key - still reach it;
  * - Up on the block's first line and Down on its last, Left at its start and Right at its end,
- *   PageUp and PageDown, which leave the caret where it is;
- * - Backspace at its start and Delete at its end, which join it to the block beside it, and on
- *   a Mac Ctrl+H and Ctrl+D, which the editor takes for them;
- * - Enter in a block that is no typed block, which splits it and puts the caret in the new
- *   block after it - a typed block holds its paragraphs, and the split stays inside it.
+ *   PageUp and PageDown, which leave the caret where it is.
  *
  * Ctrl+Home and Ctrl+End (Meta too, and Meta+Up and Meta+Down, a Mac's keys for them) put the
- * caret at the block's start and end, and Ctrl+A (or Meta+A) selects the block's text alone,
- * which the editor takes as its own at once (`selectInEditor`); with Shift held a move extends
- * the selection to the block's end it stops at.
+ * caret at the block's start and end, and Ctrl+A (Meta+A on a Mac) selects the block's text
+ * alone, which the editor takes as its own at once (`selectInEditor`); with Shift held a move
+ * extends the selection to the block's end it stops at. A Mac's Ctrl+A is the editor's own move
+ * to the start of the line's paragraph (`prosemirror-commands`' `macBaseKeymap`), which stays in
+ * the block, and is left to it.
  */
 export function confineKey(
   host: HTMLElement,
@@ -163,7 +188,7 @@ export function confineKey(
   const block = blockIn(editable, blockId);
   const selected = block === null ? null : selectionIn(block);
   if (block === null || selected === null) {
-    event.preventDefault();
+    if (couldEdit(event)) event.preventDefault();
     return;
   }
   const taken = keyAtBlock(event, block, ...selected);
@@ -172,72 +197,210 @@ export function confineKey(
   if (taken !== null) selectInEditor(taken[0][0], taken[0][1], taken[1][0], taken[1][1]);
 }
 
-/**
- * Refuses an edit the browser is about to make in the editor in `host` outside `blockId`'s
- * block: one made with the selection out of the block, or whose target ranges reach past it.
- * The editor leaves typed text, and a key its keymap does not answer, to the browser, and reads
- * the change from the page after it; this is the backstop for such a key `confineKey` does not
- * name. Called on the `beforeinput` in the capture phase.
- */
-export function confineInput(
-  host: HTMLElement,
-  blockId: string | undefined,
-  event: InputEvent
-): void {
-  const editable = editableHolding(host, event.target);
-  if (editable === null || event.defaultPrevented) return;
-  const block = blockIn(editable, blockId);
-  if (
-    block !== null &&
-    selectionIn(block) !== null &&
-    event
-      .getTargetRanges()
-      .every((range) => block.contains(range.startContainer) && block.contains(range.endContainer))
-  ) {
-    return;
-  }
-  event.preventDefault();
+/** Whether `event` is a key the editor or the browser could edit the document with, or move its
+ *  caret with: any key but a function key, held with neither Ctrl nor Meta, and those held with
+ *  either that the editor binds (`EDITING_CHORDS`, and every one with Alt held as well, which a
+ *  Mac's Alt and Windows' AltGr type letters with too). */
+function couldEdit(event: KeyboardEvent): boolean {
+  if (/^F\d+$/.test(event.key)) return false;
+  if (!event.ctrlKey && !event.metaKey) return true;
+  return event.altKey || EDITING_CHORDS[event.key.toLowerCase()] === true;
 }
 
-/**
- * Refuses a paste into the editor in `host` that would change more than the words of `blockId`'s
- * block: any paste while the selection is out of the block, and one whose text holds a line
- * break into a block that is no typed block. The editor reads each line of a pasted text as a
- * paragraph of its own (`prosemirror-view`'s `parseFromClipboard`), and those after the first go
- * after the node's block, or into a heading as a line break: measured in Chromium, two lines
- * pasted at the start of a decision's `## ` heading stored it as a heading of two lines, `Two\`,
- * `lines...` and `---` under them. A typed block holds the paragraphs a paste makes in it, and a
- * paste of one line stays in the block it is made in. Called on the `paste` in the capture
- * phase, before the editor's own listener, which ignores a paste whose default is prevented.
- */
-export function confinePaste(
-  host: HTMLElement,
-  blockId: string | undefined,
-  event: ClipboardEvent
-): void {
-  const editable = editableHolding(host, event.target);
-  if (editable === null || event.defaultPrevented) return;
-  const block = blockIn(editable, blockId);
-  if (
-    block !== null &&
-    selectionIn(block) !== null &&
-    (block.hasAttribute(TYPED_BLOCK_ATTRIBUTE) ||
-      !/[\r\n]/.test(event.clipboardData?.getData("text/plain") ?? ""))
-  ) {
-    return;
-  }
-  event.preventDefault();
+/** What the hold on a row's editor is built of: ProseMirror's plugins, and the key y-prosemirror
+ *  marks each transaction the collaboration brings with. Both are the editor library's own,
+ *  which sits behind its own `import()` (`doc/editor.ts`), so they are imported here only once a
+ *  row is edited, and kept from then on. */
+type HoldParts = readonly [state: typeof ProseMirrorState, sync: typeof YProseMirror];
+let holdParts: HoldParts | undefined;
+let loadingHoldParts: Promise<HoldParts> | undefined;
+
+/** Loads what `holdEditsToBlock` is built of, once. A row asks for it as it starts editing, so
+ *  the parts are held by the time the page hands the row its editor. A load that failed is tried
+ *  again by the next call. */
+export function loadEditsHold(): Promise<HoldParts> {
+  loadingHoldParts ??= importWhenOnline(() =>
+    Promise.all([import("@milkdown/kit/prose/state"), import("y-prosemirror")])
+  ).then(
+    (parts) => {
+      holdParts = parts;
+      return parts;
+    },
+    (error: unknown) => {
+      loadingHoldParts = undefined;
+      throw error;
+    }
+  );
+  return loadingHoldParts;
 }
 
+/** The attribute a block of the editor's document holds its id in (`@legion/proof-editor`'s
+ *  `BLOCK_ID_ATTR`), which it draws as `BLOCK_ID_ATTRIBUTE`. */
+const BLOCK_ID_PROPERTY = "blockId";
+
 /**
- * Refuses a drag that starts in the editor in `host`, and a drop into it: a drop edits the
- * document where it lands, in whichever block that is, and text dragged out of the node's block
- * is moved, not copied, wherever the editor takes it. Called on `dragstart` and `drop` in the
- * capture phase, before the editor's own listeners, which ignore them once their default is
- * prevented.
+ * Holds every edit the editor `view` makes of its own to the block `heldBlock` names, while the
+ * row holds the editor: a ProseMirror plugin whose `filterTransaction` refuses a transaction of
+ * the editor's own that changes anything outside that block - a join with the block beside it, a
+ * split into two, a block made around it or beside it - or changes the block's own type or
+ * attributes - a heading lowered a level, a paragraph made a heading, a quote, a list or a code
+ * block - or puts a line break in a heading of it, or leaves the selection outside it. The
+ * editor's keymap, its input rules, a paste, a drop and every change the browser makes to the page
+ * that the editor reads back reach the document as such a transaction, so none of them needs a
+ * guard of its own: a refused one changes nothing, and the editor draws the page again from its
+ * document.
+ *
+ * A heading stores as one line of markdown, and measured in Chromium, two lines pasted at the
+ * start of a decision's `## ` heading stored it as a heading of two lines, `Two\`, `lines...` and
+ * `---` under them. A heading's `id` is no attribute the reader edits: Milkdown derives it from the
+ * heading's words (`syncHeadingIdPlugin`), and writes it in a transaction of its own after every
+ * change of them, to each heading whose name that change moves.
+ *
+ * Every transaction the collaboration brings applies, wherever it lands: a collaborator's edit
+ * and the marks the room projects, each marked with y-prosemirror's `ySyncPluginKey`. The
+ * block's place is mapped through each transaction, and found again by its id where one moved it
+ * elsewhere. y-prosemirror's undo (Mod-z, `@milkdown/plugin-collab`) reaches the document the
+ * same way, and applies too: the row's editor is made for the row, so its undo manager holds this
+ * editor's own edits alone, each inside the block. A transaction that changes neither the
+ * document nor the selection - a decoration drawn, a mark stored for the next letter - leaves the
+ * document as it was, and applies.
+ *
+ * The plugin goes on in the call where `loadEditsHold` has loaded what it is built of, which the
+ * row asks for as it starts editing: so as the page hands over the editor, before the editor has
+ * drawn the document, and before the caret is placed; else once they have loaded. A change of the
+ * editor's plugins makes ProseMirror make each plugin's view again (`useNodeEditing.ts`). The
+ * collaborators' cursors go on later in the same way, keeping every plugin the editor holds
+ * (`@legion/proof-editor`'s `installCollabCursorsWhenReady`). While `heldBlock` names no block, or
+ * the document holds no block of its id, no edit of the editor's own goes in. Answers what takes
+ * the plugin off again.
  */
-export function confineDrag(host: HTMLElement, event: Event): void {
-  if (editableHolding(host, event.target) !== null) event.preventDefault();
+export function holdEditsToBlock(
+  view: EditorView,
+  heldBlock: () => string | undefined
+): () => void {
+  let held: Plugin | undefined;
+  let letGo = false;
+  const hold = ([state, sync]: HoldParts) => {
+    if (letGo || view.isDestroyed) return;
+    const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
+      filterTransaction: (transaction, editorState) =>
+        transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
+        (!transaction.docChanged && !transaction.selectionSet) ||
+        keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
+      // The block's start, as last found: the guess a transaction checks before it searches.
+      state: {
+        apply: (transaction, start, _, { doc }) =>
+          !transaction.docChanged
+            ? start
+            : blockStart(
+                doc,
+                heldBlock(),
+                start === undefined ? undefined : transaction.mapping.map(start, 1)
+              ),
+        init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
+      },
+    });
+    held = plugin;
+    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
+  };
+  if (holdParts === undefined) void loadEditsHold().then(hold);
+  else hold(holdParts);
+  return () => {
+    const plugin = held;
+    held = undefined;
+    letGo = true;
+    if (plugin === undefined || view.isDestroyed) return;
+    view.updateState(
+      view.state.reconfigure({ plugins: view.state.plugins.filter((each) => each !== plugin) })
+    );
+  };
+}
+
+/** Where `blockId`'s block starts in `doc`: at `guess` where that block still stands there, else
+ *  wherever the document holds it, and undefined where it holds no such block. */
+function blockStart(
+  doc: ProseMirrorNode,
+  blockId: string | undefined,
+  guess: number | undefined
+): number | undefined {
+  if (blockId === undefined) return undefined;
+  if (guess !== undefined && doc.nodeAt(guess)?.attrs[BLOCK_ID_PROPERTY] === blockId) return guess;
+  let found: number | undefined;
+  doc.descendants((node, position) => {
+    if (found !== undefined) return false;
+    if (node.attrs[BLOCK_ID_PROPERTY] !== blockId) return !node.isTextblock;
+    found = position;
+    return false;
+  });
+  return found;
+}
+
+/** Whether `transaction`, one of the editor's own in `state`, keeps to `blockId`'s block, found
+ *  from `guess`: the block stands after it where the mapping puts it, one node of the type and
+ *  attributes it had, with no more line breaks in its headings; what stands before it and after
+ *  it reads as it did; and the selection is inside it. */
+function keepsToBlock(
+  transaction: Transaction,
+  state: EditorState,
+  blockId: string | undefined,
+  guess: number | undefined
+): boolean {
+  const from = blockStart(state.doc, blockId, guess);
+  const block = from === undefined ? null : state.doc.nodeAt(from);
+  if (from === undefined || block === null) return false;
+  const to = from + block.nodeSize;
+  // Content put right before the block, or right after it, is outside it.
+  const start = transaction.mapping.map(from, 1);
+  const end = transaction.mapping.map(to, -1);
+  const kept = transaction.doc.nodeAt(start);
+  const { selection } = transaction;
+  return (
+    kept !== null &&
+    start + kept.nodeSize === end &&
+    kept.hasMarkup(block.type, attributesAsRead(block, kept), block.marks) &&
+    headingBreaks(kept) <= headingBreaks(block) &&
+    sameReading(state.doc.content.cut(0, from), transaction.doc.content.cut(0, start)) &&
+    sameReading(state.doc.content.cut(to), transaction.doc.content.cut(end)) &&
+    selection.from > start &&
+    selection.to < end
+  );
+}
+
+/** `node`'s attributes, but for a heading's `id`, which reads as `other`'s: Milkdown derives it
+ *  from the heading's words (`holdEditsToBlock`). */
+function attributesAsRead(node: ProseMirrorNode, other: ProseMirrorNode): ProseMirrorNode["attrs"] {
+  return node.type.name === "heading" ? { ...node.attrs, id: other.attrs.id } : node.attrs;
+}
+
+/** Whether `before` and `after` hold the same nodes, by type, attributes, marks and text, a
+ *  heading's `id` aside (`attributesAsRead`). */
+function sameReading(before: Fragment, after: Fragment): boolean {
+  if (before.eq(after)) return true;
+  if (before.childCount !== after.childCount) return false;
+  for (let index = 0; index < before.childCount; index += 1) {
+    const was = before.child(index);
+    const is = after.child(index);
+    if (
+      !is.hasMarkup(was.type, attributesAsRead(was, is), was.marks) ||
+      (was.isText ? was.text !== is.text : !sameReading(was.content, is.content))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The line breaks the headings of `node` hold: a hard break reads as one
+ *  (`@milkdown/preset-commonmark`'s `leafText`), as a line of text does. */
+function headingBreaks(node: ProseMirrorNode): number {
+  let breaks = 0;
+  const count = (each: ProseMirrorNode): boolean => {
+    if (each.type.name !== "heading") return !each.isTextblock;
+    breaks += each.textContent.split("\n").length - 1;
+    return false;
+  };
+  if (count(node)) node.descendants(count);
+  return breaks;
 }
 
 /**
@@ -294,23 +457,18 @@ function keyAtBlock(
   // selection, and otherwise the end on the move's side, where the browser collapses it to.
   const earlier = compare(anchor, focus) <= 0 ? anchor : focus;
   const later = earlier === anchor ? focus : anchor;
-  // A Mac's editor keys for Backspace and Delete: Ctrl+H and Ctrl+D, and Alt+D, which the editor
-  // reads by the key's code since a Mac types a letter of its own with Alt held.
-  const mac = MAC_PLATFORM.test(navigator.platform);
-  const macDelete =
-    mac && event.ctrlKey && !event.metaKey && !event.altKey
-      ? MAC_CTRL_DELETES[event.key.toLowerCase()]
-      : mac && event.altKey && !event.ctrlKey && !event.metaKey && event.code === "KeyD"
-        ? "Delete"
-        : undefined;
-  switch (macDelete ?? event.key) {
+  switch (event.key) {
     case "Home":
       return jump ? extendTo(start) : undefined;
     case "End":
       return jump ? extendTo(end) : undefined;
     case "a":
     case "A":
-      return jump && !event.altKey && !event.shiftKey ? [start, end] : undefined;
+      return (event.metaKey || (event.ctrlKey && !MAC_PLATFORM.test(navigator.platform))) &&
+        !event.altKey &&
+        !event.shiftKey
+        ? [start, end]
+        : undefined;
     case "ArrowUp":
       if (event.metaKey) return extendTo(start);
       if (!sameLine(event.shiftKey ? focus : earlier, start)) return undefined;
@@ -326,12 +484,8 @@ function keyAtBlock(
     case "PageUp":
     case "PageDown":
       return null;
-    case "Backspace":
-      return collapsed && compare(focus, start) <= 0 ? null : undefined;
-    case "Delete":
-      return collapsed && compare(focus, end) >= 0 ? null : undefined;
-    case "Enter":
-      return event.shiftKey || block.hasAttribute(TYPED_BLOCK_ATTRIBUTE) ? undefined : null;
+    // Backspace, Delete, Enter and the editor's own block keys are held to the block by the
+    // editor itself (`holdEditsToBlock`).
     default:
       return undefined;
   }

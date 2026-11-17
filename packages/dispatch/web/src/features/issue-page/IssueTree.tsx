@@ -41,7 +41,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
-import { abortOnReaderAct, useNodeEditing } from "./useNodeEditing";
+import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { useTreeKeymap } from "./useTreeKeymap";
 
 /**
@@ -114,9 +114,9 @@ export function IssueTree({
   /** Whether the issue is closed, which the writes a node's body offers are refused on. */
   isClosed: boolean;
   /** The document the reader is editing a node of here, so the page draws that document's one
-   *  editor rather than leaving the row with nothing to put a caret in; `undefined` whenever
-   *  the reader is editing nothing. */
-  onEditing: (artifactId: string | undefined) => void;
+   *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
+   *  the row; `undefined` whenever the reader is editing nothing. */
+  onEditing: OnEditing;
   /** Whether every read the tree is built from holds an answer, which a failed read never does
    *  (`slots/body.tsx`). Until then a node the tree lacks may not have arrived yet, so a tree with
    *  no node draws no `emptyLine`, and `q` and `w` with nowhere to go say nothing

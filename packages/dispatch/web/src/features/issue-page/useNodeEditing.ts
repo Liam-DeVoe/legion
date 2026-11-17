@@ -1,3 +1,4 @@
+import type { EditorView } from "@milkdown/kit/prose/view";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
@@ -7,17 +8,31 @@ import type { TreeNode } from "./issue-tree";
 import {
   caretInBlock,
   caretOutOfBlock,
-  confineDrag,
-  confineInput,
   confineKey,
-  confinePaste,
   EDITOR_BOX_ATTRIBUTE,
   holdEditorAtBlock,
+  holdEditsToBlock,
+  loadEditsHold,
   selectInEditor,
   selectionIntoBlock,
 } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 import { PRESS_ENDS } from "./press-focus";
+
+/** The editor the page draws for an edited row, as the row takes it: its ProseMirror view, which
+ *  the row holds every edit of to the node's block (`node-caret.ts`'s `holdEditsToBlock`).
+ *  `doc/editor.ts`'s `EditorHandle` is one. */
+export interface RowEditor {
+  readonly view: EditorView;
+}
+
+/** How the tree tells the page which document a row is being edited in - `undefined` while none
+ *  is - so the page draws that document's one editor, and how the page hands the row that editor:
+ *  `onEditor`, with the editor as it is made, and with `undefined` as it is torn down. */
+export type OnEditing = (
+  artifactId: string | undefined,
+  onEditor?: (editor: RowEditor | undefined) => void
+) => void;
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
  *  document the node is, and the key of the row holding the editor (`rowKeyOf`), which is what
@@ -76,11 +91,13 @@ export function abortOnReaderAct(then?: () => void): AbortController {
  * The editor's own redrawing can drop that caret before the reader has done anything, and this
  * puts it back until they have. From then on, a focus the editor drops while the reader writes
  * goes back to the caret they had, or to the node's block where the editor has redrawn the text
- * that caret was in, and stays where it fell where that block is gone too. The caret, and every
- * key, stays inside the node's block while the row holds the editor (`node-caret.ts`'s
- * `confineKey`): the editor is the document's whole editor, and free editing of the whole
- * document stays on the document page. A node whose text no document of this issue holds has
- * nothing to put a caret in, and the key says so.
+ * that caret was in, and stays where it fell where that block is gone too. Every edit stays
+ * inside the node's block while the row holds the editor: the page hands the row its editor as
+ * the editor is made (`onEditing`), and the row holds that editor's own edits to the block
+ * (`node-caret.ts`'s `holdEditsToBlock`), and its caret (`confineKey`): the editor is the
+ * document's whole editor, and free editing of the whole document stays on the document page. A
+ * node whose text no document of this issue holds has nothing to put a caret in, and the key
+ * says so.
  *
  * Escape leaves the caret for the row it came from. The editor calls `preventDefault` on the
  * key before it reaches the page's keyboard registry, which drops every binding of the press
@@ -103,8 +120,9 @@ export function useNodeEditing({
   artifacts: ReadonlyMap<string, Artifact>;
   /** The tree's own box, which the rows are found inside. */
   container: RefObject<HTMLElement | null>;
-  /** Tells the page which document a row is editing, so it draws that document's one editor. */
-  onEditing: (artifactId: string | undefined) => void;
+  /** Tells the page which document a row is editing, so it draws that document's one editor and
+   *  hands it to the row. */
+  onEditing: OnEditing;
   /** What a key reports when the node it was pressed on has no text to put a caret in. */
   onReport: (report: string) => void;
 }): NodeEditing {
@@ -138,12 +156,37 @@ export function useNodeEditing({
   // placements apart (`tree-keys.ts`'s `rowKeyOf`, `[data-row-key]`).
   const editingRow = editing?.row;
 
+  // The block the editor the page hands over holds every edit to (`holdEditsToBlock`), read as
+  // each edit is made: none, while no row is edited, lets no edit in.
+  const heldBlock = useRef<string | undefined>(undefined);
+  heldBlock.current = editingBlock;
+  // What takes the hold off the editor the page handed over last.
+  const letGo = useRef<(() => void) | undefined>(undefined);
+  const onEditor = useCallback((editor: RowEditor | undefined) => {
+    letGo.current?.();
+    letGo.current =
+      editor === undefined ? undefined : holdEditsToBlock(editor.view, () => heldBlock.current);
+  }, []);
+
   useEffect(() => {
-    onEditing(editingArtifact);
+    // What the hold is built of loads as the row asks for its editor, so the hold goes on in the
+    // task the page hands that editor over in, before the editor has drawn the document. A load
+    // that fails is tried again, and reported, by the hold itself.
+    if (editingArtifact !== undefined) loadEditsHold().catch(() => undefined);
+    onEditing(editingArtifact, onEditor);
     // The outline going - a document opened in its place - takes the row's editing with it, so
     // the page holds no editor for a row that is no longer drawn.
     return () => onEditing(undefined);
-  }, [editingArtifact, onEditing]);
+  }, [editingArtifact, onEditing, onEditor]);
+
+  // The tree going takes the hold off the editor with it, whatever the page does with that editor.
+  useEffect(
+    () => () => {
+      letGo.current?.();
+      letGo.current = undefined;
+    },
+    []
+  );
 
   useEffect(() => {
     const box = container.current;
@@ -364,43 +407,24 @@ export function useNodeEditing({
     const box = container.current;
     if (editingRow === undefined || box === null) return;
     // The row's editor is the document's whole editor, and the keys it answers for a whole
-    // document - Ctrl+Home, Up from the block's first line, Ctrl+A, Backspace at its start - took
-    // the caret, and the letters typed next, out of the node's block to text the reader cannot
-    // see. Each key in the editor is read before the editor's own listener (the capture phase)
-    // and kept inside the node's block (`confineKey`), and each edit the browser is about to make
-    // with it (`confineInput`), from the moment the row holds the editor: while the node's block
-    // is not the selection - before the caret is placed, or a Tab into the editable before the
-    // block is drawn - no key edits the document at all. A paste that would make blocks past the
-    // node's is refused too (`confinePaste`), and so are a drag out of the editor and a drop into
-    // it (`confineDrag`). The editor's history in the row holds the row's own edits alone, each
-    // inside the block, so undo and redo are the editor's; a composition is not the page's to
-    // refuse, since a browser takes no `preventDefault` of one.
+    // document - Ctrl+Home, Up from the block's first line, Ctrl+A - took the caret, and the
+    // letters typed next, out of the node's block to text the reader cannot see. The editor
+    // holds its edits to the block itself (`holdEditsToBlock`, above), and its selection, but
+    // only after the browser has moved the page's caret and scrolled the box to it; so each key
+    // in the editor is read before the editor's own listener (the capture phase) and keeps the
+    // caret inside the node's block (`confineKey`), from the moment the row holds the editor:
+    // while the node's block is not the selection - before the caret is placed, or a Tab into
+    // the editable before the block is drawn - no key that could edit reaches the editor at all.
     const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
     const listening = new AbortController();
-    const options = { capture: true, signal: listening.signal };
-    const onRow =
-      <E extends Event>(confine: (row: HTMLElement, event: E) => void) =>
-      (event: E) => {
-        const row = box.querySelector<HTMLElement>(rowSelector);
-        if (row !== null) confine(row, event);
-      };
     box.addEventListener(
       "keydown",
-      onRow<KeyboardEvent>((row, event) => confineKey(row, editingBlock, event)),
-      options
+      (event) => {
+        const row = box.querySelector<HTMLElement>(rowSelector);
+        if (row !== null) confineKey(row, editingBlock, event);
+      },
+      { capture: true, signal: listening.signal }
     );
-    box.addEventListener(
-      "beforeinput",
-      onRow<InputEvent>((row, event) => confineInput(row, editingBlock, event)),
-      options
-    );
-    box.addEventListener(
-      "paste",
-      onRow<ClipboardEvent>((row, event) => confinePaste(row, editingBlock, event)),
-      options
-    );
-    box.addEventListener("dragstart", onRow(confineDrag), options);
-    box.addEventListener("drop", onRow(confineDrag), options);
     return () => listening.abort();
   }, [container, editingBlock, editingRow]);
 
