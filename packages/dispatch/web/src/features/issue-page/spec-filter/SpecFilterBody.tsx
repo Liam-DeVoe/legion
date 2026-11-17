@@ -522,14 +522,24 @@ export function SpecFilterBody({
   // The focus on a group's line of overtaken statements makes the line the tree's one tab stop,
   // under the line's own key, as a statement's focus makes the statement; while it holds the
   // stop no statement takes Tab. It releases the statement the reader left, and a report drawn
-  // anywhere else goes.
+  // anywhere else goes. Under a press that is once the press is over, and only while the line
+  // still holds the focus, as a pressed statement takes the focus (`focusItem`): the statement
+  // above the line cutting its words again, or the cell closing its decision, while the press
+  // was held moved the line up from under the pointer, and the click missed it.
   const takeLine = useCallback(
     (key: string) => {
-      leave();
-      setStop(key);
-      setReport((held) => (held?.row === key ? held : undefined));
+      const take = () => {
+        leave();
+        setStop(key);
+        setReport((held) => (held?.row === key ? held : undefined));
+      };
+      const line = tree.current?.querySelector<HTMLElement>(
+        `[data-spec-line="${CSS.escape(key)}"]`
+      );
+      if (line == null) take();
+      else focusItem(line, take);
     },
-    [leave]
+    [focusItem, leave]
   );
   const lineHolds =
     stop !== undefined && [...folds.lines.values()].some((line) => line.key === stop);

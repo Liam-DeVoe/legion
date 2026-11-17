@@ -1409,6 +1409,41 @@ test("the Verification view opens the line of an overtaken check an address name
   }
 });
 
+// A press focuses a Verification line as it goes down, and the check the reader left shutting
+// the facts its focus drew open then would shrink it under the pointer: the line, after it, would
+// move up, and the press could end off the line and open nothing. The check shuts them once the
+// press is over.
+test("a press on a Verification line keeps the facts of the check the reader left until it ends", async () => {
+  const user = userEvent.setup();
+  const { checks, root } = statementWithOvertakenCheck();
+  const view = drawVerification(root, checks);
+  try {
+    const left = view.container.querySelector<HTMLElement>("[data-verification-check]");
+    if (left === null) throw new Error("the view draws no check");
+    const line = theLine(view.container);
+    act(() => left.focus());
+    expect(left, "the focus did not open the check's facts").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    await user.pointer({ keys: "[MouseLeft>]", target: line });
+    expect(document.activeElement, "the press did not focus the line").toBe(line);
+    expect(left, "the held press shut the facts of the check left").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(left.querySelector("[data-node-body]")).not.toBeNull();
+
+    await user.pointer({ keys: "[/MouseLeft]", target: line });
+    await waitFor(() => expect(left).toHaveAttribute("aria-expanded", "false"));
+    expect(left.querySelector("[data-node-body]")).toBeNull();
+    expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
 // A state chip's count leaves a proposed statement out, and so does what the chip draws: the
 // chip says one number and draws as many statements.
 test("the Verification view's state chip draws no statement its count leaves out", async () => {
@@ -1666,6 +1701,35 @@ test("the Spec view's overtaken line is its tab stop once the reader is on it", 
     await user.tab({ shift: true });
     const tree = view.container.querySelector("[data-spec-tree]");
     expect(tree?.contains(document.activeElement)).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A press focuses the Spec view's line as it goes down, and the statement the reader left letting
+// go of its focus then - its words cut again, its "more" back - would shrink it under the pointer:
+// the line, after it, would move up, and the press could end off the line and open nothing. The
+// statement is let go once the press is over, as a pressed statement takes the focus then
+// (`focusItem`), and the line holds the stop from then on.
+test("a press on the Spec view's overtaken line lets go of the statement the reader left once it ends", async () => {
+  const user = userEvent.setup();
+  const view = drawSpec(statementAndLine());
+  try {
+    const first = rowOf(view.container, "spec#b-r1");
+    if (first === null) throw new Error("the view draws no statement");
+    const line = theLine(view.container);
+    act(() => first.focus());
+    await waitFor(() => expect(first.className).toContain(pageFocusedRow));
+
+    await user.pointer({ keys: "[MouseLeft>]", target: line });
+    expect(document.activeElement, "the press did not focus the line").toBe(line);
+    expect(first.className, "the held press let go of the statement").toContain(pageFocusedRow);
+    expect(line, "the held press gave the line the stop").toHaveAttribute("tabindex", "-1");
+
+    await user.pointer({ keys: "[/MouseLeft]", target: line });
+    await waitFor(() => expect(first.className).not.toContain(pageFocusedRow));
+    expect(line).toHaveAttribute("tabindex", "0");
+    expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
   } finally {
     view.unmount();
   }

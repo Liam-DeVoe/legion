@@ -64,6 +64,7 @@ import {
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
+import { usePressFocus } from "../press-focus";
 import { RowText } from "../RowText";
 import { isOvertaken, outOfCounts } from "../tree-fold";
 import {
@@ -352,6 +353,16 @@ export function VerificationFilterBody({
       return next;
     });
   };
+  // A press on a line of overtaken nodes focuses the line as it goes down, and the check the
+  // focus left shuts the facts the focus drew open (`Check`): the check above the line shrank
+  // while the press was held, moved the line up from under the pointer, and the click missed it.
+  // So that check shuts them once the press is over, as a press gives the outline's rows the
+  // focus (`usePressFocus`), and only while the focus is still out of it; a key's move onto the
+  // line shuts them at once.
+  const linePress = usePressFocus<LeftForLine>(
+    ({ letGo }) => letGo(),
+    ({ row }) => !row.contains(document.activeElement)
+  );
   /** Each check row a press on `row` reaches, by its id in `rows`, and whether its facts are
    *  drawn, by the focus or by a press, as its row says (`aria-expanded`): a check's own row,
    *  or each check of a statement. Each row element carries its own id
@@ -459,6 +470,8 @@ export function VerificationFilterBody({
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onKeyDown={keyDown}
+        // A press in the tree, which a check the focus left for a line waits for (`linePress`).
+        onMouseDown={linePress.onMouseDown}
         role="tree"
         tabIndex={-1}
       >
@@ -493,6 +506,7 @@ export function VerificationFilterBody({
                   context={context.has(statement.node.id)}
                   key={statement.node.id}
                   line={lineOf(statement.node.id)}
+                  onLeaveForLine={linePress.focus}
                   onPress={press}
                   onPressChecks={pressChecks}
                   presses={presses}
@@ -523,6 +537,7 @@ export function VerificationFilterBody({
                   earlierOpen={false}
                   key={check.node.id}
                   loose={true}
+                  onLeaveForLine={linePress.focus}
                   onPress={press}
                   pressed={presses.get(check.node.id)}
                   row={check.node.id}
@@ -544,6 +559,7 @@ export function VerificationFilterBody({
                       key={statement.node.id}
                       line={lineOf(statement.node.id)}
                       lined
+                      onLeaveForLine={linePress.focus}
                       onPress={press}
                       onPressChecks={pressChecks}
                       presses={presses}
@@ -565,6 +581,7 @@ export function VerificationFilterBody({
                       key={check.node.id}
                       lined
                       loose={true}
+                      onLeaveForLine={linePress.focus}
                       onPress={press}
                       pressed={presses.get(check.node.id)}
                       row={check.node.id}
@@ -1191,6 +1208,7 @@ function Statement({
   context,
   line,
   lined,
+  onLeaveForLine,
   onPress,
   onPressChecks,
   presses,
@@ -1204,6 +1222,9 @@ function Statement({
   /** Whether the statement is drawn under the issue's line of overtaken nodes, which is where
    *  an overtaken statement, and one at or under an overtaken node, is drawn. */
   lined?: boolean;
+  /** Lets go of a check's facts the focus left for a line of overtaken nodes (the body's
+   *  `linePress`). */
+  onLeaveForLine: (left: LeftForLine) => void;
   /** Sets the press of the check row with this id (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
   /** Presses the facts of the checks of this statement's row, as Enter on it does (the body's
@@ -1241,6 +1262,7 @@ function Statement({
               key={check.node.id}
               lined
               loose={false}
+              onLeaveForLine={onLeaveForLine}
               onPress={onPress}
               pressed={presses.get(row)}
               row={row}
@@ -1316,6 +1338,7 @@ function Statement({
                   earlierOpen={statement.earlierOpen.has(check.node.id)}
                   key={check.node.id}
                   loose={false}
+                  onLeaveForLine={onLeaveForLine}
                   onPress={onPress}
                   pressed={presses.get(row)}
                   row={row}
@@ -1385,6 +1408,7 @@ function Check({
   earlierOpen,
   lined,
   loose,
+  onLeaveForLine,
   onPress,
   pressed,
   row,
@@ -1401,6 +1425,9 @@ function Check({
   lined?: boolean;
   /** Whether the check serves no statement, and so stands as a row of the table itself. */
   loose: boolean;
+  /** Lets go of the facts the focus drew open once it left for a line of overtaken nodes, at
+   *  once or once a press that gave the line the focus is over (the body's `linePress`). */
+  onLeaveForLine: (left: LeftForLine) => void;
   /** Sets this row's press (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
   /** The reader's own press: open, shut, or neither, in which case the focus decides. */
@@ -1577,6 +1604,19 @@ function Check({
       onBlur={(event) => {
         const to = event.relatedTarget;
         if (to instanceof Node && event.currentTarget.contains(to)) return;
+        // To a line of overtaken nodes, which a press may be giving the focus: the facts stay
+        // drawn until it is over (`onLeaveForLine`), so the line does not move under it.
+        if (to instanceof Element && to.matches(OVERTAKEN_LINE)) {
+          const shut = pressed === false;
+          onLeaveForLine({
+            letGo: () => {
+              setFocusInside(false);
+              if (shut) onPress(row, undefined);
+            },
+            row: event.currentTarget,
+          });
+          return;
+        }
         setFocusInside(false);
         // A shut the reader pressed lasts while the focus stays; the next visit opens again.
         if (pressed === false) onPress(row, undefined);
@@ -1810,6 +1850,13 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
       <ParentLine node={node} />
     </div>
   );
+}
+
+/** A check's row the focus left for a line of overtaken nodes, and what shuts the facts the
+ *  focus drew open in it (`Check`'s `onLeaveForLine`). */
+interface LeftForLine {
+  readonly letGo: () => void;
+  readonly row: HTMLElement;
 }
 
 /** A line of overtaken nodes as the row that holds it draws it: how many it holds, whether it is
