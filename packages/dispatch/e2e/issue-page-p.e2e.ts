@@ -1811,3 +1811,85 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
     ).toBe(title);
   });
 });
+
+// The tester's finding at 2e10926e (dispatch://INFRA-3943, round 3), decision 132 of
+// dispatch://INFRA-1196/artifact/part-decisions-md: on the new page a keyboard pick of the
+// status keeps the focus on the status (WCAG 2.4.3). The select was disabled while its own write
+// saved, and the browser moves the focus off a disabled control, so after `s` and one arrow key
+// the focus was on the page's body: a second arrow key did nothing, Tab started from the top,
+// and an Escape pressed before the select was disabled was not taken. Each focus is read once,
+// after the pick is drawn, because a retrying read passes in the frame before the pick disables
+// the select. The status's writes are held open with a route, so the save stays in flight while
+// the row reads it.
+test("a keyboard pick of the status keeps the focus on the status while it saves", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const key = seeded.key;
+    await page.setViewportSize(viewportAt(DESKTOP.width));
+    await gotoIssue(page, `/issues/${key}`);
+    await expectHeaderDrawn(page);
+    await leaveFocus(page);
+    const status = issueHeader(page).getByRole("combobox", { name: "Status" });
+    await expect(status).toHaveValue("in_progress");
+    const statusFocused = () => status.evaluate((select) => select === document.activeElement);
+
+    const held: (() => void)[] = [];
+    const writes: unknown[] = [];
+    await page.route(`**/api/v1/issues/${key}`, async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      writes.push(route.request().postDataJSON());
+      const { promise, resolve } = Promise.withResolvers<void>();
+      held.push(resolve);
+      await promise;
+      await route.continue();
+    });
+
+    await page.keyboard.press("s");
+    await expect(status, "s did not put the focus on the status").toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(status).toHaveValue("testing");
+    await framesDrawn(page, 2);
+    expect(
+      await statusFocused(),
+      "a keyboard pick of the status moved the focus off the status"
+    ).toBe(true);
+
+    // A second arrow key while the first pick saves picks again, and the focus stays.
+    await page.keyboard.press("ArrowDown");
+    await expect(status, "a second arrow key while the status saved picked nothing").toHaveValue(
+      "needs_review"
+    );
+    await framesDrawn(page, 2);
+    expect(
+      await statusFocused(),
+      "a second keyboard pick of the status moved the focus off the status"
+    ).toBe(true);
+
+    // Escape, while the save is still in flight, gives the focus back to the page.
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => onBody(page), { message: "Escape did not leave the status while it saved" })
+      .toBe(true);
+
+    // Once the writes are let through, the issue holds the last status picked.
+    await expect.poll(() => held.length).toBeGreaterThan(0);
+    for (;;) {
+      const release = held.shift();
+      if (release === undefined) break;
+      release();
+      await framesDrawn(page, 2);
+    }
+    await page.unroute(`**/api/v1/issues/${key}`);
+    await expect
+      .poll(async () => (await getIssue(key)).status, {
+        message: "the status picked last is not the issue's status",
+      })
+      .toBe("needs_review");
+    expect(writes.length, "no status was written").toBeGreaterThan(0);
+  });
+});
