@@ -170,21 +170,30 @@ function focusOn(to: HTMLElement): void {
 
 /** Puts the focus on the outline's tree, which takes none of its own (`IssueTree.tsx`): it takes
  *  it while it holds it, as the Plan view's empty tree does (`PlanFilterBody.tsx`), and no more
- *  once the focus leaves it, so Tab never stops on it beside its rows. A blur that leaves the
- *  tree the focused element - the window going, as the reader switches to another - is no focus
- *  leaving it, and the tree stays focusable: a browser moves the focus to the body as soon as the
- *  focused element stops being focusable. So each blur looks where the focus is one task later,
- *  once every browser has finished the focus move the blur belongs to. Answers the tree, or null
- *  where none is drawn. */
+ *  once the focus leaves it, so Tab never stops on it beside its rows. A blur that puts the
+ *  focus somewhere else - another control, or nothing - makes the tree take none from then on,
+ *  at once. A blur that leaves the tree the focused element - the window going, as the reader
+ *  switches to another, or a browser that moves the focus only after the blur - is no focus
+ *  leaving it yet: the tree stays focusable, since a browser moves the focus to the body as soon
+ *  as the focused element stops being focusable, and it looks again one task later, once every
+ *  browser has finished the focus move the blur belongs to. Answers the tree, or null where none
+ *  is drawn. */
 function holdFocus(tree: HTMLElement | null): HTMLElement | null {
   if (tree === null) return null;
   if (!tree.hasAttribute("tabindex")) {
     tree.tabIndex = -1;
+    // The focus has left the tree: it takes it no more, and no later blur needs a look.
+    const letGo = () => {
+      tree.removeAttribute("tabindex");
+      tree.removeEventListener("blur", onBlur);
+    };
     const onBlur = () => {
+      if (document.activeElement !== tree) {
+        letGo();
+        return;
+      }
       setTimeout(() => {
-        if (document.activeElement === tree) return;
-        tree.removeAttribute("tabindex");
-        tree.removeEventListener("blur", onBlur);
+        if (document.activeElement !== tree) letGo();
       }, 0);
     };
     tree.addEventListener("blur", onBlur);
