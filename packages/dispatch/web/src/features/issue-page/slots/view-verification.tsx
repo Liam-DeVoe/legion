@@ -3,7 +3,7 @@ import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -23,7 +23,7 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // it, each statement with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { root } = useIssueTree(issue);
+  const { blocksHeld, blocksOf, root } = useIssueTree(issue);
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own
   // (R1). The results read holds a result's commit, its verdict and its withdrawal, which the
@@ -31,20 +31,18 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   const coverage = useQuery(issueCoverageQuery(issue.key));
   const results = useQuery(issueResultsQuery(issue.key));
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
-  // The blocks read of the Verification document too: a check learns the statements it serves
+  // The Verification document's blocks, from the tree read: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
   // statement, every statement would read Unknown, and R9's line would call the issue's own
   // checks "elsewhere" (part V's R1 and R9). The results read answers the checks of one
   // document, the issue's Verification document (`api/results.go`'s `verificationDocument`),
   // which each check names (`CheckBlock.artifact_id`) and whose blocks `useIssueTree` reads; no
-  // other document's blocks place a check. The slot watches that read under the same key with
-  // an observer that is never enabled, so it sends no request of its own (R1) and sees whatever
-  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
-  // Where the results read holds no check no blocks read is needed, and the observer of no
-  // document never fetches.
-  const documentId = checks[0]?.artifact_id;
-  const blocks = useQuery({ ...artifactBlocksQuery(documentId ?? ""), enabled: false });
+  // other document's blocks place a check. The slot takes them from the `useIssueTree` above
+  // (`blocksOf`, `blocksHeld`), so it sends no request of its own (R1); their `refetch` reads the
+  // tree again, which is what Retry asks. The tree read holds the statements too, so the view
+  // waits on it whether or not the results read holds a check.
+  const blocks = blocksOf("verification");
   // Each read has answered where it holds data, and not by its status: a background refetch
   // that fails sets TanStack Query's status to error and keeps the data it last answered, and
   // the query cache keeps that data when the stage mounts this slot again as the reader comes
@@ -56,14 +54,11 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // they are in (part V's departure 6); where a read failed it says which, each with a Retry
   // that asks that read alone again, rather than draw an empty view (the architect's decisions
   // 117 and 126 on dispatch://INFRA-1196).
-  const answered =
-    coverage.data !== undefined &&
-    results.data !== undefined &&
-    (documentId === undefined || blocks.data !== undefined);
+  const answered = coverage.data !== undefined && results.data !== undefined && blocksHeld;
   const failed: VerificationRead[] = [];
   if (failedWithNothing(coverage)) failed.push("coverage");
   if (failedWithNothing(results)) failed.push("results");
-  if (documentId !== undefined && failedWithNothing(blocks)) failed.push("blocks");
+  if (failedWithNothing(blocks)) failed.push("blocks");
   const reads: VerificationReads =
     failed.length > 0
       ? {
