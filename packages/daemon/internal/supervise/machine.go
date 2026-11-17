@@ -1412,6 +1412,10 @@ type Machine struct {
 	// again at every sweep (sendPending, for a claim that does not hold its session) is written
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
 	refusalLogged string
+	// admitted is the session and file the store last admitted for this claim (holdRecorded),
+	// which HoldsItsSession reads without the lock; forgetSession clears it with heldNames.
+	// Memory only.
+	admitted atomic.Pointer[admittedSession]
 	// registration is the pod-session registration this machine keeps written for the claim's
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
 	// writes it again at its shim's first hello to the new daemon.
@@ -2964,6 +2968,7 @@ func (m *Machine) forgetSession(why string) {
 	// let this claim register that session again without asking the store. So the cache holds only
 	// the names of the session the claim records now (review F2 of #4220's round 4).
 	m.heldNames = nil
+	m.admitted.Store(nil)
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
 }

@@ -225,6 +225,59 @@ func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
 	}
 }
 
+// The publication names a live claim's session only while the claim holds every name its record
+// gives the session (supervise.RecordedHolds), in its own project, and none is a name no hold can
+// cover (review round 14 of #4220): a claim whose session's id is held for it while its file's
+// name, the id its Oh My Pi file name gives, or the Claude Code session its `<uuid>.jsonl` file
+// names is not, is left out, and so is one whose file is not a clean path. The claim holding every
+// name of its session is published as before.
+//
+// The control (the pull request records the run): LiveRoleHolders asking for the session id's
+// hold alone, as round 13 did; every one of the four claims is published beside the architect.
+func TestTheExecutorPublishesASessionOnlyWhileItsClaimHoldsEveryNameOfIt(t *testing.T) {
+	const issue = "LEGION-210"
+	const uuid = "9d0c8b7a-6e5f-4a3b-8c2d-1e0f9a8b7c6d"
+	r := newRoleHoldersRig(t)
+	for _, seeded := range []struct {
+		role    claim.Role
+		session string
+		file    string
+		skip    supervise.HoldKind // the kind of name left unheld; "" holds every name
+	}{
+		{claim.RoleArchitect, "ses-whole", "/state/sessions/2026-11-17T00-00-00-000Z_ses-whole.jsonl", ""},
+		{claim.RolePlanner, "ses-no-file-name", "/state/sessions/2026-11-17T00-00-00-000Z_ses-no-file-name.jsonl", supervise.HoldFileName},
+		{claim.RoleImplementer, "ses-no-file-id", "/state/sessions/2026-11-17T00-00-00-000Z_ses-other-id.jsonl", supervise.HoldFileID},
+		{claim.RoleTester, "ses-no-claude-stem", "/home/agent/.claude/projects/repo/" + uuid + ".jsonl", "stem"},
+		{claim.RoleReviewer, "ses-unclean-file", "/state/sessions/ses-unclean-file.jsonl/..", ""},
+	} {
+		token, err := claim.NewToken("legion", issue, seeded.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.pool.Exec(r.ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, updated_at)
+			values ($1, 'legion', $2, $2, $3, 1, $4, $5, 'working', 0, 0, 0, 0, now())`,
+			string(token), issue, string(seeded.role), seeded.session, seeded.file); err != nil {
+			t.Fatalf("seed the %s claim: %v", seeded.role, err)
+		}
+		for _, h := range supervise.RecordedHolds(seeded.session, seeded.file) {
+			if h.Kind == seeded.skip || seeded.skip == "stem" && h.Name == uuid {
+				continue
+			}
+			if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', $1, $2, $3)`,
+				string(h.Kind), h.Name, string(token)); err != nil {
+				t.Fatalf("hold %s %s for the %s claim: %v", h.Kind, h.Name, seeded.role, err)
+			}
+		}
+	}
+
+	r.enqueue(issue)
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "architect", Session: "ses-whole"}}}}
+	if got := r.published(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("published %+v, want %+v: only the architect holds every name of the session it records", got, want)
+	}
+}
+
 // The ready route queues the publication of its claim's issue (roleHoldersChanged) in a
 // transaction of its own, and a second ready of the same issue queues no second row: the one row
 // is made due again.

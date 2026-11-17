@@ -1879,7 +1879,7 @@ type Store interface {
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
 	// LiveRoleHolders is the session of each live claim of issue, by role, that the claim holds
-	// (claim_sessions holds its id for that claim): the set a role-holder publication sends.
+	// (claim_sessions holds every name of it for that claim): the set a role-holder publication sends.
 	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
 	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
 	// changed at or after since, in key order: the issues the boot publishes.

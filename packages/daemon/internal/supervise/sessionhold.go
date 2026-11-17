@@ -308,6 +308,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 	}
 	if len(ask) == 0 {
 		m.refusalLogged = ""
+		m.admitted.Store(&admittedSession{session, sessionFile})
 		return nil
 	}
 	var holders []claim.Token
@@ -330,16 +331,14 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 	if len(holders) != len(ask) {
 		return fmt.Errorf("hold the session of %s: %w: it answered %d holders for %d names", m.claim.Token, errHoldUnanswered, len(holders), len(ask))
 	}
-	for i, h := range ask {
-		if holders[i] != m.claim.Token {
-			holder := string(holders[i])
-			if holder == "" {
-				holder = "none"
-			}
-			m.warnRefusal("supervise: refused a session another claim recorded first",
-				"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", holder)
-			return fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))
+	if h, holder, refused := firstHeldElsewhere(ask, holders, m.claim.Token); refused {
+		named := string(holder)
+		if named == "" {
+			named = "none"
 		}
+		m.warnRefusal("supervise: refused a session another claim recorded first",
+			"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", named)
+		return fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))
 	}
 	if m.heldNames == nil {
 		m.heldNames = map[Hold]bool{}
@@ -348,21 +347,71 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		m.heldNames[h] = true
 	}
 	m.refusalLogged = ""
+	m.admitted.Store(&admittedSession{session, sessionFile})
 	return nil
 }
 
+// firstHeldElsewhere is the first of holds, whose holders the store answered in order
+// (Store.HoldSessions), that is held for another claim than token or for none, with its holder;
+// refused is false when every one is token's.
+func firstHeldElsewhere(holds []Hold, holders []claim.Token, token claim.Token) (h Hold, holder claim.Token, refused bool) {
+	for i, h := range holds {
+		if holders[i] != token {
+			return h, holders[i], true
+		}
+	}
+	return Hold{}, "", false
+}
+
+// admittedSession is a session and file every name of which the store last answered as this
+// claim's (holdRecorded, HoldsItsSession), kept for HoldsItsSession to read without the lock.
+type admittedSession struct{ session, file string }
+
 // HoldsItsSession is nil when every name of the session the claim records is held to it, or it
-// records none, and otherwise the hold's refusal (a claim.Refusal) or the store's error
-// (holdRecorded). The daemon's outbox asks it before it publishes to the claim's Envoy role topic:
-// a claim the boot could not suspend keeps its process, and that process keeps the role its
-// session claimed, so a message to the role would reach a process working under another claim's
-// session, or one no claim holds (review round 13 of #4220). It is answered under the machine's
-// lock, as Claim is, and asks the store nothing for a claim holding its session
-// (Machine.heldNames).
+// records none, and otherwise the hold's refusal (a claim.Refusal) or the store's error. The
+// daemon's outbox asks it before it publishes to the claim's Envoy role topic: a claim the boot
+// could not suspend keeps its process, and that process keeps the role its session claimed, so a
+// message to the role would reach a process working under another claim's session, or one no
+// claim holds (review round 13 of #4220).
+//
+// It never takes the machine's lock, which a decision holds through its runtime call, a relaunch
+// for minutes: the outbox reads claims through View for that reason (LEGION-650), and a publish
+// that waited would hold its issue's lane behind the relaunch (review round 14 of #4220). It
+// reads the claim from View, and answers from the session the store last admitted for the claim
+// (Machine.admitted) when that is the session the view records, so a claim holding its session
+// costs no store call; otherwise it asks the store itself, as holdRecorded would, and logs
+// nothing: the publisher that asked says what it did not publish.
 func (m *Machine) HoldsItsSession(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile)
+	c := m.View().Claim
+	if a := m.admitted.Load(); a != nil && *a == (admittedSession{c.Session, c.SessionFile}) {
+		return nil
+	}
+	if invalid := invalidSessionNames(c.Session, c.SessionFile); len(invalid) > 0 {
+		what := "session id"
+		if invalid[0].hold.Kind == HoldFileName {
+			what = "session file"
+		}
+		return fmt.Errorf("%s as %s: %w", c.Token, what, claim.SessionNameUnheldRefusal(what))
+	}
+	holds := RecordedHolds(c.Session, c.SessionFile)
+	if len(holds) > 0 {
+		asking, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+		holders, err := m.deps.Store.HoldSessions(asking, c.Project, c.Token, holds)
+		cancel()
+		switch {
+		case errors.Is(err, ErrHeldNamesCap):
+			return fmt.Errorf("hold the session of %s: %w", c.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
+		case err != nil:
+			return fmt.Errorf("hold the session of %s: %w: %w", c.Token, errHoldUnanswered, err)
+		case len(holders) != len(holds):
+			return fmt.Errorf("hold the session of %s: %w: it answered %d holders for %d names", c.Token, errHoldUnanswered, len(holders), len(holds))
+		}
+		if h, _, refused := firstHeldElsewhere(holds, holders, c.Token); refused {
+			return fmt.Errorf("%s as %s %s: %w", c.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))
+		}
+	}
+	m.admitted.Store(&admittedSession{c.Session, c.SessionFile})
+	return nil
 }
 
 // warnRefusal writes a refused hold's Warn line unless it is the line this machine wrote last

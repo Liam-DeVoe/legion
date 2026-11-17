@@ -198,15 +198,17 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		}
 	})
 
-	// A revocation the broker does not answer leaves the enrollment recorded, handed to no
-	// connection, and the next observation revokes it (revokeUnheld, review round 14 of #4220):
-	// the process renews its lease while it lives, so forgetting an enrollment the broker never
-	// revoked would leave it live with nothing left to revoke it.
+	// A revocation the broker does not answer stays owed: the enrollment is kept recorded, handed
+	// to no connection, and each later observation asks the broker again until it confirms
+	// (revokeUnheld, reviews rounds 13 and 14 of #4220), across a restart of the daemon too, since
+	// the claim's record carries the enrollment. The process renews its lease while it lives, so
+	// forgetting an enrollment the broker never revoked would leave it live with nothing left to
+	// revoke it.
 	//
 	// The control (the pull request records the run): the enrollment cleared before the broker
-	// answers, as round 14 first did; the claim then records no enrollment after the failed
-	// revocation, and the next observation revokes nothing.
-	t.Run("a failed revocation of a live claim's enrollment is tried again", func(t *testing.T) {
+	// answers, the let-go's revoke left to retry it, as round 14 first did; the claim then records
+	// no enrollment after the failed revocation, and nothing revokes it.
+	revokeLater := func(t *testing.T, restart bool) {
 		h := newHarness(t)
 		broker := h.withSecrets()
 		h.launch()
@@ -220,29 +222,41 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		handed := len(h.conn.Enrollments())
 		h.store.setHold(sessionID(session), claim.Token("legion-legion-LEGION-209-tester"))
 		broker.mu.Lock()
-		broker.revokeFails = 1
+		broker.revokeFails = revokeAttempts
 		broker.mu.Unlock()
 		h.restart()
 		h.helloWithIdentity()
-		h.m.Wait()
-		if revoked := broker.revocations(); len(revoked) != 0 {
-			t.Fatalf("revoked %v while the broker failed every revocation", revoked)
+		for attempt := 1; attempt <= revokeAttempts; attempt++ {
+			h.m.Wait()
+			if revoked := broker.revocations(); len(revoked) != 0 {
+				t.Fatalf("revoked %v while the broker failed every revocation", revoked)
+			}
+			if c := h.claim(); c.Enrollment == nil || c.Enrollment.ID != enrollment.ID {
+				t.Fatalf("after %d failed revocations the claim records enrollment %+v, want %s kept for the next try", attempt, c.Enrollment, enrollment.ID)
+			}
+			if got := h.conn.Enrollments(); len(got) != handed {
+				t.Fatalf("the new connection was handed enrollments %v while the revocation waits", got[handed:])
+			}
+			if attempt < revokeAttempts {
+				h.observe(runtime.Alive)
+			}
 		}
-		if c := h.claim(); c.Enrollment == nil || c.Enrollment.ID != enrollment.ID {
-			t.Fatalf("the claim records enrollment %+v after a revocation the broker did not answer, want %s kept for the next try", c.Enrollment, enrollment.ID)
+		if restart {
+			h.restart()
+			h.helloWithIdentity()
+		} else {
+			h.observe(runtime.Alive)
 		}
-		if got := h.conn.Enrollments(); len(got) != handed {
-			t.Fatalf("the new connection was handed enrollments %v while the revocation waits", got[handed:])
-		}
-		h.observe(runtime.Alive)
 		h.m.Wait()
 		if revoked := broker.revocations(); !slices.Equal(revoked, []string{enrollment.ID}) {
-			t.Fatalf("revoked %v at the next observation, want %s", revoked, enrollment.ID)
+			t.Fatalf("revoked %v once the broker answered, want %s", revoked, enrollment.ID)
 		}
 		if c := h.claim(); c.Enrollment != nil {
 			t.Fatalf("the claim still records enrollment %+v after its revocation", *c.Enrollment)
 		}
-	})
+	}
+	t.Run("a revocation the broker fails three times is tried again", func(t *testing.T) { revokeLater(t, false) })
+	t.Run("a revocation the broker fails is tried again after a restart", func(t *testing.T) { revokeLater(t, true) })
 
 	// An operator settles an id held for no claim by recording its rightful holder, and that claim's
 	// next registration on the same machine is admitted: the refusal of an id held for no claim is

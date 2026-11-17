@@ -143,6 +143,9 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// unheldWarned is, by claim, the key of the row publish last wrote its refusal's Warn line for
+	// (a claim.Token to a dedupe key), so a row held at every attempt of its backoff writes one.
+	unheldWarned sync.Map
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -183,7 +186,7 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 		log = slog.Default()
 	}
 	return &outbox{
-		pool: pool, records: records, dispatch: client, notices: heldRoles(publisher, supervisor, log), supervisor: supervisor, trees: trees, tokens: tokens,
+		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
@@ -206,48 +209,61 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 	}
 }
 
-// heldRolePublisher is the outbox's Envoy publisher. A publish to the role topic of a claim this
-// daemon supervises is made only while that claim holds the session it records
-// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
-// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
-// message, a phase's end, a hook's prompt, an update ask or a merge-queue removal would reach a
-// process working under another claim's session, or one no claim holds (review round 13 of
-// #4220). Such a publish is not made and answers notify.ErrNoHolder, which every role executor
-// already answers its own way — a notice is held for its architect, a merge-queue removal waits,
-// a role message, a phase's end, a hook's prompt and an update ask finish undelivered — so an
-// operator's settle of the name lets the next attempt through. A store that does not answer
-// publishes nothing and fails the attempt, which the row's backoff retries. A topic of no claim
-// this daemon supervises, and every other topic, is published as made.
-type heldRolePublisher struct {
-	notify.Publisher
-	supervisor *supervisor
-	log        *slog.Logger
-}
-
-// heldRoles is publisher held to the claims supervisor supervises (heldRolePublisher), or nil for
-// an outbox with no publisher, whose executors refuse their rows for that.
-func heldRoles(publisher notify.Publisher, supervisor *supervisor, log *slog.Logger) notify.Publisher {
-	if publisher == nil || supervisor == nil {
-		return publisher
-	}
-	return heldRolePublisher{Publisher: publisher, supervisor: supervisor, log: log}
-}
-
-func (p heldRolePublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	if token, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
-		if m, ok := p.supervisor.Machine(claim.Token(token)); ok {
+// publish is every executor's publish to Envoy (r.notices), held to the claims this daemon
+// supervises. A publish to the role topic of a claim the daemon supervises, or to its project's
+// controller topic while the daemon supervises the controller's claim, is made only while that
+// claim holds the session it records (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim
+// the boot could not suspend keeps its process, and that process keeps the Envoy role its session
+// claimed, so a notice, a role message, a phase's end, a hook's prompt, an update ask, a
+// merge-queue removal or a controller notice would reach a process working under another claim's
+// session, or one no claim holds (review rounds 13 and 14 of #4220). Such a publish is not made
+// and answers notify.ErrNoHolder, which every executor already answers its own way — a notice is
+// held for its architect, a merge-queue removal waits, a controller notice is retried on its
+// backoff, and a role message, a phase's end, a hook's prompt and an update ask finish undelivered
+// — so an operator's settle of the name lets the next attempt through. A store that does not
+// answer publishes nothing and fails the attempt, which the row's backoff retries.
+//
+// HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
+// relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
+// newOutbox is given, so every executor, and every test that builds an outbox, publishes through
+// it. A topic of no claim this daemon supervises, the operator's own controller among them, and
+// every other topic, is published as made.
+func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	if token, held := r.heldTopic(topic); held && r.supervisor != nil {
+		if m, ok := r.supervisor.Machine(token); ok {
 			if err := m.HoldsItsSession(ctx); err != nil {
 				var refusal claim.Refusal
 				if !errors.As(err, &refusal) {
-					return fmt.Errorf("ask whether %s holds its session before publishing to its role: %w", token, err)
+					return fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)
 				}
-				p.log.Warn("outbox: not publishing to a role whose claim records a session it does not hold",
-					"topic", topic, "key", dedupeKey, "error", err)
-				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to its role: %w", notify.ErrNoHolder, token, err)
+				if last, seen := r.unheldWarned.Load(token); !seen || last != dedupeKey {
+					// One line per row and claim, as holdRecorded writes one per refusal
+					// (warnRefusal): a held row asks again at each attempt of its backoff.
+					r.unheldWarned.Store(token, dedupeKey)
+					log := r.log
+					if log == nil {
+						log = slog.Default()
+					}
+					log.Warn("outbox: not publishing to a claim that records a session it does not hold",
+						"topic", topic, "claim", token, "key", dedupeKey, "error", err)
+				}
+				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to it: %w", notify.ErrNoHolder, token, err)
 			}
 		}
 	}
-	return p.Publisher.Publish(ctx, topic, message, payload, dedupeKey)
+	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
+}
+
+// heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
+// topic names, or the project's controller for its controller topic.
+func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
+	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
+		return claim.Token(role), true
+	}
+	if r.project != "" && topic == notify.ControllerTopic(r.project) {
+		return claim.ControllerToken(r.project), true
+	}
+	return "", false
 }
 
 // RunOnce drains every row of the project due now, in the order the lanes would run them within
@@ -1535,7 +1551,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
 }
 
@@ -1555,7 +1571,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
 	}
-	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
 		// ERROR on every attempt, as the notice executor's own unresponsive branch does
@@ -1758,7 +1774,7 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
 // message.
 func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
-	err := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
+	err := r.publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		r.log.Info(noHolder, fields...)
 		return false, nil
@@ -1773,7 +1789,7 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	if err := r.notices.Publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
+	if err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
 	}
 	return nil
