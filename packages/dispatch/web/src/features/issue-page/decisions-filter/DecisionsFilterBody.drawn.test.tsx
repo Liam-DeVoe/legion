@@ -5,10 +5,12 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { displayTree } from "../../../__tests__/display-trees";
 import { ApiError, api } from "../../../api/client";
-import type { Actor, Comment, Decision, DecisionKeep } from "../../../api/types";
+import type { Actor, ArtifactText, Comment, Decision, DecisionKeep } from "../../../api/types";
 import { pageFocusedRow, pageInkText, pageOwnWordsRule } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
@@ -194,6 +196,21 @@ function changeOf(block: string, at: string, body: string): Comment {
     created_at: at,
     id: `change-${block}`,
   } as Comment;
+}
+
+/** The decisions document the decisions read of `made` stands for: its title, then each
+ *  decision's heading and words as `made` orders them, the replaced ones after the rest and a
+ *  level down under `## Replaced`, which is where the server's section rule finds each
+ *  (`decision-review.ts`'s `decisionHeadings`). A Change's send reads it to say which place of
+ *  its quote is the decision's own (`DecisionActions.tsx`, decision 92). */
+function decisionsText(made: readonly Decision[]): string {
+  const section = (level: string) => (row: Decision) => `${level} ${row.heading}\n\n${row.text}`;
+  const replaced = made.filter((row) => row.replaced);
+  return [
+    `# Decisions of ${KEY}`,
+    ...made.filter((row) => !row.replaced).map(section("##")),
+    ...(replaced.length === 0 ? [] : ["## Replaced", ...replaced.map(section("###"))]),
+  ].join("\n\n");
 }
 
 function renderBody(
@@ -1297,11 +1314,24 @@ test("each press of the count of what waits goes to the next thing that waits", 
 // the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
 // its words with a link to it in the conversation.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
+  // The send reads the decisions document's text to say which place of the quote in it is the
+  // decision's own, and the reading of that text is the page's engine's, which must be loaded.
+  await warmMarkdownRenderer();
   const user = userEvent.setup();
+  const whole = wholeIssue();
   const sent = changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.");
   const create = spyOn(api, "createComment").mockResolvedValue(sent as never);
   const list = spyOn(api, "listComments").mockResolvedValue([sent] as never);
-  const view = renderBody(wholeIssue());
+  const markdown = decisionsText(whole.made);
+  const text = spyOn(api, "getArtifactText").mockImplementation(
+    async (): Promise<ArtifactText> => ({
+      markdown,
+      markdown_tree: displayTree(markdown),
+      token: "token",
+      version: 1,
+    })
+  );
+  const view = renderBody(whole);
   try {
     expect(rowsOfPart(view, "review")).toEqual([D("second"), D("first")]);
     const change = rowOf(view, D("second")).querySelector('button[data-row-action="change"]');
@@ -1310,11 +1340,13 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
-    // The comment is anchored to the decision's own words in the decisions document.
+    // The comment is anchored to the decision's own words in the decisions document, at the
+    // first place they stand there: the heading above them ends with no full stop, so the quote
+    // starts nowhere before them.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: DECISIONS_DOCUMENT.id, quote: "The decision second." },
+        anchor: { artifact: DECISIONS_DOCUMENT.id, occurrence: 0, quote: "The decision second." },
         body: "Name the read, please.",
       },
     ]);
@@ -1343,6 +1375,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
   } finally {
     create.mockRestore();
     list.mockRestore();
+    text.mockRestore();
   }
 });
 
@@ -1365,10 +1398,12 @@ test("another person's answer stands under Your decisions with their name", () =
 });
 
 // The tester's F16: a key with nowhere to go says so at the row it was pressed on, and the
-// report goes when the reader moves on to another row. The focus leaving the list for another
-// control of the page keeps it drawn, as it keeps the row's body, until Escape (decision 105).
-// Pressed on no row, on the foot's control say, it says so at the list's tab stop, as the
-// outline's keys do.
+// report goes when the reader moves on to another row or out of the list (decision 105 as
+// amended, `useReleaseFocus`). The focus leaving the list with no press under way, as Tab or a
+// script moves it, takes the report away at once. A press on another control of the page keeps
+// it drawn while the press is held, so nothing moves under the pointer, and takes it away once
+// the press has ended and its click has landed. Pressed on no row, on the foot's control say,
+// it says so at the list's tab stop, as the outline's keys do.
 test("a key with nowhere to go reports at the row it was pressed on", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue(), {}, { requests: true });
@@ -1381,13 +1416,24 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   await user.keyboard("j");
   expect(view.container.querySelector("[data-row-report]")).toBeNull();
 
+  // A script's focus on another control takes the report away at once.
   await act(async () => rowOf(view, "q-open").focus());
   await user.keyboard("w");
   expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
-  await act(async () => view.getByRole("button", { name: "Elsewhere" }).focus());
-  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
-  await user.keyboard("{Escape}");
+  const elsewhere = view.getByRole("button", { name: "Elsewhere" });
+  await act(async () => elsewhere.focus());
   expect(view.container.querySelector("[data-row-report]")).toBeNull();
+
+  // A press on it takes the focus as it goes down and keeps the report while it is held, and
+  // the report goes once the press is let go.
+  await act(async () => rowOf(view, "q-open").focus());
+  await user.keyboard("w");
+  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
+  await user.pointer({ keys: "[MouseLeft>]", target: elsewhere });
+  expect(document.activeElement).toBe(elsewhere);
+  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
+  await user.pointer({ keys: "[/MouseLeft]", target: elsewhere });
+  await waitFor(() => expect(view.container.querySelector("[data-row-report]")).toBeNull());
   view.unmount();
 
   // An issue with no open question, and `q` pressed on the foot's control.

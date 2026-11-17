@@ -274,12 +274,12 @@ export function DecisionsFilterBody({
       window.clearTimeout(held.ending);
     };
   }, []);
-  // The focus leaving the list for no control, or Escape once it has left for another control
-  // of the page, closes what it opened and takes away what a key reported and the reader's own
-  // review; a focus gone to another control keeps the row's body drawn until then, so nothing
-  // moves under a press there (`useReleaseFocus`, decision 105). The panel goes back to the
-  // issue's own facts as the focus leaves, unless it went to Details, where a reader reads the
-  // node's. No row of the list is edited in place.
+  // The focus leaving the list with no press under way, by Tab or a script, lets go at once of
+  // what the row opened, what a key reported and the reader's own review. A press on another
+  // control of the page keeps them until that press has ended and its click has landed, or until
+  // Escape, so nothing moves under the pointer (`useReleaseFocus`, decision 105 as amended). The
+  // panel goes back to the issue's own facts as the focus leaves, unless it went to Details,
+  // where a reader reads the node's. No row of the list is edited in place.
   const leave = useCallback(() => {
     setFocused(undefined);
     setReport(undefined);
