@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"authelia.com/provider/oauth2"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
 // The refusal texts the TypeScript broker client prints whole (packages/broker-client,
@@ -46,7 +48,62 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked whether the token's person sees the projects it names; try again.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.", []any{corpusSession, 30}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", []any{corpusSession}, "exchange.go"},
-	{oauth2.ErrInvalidRequest, "The subject token was refused: %s.", []any{"its audience is not this broker's"}, "exchange.go"},
+}
+
+// The exchange policy's refusals of a subject token, which the broker hands on as "The subject
+// token was refused: <the policy's error>." Each is the format the policy writes it with, filled
+// with values of the shape broker-client's slots take; the format must stand in the policy's
+// source. The refusal that quotes an error text of its own (`not a person's Google identity token
+// (%v)`) is not among them: broker-client withholds it.
+type policyRefusal struct {
+	format string
+	args   []any
+	source string
+}
+
+const (
+	corpusAccount    = "system:serviceaccount:legion:worker"
+	corpusMachine    = "builder@legion-prod.iam.gserviceaccount.com"
+	corpusRepository = "cybermonklabs/legion"
+	corpusWorkflow   = ".github/workflows/ci.yaml"
+	corpusRef        = "refs/heads/main"
+	policySource     = "../exchange/exchange.go"
+)
+
+var corpusSessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, and is at most %d bytes", exchange.MaxSessionBytes)
+
+var policyRefusals = []policyRefusal{
+	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, policySource},
+	{"%w: no entry lists the service account %s", []any{exchange.ErrNoEntry, corpusAccount}, policySource},
+	{"%w: %s writes as %s, which every pod of it may do, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
+	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
+	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
+	{"%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", []any{exchange.ErrClaimMissing, corpusRepository}, policySource},
+	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
+	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
+	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
+	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
+	{"%w: %s is the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusMachine, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
+	{"%w: %s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s", []any{exchange.ErrNoComputeEngine, corpusMachine, "legion-prod", "worker-*"}, policySource},
+	{"%w: %s presented a token minted in the project %s, and its entry takes machines of %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "other-project", "legion-prod"}, policySource},
+	{"%w: %s presented a token minted on the instance %s, and its entry takes the names %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "box-1", "worker-*"}, policySource},
+	{"%w: a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)", []any{exchange.ErrNoActorToken, oauthwire.ActorTokenTypeMachine}, policySource},
+	{"%w: the actor token carries no email claim, so it names no machine (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
+	{"%w: no entry lists the Google account %s, which the actor token names as the machine", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
+	{"%w: the machine %s presented an actor token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
+	{"%w: the subject token carries no sub claim, so it names no person", []any{exchange.ErrClaimMissing}, policySource},
+	{"%w: the subject token carries no email claim of an address's shape, so it names no person", []any{exchange.ErrClaimMissing}, policySource},
+	{"%w: %s signed in, and this broker takes the Google Workspace domain BROKER_SIGNIN_DOMAIN names; sign in again with `agent-secrets login` as an account of that domain", []any{exchange.ErrNotInDomain, corpusPerson}, policySource},
+	{"%w: the subject token names no machine credential id, so it is not a machine login's token", []any{exchange.ErrClaimMissing}, policySource},
+	{"%w: the machine credential records no approver to act for", []any{exchange.ErrClaimMissing}, policySource},
+	{"%w: %s writes as %s", []any{exchange.ErrSessionMismatch, corpusAccount, "legion-broker"}, policySource},
+	{"%w: %s is listed with no session of its own, so the request names one", []any{exchange.ErrSessionRequired, corpusAccount}, policySource},
+	{"%w: %s named a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusMachine, 230, corpusSessionRule}, policySource},
+	{"%w: the subject token carries no %s claim", []any{exchange.ErrClaimMissing, "repository"}, policySource},
+	{"%w: the subject token's %s claim is not a non-empty string", []any{exchange.ErrClaimMissing, "sub"}, policySource},
+	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
+	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
+	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
 // The broker's own refusal, as its token endpoint writes its rate limit.
@@ -61,6 +118,12 @@ func corpusDescriptions(t *testing.T) []string {
 			hint = fmt.Sprintf(refusal.format, refusal.args...)
 		}
 		out = append(out, refusal.base.WithHint(hint).GetDescription())
+	}
+	// As the broker's token exchange hands a policy refusal on (exchange.go, "The subject token was
+	// refused: %s.").
+	for _, refusal := range policyRefusals {
+		err := fmt.Errorf(refusal.format, refusal.args...)
+		out = append(out, oauth2.ErrInvalidRequest.WithHintf("The subject token was refused: %s.", err).GetDescription())
 	}
 	recorder := httptest.NewRecorder()
 	oauth.WriteRefusal(recorder, &oauth.Refusal{Status: 429, Code: "RATE_LIMITED", Message: corpusRateLimit})
@@ -100,20 +163,31 @@ func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
 
 func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 	sources := map[string]string{}
-	for _, refusal := range corpusRefusals {
-		text, ok := sources[refusal.source]
+	read := func(path string) string {
+		text, ok := sources[path]
 		if !ok {
-			raw, err := os.ReadFile(refusal.source)
+			raw, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("read %s: %v", refusal.source, err)
+				t.Fatalf("read %s: %v", path, err)
 			}
 			text = string(raw)
-			sources[refusal.source] = text
+			sources[path] = text
 		}
-		// The format as Go source writes it: a backquote inside a double-quoted string is itself.
-		if !strings.Contains(text, refusal.format) {
+		return text
+	}
+	// The format as Go source writes it: a backquote inside a double-quoted string is itself.
+	for _, refusal := range corpusRefusals {
+		if !strings.Contains(read(refusal.source), refusal.format) {
 			t.Errorf("%s holds no hint %q: the broker's sentence changed, so the corpus and broker-client's list must too", refusal.source, refusal.format)
 		}
+	}
+	for _, refusal := range policyRefusals {
+		if !strings.Contains(read(refusal.source), refusal.format) {
+			t.Errorf("%s holds no refusal %q: the policy's sentence changed, so the corpus and broker-client's list must too", refusal.source, refusal.format)
+		}
+	}
+	if !strings.Contains(read(policySource), `"a session name is printable, carries no whitespace, and is at most %d bytes"`) {
+		t.Errorf("%s holds no session rule as the corpus writes it", policySource)
 	}
 	raw, err := os.ReadFile(filepath.Join("..", "api", "handlers_oauth.go"))
 	if err != nil {

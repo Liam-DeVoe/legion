@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { forgetHeldSecrets, holdSecret, scrub, scrubError, WITHHELD } from "./held-secrets";
+import {
+  forgetHeldSecrets,
+  holdSecret,
+  holdUrlUserinfo,
+  scrub,
+  scrubError,
+  WITHHELD,
+} from "./held-secrets";
 
 afterEach(forgetHeldSecrets);
 
@@ -47,5 +54,28 @@ describe("scrub", () => {
     expect(error.message).toBe(`outer ${WITHHELD}`);
     expect(String(error.stack)).not.toContain(held);
     expect((error.cause as Error).message).toBe(`inner ${WITHHELD}`);
+  });
+});
+
+// A URL's user info is sent by Bun's fetch as `Authorization: Basic <base64 of user:password>`,
+// decoded, so a server that echoes the header or the URL prints neither once the URL is held.
+describe("holdUrlUserinfo", () => {
+  test("holds the password, the decoded pair and the Basic value", () => {
+    const password = `pw-${randomBytes(9).toString("hex")}`;
+    holdUrlUserinfo(
+      `https://operator-7f2a:${encodeURIComponent(`${password}/x`)}@listener.example`
+    );
+    const basic = btoa(`operator-7f2a:${password}/x`);
+    expect(scrub(`you sent Basic ${basic}`)).toBe(`you sent Basic ${WITHHELD}`);
+    expect(scrub(`password ${password}/x`)).toBe(`password ${WITHHELD}`);
+    expect(scrub(`escaped ${encodeURIComponent(`${password}/x`)}`)).toBe(`escaped ${WITHHELD}`);
+  });
+
+  test("a URL with no user info, or no URL, holds nothing", () => {
+    holdUrlUserinfo("https://listener.example/v1");
+    holdUrlUserinfo("not a url at all");
+    expect(scrub("https://listener.example/v1 and not a url at all")).toBe(
+      "https://listener.example/v1 and not a url at all"
+    );
   });
 });

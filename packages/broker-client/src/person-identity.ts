@@ -5,7 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
-import { holdSecret } from "@legion/contracts/held-secrets";
+import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, urlForText } from "@legion/contracts/log-text";
 import {
   allowInsecureRequests,
@@ -100,7 +100,7 @@ export function personIdentity(
     );
   }
   const send = options.fetch ?? fetch;
-  const insecure = flow.issuer.startsWith("http:");
+  const insecure = holdUrlUserinfo(flow.issuer).startsWith("http:");
   // Named as every client names a URL (`urlForText`); requests go to the issuer as configured.
   const issuer = urlForText(flow.issuer, SIGNIN_ISSUER_VAR);
   let discovered: Promise<ServerMetadata> | null = null;

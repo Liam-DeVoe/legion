@@ -9,6 +9,7 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
+import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
@@ -890,7 +891,9 @@ export function resolveCallTiming(config: Pick<EnvoyClientConfig, "timeoutMs" | 
 }
 
 export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
-  const baseUrl = withoutTrailingSlashes(config.baseUrl);
+  // Its user info held: Bun sends it as `Authorization: Basic` where no credential's header
+  // replaces it, and a listener at the wrong URL can echo that (`holdUrlUserinfo`).
+  const baseUrl = holdUrlUserinfo(withoutTrailingSlashes(config.baseUrl));
   const { timeoutMs, attempts, retryDelayMs } = resolveCallTiming(config);
 
   const credential = config.credential;

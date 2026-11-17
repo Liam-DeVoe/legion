@@ -20,7 +20,7 @@
 // that no longer honours a person's sign-in. So a caller that writes only with what `token()`
 // gave it never writes with no identity, nor with one that has been ended.
 
-import { holdSecret, scrub } from "@legion/contracts/held-secrets";
+import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -114,6 +114,201 @@ const PROJECT_SLOT = "[A-Z][A-Z0-9]{1,15}";
 /** A session name, which must be the one this client traded under. */
 const SESSION_SLOT = "(?<session>[^'\\s]{1,128})";
 
+/** The other slots the exchange policy's sentences carry, each the shape of what fills it. */
+const EMAIL = "[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){1,3}";
+const K8S_ACCOUNT = "system:serviceaccount:[a-z0-9][a-z0-9.-]{0,62}:[a-z0-9][a-z0-9.-]{0,252}";
+const REPOSITORY = "[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}";
+const WORKFLOW_PATH = "[A-Za-z0-9_./-]{1,200}";
+const GIT_REF = "refs/[A-Za-z0-9_./-]{1,200}";
+const WORKFLOW_REF = "[A-Za-z0-9_./@-]{1,400}";
+const IDENTITY = `(?:${K8S_ACCOUNT}|${REPOSITORY}/${WORKFLOW_PATH}|${EMAIL})`;
+const FIXED_SESSION = "[A-Za-z0-9._:@/+-]{1,200}";
+const PROJECT_LIST = `${PROJECT_SLOT}(?: ${PROJECT_SLOT}){0,31}`;
+const SERVICE = "[A-Za-z0-9._-]{1,100}";
+const CLOUD_PROJECT = "[a-z][a-z0-9-]{4,29}";
+const INSTANCE = "[a-z0-9][a-z0-9-]{0,62}";
+const INSTANCE_PATTERN = "[A-Za-z0-9*?._\\[\\]-]{1,100}";
+const NUMBER = "[0-9]{1,6}";
+const CLAIM = "[A-Za-z0-9_.:-]{1,64}";
+const URI = "[A-Za-z0-9:/._-]{1,200}";
+/** The exchange policy's one sentence of what a session name may be (Go's `sessionRule`). */
+const SESSION_RULE =
+  "a session name is printable, carries no whitespace, and is at most [0-9]{1,4} bytes";
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** A Go format's literal words, escaped, with each `%s` or `%d` replaced by its slot in order. */
+function formatPattern(format: string, slots: readonly string[]): string {
+  const words = format.split(/%[sd]/);
+  if (words.length !== slots.length + 1) {
+    throw new Error(`the format ${JSON.stringify(format)} takes ${words.length - 1} slots`);
+  }
+  return words.map((word, at) => escapeRegExp(word) + (slots[at] ?? "")).join("");
+}
+
+/** The exchange policy's sentences (`packages/envoy/internal/broker/exchange`), by the sentinel
+ *  each wraps, as the broker hands them on: `The subject token was refused: <sentinel>: <detail>.` */
+const POLICY_SENTINELS = {
+  noEntry: "exchange: no entry lists this identity",
+  noPodBinding: "exchange: the subject token is bound to no pod",
+  sessionMismatch: "exchange: the request names a session the entry does not fix",
+  sessionRequired: "exchange: the request names no session and the entry fixes none",
+  sessionInvalid: "exchange: the request names an unusable session",
+  claimMissing: "exchange: the subject token carries no such claim",
+  emailNotVerified: "exchange: the subject token's email address is not verified",
+  notInDomain: "exchange: the person's Google account is not in the sign-in domain",
+  noActorToken: "exchange: the person's token came with no machine acting for them",
+  noComputeEngine: "exchange: the subject token carries no Compute Engine claims",
+  machineNotAllowed: "exchange: the machine is not one the entry allows",
+  sessionFixed: "exchange: the entry fixes the session name it writes under",
+  projectsFixed: "exchange: the request names projects other than the one its entry gives",
+  projectsNoPerson: "exchange: a token that names no person names no project",
+} as const;
+
+function policy(sentinel: keyof typeof POLICY_SENTINELS, format: string, ...slots: string[]) {
+  return `${escapeRegExp(`The subject token was refused: ${POLICY_SENTINELS[sentinel]}: `)}${formatPattern(format, slots)}\\.`;
+}
+
+/**
+ * The exchange policy's own refusals of a subject token, each the Go format it is written with and
+ * the shape of each slot, in place of an open "The subject token was refused: <anything>" pattern,
+ * which let a token cut into pieces through. The refusal that quotes an error text of its own
+ * (`not a person's Google identity token (%v)`) is left out, so it is withheld.
+ */
+const POLICY_REFUSAL_PATTERNS: readonly string[] = [
+  policy(
+    "noPodBinding",
+    "%s presented a token bound to no pod, which proves only that the account exists",
+    K8S_ACCOUNT
+  ),
+  policy("noEntry", "no entry lists the service account %s", K8S_ACCOUNT),
+  policy(
+    "sessionFixed",
+    "%s writes as %s, which every pod of it may do, so its pods are registered for no name",
+    K8S_ACCOUNT,
+    FIXED_SESSION
+  ),
+  policy(
+    "sessionInvalid",
+    "the registration of %s names a session of %d bytes; %s",
+    K8S_ACCOUNT,
+    NUMBER,
+    SESSION_RULE
+  ),
+  policy(
+    "noEntry",
+    "%s ran %s, whose job is written in %s; an entry lists the workflow a job runs in",
+    REPOSITORY,
+    WORKFLOW_REF,
+    WORKFLOW_REF
+  ),
+  policy(
+    "claimMissing",
+    "the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s",
+    REPOSITORY
+  ),
+  policy(
+    "noEntry",
+    "no entry lists the workflow %s of %s on %s",
+    WORKFLOW_PATH,
+    REPOSITORY,
+    GIT_REF
+  ),
+  policy(
+    "claimMissing",
+    "the subject token carries no email claim, so it names no account (ask for it with format=full)"
+  ),
+  policy("noEntry", "no entry lists the Google account %s", EMAIL),
+  policy("emailNotVerified", "%s presented a token whose email_verified is not true", EMAIL),
+  policy(
+    "projectsNoPerson",
+    "%s is the service %s and names no person, and the request named %s",
+    EMAIL,
+    SERVICE,
+    PROJECT_LIST
+  ),
+  policy(
+    "noComputeEngine",
+    "%s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s",
+    EMAIL,
+    CLOUD_PROJECT,
+    INSTANCE_PATTERN
+  ),
+  policy(
+    "machineNotAllowed",
+    "%s presented a token minted in the project %s, and its entry takes machines of %s",
+    EMAIL,
+    CLOUD_PROJECT,
+    CLOUD_PROJECT
+  ),
+  policy(
+    "machineNotAllowed",
+    "%s presented a token minted on the instance %s, and its entry takes the names %s",
+    EMAIL,
+    INSTANCE,
+    INSTANCE_PATTERN
+  ),
+  policy(
+    "noActorToken",
+    "a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)",
+    URI
+  ),
+  policy(
+    "claimMissing",
+    "the actor token carries no email claim, so it names no machine (ask for it with format=full)"
+  ),
+  policy(
+    "noEntry",
+    "no entry lists the Google account %s, which the actor token names as the machine",
+    EMAIL
+  ),
+  policy(
+    "emailNotVerified",
+    "the machine %s presented an actor token whose email_verified is not true",
+    EMAIL
+  ),
+  policy("claimMissing", "the subject token carries no sub claim, so it names no person"),
+  policy(
+    "claimMissing",
+    "the subject token carries no email claim of an address's shape, so it names no person"
+  ),
+  policy(
+    "notInDomain",
+    "%s signed in, and this broker takes the Google Workspace domain BROKER_SIGNIN_DOMAIN names; sign in again with `agent-secrets login` as an account of that domain",
+    PERSON_SLOT
+  ),
+  policy(
+    "claimMissing",
+    "the subject token names no machine credential id, so it is not a machine login's token"
+  ),
+  policy("claimMissing", "the machine credential records no approver to act for"),
+  policy("sessionMismatch", "%s writes as %s", IDENTITY, FIXED_SESSION),
+  policy(
+    "sessionRequired",
+    "%s is listed with no session of its own, so the request names one",
+    IDENTITY
+  ),
+  policy("sessionInvalid", "%s named a session of %d bytes; %s", IDENTITY, NUMBER, SESSION_RULE),
+  policy("claimMissing", "the subject token carries no %s claim", CLAIM),
+  policy("claimMissing", "the subject token's %s claim is not a non-empty string", CLAIM),
+  policy(
+    "projectsFixed",
+    "%s's entry names no project, and the request named %s",
+    IDENTITY,
+    PROJECT_LIST
+  ),
+  policy(
+    "projectsFixed",
+    "%s writes the project %s that its entry names, and the request named %s",
+    IDENTITY,
+    PROJECT_SLOT,
+    PROJECT_LIST
+  ),
+  // The broker's own audience check (`oauth/exchange.go`, `audience`), which wraps no sentinel.
+  `${escapeRegExp("The subject token was refused: ")}${formatPattern("the subject token was not minted for %s, which is the audience this broker accepts from %s", [URI, URI])}\\.`,
+];
 /**
  * The broker's refusal sentences (`packages/envoy/internal/broker/oauth/exchange.go`'s hints),
  * as whole-text patterns. Their slots take a person's email, which must be the signed-in person's
@@ -135,11 +330,7 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   "Dispatch could not be asked whether the token's person sees the projects it names; try again\\.",
   `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
-  // The exchange policy's own refusal of the subject token (its audience, its issuer, its entry),
-  // whose words are the policy's: it prints under the scrub of the secrets this process holds
-  // (`@legion/contracts/held-secrets`), which takes out a token echoed in it. Last, so a sentence
-  // above whose slot holds what the trade did not send is withheld rather than read as this.
-  "The subject token was refused: [^\\n]{1,500}\\.",
+  ...POLICY_REFUSAL_PATTERNS,
 ].map((source) => new RegExp(`^${source}$`));
 
 /**
@@ -424,7 +615,9 @@ export class BrokerTokenClient {
     // Not quoted: a value that is no URL may be a token pasted where the URL goes.
     if (!isHttpUrl(brokerUrl))
       throw new Error("broker client: the broker URL is not an http or https URL");
-    this.#brokerUrl = brokerUrl;
+    // Its user info held: Bun sends it as `Authorization: Basic` on the token request, which
+    // carries no header of its own (`holdUrlUserinfo`).
+    this.#brokerUrl = holdUrlUserinfo(brokerUrl);
     this.#key = options.key;
     this.#subject = options.subject;
     this.#actor = options.actor;

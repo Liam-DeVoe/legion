@@ -12,8 +12,9 @@ import { BrokerRefusedError } from "../token-client";
 // neither print carries the token (#4140, S1 at cb4949936a).
 const LIBRARY =
   "The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed.";
+// The broker's own audience refusal, its slot filled with the subject token it was sent.
 const refusalEchoing = (subject: string) =>
-  `${LIBRARY} The subject token was refused: ${subject} is not this broker's audience.`;
+  `${LIBRARY} The subject token was refused: the subject token was not minted for ${subject}, which is the audience this broker accepts from https://kubernetes.default.svc.`;
 
 test("a refusal echoing the subject token prints none of it through console.warn", () => {
   const subject = holdSecret(`eyJ${randomBytes(48).toString("base64url")}`);
@@ -30,7 +31,7 @@ test("a refusal echoing the subject token prints none of it through console.warn
   } finally {
     console.warn = warn;
   }
-  expect(printed.join("\n")).toContain("The subject token was refused: <withheld>");
+  expect(printed.join("\n")).toContain("the subject token was not minted for <withheld>");
   expect(printed.join("\n")).not.toContain(subject.slice(0, 20));
 });
 

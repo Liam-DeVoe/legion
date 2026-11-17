@@ -45,4 +45,22 @@ describe("the broker's refusals as it writes them", () => {
       Bun.inspect(new BrokerRefusedError(400, "invalid_grant", echoed, "probe", sent))
     ).not.toContain(token);
   });
+
+  // The policy's refusals are pinned to their own sentences (P-j): a refusal of another wording,
+  // which could carry a token cut into pieces too short for the scrub, hex-encoded or reversed,
+  // is withheld.
+  const LIBRARY =
+    "The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed.";
+  const token = randomBytes(30).toString("base64url");
+  test.each([
+    ["cut every 9 characters", token.match(/.{1,9}/g)?.join(".") ?? ""],
+    ["hex", Buffer.from(token).toString("hex")],
+    ["reversed", [...token].reverse().join("")],
+  ])("a policy refusal of another wording, with the token %s, is withheld", (_, encoded) => {
+    const description = `${LIBRARY} The subject token was refused: ${encoded}.`;
+    expect(isKnownBrokerRefusal(description, sent)).toBe(false);
+    expect(new BrokerRefusedError(400, "invalid_request", description, "probe", sent).said).toBe(
+      "(its text is withheld)"
+    );
+  });
 });

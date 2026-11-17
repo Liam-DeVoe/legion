@@ -368,6 +368,11 @@ const hook = (handlers: Map<string, Handler>, name: string): Handler => {
   return found;
 };
 
+/** The controller's registration secret: random, as a real one is, since the process holds it
+ *  and every line it prints is scrubbed of it (`@legion/contracts/held-secrets`); one spelled from
+ *  words would be scrubbed out of the lines that hold those words. */
+const CONTROLLER_SECRET = `ctl-${crypto.randomUUID()}`;
+
 const originalFetch = globalThis.fetch;
 
 const temporaryPaths: string[] = [];
@@ -948,7 +953,9 @@ async function claimPane(options: {
     secret: `secret-${sessionId}`,
     promptAgents: options.promptAgents ?? [],
   };
-  const bootToken = `boot-${sessionId}`;
+  // Random, as the daemon's is: the pane holds it, and one spelled from the session's id would be
+  // scrubbed out of every line naming the role (`@legion/contracts/held-secrets`).
+  const bootToken = `boot-${crypto.randomUUID()}`;
   const stateDir = paneStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
@@ -1382,7 +1389,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       process.env.ENVOY_URL = "http://envoy.test";
       process.env.LEGION_DAEMON_URL = "http://daemon.test";
       process.env.LEGION_PROJECT = "omp";
-      process.env.LEGION_CONTROLLER_SECRET = "controller-capability";
+      process.env.LEGION_CONTROLLER_SECRET = CONTROLLER_SECRET;
       const requests: string[] = [];
       globalThis.fetch = (async (input) => {
         requests.push(new URL(input.toString()).pathname);
@@ -2969,7 +2976,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       content: [
         {
           type: "text",
-          text: 'register_gate could not look up document "spec" on REPO-42 in Dispatch: Unable to connect. Is the computer able to access the url?',
+          // The Dispatch client names a request that reached no server by the failure's class.
+          text: 'register_gate could not look up document "spec" on REPO-42 in Dispatch: Dispatch at http://dispatch.unreachable.test is unreachable: TypeError (message withheld). If the Dispatch URL changed, restart this agent process so it picks up the new configuration.',
         },
       ],
     });
@@ -3998,7 +4006,7 @@ async function launchedController(options: {
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
   const capabilityFile = path.join(secretsDir, token);
-  await writeFile(capabilityFile, "controller-capability\n", { mode: 0o600 });
+  await writeFile(capabilityFile, `${CONTROLLER_SECRET}\n`, { mode: 0o600 });
   process.env.LEGION_CONTROLLER = "1";
   process.env.LEGION_ROLE = "controller";
   process.env.LEGION_CONTROLLER_SECRET_FILE = capabilityFile;
@@ -4336,7 +4344,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "controller-capability",
+          bootToken: CONTROLLER_SECRET,
           sessionId: "ses_controller",
           ompSessionFile: "/tmp/ses_controller.jsonl",
           agentId: "ses_controller",
@@ -5498,11 +5506,11 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         .map((request) => request.body)
     ).toEqual([
       expect.objectContaining({
-        bootToken: "controller-capability",
+        bootToken: CONTROLLER_SECRET,
         sessionId: "ses_controller_pane",
       }),
       expect.objectContaining({
-        bootToken: "controller-capability",
+        bootToken: CONTROLLER_SECRET,
         sessionId: "ses_controller_takeover",
       }),
     ]);

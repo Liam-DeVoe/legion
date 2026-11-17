@@ -50,6 +50,39 @@ export function holdSecret(value: string): string {
   return value;
 }
 
+/** `text` percent-decoded, or as written where it does not decode. */
+function decoded(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Holds what a configured URL's user info is: its user and its password as written and as
+ * decoded, and the `Authorization: Basic` value Bun's fetch builds of them and sends to that URL
+ * where no header of the caller's replaces it (the base64 of the decoded `user:password`). A
+ * server at that URL that echoes the header, or the URL, prints none of them. A URL with no user
+ * info, or a value that is no URL, holds nothing. Returns `url`.
+ */
+export function holdUrlUserinfo(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (parsed.username === "" && parsed.password === "") return url;
+  const user = decoded(parsed.username);
+  const password = decoded(parsed.password);
+  for (const value of [parsed.username, parsed.password, user, password]) holdSecret(value);
+  const pair = `${user}:${password}`;
+  holdSecret(pair);
+  holdSecret(btoa(String.fromCharCode(...new TextEncoder().encode(pair))));
+  return url;
+}
+
 /** Forgets every held secret: for a test, which holds its own from nothing. */
 export function forgetHeldSecrets(): void {
   const registry = held();

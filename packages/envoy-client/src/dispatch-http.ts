@@ -90,6 +90,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { textHead } from "./ask-answer";
@@ -902,7 +903,8 @@ export class DispatchClient {
     } = {}
   ) {
     this.#credential = credential;
-    this.#baseUrl = withoutTrailingSlashes(baseUrl);
+    // Its user info held, as the Envoy client's is (`holdUrlUserinfo`).
+    this.#baseUrl = holdUrlUserinfo(withoutTrailingSlashes(baseUrl));
     const shown = urlForText(this.#baseUrl, DISPATCH_URL_SETTING);
     this.#fetch = Object.assign(
       async (...args: Parameters<typeof fetch>): Promise<Response> => {

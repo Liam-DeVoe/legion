@@ -210,7 +210,7 @@ import {
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
-import { scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
+import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
 import {
   type CarriedAnswers,
@@ -1941,7 +1941,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       relayed.release();
       void work().catch((error: unknown) => {
         held.release();
-        console.warn(
+        scrubbedConsole.warn(
           `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
           error
         );
@@ -1950,13 +1950,13 @@ export default function envoyExtension(hostApi: PiApi): void {
     };
     try {
       if (rendered.rejectedDelivery !== undefined) {
-        console.warn(
+        scrubbedConsole.warn(
           `[envoy] rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
         );
         const rejected = rendered.rejectedDelivery;
         offWorker(() => refuse(rejected, "Invalid Dispatch targeted delivery frame"));
       } else if (rendered.malformedDelivery === true) {
-        console.warn(
+        scrubbedConsole.warn(
           "[envoy] dropping malformed Dispatch targeted delivery without a reply address"
         );
         claim.settle();
@@ -2146,7 +2146,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     } catch (error) {
       handing = false;
       held.release();
-      console.warn(`[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, error);
+      scrubbedConsole.warn(
+        `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
+        error
+      );
       // The failure is the relay's to count: the frame comes again, or, from its third delivery
       // on, the relay shows its failure notice (`createConsumerDelivery`).
       throw error;
