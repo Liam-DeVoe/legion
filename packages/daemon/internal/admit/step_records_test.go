@@ -259,7 +259,9 @@ func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *test
 // stopped, and the promotion starts a new run of the same place, another record. A member whose
 // phase worker the promotion starts gets it from that start (workflow.Engine.StartPromotedWorker);
 // a member in accepting, whose role is the tree's architect, and one held from testing, whose hold
-// starts no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord).
+// starts no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord). The
+// member in accepting is its tree's work: each write of its record names the tree's architect,
+// never an architect of the member's own.
 func TestATreeAdmittedAgainStartsEachMemberAgain(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	members := []struct {
@@ -276,4 +278,10 @@ func TestATreeAdmittedAgainStartsEachMemberAgain(t *testing.T) {
 		assertStepWrites(t, pool, member.key, start(member.kind, member.step, 1, 1), end("stopped", member.kind, member.step, 1, 1), start(member.kind, member.step, 1, 2))
 	}
 	assertStepWrites(t, pool, unstarted)
+	architect, own := architectToken(t, finishedRoot), architectToken(t, inAccepting)
+	for _, w := range stepWrites(t, pool, inAccepting) {
+		if w.Agent != string(architect) || w.Agent == string(own) {
+			t.Fatalf("a write of %s's acceptance names agent %q, want the tree's architect %s, not its own %s", inAccepting, w.Agent, architect, own)
+		}
+	}
 }

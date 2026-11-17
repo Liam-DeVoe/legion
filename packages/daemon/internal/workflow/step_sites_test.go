@@ -346,6 +346,74 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 	})
 }
 
+// The acceptance of a child is its tree's architect's work, not an architect of the child's own:
+// the record of step 5 names the root's architect token, and the session and the model the daemon
+// reads of that token, at the start the review's approval writes and at the end the sign-off
+// writes, and so does the end of a run of accepting the release before started, which no start
+// counted. Each architect answers with a session and a model of its own, so a record that named
+// the child's architect would carry the child's.
+func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
+	architect, own := treeRoleToken(t, "LEGION-208", claim.RoleArchitect), treeRoleToken(t, "LEGION-209", claim.RoleArchitect)
+	reads := map[string]StepAgent{
+		architect: {Session: "ses-root-architect", Model: "anthropic/root-model"},
+		own:       {Session: "ses-child-architect", Model: "anthropic/child-model"},
+	}
+	agent := func(token claim.Token) StepAgent { return reads[string(token)] }
+	run := func(t *testing.T, at phase.Phase, enter func(pool *pgxpool.Pool, engine *Engine)) []record.StepRecord {
+		t.Helper()
+		pool := migratedPool(t)
+		stepRoot(t, pool, phase.Implementing)
+		stepChild(t, pool, "LEGION-209", at, nil)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+			Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+		engine := stepEngine(agent)
+		enter(pool, engine)
+		applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
+		if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
+			t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
+		}
+		var accepting []record.StepRecord
+		for _, w := range stepWrites(t, pool, "LEGION-209") {
+			if w.Kind == "step" && w.Step == 5 {
+				accepting = append(accepting, w)
+			}
+		}
+		return accepting
+	}
+	treeArchitects := func(t *testing.T, w record.StepRecord) {
+		t.Helper()
+		if w.Agent != architect || w.Agent == own || w.Role != "acceptance" || w.Generation != 3 {
+			t.Fatalf("the record of LEGION-209's acceptance = %+v, want agent %s, the tree's architect, not the child's %s", w, architect, own)
+		}
+		if w.Session == nil || *w.Session != "ses-root-architect" {
+			t.Fatalf("the record of LEGION-209's acceptance names session %v, want the tree architect's ses-root-architect", w.Session)
+		}
+	}
+
+	t.Run("the approval starts it", func(t *testing.T) {
+		writes := run(t, phase.Reviewing, func(pool *pgxpool.Pool, engine *Engine) {
+			move(t, pool, engine, "LEGION-209", TriggerReviewApproved, "", record.PhaseRow{})
+		})
+		if len(writes) != 2 || !isStart(writes[0]) || !isEnd(writes[1]) || writes[1].ID != writes[0].ID {
+			t.Fatalf("the writes of LEGION-209's step 5 = %+v, want the start of accepting and its end", writes)
+		}
+		treeArchitects(t, writes[0])
+		treeArchitects(t, writes[1])
+		assertEnd(t, writes[1], "step", 5, 3, "passed", nil)
+		if writes[1].Model == nil || *writes[1].Model != "anthropic/root-model" {
+			t.Fatalf("the end of LEGION-209's acceptance names model %v, want the tree architect's anthropic/root-model", writes[1].Model)
+		}
+	})
+	t.Run("a run the release before started", func(t *testing.T) {
+		writes := run(t, phase.Accepting, func(*pgxpool.Pool, *Engine) {})
+		if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, "default", "step", 5, 0) {
+			t.Fatalf("the writes of LEGION-209's step 5 = %+v, want one end at the count 0", writes)
+		}
+		treeArchitects(t, writes[0])
+		assertEnd(t, writes[0], "step", 5, 3, "passed", nil)
+	})
+}
+
 // A root's close lingers its tree and stops each member's step there, but not the merge of a member
 // that awaits it: that merge lands later, and its close in the lingering tree ends the open record
 // passed, the one end it gets.
