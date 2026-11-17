@@ -861,6 +861,45 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return run.Claim != nil, nil
 }
 
+// pastCompletion answers role's completion of reported, a phase issue no longer stands in, in one
+// of three ways: now, the refusal handoff answers at once, where the completion is of no run it
+// records or refuses as late (NotCurrentPhase); late, the refusal handoff answers after the
+// lingering tree's, for a task with plan rows whose step's run Legion ended (lateReport); or
+// neither, where handoff records the completion of a run the daemon moved the issue on from
+// without it (leftItsPhase), on its own row, moving nothing.
+func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (now, late *intake.Refusal, err error) {
+	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
+	if err != nil {
+		return nil, nil, err
+	}
+	if late, err = e.lateReport(ctx, tx, issue, fact, reported, left); err != nil {
+		return nil, nil, err
+	}
+	if !left && late == nil {
+		return intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key), nil, nil
+	}
+	return nil, late, nil
+}
+
+// returnToOf is the phase of the earlier step a failed step's report names as the one its task
+// returns to (fact.ReturnTo), "" where it names none, or the refusal of the step it names
+// (returnStep). It is judged before anything is written, so a refusal records nothing, its
+// handoff record among it, and the agent reports again.
+func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (phase.Phase, *intake.Refusal, error) {
+	if fact.ReturnTo <= 0 {
+		return "", nil, nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", nil, err
+	}
+	target, why, err := returnStep(issue, w, reported, fact.ReturnTo)
+	if err != nil || why == "" {
+		return target, nil, err
+	}
+	return "", refused("RETURN_REFUSED", why).Refusal, nil
+}
+
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -886,22 +925,14 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// (reportEndedStep).
 	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
-	// issue has moved on without, the phase that role has left. For a task with plan rows such a
-	// completion is a report of a step whose run Legion ended, and late is its refusal
-	// (lateReport), which is answered after the lingering tree's, as the recording is.
+	// issue has moved on without, the phase that role has left, which pastCompletion answers.
 	reported := phase.Of(fact.Role, issue.Phase)
 	current := reported == issue.Phase
 	var late *intake.Refusal
 	if !current {
-		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if late, err = e.lateReport(ctx, tx, *issue, fact, reported, left); err != nil {
-			return intake.Result{}, err
-		}
-		if !left && late == nil {
-			return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
+		var now *intake.Refusal
+		if now, late, err = e.pastCompletion(ctx, tx, *issue, fact, reported); err != nil || now != nil {
+			return intake.Result{Refusal: now}, err
 		}
 	}
 	// A worker still in its turn when its tree's root closed can yet complete; linger holds the
@@ -919,23 +950,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 		return intake.Result{Refusal: late}, nil
 	}
-	// A failed step's report can name the earlier step of its task that the task returns to (R7,
-	// returnTo). The step it names is judged here, before anything is written, so a refusal
-	// records nothing, its handoff record among it, and the agent reports again (returnStep).
-	var returnTo phase.Phase
-	if fact.ReturnTo > 0 {
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		target, why, err := returnStep(*issue, w, reported, fact.ReturnTo)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		if why != "" {
-			return refused("RETURN_REFUSED", why), nil
-		}
-		returnTo = target
+	returnTo, refusal, err := e.returnToOf(ctx, tx, *issue, fact, reported)
+	if err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
 	if err != nil {
@@ -1645,17 +1662,14 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// A failed step of a task with plan rows that names no step to return to returns its work to
-	// the step its plan reads from the steps' recorded types (R7, returnTarget), and where no step
-	// before it can take the work, the task stops instead (stopUnreturned). An issue with no plan
-	// rows returns to implementing, the row's own target, as today.
-	if w.Stored && returnsWork(trigger) && target == "" {
-		to, found := w.returnTarget(issue.Phase)
-		if !found {
-			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue, "", handoff))
-		}
-		if row, ok = w.row(issue.Phase, trigger, to, snapshot); !ok {
-			return fmt.Errorf("return the work of %s from %s to %s: its line %v holds no such return", issue.Key, issue.Phase, to, w.Line)
-		}
+	// the step its plan reads, or its task stops where no step before it can take the work
+	// (returnOf).
+	row, stops, err := w.returnOf(issue, trigger, target, row, snapshot)
+	if err != nil {
+		return err
+	}
+	if stops {
+		return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue, "", handoff))
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
 	// counts the task a pass: the tester's fail, a review's request for changes, a worker's
@@ -1693,67 +1707,19 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// A parent whose plan has no acceptance step passes its last step into its retro, and while an
 	// issue beneath it is still in the workflow Legion holds it before its retro instead
-	// (beneathRetro): the task moves to its retro's place, the issue stands in held, and the hold
-	// writes no status, starts no retro and keeps the last step's handoff for the retro's task.
+	// (beneathRetro, holdBeforeRetro).
 	beneath, err := e.beneathRetro(ctx, tx, issue, w, row.To)
 	if err != nil {
 		return err
 	}
-	holds := len(beneath) > 0
-	status := PhaseStatus(row.To)
-	if holds {
-		status = PhaseStatus(phase.Held)
+	if len(beneath) > 0 {
+		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, beneath)
 	}
-	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr)); err != nil {
+	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr)
+	if err != nil {
 		return err
 	}
-	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
-	// and before the start below writes the step it moves into.
-	if err := e.endStep(ctx, tx, issue, endOfTransition(w, trigger, issue, row.To, handoff)); err != nil {
-		return err
-	}
-	from := issue.Phase
-	// The task moves with the issue, in the write that moves it (moveTask): its place and state,
-	// and the phase they derive, which is row.To.
-	state := record.TaskRunning
-	if row.To == phase.Done {
-		state = record.TaskDone
-	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, state); err != nil {
-		return err
-	}
-	issue.Hold = nil
-	if holds {
-		issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
-	}
-	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
-	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
-	// not about the issue's history. It lasts as long as the run's record does — through the phase's
-	// end and its root's leave into a linger, and into the generation re-admission opens when Legion
-	// takes that same tree back, which is the work the mark was earned by and so starts again whatever
-	// its links say. Every other path that opens a run starts it clean: a child's re-entry into its
-	// tree (enterChild) and a child handed over as a root of its own without its run
-	// (admit.Admission.readmit). The invariant: no issue is exempt from the blocker check unless the
-	// run it is exempt for is the run it arrived with.
-	if issue.CarriesRun() {
-		issue.TakenBack = true
-	}
-	if status != "" {
-		issue.Status = status
-	}
-	if err := e.putIssue(ctx, tx, issue); err != nil {
-		return err
-	}
-	// The issue has moved: this is the write that takes it into another phase, the plainest
-	// movement there is (the rule, and what is left unmarked, in dispatchIssue).
-	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
-		return err
-	}
-	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
-	if holds {
-		e.logOnCommit(ctx, "workflow: a parent is held before its retro for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
-			"task", w.Task, "beneath", beneath)
-	} else if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -1785,8 +1751,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	switch {
-	case holds:
-		// The retro starts when the last issue beneath leaves (startHeldRetro), and nothing here.
 	case mergedAlready || row.To == phase.Accepting:
 		// Neither starts a phase worker: a merge GitHub has already made leaves the merger nothing
 		// to merge, and accepting's role is the tree's architect, which start skips. The step starts
@@ -1809,11 +1773,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
-	if holds {
-		if err := e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath)); err != nil {
-			return err
-		}
-	}
 	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
 		return err
 	}
@@ -1824,6 +1783,85 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return e.leave(ctx, tx, issue, "done")
 	}
 	return nil
+}
+
+// arrive writes the move of issue into to on trigger, on w, the walk of its run, in the caller's
+// transaction, and answers the phase the issue moved from: the Dispatch status (Engine.status, ""
+// for none), the end of the step the issue stood in (endStep, on the issue as it stood: before the
+// phase write, and before the start that follows writes the step it moves into), the task's move
+// with the issue's phase (moveTask), and the issue's write and its mark of movement. A hold, where
+// one is given, overlays the phase the task's new place derives, which its From names.
+func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, trigger TriggerKind, to phase.Phase, status string,
+	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest) (phase.Phase, error) {
+	if err := e.status(ctx, tx, *issue, status, moveReason(trigger, issue.Phase, to, pr)); err != nil {
+		return "", err
+	}
+	if err := e.endStep(ctx, tx, *issue, endOfTransition(*w, trigger, *issue, to, handoff)); err != nil {
+		return "", err
+	}
+	from := issue.Phase
+	state := record.TaskRunning
+	if to == phase.Done {
+		state = record.TaskDone
+	}
+	if err := e.moveTask(ctx, tx, issue, w, to, state); err != nil {
+		return "", err
+	}
+	issue.Hold = nil
+	if hold != nil {
+		overlay := *hold
+		overlay.From = issue.Phase
+		issue.Phase, issue.Hold = phase.Held, &overlay
+	}
+	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
+	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
+	// not about the issue's history. It lasts as long as the run's record does — through the phase's
+	// end and its root's leave into a linger, and into the generation re-admission opens when Legion
+	// takes that same tree back, which is the work the mark was earned by and so starts again whatever
+	// its links say. Every other path that opens a run starts it clean: a child's re-entry into its
+	// tree (enterChild) and a child handed over as a root of its own without its run
+	// (admit.Admission.readmit). The invariant: no issue is exempt from the blocker check unless the
+	// run it is exempt for is the run it arrived with.
+	if issue.CarriesRun() {
+		issue.TakenBack = true
+	}
+	if status != "" {
+		issue.Status = status
+	}
+	if err := e.putIssue(ctx, tx, *issue); err != nil {
+		return "", err
+	}
+	// The issue has moved: this is the write that takes it into another phase, the plainest
+	// movement there is (the rule, and what is left unmarked, in dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return "", err
+	}
+	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", to, "trigger", trigger, "status", issue.Status)
+	return from, nil
+}
+
+// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a plan with no
+// acceptance step while beneath, the issues beneath it, are still in the workflow (beneathRetro):
+// the task moves to its retro's place and the issue stands in held for its children
+// (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
+// retro, which the last of them to leave starts (startHeldRetro), and keeps the last step's
+// handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
+// and the hold.
+func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
+	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
+	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr)
+	if err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a parent is held before its retro for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
+		"task", w.Task, "beneath", beneath)
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
+		return err
+	}
+	if err := e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath)); err != nil {
+		return err
+	}
+	return e.phaseEnded(ctx, tx, issue, trigger, from, to, phase.RoleFor(to), reason)
 }
 
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from

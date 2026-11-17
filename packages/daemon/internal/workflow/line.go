@@ -239,6 +239,26 @@ func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
 	return "", false
 }
 
+// returnOf is the row the failed step of w's task standing where issue stands moves by on trigger
+// when its completion names no step to return to (target ""): the return of its work to the step
+// its plan reads from the steps' recorded types (returnTarget), or stops, where no step before it
+// can take the work and the task stops instead (stopUnreturned). A run with no plan rows, and
+// every other move, keeps row, whose target for a failed step is implementing, as today's line's.
+func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target phase.Phase, row Row, snapshot Snapshot) (Row, bool, error) {
+	if !w.Stored || !returnsWork(trigger) || target != "" {
+		return row, false, nil
+	}
+	to, found := w.returnTarget(issue.Phase)
+	if !found {
+		return Row{}, true, nil
+	}
+	returned, ok := w.row(issue.Phase, trigger, to, snapshot)
+	if !ok {
+		return Row{}, false, fmt.Errorf("return the work of %s from %s to %s: its line %v holds no such return", issue.Key, issue.Phase, to, w.Line)
+	}
+	return returned, false, nil
+}
+
 // returnStep is the phase of step n of w's task, the step that the report of the failed step
 // standing at failed names as the one its task returns to (R7, returnTo), or why that report is
 // refused, which changes nothing: an issue with no plan rows has no step to name, a place past the
