@@ -18,10 +18,11 @@ as the fingerprint decides (*The reviewer*, below, and
 ## The reviewer
 
 - The reviewer reads CI on GitHub and verifies the `Threads` facts and the issue's results there
-  and with `dispatch results --issue <issue>` — never from a handoff — then, when the diff
-  touches runtime code, runs
+  and with `dispatch results --issue <issue>` — never from a handoff — then, when the diff the
+  round reads touches runtime code (the whole change, or the difference the next item names), runs
   `task(agent="thermonuclear-deep-review")` and
   `task(agent="thermonuclear-code-quality")` once at that head — the head the round reviews —
+  over that diff,
   waits for each one's result with `wait`, since each runs as a job of its own, and records the
   verdict from what those results say. A result that carries no report, or that names another
   place for it, is a failed run, not a verdict: run that agent again, or read its transcript, and
@@ -182,6 +183,13 @@ as the fingerprint decides (*The reviewer*, below, and
   that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
+- **A later round reads from the commit its task names.**
+  The task of a later round names `Last reviewed commit: <sha>`, the head your own last deciding review read (the daemon part of your role prompt says where it comes from).
+  Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
+  The pair reads that same difference, and runs only when it touches runtime code.
+  Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
+  The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.
+  Read the whole change again, and give the pair the whole change, in three cases: the task names no commit; the commit is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0); or a forward merge of the base changed the fingerprint, as the end of the item above decides.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.

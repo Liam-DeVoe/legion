@@ -467,6 +467,34 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
+// The task of a later review round names the commit the reviewer's own newest deciding review read,
+// so the reviewer reads the difference from it and hands the pair that same diff in each agent's
+// task text, since each agent reviews only the diff its task supplies. A defect seen outside the
+// difference stays a finding, and three cases read the whole change again. The daemon's prompts
+// carry the same rule; prompts_test.go pins the composed reviewer prompt.
+test("a later review round reads from the commit its task names, and the pair reads that diff", () => {
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  expect(mergeGate).toContain(
+    "then, when the diff the round reads touches runtime code (the whole change, or the difference the next item names), runs"
+  );
+  expect(mergeGate).not.toContain("then, when the diff touches runtime code, runs");
+  expect(mergeGate).toContain(
+    "The task of a later round names `Last reviewed commit: <sha>`, the head your own last deciding review read"
+  );
+  expect(mergeGate).toContain(
+    "Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit."
+  );
+  expect(mergeGate).toContain(
+    "Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review."
+  );
+  expect(mergeGate).toContain(
+    "The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other"
+  );
+  expect(mergeGate).toContain(
+    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;"
+  );
+});
+
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
 // (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
