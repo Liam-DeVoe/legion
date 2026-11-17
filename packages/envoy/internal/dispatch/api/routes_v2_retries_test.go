@@ -154,6 +154,19 @@ func TestV2Retries(t *testing.T) {
 				Path: map[string]string{"owner": "tour", "repo": uuid.NewString()}, Body: map[string]any{"project": tour.project(t)}, As: alice,
 			}, bob
 		}},
+		{"a suggestion's accept by the person who accepted it", "/comments/{id}/state", func(t *testing.T) (tourRequest, tourCaller) {
+			return tourRequest{
+				Path: map[string]string{"id": tour.suggestion(t, tour.issue(t), true)}, Body: map[string]any{"state": "accepted"}, As: alice,
+			}, alice
+		}},
+		{"a delivery's accept by the session that accepted it", "/messages/{id}/deliveries/{attempt}/state", func(t *testing.T) (tourRequest, tourCaller) {
+			recipient := tourBearer("agent-token")
+			return tourRequest{
+				Path: map[string]string{"id": tour.directMessage(t), "attempt": "1"},
+				Body: map[string]any{"state": "accepted", "actor": map[string]any{"kind": "session", "id": tourRecipient}},
+				As:   recipient,
+			}, recipient
+		}},
 	} {
 		t.Run(put.name, func(t *testing.T) {
 			route := tour.requireMounted(t, http.MethodPut, put.pattern)

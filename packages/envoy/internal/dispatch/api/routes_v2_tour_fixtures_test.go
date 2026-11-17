@@ -10,9 +10,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -33,7 +38,8 @@ type routeTour struct {
 	// routes are the /api/v2 routes the rules of /api/v2 bind (apiRoute.v2Bound), by "<method>
 	// <pattern>": every route but the rows of the INFRA-979 tree and the test hooks.
 	routes map[string]apiRoute
-	// listener is the Envoy listener Dispatch asks about sessions (newFakeListener).
+	// listener is the Envoy listener Dispatch asks about sessions (newFakeListener), behind the
+	// two delivery routes tourDeliveryListener answers for tourRecipient.
 	listener *fakeListener
 	// github is GitHub, behind an App key Dispatch holds.
 	github *tourGitHub
@@ -53,7 +59,8 @@ type routeTour struct {
 // the broker that decides a broker-issued token faked.
 func newRouteTour(t *testing.T) *routeTour {
 	t.Helper()
-	listenerURL, listener := newFakeListener(t, nil, nil)
+	fakeURL, listener := newFakeListener(t, nil, nil)
+	listenerURL := tourDeliveryListener(t, fakeURL)
 	github := &tourGitHub{answers: map[string]http.HandlerFunc{}}
 	githubURL := githubtest.Server(t, githubtest.Spec{Handle: github.serve})
 	secrets := newTourSecretsBroker(t)
@@ -174,6 +181,39 @@ func (tour *routeTour) eventCount(t *testing.T, issue, eventType string) int {
 		t.Fatalf("count events: %v", err)
 	}
 	return count
+}
+
+// tourRecipient is the one session the tour's listener delivers to (tourDeliveryListener): live,
+// advertising every mode, so a message, a mention or a broadcast sent to it settles sent, and the
+// replies and the accept it writes as a bearer answer the attempts it was sent.
+const tourRecipient = "session-tour-recipient"
+
+// tourDeliveryListener is the Envoy listener the tour's server is pointed at: the fake listener at
+// upstream (newFakeListener), which answers the interests and the session list, with the two
+// routes a delivery takes answered in front of it - GET /v1/registry/<id>, which holds
+// tourRecipient alone and answers every other session 404 "no live session", and POST
+// /v1/messages/send, which takes every send.
+func tourDeliveryListener(t *testing.T, upstream string) string {
+	t.Helper()
+	target, err := url.Parse(upstream)
+	if err != nil {
+		t.Fatalf("read the fake listener's URL: %v", err)
+	}
+	forward := httputil.NewSingleHostReverseProxy(target)
+	recipients := `[{"session_id":"` + tourRecipient + `","title":"tour recipient","dir":"/w/tour","machine_id":"m1",` +
+		`"roles":[],"capabilities":["aside","btw","steer"]}]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
+			writeSessionRecord(t, w, recipients, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			WriteJSON(w, http.StatusOK, map[string]string{"event_id": "tour-envelope-" + uuid.NewString(), "recipient": tourRecipient})
+		default:
+			forward.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
 }
 
 // tourGitHub is GitHub as the tour fakes it: each method and path a step's setup tells it to

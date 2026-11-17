@@ -888,7 +888,7 @@ func (s *server) createArtifactAskV2(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	row, err := s.readAskV2(r.Context(), r, ask.ID, askV2Include{})
+	row, err := s.readWrittenAskV2(r.Context(), r, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

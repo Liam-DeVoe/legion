@@ -70,6 +70,13 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.reopenCommentAs(w, r, actor)
+}
+
+// reopenCommentAs reopens the comment thread the path's {id} names as actor, once the route has
+// resolved who acts: the work of POST /api/v1/comments/{id}/reopen and of PUT
+// /api/v2/comments/{id}/state {state: open}. It answers the comment itself, or the refusal.
+func (s *server) reopenCommentAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -168,6 +175,14 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.editCommentAs(w, r, actor, input)
+}
+
+// editCommentAs rewrites the body of the comment the path's {id} names as input asks, by actor,
+// once the route has read its body and resolved who acts: the work of PATCH
+// /api/v1/comments/{id} and PATCH /api/v2/comments/{id}. It answers the comment itself, or the
+// refusal.
+func (s *server) editCommentAs(w http.ResponseWriter, r *http.Request, actor model.Actor, input editCommentInput) {
 	// An edit stores line feeds alone, as a comment's creation does (createCommentFor): the
 	// display read ends a line at a carriage return too, but a body that holds one draws
 	// differently in every other reader of the stored text. The carried offsets below are the
@@ -296,6 +311,15 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if !ok {
 		return
 	}
+	s.commentActionAs(w, r, actor, action)
+}
+
+// commentActionAs resolves the comment the path's {id} names, or accepts or rejects its
+// suggestion, as actor, once the route has resolved who acts: the work of POST
+// /api/v1/comments/{id}/resolve, /accept and /reject and of PUT /api/v2/comments/{id}/state
+// {state: resolved, accepted or rejected}. It answers the comment itself, an accept with
+// whether its text was lost (acceptedComment), or the refusal.
+func (s *server) commentActionAs(w http.ResponseWriter, r *http.Request, actor model.Actor, action string) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -922,19 +924,31 @@ func TestBoundaryMaskFindsABoundaryAcrossWrites(t *testing.T) {
 // Every POST and PATCH route takes a key, and so does every PUT and DELETE route of /api/v2
 // (keyedMethod): a header that is not a key is refused on each of them before its handler runs,
 // and ignored by a PUT and a DELETE of /api/v1, which are idempotent already. A GET writes nothing
-// and is never wrapped.
+// and is never wrapped. A route whose body is a union is sent a body its decoder reads
+// (unionProbe): the decoder refuses one naming no arm before the keyed layer judges the key, the
+// order in which a refused body claims no key, so `{}` would never reach the layer this holds.
 func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	for _, route := range (&server{}).routes() {
 		if route.Method == http.MethodGet {
 			continue
 		}
+		body := "{}"
+		probe, member, arm, union := unionProbe(route, nil)
+		if union {
+			body = probe
+		}
 		target := route.Pattern
 		for _, name := range patternWildcards(route.Pattern) {
-			target = strings.Replace(target, "{"+name+"}", "x", 1)
-			target = strings.Replace(target, "{"+name+"...}", "x", 1)
+			value := "x"
+			if union && name == member {
+				// A union keyed by a mark's kind reads the kind from the path where it holds one.
+				value = arm
+			}
+			target = strings.Replace(target, "{"+name+"}", value, 1)
+			target = strings.Replace(target, "{"+name+"...}", value, 1)
 		}
-		request := httptest.NewRequest(route.Method, target, strings.NewReader("{}"))
+		request := httptest.NewRequest(route.Method, target, strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Dispatch-User", "alice")
 		request.Header.Set(contracts.IdempotencyKeyHeader, "not a key")
@@ -946,6 +960,51 @@ func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
 				route.Method, route.Pattern, response.Code, response.Body.String())
 		}
 	}
+}
+
+// unionProbe is a body the decoder of route's union reads, for a test that must reach what stands
+// behind the decoder: the arm of the first state or kind, in the order of the arms' names, that no
+// authority rule of the row gates - so a credential that holds no scope meets the route itself
+// rather than one arm's scope - written as that arm's type writes its zero value, so every member
+// the arm declares, its required ones among them, is there, with the discriminating member naming
+// the arm and extra's members over the rest. member is that discriminating member, state or kind,
+// and arm its value; union is false, and the rest empty, for a route whose body is no union.
+func unionProbe(route apiRoute, extra map[string]any) (body, member, arm string, union bool) {
+	switch route.Body.Kind {
+	case bodyStateUnion:
+		member = "state"
+	case bodyKindUnion:
+		member = "kind"
+	default:
+		return "", "", "", false
+	}
+	gated := map[string]bool{}
+	for _, rule := range route.Authorities {
+		if rule.Where.In == partBody && rule.Where.Name == member {
+			gated[rule.Value] = true
+		}
+	}
+	arms := slices.Sorted(maps.Keys(route.Body.Arms))
+	arm = arms[0]
+	for _, name := range arms {
+		if !gated[name] {
+			arm = name
+			break
+		}
+	}
+	members := map[string]any{}
+	if encoded, err := json.Marshal(route.Body.Arms[arm]); err != nil || json.Unmarshal(encoded, &members) != nil {
+		panic(fmt.Sprintf("%s %s: the arm %s writes no JSON object: %v", route.Method, route.Pattern, arm, err))
+	}
+	members[member] = arm
+	for name, value := range extra {
+		members[name] = value
+	}
+	encoded, err := json.Marshal(members)
+	if err != nil {
+		panic(fmt.Sprintf("%s %s: encode the arm %s: %v", route.Method, route.Pattern, arm, err))
+	}
+	return string(encoded), member, arm, true
 }
 
 // The browser case on a real route: a comment posted again under its key, its first answer lost,

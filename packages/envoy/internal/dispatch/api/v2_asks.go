@@ -442,32 +442,19 @@ func (s *server) askV2Rows(ctx context.Context, q queryer, read askV2Read, page 
 	return listed, nil
 }
 
-// completeAsksV2 fills in what every row of rows carries beyond its read (askV2Rows): the
-// identity event, the inbound backlink count and the part ids every list of asks batches
-// (loadAskDetails), the anchor's block position on the read of one ask (single), the thread
-// where include asks for it, the address, and the trees of every text a row shows. A row whose
-// read found no opened event is the server's fault, never an answer without the id (decision 2).
+// completeAsksV2 fills in what every row of rows a read of asks lists carries beyond its read
+// (askV2Rows) - every member completeWrittenAskV2 fills in - and the thread where include asks for
+// it, read with the rows' texts through one reader, so the texts are one query and one store.
 func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []askV2, thread, single bool) error {
-	pointers := make([]*model.Ask, len(rows))
-	ids := make([]string, len(rows))
-	for index := range rows {
-		pointers[index], ids[index] = &rows[index].Ask, rows[index].ID
-	}
-	if err := loadAskDetails(ctx, s.deps.Store.Pool, pointers); err != nil {
+	if err := s.prepareAsksV2(ctx, rows, single); err != nil {
 		return err
 	}
-	if single {
-		for index := range rows {
-			position, err := s.anchorBlock(ctx, rows[index].Anchor)
-			if err != nil {
-				return err
-			}
-			rows[index].AnchorPosition = position
-		}
-	}
-	// One reader for the rows and every thread under them: the texts are one query and one store.
 	reader := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
 	if thread {
+		ids := make([]string, len(rows))
+		for index := range rows {
+			ids[index] = rows[index].ID
+		}
 		threads, err := s.loadAskThreads(ctx, ids, reader)
 		if err != nil {
 			return err
@@ -484,6 +471,57 @@ func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []ask
 			rows[index].Thread = &read
 		}
 	}
+	if err := finishAsksV2(rows, reader); err != nil {
+		return err
+	}
+	reader.resolve()
+	return nil
+}
+
+// completeWrittenAskV2 fills in what the ask a write answers carries beyond its read (askV2Rows),
+// as GET /api/v2/asks/{id} reads it with no include: never its thread, whose read ends with a
+// listener call that may store the routes it read (loadAskReaches), so a write's read-back reaches
+// no write of its own outside the transactions that marked the write's key
+// (TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks).
+func (s *server) completeWrittenAskV2(ctx context.Context, r *http.Request, rows []askV2) error {
+	if err := s.prepareAsksV2(ctx, rows, true); err != nil {
+		return err
+	}
+	reader := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
+	if err := finishAsksV2(rows, reader); err != nil {
+		return err
+	}
+	reader.resolve()
+	return nil
+}
+
+// prepareAsksV2 fills in the identity event, the inbound backlink count and the part ids every
+// list of asks batches (loadAskDetails), and the anchor's block position on the read of one ask
+// (single).
+func (s *server) prepareAsksV2(ctx context.Context, rows []askV2, single bool) error {
+	pointers := make([]*model.Ask, len(rows))
+	for index := range rows {
+		pointers[index] = &rows[index].Ask
+	}
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, pointers); err != nil {
+		return err
+	}
+	if single {
+		for index := range rows {
+			position, err := s.anchorBlock(ctx, rows[index].Anchor)
+			if err != nil {
+				return err
+			}
+			rows[index].AnchorPosition = position
+		}
+	}
+	return nil
+}
+
+// finishAsksV2 gives every row its identity event's id, its address and its trees, registered
+// with reader for its caller to resolve. A row whose read found no opened event is the server's
+// fault, never an answer without the id (decision 2).
+func finishAsksV2(rows []askV2, reader *displayTreeReader) error {
 	for index := range rows {
 		row := &rows[index]
 		if row.Ask.OpenedEventID == nil {
@@ -495,7 +533,6 @@ func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []ask
 		// part ids of its options and of its answer into the row these fields stand in front of.
 		row.shape(reader)
 	}
-	reader.resolve()
 	return nil
 }
 
@@ -512,18 +549,41 @@ func askV2Ref(row askV2) string {
 	return refs.AskRef(ref)
 }
 
-// readAskV2 reads the ask id names as GET /api/v2/asks/{id} answers it, with include's members.
-func (s *server) readAskV2(ctx context.Context, r *http.Request, id string, include askV2Include) (askV2, error) {
-	read := askV2Read{order: "a.id", markOf: include.markOf}
+// askV2ByID is the ask id names as askV2Rows reads it, with the mark of markOf where it names
+// one, or 404 ASK_NOT_FOUND.
+func (s *server) askV2ByID(ctx context.Context, id, markOf string) ([]askV2, error) {
+	read := askV2Read{order: "a.id", markOf: markOf}
 	read.where("a.id = " + read.argument(id))
 	rows, err := s.askV2Rows(ctx, s.deps.Store.Pool, read, nil)
 	if err != nil {
-		return askV2{}, err
+		return nil, err
 	}
 	if len(rows) == 0 {
-		return askV2{}, errorf(apicode.AskNotFound, "no ask has the id %s", id)
+		return nil, errorf(apicode.AskNotFound, "no ask has the id %s", id)
+	}
+	return rows, nil
+}
+
+// readAskV2 reads the ask id names as GET /api/v2/asks/{id} answers it, with include's members.
+func (s *server) readAskV2(ctx context.Context, r *http.Request, id string, include askV2Include) (askV2, error) {
+	rows, err := s.askV2ByID(ctx, id, include.markOf)
+	if err != nil {
+		return askV2{}, err
 	}
 	if err := s.completeAsksV2(ctx, r, rows, include.thread, true); err != nil {
+		return askV2{}, err
+	}
+	return rows[0], nil
+}
+
+// readWrittenAskV2 reads the ask id names as a write of it answers it: as GET /api/v2/asks/{id}
+// reads it with no include (completeWrittenAskV2).
+func (s *server) readWrittenAskV2(ctx context.Context, r *http.Request, id string) (askV2, error) {
+	rows, err := s.askV2ByID(ctx, id, "")
+	if err != nil {
+		return askV2{}, err
+	}
+	if err := s.completeWrittenAskV2(ctx, r, rows); err != nil {
 		return askV2{}, err
 	}
 	return rows[0], nil
@@ -532,7 +592,7 @@ func (s *server) readAskV2(ctx context.Context, r *http.Request, id string, incl
 // writeAskV2 answers a write of the ask id names with the ask, read back as GET /api/v2/asks/{id}
 // reads it, at status.
 func (s *server) writeAskV2(w http.ResponseWriter, r *http.Request, status int, id string) {
-	row, err := s.readAskV2(r.Context(), r, id, askV2Include{})
+	row, err := s.readWrittenAskV2(r.Context(), r, id)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1021,7 +1081,7 @@ func (s *server) createIssueAskV2(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	row, err := s.readAskV2(r.Context(), r, ask.ID, askV2Include{})
+	row, err := s.readWrittenAskV2(r.Context(), r, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

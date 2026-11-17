@@ -164,7 +164,15 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 			"idempotency_key is the Idempotency-Key header, not a body member")
 		return
 	}
-	requested, err := validateBroadcastInput(input.Body, input.Delivery, input.SessionIDs)
+	s.sendBroadcast(w, r, actor, input.Body, input.Delivery, input.SessionIDs)
+}
+
+// sendBroadcast sends body in mode delivery to each session of sessionIDs that can take it, as
+// the person actor, once the route has read its body: the work of POST /api/v1/broadcasts and
+// POST /api/v2/broadcasts. It answers 201 the broadcast once it is committed, each recipient's
+// delivery running behind the answer, with the sessions it left out; or the refusal.
+func (s *server) sendBroadcast(w http.ResponseWriter, r *http.Request, actor model.Actor, body, delivery string, sessionIDs []string) {
+	requested, err := validateBroadcastInput(body, delivery, sessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -197,7 +205,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	targets := resolveBroadcastTargets(requested, input.Delivery, sessions)
+	targets := resolveBroadcastTargets(requested, delivery, sessions)
 	recipients := make([]broadcastTarget, 0, len(targets))
 	excluded := make([]broadcastExclusion, 0)
 	for _, target := range targets {
@@ -215,7 +223,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, events, err := s.writeBroadcast(r.Context(), actor, input.Body, input.Delivery, recipients, excluded)
+	created, events, err := s.writeBroadcast(r.Context(), actor, body, delivery, recipients, excluded)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -242,7 +250,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		sends = append(sends, broadcastSend{message: recipient.Message.Message, attempt: 1})
 	}
 	sending := context.WithoutCancel(r.Context())
-	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, input.Delivery, actor) })
+	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, delivery, actor) })
 	// The send's own answer carries the body it has just stored the tree of, so it is read where
 	// it stands rather than from the table.
 	shapeBuilt(wantsDisplayTrees(r), created.attachTrees)
@@ -629,7 +637,19 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+	summaries, err := s.broadcastSummaries(r.Context(), wantsDisplayTrees(r), 50, 0)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, summaries)
+}
+
+// broadcastSummaries is one page of the broadcasts, newest first, limit of them from offset, each
+// with how many sessions it reached and how many of those answered: GET /api/v1/broadcasts reads
+// the newest 50, and GET /api/v2/broadcasts the page its query names.
+func (s *server) broadcastSummaries(ctx context.Context, trees bool, limit, offset int) ([]broadcastSummary, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select b.id::text, b.author, b.body, b.delivery, b.created_at,
 		       count(distinct m.id),
 		       -- Recipients who answered, not answered attempts: one recipient that answered a
@@ -640,14 +660,12 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		left join message_deliveries d on d.message_id = m.id and d.reply_id is not null
 		group by b.id
 		order by b.created_at desc, b.id desc
-		limit 50
-	`)
+		limit $1 offset $2
+	`, limit, offset)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	summaries := []broadcastSummary{}
 	for rows.Next() {
 		var summary broadcastSummary
@@ -656,26 +674,25 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 			&summary.ID, &author, &summary.Body, &summary.Delivery, &summary.CreatedAt,
 			&summary.Recipients, &summary.Replies,
 		); err != nil {
-			s.writeHandlerError(w, r, err)
-			return
+			return nil, err
 		}
 		if err := json.Unmarshal(author, &summary.Author); err != nil {
-			s.writeHandlerError(w, r, err)
-			return
+			return nil, err
 		}
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return nil, err
 	}
+	rows.Close()
 	// The bodies are registered once the list is whole: a row of a slice still being appended to
 	// is a row the reader must not hold the address of.
+	reader := s.readDisplayTrees(ctx, trees)
 	for index := range summaries {
 		summaries[index].attachTrees(reader)
 	}
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, summaries)
+	return summaries, nil
 }
 
 // GET /api/v1/broadcasts/{id}

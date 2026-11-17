@@ -56,6 +56,16 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.postIssueMessage(w, r, actor, human, input)
+}
+
+// postIssueMessage writes the message input asks on the issue the path's {key} names, as the
+// caller optionalActor resolved (actor, and whether it is a person at a browser), once the route
+// has read its body: the work of POST /api/v1/issues/{key}/messages and POST
+// /api/v2/issues/{key}/messages. It answers 201 the message with the write's advice, or the
+// refusal.
+func (s *server) postIssueMessage(w http.ResponseWriter, r *http.Request, actor model.Actor, human bool, input createMessageInput) {
+	var err error
 	if !human {
 		if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
 			s.writeHandlerError(w, r, err)
@@ -108,6 +118,14 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.sendAgentMessage(w, r, actor, input)
+}
+
+// sendAgentMessage sends the message input asks to the session the path's {session_id} names, as
+// the person actor, once the route has read its body: the work of POST
+// /api/v1/agents/{session_id}/messages and POST /api/v2/agents/{session_id}/messages. It answers
+// 201 the message once its first attempt has settled, or the refusal.
+func (s *server) sendAgentMessage(w http.ResponseWriter, r *http.Request, actor model.Actor, input createAgentMessageInput) {
 	target := "session:" + r.PathValue("session_id")
 	messageInput := createMessageInput{
 		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock,
@@ -776,10 +794,19 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 	if !requireUUIDPath(w, r, "message", apicode.MessageIDInput) {
 		return messageRead{}, false
 	}
+	return s.readableThreadAs(w, r, r.PathValue("id"), strings.TrimSpace(r.URL.Query().Get("session")))
+}
+
+// readableThreadAs is readableMessageThread's rule once the route has read the session the caller
+// names (session, "" for none) and held id to a message: the conversation message id belongs to,
+// read whole for a person's own credential and for an issue thread, and a direct conversation for
+// every other credential only where session is in it. GET /api/v2/messages/{id} passes the
+// session its decoded query names (decodedSession). ok is false once it has written the refusal.
+func (s *server) readableThreadAs(w http.ResponseWriter, r *http.Request, id, session string) (messageRead, bool) {
 	var rootID string
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), messageThreadCTE+`
 		select id::text from thread where in_reply_to is null
-	`, r.PathValue("id")).Scan(&rootID); err != nil {
+	`, id).Scan(&rootID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return messageRead{}, false
 	}
@@ -792,7 +819,6 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 	// names no session in it, as their browser does. The scope is the request's credential's;
 	// this read records no actor, so there is nothing else to resolve.
 	if !s.callerHoldsScope(r, model.ScopePerson) && read.Message.IssueKey == nil {
-		session := strings.TrimSpace(r.URL.Query().Get("session"))
 		if session == "" {
 			writeError(w, r, apicode.SessionRequired,
 				"a direct conversation is read as a session in it: name yours in ?session=")
@@ -891,26 +917,11 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))
+	roots, err := s.issueRootMessages(r.Context(), r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	defer rows.Close()
-	roots := []model.Message{}
-	for rows.Next() {
-		root, err := scanMessage(rows)
-		if err != nil {
-			s.writeHandlerError(w, r, err)
-			return
-		}
-		roots = append(roots, root)
-	}
-	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	rows.Close()
 	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -919,26 +930,33 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
-func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.actingPerson(w, r)
-	if !ok {
-		return
+// issueRootMessages is every root message of the issue key, oldest first
+// (listIssueRootMessagesQuery), unhydrated: the rows both versions' lists of an issue's threads
+// read.
+func (s *server) issueRootMessages(ctx context.Context, key string) ([]model.Message, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, listIssueRootMessagesQuery, key)
+	if err != nil {
+		return nil, err
 	}
-	sessionID := strings.TrimSpace(r.PathValue("session_id"))
-	if sessionID == "" {
-		writeError(w, r, apicode.MessageInput, "session id is required")
-		return
+	defer rows.Close()
+	roots := []model.Message{}
+	for rows.Next() {
+		root, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
 	}
-	// Newest activity first: a conversation moves up when anyone replies anywhere in it, so the
-	// newest one the Agents page opens on is the one that last moved, not the one last started.
-	// The window is the 50 that moved last, plus every conversation holding a reply this viewer
-	// has not read, in one activity order. The unread term has no ceiling: it is exactly what
-	// `unread_replies` counts (both read the shared unreadDirectRepliesCTE), so the count and the
-	// window can never disagree. Bounding it would reopen LEGION-301's defect at a higher
-	// threshold - a reply counted, never shown, and then marked read by a watermark that only
-	// moves forward.
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		with recursive`+unreadDirectRepliesCTE+`,
+	return roots, rows.Err()
+}
+
+// agentConversationRootsCTE names `roots`: every root of one session's conversations, with the
+// time it last moved and whether it holds a reply the caller has not read. Its parameters are
+// unreadDirectRepliesCTE's own (unreadDirectRepliesArgs), the session in $3, so a read appending
+// its own starts at $4; each read selects messageColumns and then unread from it, the columns
+// readAgentConversations scans.
+const agentConversationRootsCTE = `
+		with recursive` + unreadDirectRepliesCTE + `,
 		-- Two indexed branches rather than one scan with an OR across two tables: the roots
 		-- targeted at this session (messages_session_roots) and the roots one of its deliveries
 		-- names (message_deliveries_session). An OR spanning messages and message_deliveries can
@@ -976,7 +994,27 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 			left join activity on activity.root_id = c.id
 			left join (select distinct root_id from unread_direct_replies) unread
 			  on unread.root_id = c.id
-		),
+		)`
+
+func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("session_id"))
+	if sessionID == "" {
+		writeError(w, r, apicode.MessageInput, "session id is required")
+		return
+	}
+	// Newest activity first: a conversation moves up when anyone replies anywhere in it, so the
+	// newest one the Agents page opens on is the one that last moved, not the one last started.
+	// The window is the 50 that moved last, plus every conversation holding a reply this viewer
+	// has not read, in one activity order. The unread term has no ceiling: it is exactly what
+	// `unread_replies` counts (both read the shared unreadDirectRepliesCTE), so the count and the
+	// window can never disagree. Bounding it would reopen LEGION-301's defect at a higher
+	// threshold - a reply counted, never shown, and then marked read by a watermark that only
+	// moves forward.
+	result, err := s.readAgentConversations(r.Context(), agentConversationRootsCTE+`,
 		ranked as (
 			select *, row_number() over (order by moved desc, id desc) as rank from roots
 		)
@@ -984,10 +1022,21 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		from ranked
 		where rank <= 50 or unread
 		order by moved desc, id desc
-	`, unreadDirectRepliesArgs(actor.ID, &sessionID)...)
+	`, unreadDirectRepliesArgs(actor.ID, &sessionID), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, result)
+}
+
+// readAgentConversations runs query, a read of agentConversationRootsCTE's roots selecting
+// messageColumns and then unread, and answers each root it selects as a thread (its deliveries
+// and every reply) carrying its own unread verdict, in the order the query selects them.
+func (s *server) readAgentConversations(ctx context.Context, query string, args []any, trees bool) ([]messageRead, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	roots := []model.Message{}
@@ -996,28 +1045,25 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		var holdsUnread bool
 		message, err := scanMessage(rows, &holdsUnread)
 		if err != nil {
-			s.writeHandlerError(w, r, err)
-			return
+			return nil, err
 		}
 		roots = append(roots, message)
 		unread[message.ID] = holdsUnread
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return nil, err
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(ctx, roots, trees)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return nil, err
 	}
 	// Only this list has an unread verdict to carry; a root the query left out of the map is
 	// read, which `json:"unread,omitempty"` omits.
 	for index := range result {
 		result[index].Unread = unread[result[index].Message.ID]
 	}
-	WriteJSON(w, http.StatusOK, result)
+	return result, nil
 }
 
 func (s *server) loadMessage(ctx context.Context, q queryer, issueKey, id string) (model.Message, error) {

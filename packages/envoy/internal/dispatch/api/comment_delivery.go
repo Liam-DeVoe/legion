@@ -921,6 +921,14 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.retryCommentMention(w, r, actor, input)
+}
+
+// retryCommentMention opens a new delivery attempt of one mention of the comment the path's {id}
+// names, in the mode input asks, for actor, once the route has read its body and resolved who
+// acts: the work of POST /api/v1/comments/{id}/deliveries and POST /api/v2/comments/{id}/deliveries.
+// It answers the attempt as it settled, or the refusal.
+func (s *server) retryCommentMention(w http.ResponseWriter, r *http.Request, actor model.Actor, input createCommentDeliveryInput) {
 	if !validDelivery(input.Delivery) {
 		writeError(w, r, apicode.MentionInput, "delivery must be one of btw, aside, steer")
 		return
@@ -1016,6 +1024,15 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.answerCommentDelivery(w, r, input)
+}
+
+// answerCommentDelivery is the mentioned session's answer to one delivery attempt of the comment
+// the path's {id} names - a reply's body, or the error the session met - once the route has read
+// its body: the work of POST /api/v1/comments/{id}/reply and POST /api/v2/comments/{id}/replies,
+// whose caller has already shown a bearer credential. It answers the reply, an answered attempt's
+// stored reply, the failed attempt, or the refusal.
+func (s *server) answerCommentDelivery(w http.ResponseWriter, r *http.Request, input commentReplyInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return

@@ -68,6 +68,13 @@ type tourStep struct {
 	// NoCredential is the 401 code the route answers a request with no credential, where it is
 	// not the identity layer's NO_IDENTITY: a route only a bearer may call answers its own.
 	NoCredential apicode.Code
+	// ReplayMoves are the members a route whose Replay answers the resource afresh answers as they
+	// stand at the repeat rather than as its first answer gave them, which the replays subtest
+	// leaves out of its comparison: each a path of member names from the top, joined by dots, `*`
+	// standing for every element of a list (`recipients.*.message.deliveries`, a broadcast's
+	// attempts, which run behind its first answer and which the route describes as they stand).
+	// Empty for every other step, whose repeat answers its first answer whole.
+	ReplayMoves []string
 }
 
 // tourRequest is the request a step sends.
@@ -161,9 +168,9 @@ func tourSteps() []tourStep {
 //   - unauthenticated: each step of a route that is not public, sent with no credential, is
 //     answered 401 with the identity layer's code.
 //   - replays: each write step sent twice under one Idempotency-Key is answered the same body the
-//     second time (the same JSON value, for a route whose Replay answers the resource afresh),
-//     marked a replay, with no second event; a route whose answer holds a secret answers the
-//     repeat 409 KEY_COMMITTED (R8).
+//     second time (the same JSON value, for a route whose Replay answers the resource afresh, but
+//     the members its step names as answered as they stand, ReplayMoves), marked a replay, with no
+//     second event; a route whose answer holds a secret answers the repeat 409 KEY_COMMITTED (R8).
 func TestV2RouteTour(t *testing.T) {
 	tour := newRouteTour(t)
 	steps := tourSteps()
@@ -305,8 +312,10 @@ func TestV2RouteTour(t *testing.T) {
 				sameAnswer := again.Body.String() == first.Body.String()
 				if route.Replay != nil {
 					// A route with a Replay answers a repeat with the resource as it stands now
-					// (writeRefreshed), re-encoded, so its members may come back in another order.
-					sameAnswer = jsonEqual(t, again.Body.Bytes(), first.Body.String())
+					// (writeRefreshed), re-encoded, so its members may come back in another order,
+					// and those the step names as moving since may hold what they hold now.
+					sameAnswer = jsonEqual(t, withoutMembers(t, again.Body.Bytes(), step.ReplayMoves),
+						string(withoutMembers(t, first.Body.Bytes(), step.ReplayMoves)))
 				}
 				if route.AnswerHoldsSecret {
 					if code, _ := refusalOf(t, again); again.Code != http.StatusConflict || code != "KEY_COMMITTED" {
@@ -395,6 +404,47 @@ func withQueryValue(query url.Values, key, value string) url.Values {
 	}
 	with.Add(key, value)
 	return with
+}
+
+// withoutMembers is the JSON value body with each member paths names taken out (tourStep's
+// ReplayMoves), and body itself where paths names none.
+func withoutMembers(t *testing.T, body []byte, paths []string) json.RawMessage {
+	t.Helper()
+	if len(paths) == 0 {
+		return body
+	}
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		t.Fatalf("decode the answer %s: %v", body, err)
+	}
+	for _, path := range paths {
+		value = withoutMember(value, strings.Split(path, "."))
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode the answer: %v", err)
+	}
+	return encoded
+}
+
+// withoutMember is value with the member path names taken out, every element of a list where a
+// name is `*`; a path that names nothing value holds leaves it as it is.
+func withoutMember(value any, path []string) any {
+	switch node := value.(type) {
+	case map[string]any:
+		if len(path) == 1 {
+			delete(node, path[0])
+		} else if child, held := node[path[0]]; held {
+			node[path[0]] = withoutMember(child, path[1:])
+		}
+	case []any:
+		if path[0] == "*" && len(path) > 1 {
+			for index := range node {
+				node[index] = withoutMember(node[index], path[1:])
+			}
+		}
+	}
+	return value
 }
 
 // withUndeclaredMember is body with a member no route declares, zz_undeclared: a JSON object's

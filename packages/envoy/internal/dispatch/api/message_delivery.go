@@ -41,7 +41,15 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !validDelivery(input.Delivery) {
+	s.retryMessageDelivery(w, r, actor, input.Delivery)
+}
+
+// retryMessageDelivery opens or resumes a delivery attempt of the targeted message the path's {id}
+// names, in mode delivery, for actor, once the route has read its body and resolved who acts: the
+// work of POST /api/v1/messages/{id}/deliveries and POST /api/v2/messages/{id}/deliveries. It
+// answers 201 the attempt as it settled, or the refusal.
+func (s *server) retryMessageDelivery(w http.ResponseWriter, r *http.Request, actor model.Actor, delivery string) {
+	if !validDelivery(delivery) {
 		writeError(w, r, apicode.MessageInput, "delivery must be one of btw, aside, steer")
 		return
 	}
@@ -55,7 +63,7 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	// call, a cut connection must not strand it, and one a process death strands the delivery
 	// sweep resumes. It carries the urgency of the attempt it resumes, and none on an attempt it
 	// opens: a Retry asks for none.
-	attempt, err := s.deliverMessage(context.WithoutCancel(r.Context()), message, input.Delivery, actor, nil)
+	attempt, err := s.deliverMessage(context.WithoutCancel(r.Context()), message, delivery, actor, nil)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -142,6 +150,15 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.acceptDeliveryAs(w, r, actor)
+}
+
+// acceptDeliveryAs is the accept's compare-and-set for the attempt the path's {attempt} names of
+// the message its {id} names, by the session actor, once the route has read its body and resolved
+// who acts: the work of POST /api/v1/messages/{id}/deliveries/{attempt}/accept and PUT
+// /api/v2/messages/{id}/deliveries/{attempt}/state {state: accepted}. It answers the accepted
+// attempt with the message's stored body, or the refusal naming the check.
+func (s *server) acceptDeliveryAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	number, err := strconv.Atoi(r.PathValue("attempt"))
 	if err != nil || number < 1 {
 		writeError(w, r, apicode.MessageNotFound, "message delivery not found")
@@ -879,6 +896,19 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	followUp, followUpErr := followUpRequested(r)
+	s.answerMessageDelivery(w, r, input, followUp, followUpErr)
+}
+
+// answerMessageDelivery is the targeted session's answer to one delivery attempt of the message
+// the path's {id} names - a reply's body, or the error the session met - once the route has read
+// its body and its follow_up: the work of POST /api/v1/messages/{id}/reply and POST
+// /api/v2/messages/{id}/replies, whose caller has already shown a bearer credential. followUpErr
+// is the refusal of a follow_up that is neither true nor false, which /api/v1 reads off the raw
+// query and answers after the body's own checks, as it always has; /api/v2's decoder refuses such
+// a value before the handler runs, so it passes nil. It answers the reply, an answered attempt's
+// stored reply, the failed attempt, or the refusal.
+func (s *server) answerMessageDelivery(w http.ResponseWriter, r *http.Request, input messageReplyInput, followUp bool, followUpErr error) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -903,9 +933,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	followUp, err := followUpRequested(r)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
+	if followUpErr != nil {
+		s.writeHandlerError(w, r, followUpErr)
 		return
 	}
 

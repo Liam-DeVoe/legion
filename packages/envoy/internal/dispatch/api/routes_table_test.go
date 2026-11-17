@@ -432,17 +432,22 @@ func routeProbePath(pattern string) string {
 }
 
 // routeProbeBody is the JSON body a probe sends. Every mutation that decodes before it
-// authenticates accepts `actor` (a bearer's self-identification). Two kinds of route need more:
+// authenticates accepts `actor` (a bearer's self-identification). Three kinds of route need more:
 // a review route refuses a body without a valid state (400 INVALID_REVIEW) before it reads the
-// document, so its probe is an approval, and a reply route answers REPLY_FORBIDDEN to a malformed
+// document, so its probe is an approval; a reply route answers REPLY_FORBIDDEN to a malformed
 // reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
-// check.
+// check; and a /api/v2 route whose body is a union is decoded before its handler runs, and its
+// decoder refuses a body naming no arm 400 before any credential is judged, so its probe is an arm
+// its decoder reads that no scope gates (unionProbe).
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
 	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":
 		return `{"state":"approved"}`
 	case "POST /api/v1/messages/{id}/reply", "POST /api/v1/comments/{id}/reply":
 		return `{"actor":{"kind":"session","id":"s1"},"attempt":1,"body":"probe"}`
+	}
+	if probe, _, _, union := unionProbe(route, map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}); union {
+		return probe
 	}
 	return `{"actor":{"kind":"session","id":"s1"}}`
 }

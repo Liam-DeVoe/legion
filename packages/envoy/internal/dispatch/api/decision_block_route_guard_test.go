@@ -40,7 +40,10 @@ const (
 // is read by no walk, so this map is a hand-kept list there: it names the routes known to carry
 // such prose unrefused, and nothing derives that list or fails when a later route joins it.
 var decisionBlockExempt = map[string]string{
-	"POST /api/v1/issues/{key}/handoffs/{phase}": "the body is one JSON object, held to contracts.DispatchHandoffBodyMax and stored exactly as sent (handoffs.go); every reader is given its fields as JSON and none of it as Markdown, so no decision card is ever drawn from it",
+	"POST /api/v1/issues/{key}/handoffs/{phase}": handoffRouteExemption,
+	// Its /api/v2 route, the same write with the phase in the body (v2_threads.go), for the
+	// same reason.
+	"POST /api/v2/issues/{key}/handoffs": handoffRouteExemption,
 
 	// The five ask writes. The reason is one decision, recorded as "An ask's own question, its
 	// options and its answers are left alone" (dispatch://INFRA-1201/artifact/decisions-md): the
@@ -63,6 +66,9 @@ var decisionBlockExempt = map[string]string{
 
 // reviewRouteExemption is why decisionBlockExempt leaves both review routes unrefused.
 const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
+
+// handoffRouteExemption is why decisionBlockExempt leaves both handoff writes unrefused.
+const handoffRouteExemption = "the body is one JSON object, held to contracts.DispatchHandoffBodyMax and stored exactly as sent (handoffs.go); every reader is given its fields as JSON and none of it as Markdown, so no decision card is ever drawn from it"
 
 // decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
 // pass by seeing nothing: a comment, a message and a broadcast. They are a control over the walk,

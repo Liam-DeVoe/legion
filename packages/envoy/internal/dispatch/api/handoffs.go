@@ -74,7 +74,17 @@ func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
+	s.recordHandoffInput(w, r, actor, phase, input)
+}
+
+// recordHandoffInput records input as the next version of phase on the issue the path's {key}
+// names, by the bearer caller optionalActor resolved as actor, once the route has held the caller
+// to a bearer, read the phase and read the body within the handoff's own limit: the work of POST
+// /api/v1/issues/{key}/handoffs/{phase} and POST /api/v2/issues/{key}/handoffs. It answers 201 the
+// handoff without its body, or the refusal.
+func (s *server) recordHandoffInput(w http.ResponseWriter, r *http.Request, actor model.Actor, phase string, input createHandoffInput) {
+	actor, err := bearerSessionActor(r, actor, input.Actor)
+	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
@@ -193,10 +203,14 @@ func (s *server) getHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	s.writeHandoff(w, r, "handoff "+id+" not found", `
-		select `+handoffColumns+`, body from handoffs where id = $1
-	`, id)
+	s.writeHandoff(w, r, "handoff "+id+" not found", handoffByIDQuery, id)
 }
+
+// handoffByIDQuery is the one handoff whose id is $1, with its body, which GET /api/v1/handoffs/{id}
+// and GET /api/v2/handoffs/{id} both read.
+const handoffByIDQuery = `
+		select ` + handoffColumns + `, body from handoffs where id = $1
+	`
 
 // writeHandoff answers the one handoff query selects (handoffColumns, then body), or 404
 // HANDOFF_NOT_FOUND with missing when it selects none.
