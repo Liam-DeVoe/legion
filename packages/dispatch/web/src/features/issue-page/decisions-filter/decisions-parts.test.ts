@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import { wordsOf } from "../../refs/tree-fragment";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
@@ -42,8 +43,9 @@ import {
  * hand and reads what it answers.
  */
 
-/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
-const nodeIdOf = treeContext({ issue: issueDetails() }).nodeIdOf;
+/** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). The line
+ *  a block is named by is the whole reading's words (`wordsOf`), which nothing below reads. */
+const nodeIdOf = treeContext({ issue: issueDetails() }, wordsOf).nodeIdOf;
 
 /** The decisions document's blocks as the blocks read answers them: each decision's own block,
  *  its heading, in the order the decisions were made. */

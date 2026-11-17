@@ -208,8 +208,7 @@ function StoredText({
   const ambiguous = useKnownAmbiguousReferences();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   const found = useMemo(
-    () =>
-      rowReferences(markdown, knownIssueKeys(names)).filter((one) => !ambiguous.has(one.reference)),
+    () => rowReferences(markdown, knownIssueKeys(names), ambiguous),
     [ambiguous, markdown, names]
   );
   const follow = useFollowInPlace();
@@ -332,18 +331,9 @@ function DrawnText({
     const element = drawn.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    linkRowReferences(element, names);
+    linkRowReferences(element, names, ambiguous);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
-      // A reference the read answered as ambiguous is drawn as its author wrote it, with no
-      // link. The pass links only what the reading left as text, and the reading makes a
-      // dashboard address a link of its own, so what it linked here is a `dispatch://`
-      // reference, which is written as the reference reads. Each later pass links it again,
-      // and this takes the link out again.
-      if (ambiguous.has(reference)) {
-        anchor.replaceWith(reference);
-        continue;
-      }
       const route = parseNodeReference(reference);
       if (route !== undefined && route.kind !== "issue") {
         anchor.setAttribute(ROW_CHIP, "");
