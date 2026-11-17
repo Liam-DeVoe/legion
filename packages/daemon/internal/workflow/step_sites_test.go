@@ -412,6 +412,43 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	}
 }
 
+// A merge event closes a held merging phase too, both in a live tree and after its root parks.
+// Calling closeMerged directly would miss the event handler's choice of which phases it closes.
+func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
+	for _, lingering := range []bool{false, true} {
+		name := "live tree"
+		if lingering {
+			name = "lingering tree"
+		}
+		t.Run(name, func(t *testing.T) {
+			pool := migratedPool(t)
+			stepRoot(t, pool, phase.Reviewing)
+			stepChild(t, pool, "LEGION-209", phase.Retro, nil)
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+				Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+			engine := stepEngine(nil)
+			move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+			child := issueRecord(t, pool, "LEGION-209")
+			child.Phase, child.Hold = phase.Held, &record.Hold{From: phase.Merging}
+			seedIssue(t, pool, *child)
+			apply := applyFacts(t, pool, engine)
+			if lingering {
+				apply("park-root", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+					Status: "backlog", Title: "root", Rank: "U"})
+			}
+			apply("merge-held", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
+			writes := stepWrites(t, pool, "LEGION-209")
+			if len(writes) != 3 || !isStart(writes[1]) || writes[1].Kind != "merge" || writes[2].ID != writes[1].ID {
+				t.Fatalf("held merge writes = %+v, want the retro's end, the merge's start and its matching end", writes)
+			}
+			assertEnd(t, writes[2], "merge", 0, 3, "passed", nil)
+			if got := issueAt(t, pool, "LEGION-209"); got != phase.Done {
+				t.Fatalf("merged held child stands at %s, want done", got)
+			}
+		})
+	}
+}
+
 // A root's close stops every member's running step, each keyed on the phase that member stands in,
 // and the root's own.
 func TestALingeringRootEndsEachMembersStep(t *testing.T) {
