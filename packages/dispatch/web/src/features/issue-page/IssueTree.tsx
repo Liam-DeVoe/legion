@@ -341,12 +341,12 @@ export function IssueTree({
   // while the press was held moved the line up from under the pointer, and the click missed it.
   // The stop goes to the line the press focused while that line still holds the focus; a key's
   // move onto a line gives it the stop at once.
-  const linePress = usePressFocus<{ readonly line: Element | null; readonly row: string }>(
+  const linePress = usePressFocus<{ readonly line: HTMLElement; readonly row: string }>(
     ({ row }) => {
       leave();
       setStop(row);
     },
-    ({ line }) => line?.contains(document.activeElement) === true
+    ({ line }) => line.contains(document.activeElement)
   );
   // What the twisty and the arrow keys do to one branch. Folding a branch is held as its own
   // set and not as the absence of an opened one: the fold draws the reasoning and the path to
@@ -787,9 +787,8 @@ export function IssueTree({
                 // the focus left, as the focus leaving the tree does (`leave`): its body, its
                 // focused look, its acts, which no key reaches from the line, and what a key
                 // reported there; under a press, once it is over (`linePress`). The line focuses
-                // no node: Details goes on drawing what it drew. Its focus is heard as it lands,
-                // so the element that holds the focus is the line.
-                onStop={(row) => linePress.focus({ line: document.activeElement, row })}
+                // no node: Details goes on drawing what it drew.
+                onStop={(row, line) => linePress.focus({ line, row })}
                 // A branch opens where it is at every width (R16): below 1024 px the outline draws
                 // one level under the node it is read from, so an opened branch deeper than that is
                 // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.

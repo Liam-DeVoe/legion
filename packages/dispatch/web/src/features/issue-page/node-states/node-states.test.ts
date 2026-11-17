@@ -110,6 +110,7 @@ import {
   statesByReference,
   withLine,
 } from "./node-states";
+import { OvertakenLine } from "./OvertakenLine";
 import { useOvertakenTarget } from "./settle-write";
 
 /**
@@ -678,6 +679,28 @@ test("a press on the overtaken line lets go of the row the reader left once it e
     expect(left()?.querySelector("[data-row-acts]"), "the row left kept its acts").toBeNull();
     expect(line).toHaveAttribute("tabindex", "0");
     expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The line hands its own element to the tree as its focus lands (`onStop`), so a press that
+// focused it is checked against the line itself once it ends, whatever holds the focus when the
+// tree reads it.
+test("the overtaken line hands itself to the tree as it takes the focus", () => {
+  const stops: HTMLElement[] = [];
+  const view = render(
+    createElement(OvertakenLine, {
+      onStop: (line: HTMLElement) => stops.push(line),
+      row: { held: 1, level: 1, of: node(KEY, "issue"), open: false, trail: [] },
+      tabStop: true,
+    })
+  );
+  try {
+    const line = theLine(view.container);
+    act(() => line.focus());
+    expect(stops).toHaveLength(1);
+    expect(stops[0], "the line handed the tree no element of its own").toBe(line);
   } finally {
     view.unmount();
   }
@@ -1830,6 +1853,43 @@ test("the Spec view draws a line only after the group whose statements it folds"
     expect(rowOf(two.container, "spec#b-r5")).toBeNull();
   } finally {
     two.unmount();
+  }
+});
+
+// Under Spec a line counts the overtaken nodes its statements fold with, each once: the topmost
+// one each statement stands at or under (`closedBy`), as the Verification view's line counts its
+// rows. An overtaken statement that holds an overtaken one, which holds a live one, is one node of
+// the count, and an overtaken statement beside it is another; opened, the line draws all four
+// after the live statement beside them, in the order the spec holds them.
+test("the Spec view's line counts each overtaken node its statements stand under once", async () => {
+  const user = userEvent.setup();
+  const view = drawSpec(
+    stamped(
+      node(KEY, "issue", [
+        statement("r1", { children: [statement("r2", { children: [statement("r3")] })] }),
+        statement("r4"),
+        statement("r5"),
+      ]),
+      {
+        "spec#b-r1": { life: "overtaken" },
+        "spec#b-r2": { life: "overtaken" },
+        "spec#b-r5": { life: "overtaken" },
+      }
+    )
+  );
+  try {
+    const lines = linesOf(view.container);
+    expect(lines.map((line) => line.textContent)).toEqual([`2 ${CONTROL_LABELS.overtaken_count}`]);
+    const [line] = lines;
+    if (line === undefined) throw new Error("the view draws no line");
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+      (row) => row.dataset.nodeId
+    );
+    expect(drawn).toEqual(["spec#b-r4", "spec#b-r1", "spec#b-r2", "spec#b-r3", "spec#b-r5"]);
+  } finally {
+    view.unmount();
   }
 });
 

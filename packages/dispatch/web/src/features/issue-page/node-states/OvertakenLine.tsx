@@ -37,8 +37,8 @@ export function OvertakenLine({
   onOvertaken?: (id: string, open: boolean) => void;
   /** Makes the line the tree's one tab stop and lets go of the row the focus left, which its
    *  focus does and nothing else: it opens no row's body and focuses no node (`IssueTree.tsx`'s
-   *  `stop`). */
-  onStop?: () => void;
+   *  `stop`). It is handed the line's own element, which a press is checked against. */
+  onStop?: (line: HTMLElement) => void;
   /** What a key pressed on the line answers, where it answers in words: drawn at the line,
    *  last, as a row draws it (`NodeRow`'s `report`). */
   report?: string;
@@ -58,9 +58,9 @@ export function OvertakenLine({
       data-overtaken-line=""
       onBlur={() => setFocused(false)}
       onClick={() => onOvertaken?.(row.of.id, !row.open)}
-      onFocus={() => {
+      onFocus={(event) => {
         setFocused(true);
-        onStop?.();
+        onStop?.(event.currentTarget);
       }}
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}

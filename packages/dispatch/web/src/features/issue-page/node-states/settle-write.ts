@@ -95,7 +95,10 @@ export function useSettleIssue(): string | undefined {
  * the views and drops none, leaving out each whose read began in the turn it heard that in, as
  * the reads begun here did. The coverage's read begins first, so its answer, changed or not, is
  * no newer than the tree read begun here (`answeredNewer`), for which the subscription would read
- * the tree and the open view again: the coverage, the tree and the open view are read once each.
+ * the tree and the open view again: the coverage, the tree and the open view are read once each,
+ * where no tree read is out or held by the refresh interval. Where one is, `refreshQueries`
+ * begins none here, so a changed coverage is newer than the tree's last read, and the open view
+ * is read again, which costs a read and leaves none out.
  * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {

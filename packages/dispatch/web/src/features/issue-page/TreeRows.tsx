@@ -70,8 +70,8 @@ export function TreeRows({
   onOvertaken?: (id: string, open: boolean) => void;
   onPin: (row: string) => void;
   /** Makes the line of overtaken nodes `key` names the tree's one tab stop as it takes the
-   *  focus, which a row's own `onFocus` does for a row. */
-  onStop?: (key: string) => void;
+   *  focus, which a row's own `onFocus` does for a row, with the line's own element. */
+  onStop?: (key: string, line: HTMLElement) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
   /** The node whose body the preset opens without being asked (R7). */
   openBody?: string;
@@ -120,7 +120,7 @@ export function TreeRows({
               <OvertakenLine
                 key={key}
                 onOvertaken={onOvertaken}
-                onStop={() => onStop?.(key)}
+                onStop={(line) => onStop?.(key, line)}
                 {...(report?.row === key ? { report: report.line } : {})}
                 row={row}
                 tabStop={tabStop === key}

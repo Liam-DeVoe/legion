@@ -527,18 +527,12 @@ export function SpecFilterBody({
   // above the line cutting its words again, or the cell closing its decision, while the press
   // was held moved the line up from under the pointer, and the click missed it.
   const takeLine = useCallback(
-    (key: string) => {
-      const take = () => {
+    (key: string, line: HTMLElement) =>
+      focusItem(line, () => {
         leave();
         setStop(key);
         setReport((held) => (held?.row === key ? held : undefined));
-      };
-      const line = tree.current?.querySelector<HTMLElement>(
-        `[data-spec-line="${CSS.escape(key)}"]`
-      );
-      if (line == null) take();
-      else focusItem(line, take);
-    },
+      }),
     [focusItem, leave]
   );
   const lineHolds =
@@ -1204,9 +1198,9 @@ function Group({
   ) => void;
   /** Takes a focus inside a statement's row. */
   onFocus: (row: HTMLElement, node: TreeNode) => void;
-  /** Takes the focus on the group's line of overtaken statements, by the line's key: it makes
-   *  the line the tree's tab stop and focuses no statement. */
-  onLineFocus?: (key: string) => void;
+  /** Takes the focus on the group's line of overtaken statements, by the line's key and its own
+   *  element: it makes the line the tree's tab stop and focuses no statement. */
+  onLineFocus?: (key: string, line: HTMLElement) => void;
   /** Opens or closes that line, by its key (`GroupLine.key`, `line:` and the id of the first
    *  statement of the group that draws it), which the line hands back as its `of`'s id. */
   onOvertaken?: (id: string, open: boolean) => void;
@@ -1305,7 +1299,7 @@ function Group({
         >
           <OvertakenLine
             onOvertaken={onOvertaken}
-            onStop={() => onLineFocus?.(line.key)}
+            onStop={(item) => onLineFocus?.(line.key, item)}
             {...(report?.row === line.key ? { report: report.line } : {})}
             row={line.row}
             tabStop={tabStop === line.key}
