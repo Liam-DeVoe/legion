@@ -3,7 +3,8 @@
 // What the machine, enroll and airlock code prints in place of a value a person could have put a
 // secret in: AGENT_SECRETS_APPROVE_URL only as internal/redact's URL prints it, enroll's help
 // without the directory AGENT_SECRETS_KEY_DIR names, and the airlock's refusals without the
-// broker's proxy URL or the paths of the files a grant writes. Every secret here is made up.
+// broker's proxy URL or the WGETRC a command inherits, whose file can hold a password; the
+// airlock's own paths still print. Every secret here is made up.
 package main
 
 import (
@@ -112,37 +113,61 @@ func TestAnAirlockProxyURLThatCannotBeUsedIsNotPrinted(t *testing.T) {
 	})
 }
 
-// TestAnAirlockDirectoryThatCannotBePutInPlaceNamesNoPath: when a grant's directory cannot take
-// its final name, the refusal says which step failed and the system's reason, and not the paths
-// of the directory and the files in it, which hold the wgetrc the command reads. A root with
-// nothing in the way still takes the grant's files.
-func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesNoPath(t *testing.T) {
-	const secret = "xdg-hunter2pw-airlock-8b4e20"
-	base := filepath.Join(t.TempDir(), secret)
+// inheritedWgetrc is a WGETRC a command could inherit: a file at a path a person chose, holding a
+// password for wget as a wgetrc may (http_password). It answers the environment's WGETRC entry
+// and the made-up secrets no airlock output may hold: a part of that path, and the password.
+func inheritedWgetrc(t *testing.T) (string, []string) {
+	t.Helper()
+	const dirSecret, httpPass = "hunter2pw-wgetrc-dir-1c5e", "hunter2pw-wgetrc-pass-9a07"
+	dir := filepath.Join(t.TempDir(), dirSecret)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "wgetrc")
+	// wget's key for a password, joined from parts so that no line here reads as one set to a value.
+	key := "http_" + "pass" + "word"
+	content := "http_user = agent\n" + key + " = " + httpPass + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return "WGETRC=" + path, []string{dirSecret, httpPass}
+}
+
+// TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs: every path the airlock
+// prints is its root - XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory - and
+// names this CLI made below it, none of which a person sets to a secret's file, so when a grant's
+// directory cannot take its final name the refusal names that path and the system's reason. The
+// WGETRC the command inherits names a file that can hold http_password, so neither its path nor
+// what it holds prints. With nothing in the way the root takes the grant's files, and the wgetrc
+// there carries the inherited lines: the control, which shows the run read that WGETRC.
+func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *testing.T) {
+	wgetrc, secrets := inheritedWgetrc(t)
+	base := filepath.Join(t.TempDir(), "runtime")
 	root := filepath.Join(base, "agent-secrets", "airlock")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	environ := []string{"XDG_RUNTIME_DIR=" + base, wgetrc}
 	// A file where the grant's directory goes: the rename of a directory onto it is refused.
 	if err := os.WriteFile(filepath.Join(root, "grant-one"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + base}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	_, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 	if err == nil {
 		t.Fatal("prepareAirlock put its directory in place over a file")
 	}
-	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", "rename: not a directory"}, secret)
+	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, "grant-one") + ": not a directory"}, secrets...)
 
 	t.Run("control: nothing in the way", func(t *testing.T) {
 		if err := os.Remove(filepath.Join(root, "grant-one")); err != nil {
 			t.Fatal(err)
 		}
-		files, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + base}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+		files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 		if err != nil {
 			t.Fatalf("prepareAirlock: %v", err)
 		}
-		if _, err := os.Stat(files.wgetrc); err != nil {
-			t.Fatalf("the wgetrc: %v", err)
+		if data, err := os.ReadFile(files.wgetrc); err != nil || !strings.Contains(string(data), "http_password") {
+			t.Fatalf("the grant's wgetrc: %v; want it to carry the inherited lines", err)
 		}
 	})
 }

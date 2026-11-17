@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -271,6 +272,11 @@ func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {
 					texts[enrollmentErrorFile] = string(recorded)
 				}
 				for what, text := range texts {
+					// No decoder error of these answers can quote the address: both answers are
+					// decoded into string fields alone, and encoding/json's error for them names
+					// the JSON kind and the struct field (UnmarshalTypeError) or one character
+					// (SyntaxError). So this check guards how the rest of the line names the broker
+					// (podRefusal, refusalText), and the Words checks below guard the decoder's words.
 					if strings.Contains(text, "hunter2pw-broker-2c6d") || strings.Contains(text, "tokuser9f3") {
 						t.Errorf("%s %q holds the address's credential", what, text)
 					}
@@ -285,5 +291,105 @@ func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestARefusalThatCannotBeRecordedNamesTheDirectoryByItsFlag: beside an earlier run's key.pem,
+// enroll --pod records each refusal in enrollment.error too, and when that record cannot be
+// written the line saying so names the directory by --out and the system's reason, never the
+// directory's path. A directory that takes the record holds the refusal, with no such line: the
+// control.
+func TestARefusalThatCannotBeRecordedNamesTheDirectoryByItsFlag(t *testing.T) {
+	const secret = "hunter2pw-recorddir-5c2a71"
+	for _, blocked := range []bool{true, false} {
+		name := "a directory where the record goes"
+		if !blocked {
+			name = "control: a directory that takes the record"
+		}
+		t.Run(name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), secret)
+			// A key from an earlier run, so that a refusal is recorded in enrollment.error too.
+			if _, err := enrollSessionKey(out); err != nil {
+				t.Fatal(err)
+			}
+			if blocked {
+				if err := os.Mkdir(filepath.Join(out, enrollmentErrorFile), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			broker, calls := servePodBroker(t, "never-reached")
+			t.Setenv("AGENT_SECRETS_URL", broker.URL)
+			missing := filepath.Join(t.TempDir(), "no-token-here")
+			var stdout, stderr bytes.Buffer
+			if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", missing, "--out", out}, &stdout, &stderr); code != 1 {
+				t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
+			}
+			if n := len(calls()); n != 0 {
+				t.Fatalf("the broker was asked %d times, want none", n)
+			}
+			if blocked {
+				// os.Rename refuses a directory where the file goes as EEXIST.
+				wantNamedNotPrinted(t, "stderr", stderr.String(), []string{"record that refusal in " + enrollmentErrorFile + " in " + outDir, "rename: file exists"}, secret)
+				return
+			}
+			recorded, err := os.ReadFile(filepath.Join(out, enrollmentErrorFile))
+			if err != nil || !strings.Contains(string(recorded), "--pod-token-file") || strings.Contains(stderr.String(), "record that refusal") {
+				t.Errorf("%s = %q (%v), stderr %q; want the refusal recorded and no line about recording it", enrollmentErrorFile, recorded, err, stderr.String())
+			}
+		})
+	}
+}
+
+// TestAnEarlierRefusalThatCannotBeRemovedNamesTheDirectoryByItsFlag: once enroll --pod has
+// written the enrollment id it removes an earlier run's enrollment.error, and when that removal
+// fails the line saying so names the directory by --out and the system's reason, never the
+// directory's path. An earlier refusal that can be removed is removed, with no such line: the
+// control.
+func TestAnEarlierRefusalThatCannotBeRemovedNamesTheDirectoryByItsFlag(t *testing.T) {
+	const secret = "hunter2pw-removedir-8e6b14"
+	for _, blocked := range []bool{true, false} {
+		name := "a directory that is not empty where the earlier refusal is"
+		if !blocked {
+			name = "control: an earlier refusal that can be removed"
+		}
+		t.Run(name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), secret)
+			earlier := filepath.Join(out, enrollmentErrorFile)
+			if blocked {
+				// os.Remove refuses a directory that is not empty.
+				if err := os.MkdirAll(filepath.Join(earlier, "inside"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(out, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(earlier, []byte("an earlier refusal\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
+			broker, _ := servePodBroker(t, "enrollment-of-the-pod")
+			t.Setenv("AGENT_SECRETS_URL", broker.URL)
+			var stdout, stderr bytes.Buffer
+			if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", out}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit %d, want 0 (stderr %q)", code, stderr.String())
+			}
+			// The renewal command a successful enrolment prints names the directory by its path on
+			// purpose (enrolPod), so only the removal's own line is read.
+			removal := ""
+			for _, line := range strings.Split(stderr.String(), "\n") {
+				if strings.Contains(line, "remove the earlier refusal") {
+					removal = line
+				}
+			}
+			if blocked {
+				wantNamedNotPrinted(t, "the removal's line", removal, []string{"remove the earlier refusal in " + enrollmentErrorFile + " in " + outDir, "remove: directory not empty"}, secret)
+				return
+			}
+			if _, err := os.Stat(earlier); !errors.Is(err, os.ErrNotExist) || removal != "" {
+				t.Errorf("the earlier refusal after the enrolment: %v, stderr %q; want it removed and no line about removing it", err, stderr.String())
+			}
+		})
 	}
 }

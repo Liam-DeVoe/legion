@@ -9,7 +9,8 @@
 // An error of a request built from that URL (Error, Cause) prints text of its own only beside a
 // clean URL and a request URL Call prints, and only where that text is a transport failure's, text
 // the allow-list passes, or the broker's own OAuth words. Those words are trusted, not checked, so
-// whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) with a
+// whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) of the
+// broker's own (BrokerAnswer: never one that Class or Masked holds, another server's) with a
 // nonempty error code and an empty error_uri prints its error code and error_description whole,
 // as the broker wrote them, since they are the reason for a refusal a person acts on. No other
 // field of an OAuth answer ever prints: an answer that carries an error_uri, or one with no error
@@ -272,16 +273,18 @@ func transport(err error) bool {
 }
 
 // trustedAnswer reports whether err is an OAuth error answer whose text is the broker's error code
-// and error_description alone: an *oauth2.RetrieveError with a nonempty ErrorCode and an empty
-// ErrorURI. printable asks only beside a clean base and a request URL Call prints, and there those
-// two fields print whole, trusted rather than checked, since they are the broker's reason for a
-// refusal and the only part a person can act on. Any other OAuth answer is not one, so it prints
-// as its class alone ("the broker answered HTTP <n>"): an error_uri is a URL by RFC 6749, which
-// may carry a credential or point anywhere, and for an answer with no error code x/oauth2's text
-// is the response body it kept, up to 1 MiB with its line breaks, which can forge a log line.
+// and error_description alone: an *oauth2.RetrieveError of the broker's own (BrokerAnswer) with a
+// nonempty ErrorCode and an empty ErrorURI. printable asks only beside a clean base and a request
+// URL Call prints, and there those two fields print whole, trusted rather than checked, since they
+// are the broker's reason for a refusal and the only part a person can act on. An answer that
+// Class or Masked holds is another server's and buys the text around it no such trust. Any other
+// OAuth answer is not one, so it prints as its class alone ("the broker answered HTTP <n>"): an
+// error_uri is a URL by RFC 6749, which may carry a credential or point anywhere, and for an
+// answer with no error code x/oauth2's text is the response body it kept, up to 1 MiB with its
+// line breaks, which can forge a log line.
 func trustedAnswer(err error) bool {
-	var re *oauth2.RetrieveError
-	return errors.As(err, &re) && re.ErrorCode != "" && re.ErrorURI == ""
+	re, ok := BrokerAnswer(err)
+	return ok && re.ErrorCode != "" && re.ErrorURI == ""
 }
 
 // classified is an error whose text is its class alone.

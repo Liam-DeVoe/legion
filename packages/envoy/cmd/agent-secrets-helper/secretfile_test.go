@@ -97,6 +97,33 @@ func TestClaimMachineFileNamesTheSettingNeverThePath(t *testing.T) {
 	again.Close()
 }
 
+// TestAMachineFileLockThatCannotBeOpenedNamesTheSetting: the lock beside the machine file is opened
+// at the machine file's own path with ".lock" after it, so when it cannot be opened the refusal
+// names AGENT_SECRETS_MACHINE_FILE and the system's reason, never the path. With the way clear the
+// same path is claimed: the control.
+func TestAMachineFileLockThatCannotBeOpenedNamesTheSetting(t *testing.T) {
+	const secret = "hunter2pw-lock-R4m8"
+	path := filepath.Join(t.TempDir(), secret, "machine.json")
+	// A directory where the lock goes, which no open for writing takes.
+	if err := os.MkdirAll(path+".lock", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := claimMachineFile(path)
+	if err == nil {
+		t.Fatal("a claim whose lock is a directory = nil")
+	}
+	wantNamedNotPrinted(t, "the lock's refusal", err.Error(), []string{"open the lock beside", "AGENT_SECRETS_MACHINE_FILE", "open: is a directory"}, secret)
+
+	if err := os.Remove(path + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := claimMachineFile(path)
+	if err != nil {
+		t.Fatalf("a claim with the way clear: %v", err)
+	}
+	claim.Close()
+}
+
 // TestTheIdentityKeyLogLineNamesNoPath: the line the helper logs about the identity key it
 // trades with, and the refusal of one others can read, name the key by where it lives under
 // HOME, never by its path; the line still carries the key's public thumbprint.

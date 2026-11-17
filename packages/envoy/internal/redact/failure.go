@@ -43,6 +43,31 @@ func Masked(err error, text string) error {
 	return &classified{text, err}
 }
 
+// BrokerAnswer is the OAuth error answer (*oauth2.RetrieveError) err holds as the broker's own: the
+// first one Unwrap reaches, as errors.As walks err's tree, on no branch through an error Class,
+// Masked, Error or Cause made. Those hold another server's answer, or one whose text they have
+// already withheld, and keep it reachable so errors.As still classifies the failure; a printer
+// that took that answer's words for the broker's would print the very text they withheld. A
+// printer of the broker's own refusals - its code and its error_description, which print whole
+// (trustedAnswer) - reads the answer through this function, never through errors.As.
+func BrokerAnswer(err error) (*oauth2.RetrieveError, bool) {
+	switch e := err.(type) {
+	case nil, *classified:
+		return nil, false
+	case *oauth2.RetrieveError:
+		return e, true
+	case interface{ Unwrap() error }:
+		return BrokerAnswer(e.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, branch := range e.Unwrap() {
+			if re, ok := BrokerAnswer(branch); ok {
+				return re, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // Answered is a server's refusal, an HTTP status with the body it came with, as a message may
 // print it: "the server answered HTTP <status>", followed by the answer's error code where body
 // names a registered one (answerCodes) as an OAuth error (`{"error":"invalid_grant"}`) or as a

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -69,10 +70,14 @@ type SignIn struct {
 // which is a refusal of its own: a person cannot sign in there with no browser.
 //
 // go-oidc's own error quotes the issuer, the issuer the document names and the body of an answer
-// that is not a success, so none of its text prints: a document the issuer did not serve prints
-// as the status of the last request (redact.Answered, through redact.Masked, so the error still
-// unwraps to go-oidc's), one that does not read as this issuer's as fixed text, and a request
-// that failed as its class (redact.Class). A redirect whose target fails is that failure.
+// that is not a success, so none of its text prints. An answer whose body the client could not
+// read whole - a connection cut, a deadline passing in the middle of it - prints as that read
+// failure's class (redact.Class), whatever its status; go-oidc quotes that failure without
+// wrapping it, so it is joined to go-oidc's error and both stay in the chain. A document the
+// issuer did not serve prints as the status of the last request (redact.Answered, through
+// redact.Masked, so the error still unwraps to go-oidc's), a 2xx answer read whole that does not
+// read as this issuer's document as fixed text, and a request that failed as its class. A
+// redirect whose target fails is that failure.
 func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -81,7 +86,10 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	}
 	answered := &statusOf{}
 	provider, err := gooidc.NewProvider(withStatusOf(d.context(ctx), answered), d.Issuer)
+	readErr := answered.readErr()
 	switch {
+	case err != nil && readErr != nil:
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(errors.Join(err, readErr), redact.Class(readErr).Error()))
 	case err != nil && answered.status/100 > 2:
 		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(err, redact.Answered(answered.status, nil)))
 	case err != nil && answered.status != 0:
@@ -116,8 +124,9 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 // withStatusOf is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests
 // with - the one ctx carries (oauth2.HTTPClient), else http.DefaultClient, as every other call
 // of a DeviceFlow resolves it - timeout and all, with its transport wrapped so answered records
-// the status of each answer it carries. A library whose error quotes an answer's body is
-// printed by that status (redact.Answered) instead.
+// the status of each answer it carries and how a read of its body failed. A library whose error
+// quotes an answer's body is printed by that status (redact.Answered), or by that read failure's
+// class, instead.
 func withStatusOf(ctx context.Context, answered *statusOf) context.Context {
 	wrapped := *oauth2.NewClient(ctx, nil)
 	answered.base = wrapped.Transport
@@ -128,22 +137,49 @@ func withStatusOf(ctx context.Context, answered *statusOf) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
 }
 
-// statusOf is a transport that records the status of the last request it carried, which is all a
+// statusOf is a transport that records what became of the last request it carried, which is all a
 // refusal may say of an answer whose library error quotes its body: the answer's status, or 0
-// where the request got no answer, so a redirect whose target fails is not read as the redirect.
-// One call at a time uses it.
+// where the request got no answer, so a redirect whose target fails is not read as the redirect;
+// and its body, which records how a read of it failed (readErr), so an answer the client could
+// not read whole is not read as a document it read and refused. One call at a time uses it.
 type statusOf struct {
 	base   http.RoundTripper
 	status int
+	body   *readOf
 }
 
 func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := s.base.RoundTrip(request)
-	s.status = 0
+	s.status, s.body = 0, nil
 	if err == nil {
 		s.status = response.StatusCode
+		s.body = &readOf{ReadCloser: response.Body}
+		response.Body = s.body
 	}
 	return response, err
+}
+
+// readErr is the first error other than io.EOF a read of the last answer's body ended in, and nil
+// where that body read whole, or so far, or there was no answer.
+func (s *statusOf) readErr() error {
+	if s.body == nil {
+		return nil
+	}
+	return s.body.err
+}
+
+// readOf is an answer's body that keeps the first error other than io.EOF a read of it ends in.
+type readOf struct {
+	io.ReadCloser
+	err error
+}
+
+func (r *readOf) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && r.err == nil {
+		r.err = err
+	}
+	return n, err
 }
 
 // Start asks the issuer for a device code and a user code: what the person types in, and where.

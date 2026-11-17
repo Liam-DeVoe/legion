@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -350,6 +351,128 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 	}
 }
 
+// TestADiscoveryWhoseBodyFailsPrintsTheReadFailure: a discovery answer whose status is 200 but
+// whose body the client could not read whole - the connection cut half way, a deadline passing
+// in the middle of it - prints as the read failure's class beside the issuer's setting, and
+// unwraps to that failure, never as a document that names another issuer, which would send the
+// reader after a mismatch that is not there. Nothing of the half-read body prints. A 200 whose
+// whole document names another issuer still prints as that mismatch: the control.
+func TestADiscoveryWhoseBodyFailsPrintsTheReadFailure(t *testing.T) {
+	const mismatch = "names another issuer or is not one"
+	half := `{"issuer":"echo of ` + printedSecret + `","device_authorization_endpoint":`
+	cut := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		conn, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack the discovery's connection: %v", err)
+			return
+		}
+		defer conn.Close()
+		buffered.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n" + half)
+		buffered.Flush()
+	})
+	_, err := exampleFlow(cut).Start(context.Background())
+	if err == nil {
+		t.Fatal("Start read a discovery document whose connection was cut")
+	}
+	holdsNoSecret(t, "the cut discovery", err.Error())
+	namesAll(t, "the cut discovery", err.Error(), SignInIssuerVar, "the request failed")
+	if strings.Contains(err.Error(), mismatch) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("the cut discovery = %q (errors.Is ErrUnexpectedEOF: %t), want the cut read it ended in", err, errors.Is(err, io.ErrUnexpectedEOF))
+	}
+
+	stalled := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(half))
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = exampleFlow(stalled).Start(ctx)
+	if err == nil {
+		t.Fatal("Start read a discovery document whose deadline passed in the middle of its body")
+	}
+	holdsNoSecret(t, "the stalled discovery", err.Error())
+	namesAll(t, "the stalled discovery", err.Error(), SignInIssuerVar, "timed out")
+	if strings.Contains(err.Error(), mismatch) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the stalled discovery = %q (errors.Is DeadlineExceeded: %t), want the deadline it ended in", err, errors.Is(err, context.DeadlineExceeded))
+	}
+
+	another := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"issuer":"https://another-issuer.example"}`))
+	})
+	_, err = exampleFlow(another).Start(context.Background())
+	if err == nil {
+		t.Fatal("Start read a discovery document that names another issuer")
+	}
+	namesAll(t, "the other issuer's discovery", err.Error(), SignInIssuerVar, mismatch)
+}
+
+// TestAnIssuerWhoseEndpointsRefuseTheConnectionPrintsTheClass: Start, Wait and Refresh each send
+// a request past discovery, to the device or the token endpoint the issuer's document names, and
+// when that endpoint refuses the connection each prints the refusal's class beside the issuer's
+// setting, and unwraps to it. Nothing prints of the endpoint's URL, which the document can fill
+// with a user name, a password and a query, nor of an issuer that carries a credential. A plain
+// issuer prints whole: the control.
+func TestAnIssuerWhoseEndpointsRefuseTheConnectionPrintsTheClass(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := listener.Addr().String()
+	listener.Close()
+	endpoint := "http://tokuser9f3:" + printedSecret + "@" + closed
+	// The document names as its issuer the one the request asked for, user name and password
+	// included, as an issuer that echoes its caller would.
+	issuer := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		asked := "http://" + r.Host
+		if user, pass, ok := r.BasicAuth(); ok {
+			asked = "http://" + user + ":" + pass + "@" + r.Host
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                        asked,
+			"device_authorization_endpoint": endpoint + "/device?token=" + printedSecret,
+			"token_endpoint":                endpoint + "/token?token=" + printedSecret,
+			"authorization_endpoint":        endpoint + "/auth",
+			"jwks_uri":                      endpoint + "/jwks",
+		})
+	})
+	host := strings.TrimPrefix(issuer, "http://")
+	for _, row := range []struct {
+		name, issuer string
+		named        []string
+	}{
+		{"an issuer that carries a credential", "http://tokuser9f3:" + printedSecret + "@" + host, nil},
+		{"control: a plain issuer", issuer, []string{"(" + SignInIssuerVar + " names " + issuer + ")"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			flow := exampleFlow(row.issuer)
+			ctx := context.Background()
+			_, startErr := flow.Start(ctx)
+			_, waitErr := flow.Wait(ctx, &oauth2.DeviceAuthResponse{DeviceCode: "a-device-code", Interval: 1})
+			_, refreshErr := flow.Refresh(ctx, "a-refresh-token")
+			for name, err := range map[string]error{"Start": startErr, "Wait": waitErr, "Refresh": refreshErr} {
+				if err == nil {
+					t.Errorf("%s reached an endpoint that refuses the connection", name)
+					continue
+				}
+				holdsNoSecret(t, name+"'s error", err.Error())
+				namesAll(t, name+"'s error", err.Error(), append([]string{SignInIssuerVar, "connection refused"}, row.named...)...)
+				if !errors.Is(err, syscall.ECONNREFUSED) {
+					t.Errorf("%s's error = %q, want it to unwrap to the refused connection", name, err)
+				}
+			}
+		})
+	}
+}
+
 // roundTripFunc is a transport that answers every request with f.
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -373,6 +496,11 @@ func TestAnIdentityTokenThatDoesNotParseIsNotQuoted(t *testing.T) {
 				t.Errorf("PersonOf's error = %q, which quotes the token's claims", err)
 			}
 		}
+	}
+	// Control: a token that parses names the person its email claim does, in lower case.
+	good := segment(`{"alg":"RS256"}`) + "." + segment(`{"email":"Ada@Example.com"}`) + ".c2ln"
+	if person, err := PersonOf(good); err != nil || person != "ada@example.com" {
+		t.Errorf("PersonOf(a token that parses) = %q, %v; want ada@example.com", person, err)
 	}
 }
 
@@ -403,18 +531,83 @@ func TestTheSignInStorePrintsItsSettingAndNeverItsPathOrContent(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, content := range []string{
-		`{"person":"ada@example.com","refresh_token":"` + printedSecret + `","box_key":"k","signed_in_at":"` + printedSecret + `"}`,
-		`{"person":"ada@example.com","refresh_token":` + printedSecret + `}`,
-		`{"person":"ada@example.com"}`,
+	good, err := json.Marshal(signedIn(t, "ada@example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		content string
+		reads   bool
+	}{
+		{`{"person":"ada@example.com","refresh_token":"` + printedSecret + `","box_key":"k","signed_in_at":"` + printedSecret + `"}`, false},
+		{`{"person":"ada@example.com","refresh_token":` + printedSecret + `}`, false},
+		{`{"person":"ada@example.com"}`, false},
+		// Control: the record `agent-secrets login` keeps is read.
+		{string(good), true},
 	} {
-		if err := os.WriteFile(filepath.Join(dir, "record.json"), []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "record.json"), []byte(row.content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := (SignInStore{Dir: dir}).List(); err == nil {
-			t.Errorf("List read a record that is not one: %s", content)
-		} else {
+		records, err := (SignInStore{Dir: dir}).List()
+		switch {
+		case row.reads:
+			if err != nil || len(records) != 1 || records[0].Person != "ada@example.com" {
+				t.Errorf("List = %v, %v; want the one record a sign-in keeps", records, err)
+			}
+		case err == nil:
+			t.Errorf("List read a record that is not one: %s", row.content)
+		default:
 			holdsNoSecret(t, "the bad record's error", err.Error())
+			namesAll(t, "the bad record's error", err.Error(), SignInDirVar)
 		}
 	}
+}
+
+// TestASignInStoreWriteThatFailsPastItsDirectoryNamesItsSetting: Write makes the store's
+// directory, holds it to this user, and puts the record in place, and a failure of either of the
+// last two - a directory whose mode nobody may change, a directory standing where the record's
+// file goes - names AGENT_SECRETS_SIGNIN_DIR and the system's reason, never the directory's path.
+// With the way clear the same store keeps the record and List reads it: the control.
+func TestASignInStoreWriteThatFailsPastItsDirectoryNamesItsSetting(t *testing.T) {
+	ada := signedIn(t, "ada@example.com")
+	t.Run("a directory whose mode cannot change", func(t *testing.T) {
+		// A process's /proc directory: Linux refuses every chmod of it, root's included, so the
+		// probe changes no mode on the machine whoever runs it.
+		if info, err := os.Stat("/proc/self"); err != nil || !info.IsDir() {
+			t.Skip("no /proc/self directory, so nothing here refuses a chmod to every user")
+		}
+		link := filepath.Join(t.TempDir(), printedSecret)
+		if err := os.Symlink("/proc/self", link); err != nil {
+			t.Fatal(err)
+		}
+		err := SignInStore{Dir: link}.Write(ada)
+		if err == nil {
+			t.Fatal("Write held a directory whose mode cannot change to this user")
+		}
+		holdsNoSecret(t, "the refused chmod", err.Error())
+		namesAll(t, "the refused chmod", err.Error(), SignInDirVar, "chmod: operation not permitted")
+	})
+	t.Run("a directory where the record goes", func(t *testing.T) {
+		store := SignInStore{Dir: filepath.Join(t.TempDir(), printedSecret, "signins")}
+		if err := os.MkdirAll(store.Path(ada.Person), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		err := store.Write(ada)
+		if err == nil {
+			t.Fatal("Write put a record in place over a directory")
+		}
+		// os.Rename refuses a directory where the file goes as EEXIST, on every Unix alike.
+		holdsNoSecret(t, "the refused rename", err.Error())
+		namesAll(t, "the refused rename", err.Error(), SignInDirVar, "rename: file exists")
+
+		if err := os.Remove(store.Path(ada.Person)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Write(ada); err != nil {
+			t.Fatalf("Write with the way clear: %v", err)
+		}
+		if records, err := store.List(); err != nil || len(records) != 1 || records[0].Person != ada.Person {
+			t.Fatalf("List = %v, %v; want the record Write kept", records, err)
+		}
+	})
 }

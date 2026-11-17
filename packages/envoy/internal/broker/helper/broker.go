@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -383,11 +384,13 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // credential, which the broker or anyone answering for it can repeat back - stays as it printed
 // it, the failure's class and status: the code and description under it are the very text it
 // withheld, and a BrokerError made of them would print them all the same. The redactor printed
-// err whole exactly when it answers err itself, which is what its own contract says it does.
+// err whole exactly when it answers err itself, which is what its own contract says it does. The
+// answer is read as the broker's own (redact.BrokerAnswer), never through errors.As: an answer
+// that redact.Class or redact.Masked holds is another server's, whose words they withheld.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
-	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) || shown != err {
+	re, ok := redact.BrokerAnswer(err)
+	if !ok || shown != err {
 		return shown
 	}
 	be := &BrokerError{Code: re.ErrorCode, Message: re.ErrorDescription}
