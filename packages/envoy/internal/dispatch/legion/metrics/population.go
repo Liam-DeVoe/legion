@@ -9,8 +9,9 @@
 // Two disciplines run through it:
 //
 //   - The daemon's state is read loosely. What Dispatch holds of it is legion_observations, whose
-//     fields are legion/state.go's; a field a daemon does not send is a field this package has no
-//     observation of, never an assumption. An issue's tree comes from the daemon's own `tree`
+//     fields are legion/state.go's; a field a daemon never sent is a field this package has no
+//     observation of, never an assumption, and one it stopped sending has a `null` observation
+//     from the read that no longer carried it. An issue's tree comes from the daemon's own `tree`
 //     where a read carried one (dispatch://INFRA-980 adds it) and from the parent chain
 //     otherwise, so nothing here takes a slot holder for a root.
 //   - The precedence of the phase-time segments lives in exactly one ordered list, segments.go's

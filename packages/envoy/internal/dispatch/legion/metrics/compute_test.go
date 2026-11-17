@@ -1157,7 +1157,7 @@ func TestChildrenPerRootCountsEveryIssueOfTheTreeUnderItsRoot(t *testing.T) {
 // TestTheSplittingTableNamesAFilerByThePhaseWordsOfTables: "Every table names a phase by the bar
 // it falls on: design, planning, implementing, testing, reviewing, accepting, retro, merging (for
 // `merging` and `awaiting_merge`). So splitting and follow-ups names a filer in `awaiting_merge`
-// as merging" (spec version 48, "Phase words in tables"). Retro is on the implementer's bar and
+// as merging" (the spec's "Phase words in tables"). Retro is on the implementer's bar and
 // keeps its own word, and both phases of the merger's bar are named merging.
 func TestTheSplittingTableNamesAFilerByThePhaseWordsOfTables(t *testing.T) {
 	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(20)).
