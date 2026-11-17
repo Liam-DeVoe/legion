@@ -107,24 +107,17 @@ func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
 		if dismissed := dismissRows(t, handler, database, "alice", inboxDismissReplyPrefix+root.ID); dismissed != 1 {
 			t.Fatalf("dismissed = %d, want alice's thread", dismissed)
 		}
-		at := threadDismissal(t, database, "alice", root.ID)
-		if at == nil {
+		if at := threadDismissal(t, database, "alice", root.ID); at == nil {
 			t.Fatalf("alice's row carries no dismissal after her dismiss")
 		}
-		// The dismissal's tuple from the person, as the dismiss route states it once read state is
-		// tuples (dispatch://INFRA-1152 R6): the reply below retracts it.
+		// The dismissal's tuple from the person, which the dismiss route states under the event it
+		// appends (dispatch://INFRA-1152 R6): the reply below retracts it.
+		dismissEvent := newestEventOf(t, database, "user_thread_state.updated", "alice")
 		thread := "comment:" + root.ID
-		writeInTx(t, database, func(tx pgx.Tx) error {
-			return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
-				FromKind: graphstore.KindPerson, FromID: "alice", Kind: graphstore.TupleDismissed,
-				ToKind: graphstore.KindComment, ToID: root.ID,
-				At: *at, Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
-			}})
-		})
 		carol := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One more.", "reply_to": root.ID}, "carol")
 		carolEvent := writeEventOf(t, database, "comment.created", carol.ID)
 		requireRelationTuples(t, database, graphstore.TupleDismissed, thread,
-			fmt.Sprintf("person:alice > %s @0", thread),
+			fmt.Sprintf("person:alice > %s @%d", thread, dismissEvent),
 			fmt.Sprintf("person:alice > %s @%d retracted", thread, carolEvent))
 		if at := threadDismissal(t, database, "alice", root.ID); at != nil {
 			t.Errorf("alice's row still carries the dismissal %s after carol wrote in the thread", at)
@@ -310,6 +303,19 @@ func writeEventOf(t *testing.T, database *store.Store, eventType, id string) int
 		select coalesce(max(id), 0) from events where type = $1 and payload->>'id' = $2
 	`, eventType, id).Scan(&event); err != nil || event == 0 {
 		t.Fatalf("read the %s of %s: event %d, %v", eventType, id, event, err)
+	}
+	return event
+}
+
+// newestEventOf is the newest event of eventType whose payload names login, the event a write of
+// that person's own read state appended.
+func newestEventOf(t *testing.T, database *store.Store, eventType, login string) int64 {
+	t.Helper()
+	var event int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(id), 0) from events where type = $1 and payload->>'login' = $2
+	`, eventType, login).Scan(&event); err != nil || event == 0 {
+		t.Fatalf("read the %s of %s: event %d, %v", eventType, login, event, err)
 	}
 	return event
 }

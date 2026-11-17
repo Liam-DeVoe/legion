@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -735,6 +736,12 @@ type threadReadInput struct {
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
 // writes nothing.
 //
+// A mark that moved is a tuple from the caller's person node too (dispatch://INFRA-1152 R6):
+// read_through to the thread's root at the moment the row now holds, appended through
+// graphstore.FromPerson under the event the move appends, after it, so the tuple is caused by the
+// write that made it. The row keeps the login and the marker it holds: user_threads' marker is the
+// one writer of a thread's and the backfill's (inboxwrite.Record, migration 20261116160000).
+//
 // This transaction takes the Inbox's read-mark lock order over its one thread: the thread's
 // owner row `for share`, then the caller's user_threads row, then the project its event names.
 // Which locks that order rules out, and why the Inbox's Mark all read has to take the same one,
@@ -794,25 +801,35 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// read_through is cast by Postgres from the caller's own text rather than bound as a parsed
 	// time: an answer's time carries nanoseconds, which the trigger's cast of the answer rounds to
 	// the microsecond while pgx truncates a bound time, so a mark through the answer's own time
-	// would otherwise fall a microsecond short of the answer and leave the thread unread.
-	moved, err := tx.Exec(r.Context(), `
+	// would otherwise fall a microsecond short of the answer and leave the thread unread. The row
+	// answers the mark it now holds and its root's kind, which the mark's tuple states.
+	var kind, root string
+	var readThrough time.Time
+	err = tx.QueryRow(r.Context(), `
 		update user_threads set read_through = least($3::text::timestamptz, now())
 		where login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())
-	`, login, threadID, *input.ReadThrough)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+		returning kind, thread_id::text, read_through
+	`, login, threadID, *input.ReadThrough).Scan(&kind, &root, &readThrough)
 	// A revisit that moves nothing announces nothing: the thread on screen marks itself on every
 	// visit, and each event would refetch the count in every tab the viewer has open.
-	if moved.RowsAffected() == 0 {
+	if errors.Is(err, pgx.ErrNoRows) {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.FromPerson(r.Context(), tx, event.CreatedAt, []graphstore.Tuple{
+		personMark(actor, graphstore.TupleReadThrough, kind, root, readThrough, true, event.ID),
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

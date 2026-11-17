@@ -716,8 +716,11 @@ var indexPasses = map[string]string{
 	// row and its issue's and project's) - and appends the participation and the deliveries of that
 	// one write, through graphstore.ToPerson. An answer's catch-up reads its ask's own row and refs
 	// rows while their markers are null, which is the marker test passing. It reads no marked
-	// row's columns to decide what to write, so it mends nothing and is no repair.
-	"inboxwrite/record.go#Record": "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples and the rows of the thread the marker test passes",
+	// row's columns to decide what to write, so it mends nothing and is no repair. The read mark
+	// its writer's own row stands at once its upsert ran is that write's own result, which it
+	// states as the writer's read_through (graphstore.FromPerson), as a route states the mark its
+	// statement stored.
+	"inboxwrite/record.go#Record": "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, and the read mark its own upsert left its writer's row at",
 	// The move of the person open asks wait on (dispatch://INFRA-1152 R2): it locks the asks the
 	// write that changed who they wait on may have moved, and reads of each who it waits on now and,
 	// in the store, whom its delivery stands to - whether each such person's delivery and
@@ -726,6 +729,15 @@ var indexPasses = map[string]string{
 	// graphstore.ToPerson. It reads the store to state what the store holds next, never a
 	// projection to mend it, so it is no repair.
 	"inboxwrite/waiting.go#MoveWaiting": "the asks its caller's write may have moved, who each waits on, and the tuples of whom its delivery stands to",
+	// The routes that write a person's read state (dispatch://INFRA-1152 R6): each states, through
+	// graphstore.FromPerson and under the event it appends, the marks its own statement stored, read
+	// back from that statement - the rows it moved and the moment each now holds - so each tuple is
+	// the request's own write, never a projection read to mend the store.
+	"api/replies.go#putThreadRead":           "the read mark the request carries and the row its own update moved",
+	"api/inbox_read.go#commitInboxMarks":     "the marks its route's own statements stored and the events it appends for them",
+	"api/state.go#putUserAgentState":         "the Clear, the read mark and the replies the request carries, as its own statements stored them",
+	"api/ask_snooze.go#announceAskSnooze":    "the snooze or the unsnooze its route's own statement stored and the event it appends",
+	"api/artifact_removal.go#removeArtifact": "the removal request and the Inbox rows its own delete removed",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the
@@ -738,7 +750,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|AttemptOpened|Attempted|ToPerson|EraseNode|FillScopes)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|AttemptOpened|Attempted|ToPerson|FromPerson|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

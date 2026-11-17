@@ -27,20 +27,21 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same twelve docs' register of the tree's passes scans for
+// package goes through, the same thirteen docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
 // author, a reached session and a session an ask names, AttemptOpened and Attempted, which write a
 // delivery attempt's node before its row and state what its row holds after each write of it,
 // ToPerson, the one writer of a delivered_to, a mentions or a participates_in that names a person,
-// EraseNode, the erase's delete of a node and its tuples, and FillScopes, the backfill's fill of
-// the project of a node stored with none. Each is a function of the package, never a method, so a
-// call of one is named by the package and found here wherever it is made. A write that holds a
-// statement of its own instead is found by rawStoreWrite, and none outside this package may hold
-// one.
+// FromPerson, the one writer of a mark from a person (read_through, dismissed, cleared, reply_read
+// and snoozed), EraseNode, the erase's delete of a node and its tuples, and FillScopes, the
+// backfill's fill of the project of a node stored with none. Each is a function of the package,
+// never a method, so a call of one is named by the package and found here wherever it is made. A
+// write that holds a statement of its own instead is found by rawStoreWrite, and none outside this
+// package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "AttemptOpened", "Attempted", "ToPerson", "EraseNode", "FillScopes"}
+	"Authored", "Reached", "SessionRecorded", "AttemptOpened", "Attempted", "ToPerson", "FromPerson", "EraseNode", "FillScopes"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -244,6 +245,21 @@ var storeWriteCallSites = []string{
 	// writes the person nodes `do nothing` before the tuples, in ascending (kind, id). api's
 	// TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder holds the three moves to those steps.
 	"inboxwrite/waiting.go#MoveWaiting",
+	// The writes of a person's read state (dispatch://INFRA-1152 R6): each route that writes one
+	// of the read-state tables appends, through FromPerson and under the event it appends after
+	// its statement, the mark that statement stored - a thread read, Mark all read and the
+	// dismissal (whose transactions end in commitInboxMarks), a conversation's Clear, read mark
+	// and replies read by id, a snooze and an unsnooze, and the removal of an untouched document,
+	// which retracts the marks of the Inbox rows it deletes. Each takes the lock order written on
+	// api/inbox_read.go's markInboxReadThreads as it did, and the one statement FromPerson adds
+	// comes after its event and every row it locks: it writes the person's node `do nothing` and
+	// appends tuples, which lock no row of another table. api's
+	// TestEveryReadStateWriteIsATupleFromThePerson reads what each of them states.
+	"api/artifact_removal.go#removeArtifact",
+	"api/ask_snooze.go#announceAskSnooze",
+	"api/inbox_read.go#commitInboxMarks",
+	"api/replies.go#putThreadRead",
+	"api/state.go#putUserAgentState",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

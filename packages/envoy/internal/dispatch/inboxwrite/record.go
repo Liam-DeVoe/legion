@@ -173,10 +173,12 @@ func (w Write) keptLogin() (string, bool) {
 //     reply under a direct conversation, the one to the person who started it (w.Starter);
 //  4. for a reply, the move of each row of T a person of that set but A holds: replied_at,
 //     last_reply_id, version + 1 and dismissed_at cleared, and, for each person of that set but A
-//     whose dismissed tuple into T stands, the retraction of that tuple;
+//     whose dismissed tuple into T stands, the retraction of that tuple (graphstore.FromPerson);
 //  5. A's own row, where A is a person and T's owner resolves to a project: its read mark moves to
 //     the write, and a row this write begins records marked_version 0 and marked_seq at the log
-//     position of this moment (migration 20261116160000).
+//     position of this moment (migration 20261116160000); then, through graphstore.FromPerson,
+//     A's read_through to T at the moment that row's read mark stands at once the upsert ran, as
+//     every writer of a read mark states it (dispatch://INFRA-1152 R6).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
 // dismissals: the root `for key share`, then the delete of every user_agent_thread_dismissed row
@@ -255,7 +257,7 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 				return err
 			}
 			if len(cleared) > 0 {
-				if err := graphstore.Write(ctx, tx, nil, dismissalsEnded(cleared, thread, w, event)); err != nil {
+				if err := graphstore.FromPerson(ctx, tx, w.At, dismissalsEnded(cleared, thread, w, event)); err != nil {
 					return fmt.Errorf("retract the dismissals of message %s: %w", thread.id, err)
 				}
 			}
@@ -303,7 +305,7 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 
 		// 4. Each row of T those people hold moves, and each of their dismissals of T ends.
 		if len(dismissed) > 0 {
-			if err := graphstore.Write(ctx, tx, nil, dismissalsEnded(dismissed, thread, w, event)); err != nil {
+			if err := graphstore.FromPerson(ctx, tx, w.At, dismissalsEnded(dismissed, thread, w, event)); err != nil {
 				return fmt.Errorf("retract the dismissals of %s/%s: %w", thread.kind, thread.id, err)
 			}
 		}
@@ -312,10 +314,18 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		}
 	}
 
-	// 5. A's own row.
+	// 5. A's own row, and the read mark it stands at.
 	if login, keeps := w.keptLogin(); keeps {
-		if err := keepRow(ctx, tx, thread, w, login); err != nil {
+		readThrough, err := keepRow(ctx, tx, thread, w, login)
+		if err != nil {
 			return err
+		}
+		if err := graphstore.FromPerson(ctx, tx, w.At, []graphstore.Tuple{{
+			FromKind: graphstore.KindPerson, FromID: login, Kind: graphstore.TupleReadThrough,
+			ToKind: thread.kind, ToID: thread.id,
+			At: readThrough, Who: w.Who, SourceEvent: event, Asserted: true,
+		}}); err != nil {
+			return fmt.Errorf("record %s's read mark on %s/%s: %w", login, thread.kind, thread.id, err)
 		}
 	}
 	return nil

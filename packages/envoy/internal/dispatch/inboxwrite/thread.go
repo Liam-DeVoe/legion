@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -177,24 +178,27 @@ func moveRows(ctx context.Context, tx pgx.Tx, thread thread, w Write, logins []s
 }
 
 // keepRow is step 5 of Record: the row of login, w's writer, on the thread, its read mark moved to
-// the write's moment where it stood earlier. A row this write begins is marked from its insert:
-// marked_version 0, since no write by somebody else has reached it, and marked_seq the newest
-// position of the log this transaction sees, which is above every tuple an earlier write into the
-// thread appended - each of those committed before this write took the owner row - and below every
-// one a later write appends. A row that was there keeps the marker it holds, or holds none, which
-// is a row the backfill takes; as the trigger's own insert, it touches neither version nor the
-// dismissal.
-func keepRow(ctx context.Context, tx pgx.Tx, thread thread, w Write, login string) error {
-	if _, err := tx.Exec(ctx, `
+// the write's moment where it stood earlier, and it answers the read mark the row stands at once
+// the upsert ran, which is the moment Record's read_through tuple states. A row this write begins
+// is marked from its insert: marked_version 0, since no write by somebody else has reached it, and
+// marked_seq the newest position of the log this transaction sees, which is above every tuple an
+// earlier write into the thread appended - each of those committed before this write took the
+// owner row - and below every one a later write appends. A row that was there keeps the marker it
+// holds, or holds none, which is a row the backfill takes; as the trigger's own insert, it touches
+// neither version nor the dismissal.
+func keepRow(ctx context.Context, tx pgx.Tx, thread thread, w Write, login string) (time.Time, error) {
+	var readThrough time.Time
+	if err := tx.QueryRow(ctx, `
 		insert into user_threads (login, thread_id, kind, project_key, issue_key, artifact_id, read_through, marked_version, marked_seq)
 		values ($1, $2::uuid, $3, $4, $5, case when $5::text is null then $6::uuid end, $7, 0,
 		        (select coalesce(max(seq), 0) from graph_tuples))
 		on conflict (login, thread_id) do update
 			set read_through = greatest(user_threads.read_through, excluded.read_through)
-	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At); err != nil {
-		return fmt.Errorf("keep the row of %s on thread %s/%s: %w", login, thread.kind, thread.id, err)
+		returning read_through
+	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At).Scan(&readThrough); err != nil {
+		return time.Time{}, fmt.Errorf("keep the row of %s on thread %s/%s: %w", login, thread.kind, thread.id, err)
 	}
-	return nil
+	return readThrough, nil
 }
 
 // clearAgentDismissals takes the Agent dismissals of root, the message a session's reply climbed

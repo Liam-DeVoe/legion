@@ -16,14 +16,11 @@ import (
 // TupleMentions points from a thing at the person a mention of it names, as it points at a
 // document or an issue the thing cites; TupleParticipatesIn points from a person, or a session,
 // at the root of a thread they took part in. Each of the three that names a person is appended by
-// ToPerson and by nothing else.
-//
-// TupleDismissed is the read state a person's dismissal of a thread states, from the person to the
-// thread's root, whose retraction a later write by somebody else appends (inboxwrite.Record).
+// ToPerson and by nothing else. What a person has read, cleared, dismissed or snoozed is the other
+// direction, a tuple from the person, and FromPerson's (from_person.go).
 const (
 	TupleMentions       = "mentions"
 	TupleParticipatesIn = "participates_in"
-	TupleDismissed      = "dismissed"
 )
 
 // ErrReservedForAuthor refuses a delivered_to, a mentions or a participates_in tuple between a
@@ -189,18 +186,33 @@ func namesPerson(tuple Tuple) bool {
 	return false
 }
 
-// refusePersonTuples is the check every writer of this store but ToPerson makes of the tuples and
-// the claims it is handed (ErrPersonTupleOutsideToPerson).
+// refusePersonTuples is the check every writer of this store but ToPerson and FromPerson makes of
+// the tuples and the claims it is handed: a tuple of ToPerson's three kinds naming a person is
+// ToPerson's (ErrPersonTupleOutsideToPerson), and a mark from a person is FromPerson's
+// (ErrMarkOutsideFromPerson).
 func refusePersonTuples(tuples []Tuple, claims []Claim) error {
 	for _, tuple := range tuples {
-		if namesPerson(tuple) {
-			return fmt.Errorf("%s %s/%s -> %s/%s: %w", tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, ErrPersonTupleOutsideToPerson)
+		if err := refusePersonTuple("", tuple); err != nil {
+			return err
 		}
 	}
 	for _, claim := range claims {
-		if namesPerson(Tuple{Kind: claim.Kind, FromKind: claim.FromKind, ToKind: claim.ToKind}) {
-			return fmt.Errorf("claim %s %s/%s -> %s/%s: %w", claim.Kind, claim.FromKind, claim.FromID, claim.ToKind, claim.ToID, ErrPersonTupleOutsideToPerson)
+		claimed := Tuple{FromKind: claim.FromKind, FromID: claim.FromID, Kind: claim.Kind, ToKind: claim.ToKind, ToID: claim.ToID}
+		if err := refusePersonTuple("claim ", claimed); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// refusePersonTuple is that check of one tuple, or of one claim spelled as its tuple, which what
+// names as such in the refusal.
+func refusePersonTuple(what string, tuple Tuple) error {
+	switch {
+	case namesPerson(tuple):
+		return fmt.Errorf("%s%s %s/%s -> %s/%s: %w", what, tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, ErrPersonTupleOutsideToPerson)
+	case marksFromPerson(tuple):
+		return fmt.Errorf("%s%s %s/%s -> %s/%s: %w", what, tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, ErrMarkOutsideFromPerson)
 	}
 	return nil
 }

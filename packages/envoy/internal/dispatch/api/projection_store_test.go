@@ -103,14 +103,16 @@ var rowWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|delete\s+from)\s+(blo
 var nodeColumnWrite = regexp.MustCompile(`(?is)\bupdate\s+(block_refs|comments|document_blocks)\b[^;]*?\bset\b[^;]*?\bnode_(?:kind|address)\b`)
 
 // The store's own writers, as a call names them. Everything that writes graph_nodes and
-// graph_tuples goes through one of the five (internal/dispatch/graphstore). WriteUncaused is
+// graph_tuples goes through one of the six (internal/dispatch/graphstore). WriteUncaused is
 // Write split at the seam between writing the node row and appending the facts under it, for a
 // writer whose event is appended after the row it writes; it writes the same node rows. ToPerson
 // is the one writer of a delivered_to, a mentions or a participates_in that names a person, with
-// that person's node.
+// that person's node, and FromPerson the one writer of a mark from a person, with that person's
+// node.
 var storeWriters = []string{
 	"func:graphstore.Write", "func:graphstore.WriteUncaused",
 	"func:graphstore.WriteArms", "func:graphstore.Authored", "func:graphstore.ToPerson",
+	"func:graphstore.FromPerson",
 }
 
 // projectionWrite is one statement of the sources that writes a projected table.

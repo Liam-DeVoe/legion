@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -77,6 +79,9 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	// stores nothing and reads as absent - a 404 - instead of the foreign key's 500; a past moment
 	// is refused first, whatever ask it names. previous is read from the statement's own snapshot,
 	// before the write, so a snooze to the moment the row already holds is known to move nothing.
+	// A snooze that moves the row marks it at its snoozed_until, the moment of its snoozed tuple
+	// (decision 13), where the mark fits the store ($4, markFits); one that moves nothing leaves
+	// the row's marker as it was, since it states no tuple.
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -85,17 +90,23 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var future bool
 	var stored, previous *time.Time
+	var ask *string
 	if err := tx.QueryRow(r.Context(), `
 		with previous as (
 			select snoozed_until from user_ask_snooze where login = $1 and ask_id = $2
 		), snoozed as (
-			insert into user_ask_snooze (login, ask_id, snoozed_until)
-			select $1, id, $3::timestamptz from asks where id = $2 and $3::timestamptz > now()
-			on conflict (login, ask_id) do update set snoozed_until = excluded.snoozed_until
-			returning snoozed_until
+			insert into user_ask_snooze (login, ask_id, snoozed_until, tuples_stored_at)
+			select $1, id, $3::timestamptz, case when $4::boolean then $3::timestamptz end
+			from asks where id = $2 and $3::timestamptz > now()
+			on conflict (login, ask_id) do update set
+				snoozed_until = excluded.snoozed_until,
+				tuples_stored_at = case when user_ask_snooze.snoozed_until is distinct from excluded.snoozed_until
+				                        then excluded.tuples_stored_at else user_ask_snooze.tuples_stored_at end
+			returning snoozed_until, ask_id::text
 		)
-		select $3::timestamptz > now(), (select snoozed_until from snoozed), (select snoozed_until from previous)
-	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil).Scan(&future, &stored, &previous); err != nil {
+		select $3::timestamptz > now(), (select snoozed_until from snoozed), (select snoozed_until from previous),
+		       (select ask_id from snoozed)
+	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil, markFits(actor)).Scan(&future, &stored, &previous, &ask); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -108,7 +119,8 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if previous == nil || !previous.Equal(*stored) {
-		if !s.announceAskSnooze(w, r, tx, actor, askID) {
+		mark := personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, *ask, *stored, true, graphstore.NoEvent)
+		if !s.announceAskSnooze(w, r, tx, actor, askID, mark) {
 			return
 		}
 	} else if err := tx.Commit(r.Context()); err != nil {
@@ -131,35 +143,46 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 	// Un-snoozing a row that is not snoozed is the state the caller asked for, so it answers
 	// the same 204 rather than a 404 the reader could do nothing with, and announces nothing.
+	// A row it deletes is the retraction of its snoozed tuple at the moment of the delete.
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	removed, err := tx.Exec(r.Context(), `
+	var ask string
+	var at time.Time
+	err = tx.QueryRow(r.Context(), `
 		delete from user_ask_snooze where login = $1 and ask_id = $2
-	`, model.CanonicalLogin(actor.ID), askID)
+		returning ask_id::text, now()
+	`, model.CanonicalLogin(actor.ID), askID).Scan(&ask, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if removed.RowsAffected() == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if !s.announceAskSnooze(w, r, tx, actor, askID) {
+	if !s.announceAskSnooze(w, r, tx, actor, askID, personMark(actor, graphstore.TupleSnoozed, graphstore.KindAsk, ask, at, false, graphstore.NoEvent)) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// announceAskSnooze appends the snooze's event in tx, commits, and publishes it. It answers false
-// after writing the error response when any step fails.
-func (s *server) announceAskSnooze(w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string) bool {
+// announceAskSnooze appends the snooze's event in tx, then mark, the snoozed tuple or its
+// retraction the write states, under that event (graphstore.FromPerson), commits, and publishes
+// the event. It answers false after writing the error response when any step fails.
+func (s *server) announceAskSnooze(
+	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string, mark graphstore.Tuple,
+) bool {
 	event, err := s.askSnoozeEvent(r.Context(), tx, actor, askID)
 	if err == nil {
 		event, err = s.appendEvent(r.Context(), tx, event)
+	}
+	if err == nil {
+		mark.SourceEvent = event.ID
+		err = graphstore.FromPerson(r.Context(), tx, event.CreatedAt, []graphstore.Tuple{mark})
 	}
 	if err == nil {
 		err = tx.Commit(r.Context())

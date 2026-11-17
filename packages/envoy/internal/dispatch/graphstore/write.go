@@ -487,8 +487,9 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 // that index's exact column list and predicate - a partial index is not a constraint, so
 // `on conflict on constraint` cannot name it. Both keys are partial on `source_event <> 0`, so a
 // tuple at the sentinel is appended unconditionally. It is what Write and Caused append through,
-// so a tuple of ToPerson's three kinds naming a person is refused here (refusePersonTuples). The
-// two statements wait on no answer of each other and go in one round trip (sendStatements).
+// so a tuple of ToPerson's three kinds naming a person, and a mark from a person, which is
+// FromPerson's, are refused here (refusePersonTuples). The two statements wait on no answer of
+// each other and go in one round trip (sendStatements).
 func appendTuples(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
 	statements, err := tupleAppends(tuples)
 	if err != nil {
