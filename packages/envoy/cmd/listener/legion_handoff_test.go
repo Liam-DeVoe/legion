@@ -197,7 +197,7 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	rig.registerFinished(t, handoffArchitect, "INFRA-204", "architect", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
 
-	item := envelopeFor(contracts.AgentSubject(handoffAgent), "agent."+handoffAgent+".k1", "agent")
+	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+".k1", "agent")
 	handed, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
 	if err != nil || handed == nil {
 		t.Fatalf("a send to a stopped registered agent = %v, %v; want it handed off", handed, err)
@@ -245,7 +245,7 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 
 	hand := func(key string) *legionHandoffMessage {
 		t.Helper()
-		item := envelopeFor(contracts.AgentSubject(handoffAgent), "agent."+handoffAgent+"."+key, "agent")
+		item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+key, "agent")
 		handed, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})
 		if err != nil {
 			t.Fatalf("hand off %s: %v", key, err)
@@ -292,7 +292,7 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
 	item := func(key string) contracts.Envelope {
-		return envelopeFor(contracts.AgentSubject(handoffAgent), "agent."+handoffAgent+"."+key, "agent")
+		return envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+key, "agent")
 	}
 
 	for _, tc := range []struct {
@@ -304,7 +304,7 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 		{"a role token that is no Legion role's", legionHandoffTarget{envelope: item("c"), roleToken: "reviewer"}},
 		{"a role token no session holds", legionHandoffTarget{envelope: item("d"), roleToken: "legion-infra-infra-999-merger"}},
 		{"a role token whose issue is still in the workflow", legionHandoffTarget{envelope: item("d2"), roleToken: "legion-infra-infra-204-implementer"}},
-		{"a source of envoy", legionHandoffTarget{envelope: envelopeFor(contracts.AgentSubject(handoffAgent), "agent."+handoffAgent+".e", "envoy"), session: handoffAgent}},
+		{"a source of envoy", legionHandoffTarget{envelope: envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+".e", "envoy"), session: handoffAgent}},
 		{"a body that opted out", legionHandoffTarget{envelope: item("f"), session: handoffAgent, optedOut: true}},
 	} {
 		handed, err := rig.handoff.handOffToLegion(context.Background(), tc.target)

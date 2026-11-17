@@ -20,8 +20,10 @@ export function legionAgentHandoffSubject(project: string, session: string): str
  * agent registry names the session, and its project's answering record last said `answering:
  * true`, whether that daemon runs now or not):
  *
- * - `original_topic` is the topic the message was for: the agent's own
- *   (`notifications.agent.<session>`) or its role's (`notifications.role.<role token>`).
+ * - `original_topic` is the topic the message was for: the agent's own, in either form
+ *   (`notifications.agent.<session>`, or `notifications.agent.<PROJECT or _>.<session>`), or its
+ *   role's (`notifications.role.<role token>`). `target_session` names the session whichever form
+ *   it came in.
  * - `target_session` is the agent session it is for: the session addressed, or the role's newest.
  * - `role_token` is that session's Legion role token, `project` its Legion project token.
  * - `envelope` is the Envoy envelope exactly as it would have been delivered to the agent: a

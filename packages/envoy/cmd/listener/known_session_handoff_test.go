@@ -83,7 +83,7 @@ func TestASendToAStoppedLegionAgentTheKnownStoreHoldsIsHandedToItsDaemon(t *test
 	rig.register(t, agent, nil)
 	rig.stop(t, agent)
 	rig.record(t, agent)
-	subject := contracts.AgentSubject(agent)
+	subject := contracts.LegacyAgentSubject(agent)
 	requireHandoffs := func(want uint64, after string) {
 		t.Helper()
 		if count, data := handoffs(t, rig.harness.client, agent); count != want {
@@ -145,7 +145,7 @@ func TestASendToAReleasedLegionAgentTheKnownStoreHoldsIsStoredForItsWake(t *test
 	rig.register(t, agent, nil)
 	rig.stop(t, agent)
 	record := rig.record(t, agent)
-	subject := contracts.AgentSubject(agent)
+	subject := contracts.LegacyAgentSubject(agent)
 	// The wakes are reported and read from here on, so the one awaited below is the send's.
 	lifetime, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)

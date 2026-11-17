@@ -13,9 +13,11 @@ import (
 )
 
 // Handoff is one message the listener handed off: the topic it was for (the agent's own,
-// notifications.agent.<session>, or its role's, notifications.role.<token>), the agent session it
-// is for (the session addressed, or the role's newest), that session's role token, the Legion
-// project token, and the Envoy envelope exactly as it would have been delivered to the agent.
+// notifications.agent.<session> or its form under a project, notifications.agent.<PROJECT or
+// _>.<session>, or its role's, notifications.role.<token>), the agent session it is for (the
+// session addressed, or the role's newest, whichever form the topic took), that session's role
+// token, the Legion project token, and the Envoy envelope exactly as it would have been delivered
+// to the agent.
 type Handoff struct {
 	OriginalTopic string          `json:"original_topic"`
 	TargetSession string          `json:"target_session"`

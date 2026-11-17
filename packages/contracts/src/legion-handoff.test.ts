@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LegionAgentHandoffSchema, legionAgentHandoffSubject } from "./legion-handoff";
-import { agentSubject } from "./subject";
+import { legacyAgentSubject } from "./subject";
 
 const dispatchFrame = JSON.stringify({
   event: {
@@ -23,7 +23,7 @@ const dispatchFrame = JSON.stringify({
 });
 
 const handoff = (overrides: Record<string, unknown> = {}) => ({
-  original_topic: agentSubject("ses_tester"),
+  original_topic: legacyAgentSubject("ses_tester"),
   target_session: "ses_tester",
   role_token: "legion-legion-legion-9-tester",
   project: "legion",
@@ -31,7 +31,7 @@ const handoff = (overrides: Record<string, unknown> = {}) => ({
     event_id: "evt-1",
     source: "dispatch",
     source_event_id: "src-1",
-    topic: agentSubject("ses_tester"),
+    topic: legacyAgentSubject("ses_tester"),
     dedupe_key: "agent.ses_tester.0b8f1c1e-1111-4222-8333-944455556666:btw",
     issued_at: 1_790_000_000_000,
     payload_summary: "Why plum?",
