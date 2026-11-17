@@ -1,6 +1,8 @@
-// The backstop under every rule of `log-text.ts`: the secrets this process holds, and the scrub
-// every line the clients print passes. The rules name nothing a peer or a setting wrote; the scrub
-// catches what a rule let through anyway, such as a server at the wrong URL that echoes the
+// The backstop under every rule of `log-text.ts`: the secrets this process holds, and the scrub the
+// clients pass their printed surfaces through (each client's changelog names which: envoy-client's
+// error and reason texts, pi-envoy's logger, notices and tool answers, claude-envoy's process
+// streams, broker-client's refusal text). The rules name nothing a peer or a setting wrote; the
+// scrub catches what a rule let through anyway, such as a server at the wrong URL that echoes the
 // bearer it was sent inside a refusal the client prints as guidance. A line that holds no held
 // secret comes back as the same string, byte for byte.
 
@@ -18,8 +20,9 @@ const SHORTEST_HELD = SCRUB_RUN;
 interface Held {
   /** Each held value. */
   readonly values: Set<string>;
-  /** Each run of {@link SCRUB_RUN} characters of a held value, and the values it is a run of. */
-  readonly runs: Map<string, string[]>;
+  /** Every run of {@link SCRUB_RUN} characters of every held value: a run of 10 or more of a held
+   *  value's characters stands in a line only where one of these does. */
+  readonly windows: Set<string>;
 }
 
 /** One registry per process, whichever copy of this module a bundle carries. */
@@ -27,7 +30,7 @@ const KEY = Symbol.for("@legion/contracts/held-secrets");
 
 function held(): Held {
   const global = globalThis as { [KEY]?: Held };
-  global[KEY] ??= { values: new Set(), runs: new Map() };
+  global[KEY] ??= { values: new Set(), windows: new Set() };
   return global[KEY];
 }
 
@@ -42,10 +45,7 @@ export function holdSecret(value: string): string {
   if (value.length < SHORTEST_HELD || registry.values.has(value)) return value;
   registry.values.add(value);
   for (let at = 0; at + SCRUB_RUN <= value.length; at += 1) {
-    const run = value.slice(at, at + SCRUB_RUN);
-    const values = registry.runs.get(run);
-    if (values === undefined) registry.runs.set(run, [value]);
-    else if (!values.includes(value)) values.push(value);
+    registry.windows.add(value.slice(at, at + SCRUB_RUN));
   }
   return value;
 }
@@ -54,28 +54,26 @@ export function holdSecret(value: string): string {
 export function forgetHeldSecrets(): void {
   const registry = held();
   registry.values.clear();
-  registry.runs.clear();
+  registry.windows.clear();
 }
 
 /**
  * `text` with every held secret, and every run of 10 or more characters of one, replaced by
- * `<withheld>`. Overlapping or touching runs are one. A text with none comes back as itself.
+ * `<withheld>`. A run of 10 or more of a held value's characters stands in a line only where one of
+ * that value's 10-character windows does, so the scan looks each of the line's windows up in the
+ * one set every held value's windows were put in when it was held: linear in the line's length,
+ * whatever the secrets' length. Each window found is withheld, and overlapping or touching ones
+ * are one stretch. A text with none comes back as itself.
  */
 export function scrub(text: string): string {
-  const { runs } = held();
-  if (runs.size === 0 || text.length < SCRUB_RUN) return text;
+  const { windows } = held();
+  if (windows.size === 0 || text.length < SCRUB_RUN) return text;
   const spans: [number, number][] = [];
   for (let at = 0; at + SCRUB_RUN <= text.length; at += 1) {
-    const values = runs.get(text.slice(at, at + SCRUB_RUN));
-    if (values === undefined) continue;
-    let end = at + SCRUB_RUN;
-    for (const value of values) {
-      let reach = at + SCRUB_RUN;
-      while (reach < text.length && value.includes(text.slice(at, reach + 1))) reach += 1;
-      if (reach > end) end = reach;
-    }
+    if (!windows.has(text.slice(at, at + SCRUB_RUN))) continue;
+    const end = at + SCRUB_RUN;
     const last = spans.at(-1);
-    if (last !== undefined && at <= last[1]) last[1] = Math.max(last[1], end);
+    if (last !== undefined && at <= last[1]) last[1] = end;
     else spans.push([at, end]);
   }
   if (spans.length === 0) return text;

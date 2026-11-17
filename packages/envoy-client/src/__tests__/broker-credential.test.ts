@@ -616,7 +616,9 @@ async function signedInPod(
   const signins = path.join(tempDir(), "signins");
   for (const record of records) await writeSignIn(signins, record);
   const secret = path.join(tempDir(), "client-secret");
-  writeFileSync(secret, "example-device-client-secret\n", { mode: 0o600 });
+  // Random, as a real client secret is: one spelled from words would be scrubbed out of the lines
+  // that hold those words (`@legion/contracts/held-secrets`).
+  writeFileSync(secret, `secret-${crypto.randomUUID()}\n`, { mode: 0o600 });
   return {
     env: {
       ...podEnvironment(brokerUrl, dispatchUrl),

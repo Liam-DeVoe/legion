@@ -32,7 +32,9 @@ export async function signedIn(
     person,
     issuer: "https://accounts.example",
     client_id: "example-device-client",
-    refresh_token: `refresh-token-of-${person}`,
+    // Random, as a real refresh token is: a value that held the person's email would be scrubbed
+    // out of every line naming that person (`@legion/contracts/held-secrets`).
+    refresh_token: `refresh-${crypto.randomUUID()}`,
     box_key: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
     thumbprint: await thumbprintOf(publicKey.export({ format: "jwk" }) as JWK),
     enrollment_id: "",

@@ -20,7 +20,7 @@
 // that no longer honours a person's sign-in. So a caller that writes only with what `token()`
 // gave it never writes with no identity, nor with one that has been ended.
 
-import { holdSecret } from "@legion/contracts/held-secrets";
+import { holdSecret, scrub } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -222,7 +222,10 @@ export class BrokerRefusedError extends Error {
       description === ""
         ? ""
         : isKnownBrokerRefusal(description, context)
-          ? description
+          ? // Scrubbed here, not only where a caller prints it: a host prints the error itself
+            // (a `console.warn(text, error)`, an uncaught error), and the policy's own refusal
+            // can carry the subject token it was sent.
+            scrub(description)
           : REFUSAL_TEXT_WITHHELD;
     super(
       `the secrets broker refused ${refused}: HTTP ${status}${shownCode === "" ? "" : ` ${shownCode}`}${said === "" ? "" : `: ${said}`}`
