@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { fakeDispatchFetch, startFakeDispatch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -9,8 +10,9 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
 // `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
-// format cases drive `executeDispatchTool` over a recording fetch, so each reads the text and the
-// details a host is handed; the last case drives the real CLI against a fake Dispatch server.
+// format cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`)
+// as a fetch, so each reads the text and the details a host is handed; the last case drives the
+// real CLI against that fake on a loopback port.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
@@ -103,20 +105,16 @@ const config = {
   error: null,
 };
 
-/** A fetch that records each request and answers the steps read with `steps`. */
-function answering(requests: string[], steps: unknown): typeof fetch {
-  return (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const method = init?.method ?? "GET";
-    const { pathname } = new URL(String(url));
-    requests.push(`${method} ${pathname}`);
-    return Response.json(steps);
-  }) as typeof fetch;
-}
+/** The one route the command reads. */
+const STEPS_PATH = "/api/v1/issues/LEG-1/steps";
 
-function readSteps(issue: string, fetchImpl: typeof fetch) {
-  return executeDispatchTool({
+/** `dispatch steps --issue LEG-1` over a fake Dispatch whose steps route answers `answer`: the
+ *  result, and each request the fake saw as `<method> <pathname>`. */
+async function readSteps(answer: unknown) {
+  const dispatch = fakeDispatchFetch({ routes: { [STEPS_PATH]: answer } });
+  const result = await executeDispatchTool({
     tool: "dispatch_steps",
-    args: { issue },
+    args: { issue: "LEG-1" },
     cwd: "/workspace",
     host: "omp",
     sessionId: "session-1",
@@ -125,21 +123,24 @@ function readSteps(issue: string, fetchImpl: typeof fetch) {
     exec: async (file, args) => {
       throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
     },
-    fetchImpl,
+    fetchImpl: dispatch.fetchImpl,
   });
+  return {
+    result,
+    requests: dispatch.calls.map((call) => `${call.method} ${call.url.pathname}`),
+  };
 }
 
 describe("dispatch steps", () => {
   test("prints a header, then one line per run, a running step running", async () => {
-    const requests: string[] = [];
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [{ task: "default", steps: [implementer, tester] }],
     };
 
-    const result = await readSteps("LEG-1", answering(requests, answer));
+    const { result, requests } = await readSteps(answer);
 
-    expect(requests).toEqual(["GET /api/v1/issues/LEG-1/steps"]);
+    expect(requests).toEqual([`GET ${STEPS_PATH}`]);
     expect(result.text).toBe(
       [
         "LEG-1: 2 steps in 1 tasks",
@@ -156,7 +157,7 @@ describe("dispatch steps", () => {
       tasks: [{ task: "default", steps: [implementer, mergedByGitHub] }],
     };
 
-    const result = await readSteps("LEG-1", answering([], answer));
+    const { result } = await readSteps(answer);
 
     expect(result.text.split("\n")[2]).toBe(
       "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed"
@@ -172,7 +173,7 @@ describe("dispatch steps", () => {
       ],
     };
 
-    const result = await readSteps("LEG-1", answering([], answer));
+    const { result } = await readSteps(answer);
 
     expect(result.text).toBe(
       [
@@ -191,7 +192,7 @@ describe("dispatch steps", () => {
       { issue: "LEG-1", tasks: [] },
       { issue: "LEG-1", tasks: null },
     ]) {
-      const result = await readSteps("LEG-1", answering([], answer));
+      const { result } = await readSteps(answer);
 
       expect(result.text, JSON.stringify(answer)).toBe("LEG-1: 0 steps in 0 tasks");
       expect(result.details, JSON.stringify(answer)).toEqual({ issue: "LEG-1", tasks: [] });
@@ -200,27 +201,16 @@ describe("dispatch steps", () => {
 });
 
 describe("dispatch steps on the command line", () => {
-  const requests: string[] = [];
   const makeDirectory = temporaryDirectories("dispatch-steps");
-  const server = Bun.serve({
-    port: 0,
-    fetch(request) {
-      const { pathname } = new URL(request.url);
-      requests.push(`${request.method} ${pathname}`);
-      if (pathname === "/api/v1/issues/LEG-1/steps" && request.method === "GET") {
-        return Response.json({
-          issue: "LEG-1",
-          tasks: [{ task: "default", steps: [implementer, tester] }],
-        });
-      }
-      return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+  const server = startFakeDispatch({
+    routes: {
+      [STEPS_PATH]: { issue: "LEG-1", tasks: [{ task: "default", steps: [implementer, tester] }] },
     },
   });
-  afterAll(() => server.stop(true));
+  afterAll(() => server.stop());
 
   let stateDir = "";
   beforeEach(() => {
-    requests.length = 0;
     stateDir = makeDirectory();
     forgetKeyedLayerMemory();
   });
@@ -233,7 +223,7 @@ describe("dispatch steps on the command line", () => {
         HOME: stateDir,
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
-        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        DISPATCH_URL: server.url,
         DISPATCH_TOKEN: "test-token",
         DISPATCH_STATE_DIR: stateDir,
       },
@@ -254,12 +244,13 @@ describe("dispatch steps on the command line", () => {
       ["steps", "--issue", "LEG-1"],
       ["steps", "LEG-1"],
     ]) {
-      requests.length = 0;
+      const before = server.reads.length;
 
       const { code, stdout } = await run(argv);
 
       expect(code, argv.join(" ")).toBe(0);
-      expect(requests).toEqual(["GET /api/v1/issues/LEG-1/steps"]);
+      // The run read the steps route once and asked Dispatch nothing else.
+      expect(server.reads.slice(before).map((url) => url.pathname)).toEqual([STEPS_PATH]);
       expect(stdout).toContain(
         [
           "LEG-1: 2 steps in 1 tasks",
