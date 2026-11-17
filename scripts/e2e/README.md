@@ -370,6 +370,13 @@ Each item below names a script, then what it proves.
   and with that commit cleared from the reviewer's phases row between the rounds, the second round's task names none.
   No GitHub, no cluster
 
+- `plan-guidance.sh`
+
+  a deployment's plan guidance reaches the launch of an owner and of no other agent, driven against the real Dispatch server this checkout builds and the whole daemon booted with `dispatch_url` at it and `plan_guidance` naming a file of planted text, over the package's fake runtime:
+  the architect of a person's issue is launched with the guidance after its addressing, the planner with none, the daemon's settings serve the file's path, and `legion start --check-config` names it;
+  the control, run first, is the same run with `plan_guidance` unset.
+  No GitHub, no cluster
+
 - `step-records.sh`
 
   each phase of an issue leaves a step record on its Dispatch issue, and a person reads the records back with the real `dispatch steps` command, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with one issue that walks planning to done with one failed review:
@@ -4918,6 +4925,38 @@ and no agent runs.
 The stand-in answers every other route `404`, so the daemon's own read of the pull request, at its start and after each recorded handoff (`readIssuePullRequest` in `internal/daemon/issue_reads.go`), fails and is logged, and the review reaches the daemon only as its webhook.
 The read of the pull request's reviews that applies a review whose webhook never arrived (`readReviews` in `internal/daemon/review_reads.go`) hands the workflow the same review, which records the reviewed commit in the same step (`review` in `internal/workflow/review.go`); this proof does not drive that read.
 `REVIEW_RANGE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## plan-guidance.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/plan-guidance.sh     # → "plan guidance control e2e: PASS in <n>s", then "plan guidance e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a deployment's plan guidance (`plan_guidance` in `legion.yaml`) reaches the launch of an owner and of no other agent.
+It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inputs and refusals but `bun`, which it does not need:
+`go`, `git`, `jj` 0.38 or later, `awk` and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
+It makes [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run twice, each with its own broker:
+first the control, a test binary of `TestPlanGuidanceControlLive`, then the proof, one of `TestPlanGuidanceLive` (both in `internal/daemon/plan_guidance_live_test.go`, `-tags e2e`).
+
+The rig is `step-records.sh`'s (`newStepRecordsRigWith`, in `internal/daemon/step_records_test.go`):
+the real Dispatch server on a database of its own, a project of the run's own (`SR<6 hex>`) with one issue a person creates, in progress with the `legion` label, seeded in the daemon's store at `admitted` with its design gate approved, and the whole daemon booted through `run` with `dispatch_url` at that server.
+The boot launches the issue's architect and the admission pass its planner, the agent of the issue's first step.
+The runtime is the package's fake one, which records each launch's spec, and each check composes the launch's prompt from that spec with `runtime.ComposePrompt`, the function every runtime writes an agent's prompt file with.
+
+| step | read back as |
+| :--- | :--- |
+| `owner-has-guidance` | the architect's launch reads `<state_dir>/plan-guidance.md`, and its composed prompt holds `# Plan guidance of this deployment (<project>)` and the planted text once each, after the launch's own addressing |
+| `worker-has-none` | the planner's launch reads no guidance, and its composed prompt holds neither |
+| `settings-serve-the-key` | `GET /legion/v1/state`, the route `legion state --json` prints, serves `settings.plan_guidance`, the guidance file's path |
+| `check-config-names-it` | `legion start --check-config`, built from this checkout, on a `legion.yaml` that names the same file, exits 0 and prints `plan_guidance: <path> — each owner's system prompt carries this guidance after its addressing; Legion requires none of it` |
+
+The control prints each step as `control-<step>`:
+with `plan_guidance` unset, `owner-has-guidance`, `settings-serve-the-key` and `check-config-names-it` must fail and `worker-has-none` must hold, so a check that holds whatever the deployment sets fails the control.
+What the proof stands in for:
+the broker is a native `nats-server`; GitHub, the Apps' tokens and Envoy's listener are `step-records.sh`'s stand-ins;
+and no agent runs, so the proof reads the prompt each launch was given, not what an agent did with it.
+`PLAN_GUIDANCE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps, under `control/` and `run/`, each run's transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## step-records.sh
 
