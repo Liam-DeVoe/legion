@@ -1731,7 +1731,8 @@ type Store interface {
 	// of the record's id already, and the count only rises.
 	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, at time.Time) (int64, error)
 	// StepStarts is the count of starts of place on issue with the agent, the moment and the end
-	// mark of the latest, unchanged: the zero StepStart where no start was counted.
+	// mark of the latest, unchanged: the zero StepStart where the place has no row, no start
+	// counted and no uncounted end written.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
 	// EndStepStart marks the run of the latest start of place on issue ended and answers that
 	// start and true, in the transaction that writes the run's end (workflow's endStep); false
