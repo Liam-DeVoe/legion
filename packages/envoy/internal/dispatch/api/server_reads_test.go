@@ -197,9 +197,10 @@ func TestEveryServerReadIsNamed(t *testing.T) {
 }
 
 // everyReaderUses is each function of the api package's source that names everyReader, or spells
-// the server's own viewer itself (model.ServerViewer), as "file:function", sorted and distinct. The
-// declaration of everyReader is no use; a read that builds the server's reader inline is one, so
-// it is named as every other is.
+// the server's own reader or viewer itself (model.ServerReader, model.ServerViewer), as
+// "file:function", sorted and distinct. The declaration of everyReader is no use; a read that
+// builds the server's reader inline, or binds model.ServerReader, is one, so it is named as every
+// other is.
 func everyReaderUses(t *testing.T) []string {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -228,7 +229,7 @@ func everyReaderUses(t *testing.T) []string {
 						found[file+":"+function.Name.Name] = true
 					}
 				case *ast.SelectorExpr:
-					if node.Sel.Name == "ServerViewer" {
+					if node.Sel.Name == "ServerViewer" || node.Sel.Name == "ServerReader" {
 						found[file+":"+function.Name.Name] = true
 					}
 				}

@@ -121,4 +121,4 @@ func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Ac
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
 //     and handed to the next reader whose request names the same pair, so an answer read for
 //     one person would be served to another.
-var everyReader = model.Actor{Viewer: model.ServerViewer}
+var everyReader = model.ServerReader

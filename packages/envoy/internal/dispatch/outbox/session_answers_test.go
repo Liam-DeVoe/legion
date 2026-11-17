@@ -98,7 +98,7 @@ func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
 
 	// The publisher's own record is what this reads back, so it reads as the server, which sees
 	// every project and every party; the route binds its caller's viewer (api's listSessionAnswers).
-	server := refs.VisibilityArg(model.Actor{Viewer: model.ServerViewer})
+	server := refs.VisibilityArg(model.ServerReader)
 	items, err := sessionanswers.List(ctx, database.Pool, server, asker.ID, time.Now().Add(-72*time.Hour))
 	if err != nil {
 		t.Fatalf("read the asker's answers: %v", err)

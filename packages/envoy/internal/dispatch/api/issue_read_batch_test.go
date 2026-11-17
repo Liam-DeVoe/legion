@@ -172,7 +172,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the design gates: %v", err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{Viewer: model.ServerViewer}, "issue", []string{issue.Key}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.ServerReader, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
