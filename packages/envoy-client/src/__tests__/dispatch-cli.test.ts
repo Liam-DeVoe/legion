@@ -3870,6 +3870,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // write that heard nothing, never landed_without_answer. The control is the first row of the
   // table below: Dispatch's own answer prints as the stored result.
   test("with the job's identity, a 2xx answer that is not Dispatch's prints write_outcome_unknown and exits 1", async () => {
+    // Such a server runs no keyed layer, so its page names no key back.
+    unkeyed = true;
     dispatchAnswer = () =>
       new Response("Welcome to Bun! To get started, return a Response object.", {
         status: 200,
@@ -3888,40 +3890,44 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   // A job's step writes `--issue "$ISSUE" --check "$CHECK" --commit "$SHA"`, and an empty variable
   // is the honest way to send one empty: the issue form refuses it before the trade or any write,
-  // naming the flag, and the project form refuses an empty --commit the same way.
+  // naming the flag, as the project form does (the row of the project form above).
   test("with the job's identity, an empty --issue, --check or --commit is refused before any request, naming the flag", async () => {
-    for (const [argv, flag, noun] of [
-      [issueRecord, "--issue", "issue"],
-      [issueRecord, "--check", "check"],
-      [issueRecord, "--commit", "commit"],
-      [record, "--commit", "commit"],
+    for (const [flag, noun] of [
+      ["--issue", "issue"],
+      ["--check", "check"],
+      ["--commit", "commit"],
     ] as const) {
-      const emptied = [...argv];
+      const emptied = [...issueRecord];
       emptied[emptied.indexOf(flag) + 1] = "";
       const { code, stdout, stderr } = await runJob(emptied, jobEnvironment());
-      expect({ code, stderr, lines: stdout.split("\n").slice(0, 2) }, `${argv[1]} ${flag}`).toEqual(
-        {
-          code: 2,
-          stderr: "",
-          lines: [
-            "dispatch result was not called: 1 problem",
-            `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
-          ],
-        }
-      );
+      expect({ code, stderr, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
+        code: 2,
+        stderr: "",
+        lines: [
+          "dispatch result was not called: 1 problem",
+          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+        ],
+      });
     }
     sentNothing();
   });
 
-  // The issue form reads its answer as the project form does: it prints a landing only where
-  // Dispatch names the write's key back, on a 2xx whose body gives no stored result
-  // (ANSWER_LOST) as on a 409 KEY_COMMITTED. A 2xx that names no key back and gives the stored
-  // result is the answer of a Dispatch with no keyed layer, and the result prints. Every other
-  // answer that does not name the write's key back leaves the outcome unknown: the result may be
-  // stored, and a second run is safe. The rows that print the result are the controls of the rest.
+  // The issue form reads its answer as the project form does: Dispatch's keyed layer names the
+  // write's key back on every answer of a write route, so only an answer that names it back is
+  // Dispatch's to this write. Such a 2xx prints the stored result, or a landing where its body
+  // gives none (ANSWER_LOST), and such a 409 KEY_COMMITTED prints a landing. Every other answer,
+  // one that names no key back or another request's, whatever it holds, leaves the outcome
+  // unknown: the result may be stored, and a second run is safe. The rows that name the key back
+  // are the controls of the rest.
   for (const [name, answer, echo, code, printed] of [
     ["a 201 with the stored result that names the key back", "result", "this", 0, recordedOnIssue],
-    ["a 201 with the stored result that names no key back", "result", "none", 0, recordedOnIssue],
+    [
+      "a 201 with the stored result that names no key back",
+      "result",
+      "none",
+      1,
+      { write_outcome_unknown: "HTTP_201" },
+    ],
     [
       "a 201 with the stored result that names another request's key back",
       "result",
