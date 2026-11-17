@@ -155,6 +155,21 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(1);
   });
 
+  test("a merge with no agent that never ended fails, exit 1: no agent waives no end", () => {
+    const { code, stdout } = read(
+      changed(/ merge merger /, (line) =>
+        line
+          .replace("legion-infra-infra-42-merger", "-")
+          .replace(/ \S+ passed$/, " running running")
+      )
+    );
+    expect(stdout).toContain(
+      "FAIL: the record never ended: default 0 merge merger - attempt 1 - - 2026-11-20T11:11:00Z running running"
+    );
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(1);
+  });
+
   test("a step of kind step with no model fails, exit 1; the retro and the merge need none", () => {
     const { code, stdout } = read(
       changed(/ 1 step planner /, (line) => line.replace("anthropic/claude-opus-5", "-"))
