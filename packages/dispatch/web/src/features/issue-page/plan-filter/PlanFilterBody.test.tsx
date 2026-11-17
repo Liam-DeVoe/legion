@@ -1,12 +1,13 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import type { Artifact } from "../../../api/types";
+import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import type { Artifact, ArtifactBlock, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -23,11 +24,14 @@ import {
 import {
   ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
+  CONTROL_LABELS,
   EMPTY_STATE_LINES,
   NODE_TYPE_NAMES,
   type NodeType,
   PLAN_WORDS,
 } from "../page-words";
+import { ProvidersSlot } from "../slots/providers";
+import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../tree-drafts";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
@@ -41,6 +45,10 @@ import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody"
  * a row of its own, the statement it serves its parent line, and any further statement a chip
  * naming what it is also under; and each `needs` chip is named as the tree names it, from the
  * task it points at (`issue`), since the view draws the tree's names and names no edge itself.
+ *
+ * Two cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
+ * holds the reads the issue's tree is built from, for what the slot hands the body as the reads
+ * change: the body kept mounted, and a refused read's line and Retry.
  */
 
 const KEY = "CORE-1";
@@ -192,6 +200,9 @@ const PLAN_ARTIFACT = "artifact-plan";
 /** Both reads answered, which every case draws under unless it gives another. */
 const ANSWERED: PlanReads = { state: "answered" };
 
+/** A body `renderBody` drew, with `redraw`, which draws it again over another `root` and `reads`. */
+type DrawnBody = RenderResult & { readonly redraw: (root: TreeNode, reads: PlanReads) => void };
+
 /** Draws the body over `root`, the view's tasks. `plan` is the whole plan's tasks, which the
  *  order and the chart's places are worked out from (`slots/view-plan.tsx`): the view's own
  *  tasks unless a case draws the view a words filter leaves. `reveal` is the chain down to the
@@ -217,7 +228,7 @@ function renderBody(
     reveal?: readonly TreeNode[];
     written?: readonly string[];
   } = {}
-): RenderResult & { readonly redraw: (root: TreeNode, reads: PlanReads) => void } {
+): DrawnBody {
   const client =
     given ??
     new QueryClient({
@@ -502,14 +513,15 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
   }
 });
 
-// An address that names a step lands on it, in the view the filter opens on.
-test("an address naming a step puts the focus on its bar's row", () => {
+// An address that names a step lands on it, in the view the filter opens on. The landing focuses
+// the row in the frame after the commit that draws it (`IssueTree.tsx`'s `landOnRow`).
+test("an address naming a step puts the focus on its bar's row", async () => {
   setViewport(1440);
   const named = task("t2", { needs: ["t1"] });
   const root = issue([task("t1"), named]);
   const view = renderBody(root, { reveal: [root, named] });
   try {
-    expect(focusedRow()).toBe(D("t2"));
+    await waitFor(() => expect(focusedRow()).toBe(D("t2")));
   } finally {
     view.unmount();
   }
@@ -529,7 +541,7 @@ test("the control switches to the ordered steps, which are the outline's own row
     // The address's step takes the focus once for the whole view: a press on the switch is the
     // reader's, and leaves the focus on the button pressed, since neither drawing takes the
     // address's step again.
-    expect(focusedRow()).toBe(D("t1"));
+    await waitFor(() => expect(focusedRow()).toBe(D("t1")));
     await showSteps(view);
     expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.steps }));
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
@@ -552,14 +564,158 @@ test("the control switches to the ordered steps, which are the outline's own row
   }
 });
 
+/** The spec and the Verification document, by the ids the issue read names them by. */
+const SPEC_ARTIFACT = "artifact-spec";
+const VERIFICATION_ARTIFACT = "artifact-verification";
+
+/** One document of the issue, with whatever the case gives it: a role, or being the spec. */
+function issueDocument(id: string, slug: string, extra: Partial<Artifact>): Artifact {
+  return {
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id,
+    issue_key: KEY,
+    kind: "doc",
+    name: slug,
+    primary: false,
+    project: "CORE",
+    ref_key: `artifact:${id}`,
+    session_id: null,
+    slug,
+    versions: [],
+    ...extra,
+  };
+}
+
+/** The issue as its read hands it to the slot: its spec and its plan, and the Verification
+ *  document where a case gives one. */
+function issueRead(verification?: Artifact): IssueDetails {
+  return {
+    advances: [],
+    advances_revision: 0,
+    artifacts: [
+      issueDocument(SPEC_ARTIFACT, SPEC, { primary: true }),
+      issueDocument(PLAN_ARTIFACT, PLAN, { role: "plan" }),
+      ...(verification === undefined ? [] : [verification]),
+    ],
+    assignee: null,
+    blocked_by: [],
+    children: [],
+    claim: null,
+    closed_at: null,
+    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    decisions_artifact_id: "",
+    design_gates: [],
+    external_links: [],
+    holder_state: null,
+    key: KEY,
+    labels: [],
+    last_seen: null,
+    last_seq: 1,
+    number: 1,
+    open_asks: [],
+    parent: null,
+    plan_artifact_id: PLAN_ARTIFACT,
+    primary_artifact_id: SPEC_ARTIFACT,
+    priority: null,
+    progress: { children: null, tasks: null },
+    project: "CORE",
+    rank: "U",
+    referenced_by_count: 0,
+    repo: null,
+    resolved_repo: null,
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "todo",
+    takeable_at: null,
+    title: "The issue page draws one ordered body",
+    updated_at: "2026-11-05T00:00:00Z",
+    verification_artifact_id: verification?.id ?? "",
+  };
+}
+
+/** A plan task's block, as the plan document's blocks read holds it. */
+function taskBlock(id: string): ArtifactBlock {
+  return {
+    attributes: [],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type: "plan_task",
+  };
+}
+
+/** A query client holding every read the issue's tree is built from (`useIssueTree.ts`), each
+ *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, which
+ *  a case may leave unheld for its read to go to `api.getArtifactBlocks`. */
+function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, {
+    gaps: [],
+    has_plan: true,
+    issue: KEY,
+    requirements: [],
+    spec_artifact_id: SPEC_ARTIFACT,
+  });
+  client.setQueryData(issueResultsQuery(KEY).queryKey, {
+    checks: [],
+    issue: KEY,
+    verification_artifact_id: "",
+  });
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
+    taskBlock("t1"),
+    taskBlock("t2"),
+  ]);
+  if (specHeld) client.setQueryData(artifactBlocksQuery(SPEC_ARTIFACT).queryKey, []);
+  return client;
+}
+
+/** A slot `renderSlot` drew, with `redraw`, which draws it again for another read of the issue. */
+type DrawnSlot = RenderResult & { readonly redraw: (issue: IssueDetails) => void };
+
+/** Draws the Plan view's slot (`slots/view-plan.tsx`) for `shown` over `client`, with the
+ *  providers the page draws every slot under (`slots/providers.tsx`). */
+function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
+  const route = { key: KEY, kind: "issue" } as const;
+  const draw = (issue: IssueDetails): ReactNode => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <IssueScope />
+              <ViewPlanSlot issue={issue} route={route} />
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw(shown));
+  return { ...view, redraw: (issue) => view.rerender(draw(issue)) };
+}
+
 // A Verification or decisions document made while the reader is on Plan rebuilds the issue's
-// tree, and the slot draws the same body again over the same tasks, its reads still answered and
-// the body still mounted (`slots/view-plan.tsx`): the reader's press of "Steps", the
-// focused row and its mark stay.
+// tree and opens a read of its blocks that holds nothing yet, and the slot draws the same body
+// again over the same tasks, still mounted (`slots/view-plan.tsx`): the reader's press of
+// "Steps", the focused row and its mark stay.
 test("the body drawn again over the same tasks keeps Steps pressed and the focused row marked", async () => {
   setViewport(1440);
-  const tasks = (): TreeNode => issue([task("t1"), task("t2", { needs: ["t1"] })]);
-  const view = renderBody(tasks());
+  const held = Promise.withResolvers<never>();
+  const blocks = spyOn(api, "getArtifactBlocks").mockReturnValue(held.promise as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(slotClient(), issueRead());
   try {
     const steps = () => view.getByRole("button", { name: PLAN_WORDS.steps });
     const card = () => rowOf(view, "t2").querySelector("[data-node-card]")?.className;
@@ -567,7 +723,10 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     act(() => rowOf(view, "t2").focus());
     expect([steps().getAttribute("aria-pressed"), focusedRow()]).toEqual(["true", D("t2")]);
     expect(card()).toContain(pageFocusedRow);
-    view.redraw(tasks(), ANSWERED);
+    view.redraw(
+      issueRead(issueDocument(VERIFICATION_ARTIFACT, "verification-md", { role: "verification" }))
+    );
+    await waitFor(() => expect(blocks).toHaveBeenCalledWith(VERIFICATION_ARTIFACT));
     expect(
       steps().getAttribute("aria-pressed"),
       "the body drawn again over the same tasks is back on the chart"
@@ -576,8 +735,50 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     expect(card()).toContain(pageFocusedRow);
   } finally {
     view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
   }
 });
+
+// The spec's blocks read refused before it first answered: the view says, in the page's words,
+// that it could not load the statements, with a Retry that asks the spec's blocks again.
+test("a refused read of the spec's blocks says so, with a Retry that reads them again", async () => {
+  setViewport(1440);
+  const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(slotClient({ specHeld: false }), issueRead());
+  try {
+    const line = await waitFor(() => {
+      const found = view.container.querySelector('[data-plan-unreadable="statements"]');
+      if (found === null) throw new Error("the view says nothing of the refused statements read");
+      return found;
+    });
+    expect(line.querySelector("p")?.textContent).toBe(ANSWER_LINES.statements_unreadable);
+    expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
+    const asked = () => blocks.mock.calls.filter(([id]) => id === SPEC_ARTIFACT).length;
+    const before = asked();
+    expect(before, "the tree sends no read of the spec's blocks").toBe(1);
+    await userEvent.click(retryOf(view, "statements"));
+    await waitFor(() =>
+      expect(asked(), "Retry on the statements line does not read the spec's blocks").toBe(
+        before + 1
+      )
+    );
+  } finally {
+    view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+/** The reads as the slot hands them on where `reads` failed before they first answered, in the
+ *  order given, each Retry noting its read in `asked`. */
+function failed(asked: PlanRead[], ...reads: PlanRead[]): PlanReads {
+  return {
+    failed: reads.map((read) => ({ read, retry: () => asked.push(read) })),
+    state: "failed",
+  };
+}
 
 // The view waits on the plan's and the spec's blocks reads (`slots/view-plan.tsx`): while one is
 // out its tree holds nothing, and a read refused before it first answered is one line over the
@@ -588,11 +789,6 @@ test("while a read is out the view draws nothing, and a read that failed says so
   setViewport(1440);
   const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
   const asked: PlanRead[] = [];
-  const failed = (...reads: PlanRead[]): PlanReads => ({
-    failed: reads,
-    onRetry: (read) => asked.push(read),
-    state: "failed",
-  });
   const view = renderBody(root, { reads: { state: "waiting" } });
   try {
     const drawn = () => ({
@@ -607,7 +803,7 @@ test("while a read is out the view draws nothing, and a read that failed says so
     expect(drawn()).toEqual(nothing);
     expect(lines()).toHaveLength(0);
 
-    view.redraw(root, failed("plan", "statements"));
+    view.redraw(root, failed(asked, "plan", "statements"));
     expect(drawn()).toEqual(nothing);
     expect(
       lines().map((line) => [
@@ -632,6 +828,142 @@ test("while a read is out the view draws nothing, and a read that failed says so
     expect(focusedRow(), "Enter on Retry does not leave the focus on the first row").toBe(D("t1"));
   } finally {
     view.unmount();
+  }
+});
+
+// A read asked again that holds no answer is out again rather than failed (TanStack Query's
+// `pending`), so the slot hands the body `waiting`, and the failed line leaves the page with the
+// Retry that held the focus: after a press of that Retry, and after the page asked the read again
+// with no press, on the window's focus or on an event. The focus stays in the view all the while,
+// on its tree, and goes on to the Retry of a read refused again, or to the first row once the
+// reads answer; with both reads refused, the second line's Retry gives it to the first's.
+test("the focus stays in the view while a retried read is out, and goes on to a Retry or the first row", async () => {
+  setViewport(1440);
+  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const waiting: PlanReads = { state: "waiting" };
+  /** Draws the view with `reads` refused and the focus on the Retry of `on`, then runs `steps`. */
+  const from = async (
+    reads: readonly PlanRead[],
+    on: PlanRead,
+    steps: (view: DrawnBody, asked: readonly PlanRead[]) => Promise<void>
+  ): Promise<void> => {
+    const asked: PlanRead[] = [];
+    const view = renderBody(root, { reads: failed(asked, ...reads) });
+    try {
+      act(() => retryOf(view, on).focus());
+      expect(document.activeElement).toBe(retryOf(view, on));
+      await steps(view, asked);
+    } finally {
+      view.unmount();
+    }
+  };
+  /** Fails the case where the focus is on the page's body, or anywhere outside the view. */
+  const inTheView = (view: RenderResult, step: string): void => {
+    expect(document.activeElement, `${step}: the focus fell to the page's body`).not.toBe(
+      document.body
+    );
+    expect(
+      view.container.contains(document.activeElement),
+      `${step}: the focus left the view`
+    ).toBe(true);
+  };
+
+  // Failed, then waiting once its Retry is pressed, then answered.
+  await from(["plan"], "plan", async (view, asked) => {
+    await userEvent.keyboard("{Enter}");
+    expect(asked).toEqual(["plan"]);
+    view.redraw(root, waiting);
+    inTheView(view, "the read Retry asked again is out");
+    view.redraw(root, ANSWERED);
+    inTheView(view, "the read Retry asked again has answered");
+    expect(
+      focusedRow(),
+      "the read Retry asked again answered leaves the focus off the first row"
+    ).toBe(D("t1"));
+  });
+  // Failed, then waiting once its Retry is pressed, then refused again: the Retry drawn again
+  // takes the focus back.
+  await from(["plan"], "plan", async (view) => {
+    await userEvent.keyboard("{Enter}");
+    view.redraw(root, waiting);
+    inTheView(view, "the read Retry asked again is out");
+    view.redraw(root, failed([], "plan"));
+    inTheView(view, "the read Retry asked again is refused again");
+    expect(document.activeElement, "the read refused again leaves the focus off its Retry").toBe(
+      retryOf(view, "plan")
+    );
+  });
+  // Failed, then waiting once its Retry is pressed, then answered with no task: the view draws
+  // the issue's empty line, and the focus stays on its tree, which is all the view holds.
+  await from(["plan"], "plan", async (view) => {
+    await userEvent.keyboard("{Enter}");
+    view.redraw(root, waiting);
+    inTheView(view, "the read Retry asked again is out");
+    view.redraw(issue([]), ANSWERED);
+    inTheView(view, "the read Retry asked again has answered with no task");
+    expect(
+      document.activeElement,
+      "the read Retry asked again answered with no task leaves the focus off the view's tree"
+    ).toBe(view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`));
+    expect(view.container.textContent).toContain(EMPTY_STATE_LINES.plan);
+  });
+  // Both refused, and the statements line's Retry pressed: that read is out and its line goes,
+  // and the plan's line stays.
+  await from(["plan", "statements"], "statements", async (view, asked) => {
+    await userEvent.keyboard("{Enter}");
+    expect(asked).toEqual(["statements"]);
+    view.redraw(root, failed([], "plan"));
+    inTheView(view, "the statements read Retry asked again is out");
+    expect(
+      document.activeElement,
+      "the statements line's Retry pressed leaves the focus off the plan's Retry"
+    ).toBe(retryOf(view, "plan"));
+  });
+  // Asked again with no press, with the focus on its Retry - on the window's focus, or on an
+  // event - and answered.
+  await from(["plan"], "plan", async (view, asked) => {
+    view.redraw(root, waiting);
+    inTheView(view, "the read the page asked again is out");
+    view.redraw(root, ANSWERED);
+    inTheView(view, "the read the page asked again has answered");
+    expect(asked).toEqual([]);
+    expect(
+      focusedRow(),
+      "the read the page asked again answered leaves the focus off the first row"
+    ).toBe(D("t1"));
+  });
+});
+
+/** The Retry of the line that says `read` failed. */
+function retryOf(view: RenderResult, read: PlanRead): HTMLElement {
+  const retry = view.container.querySelector<HTMLElement>(
+    `[data-plan-unreadable="${read}"] button`
+  );
+  if (retry === null) throw new Error(`the line saying the ${read} read failed draws no Retry`);
+  return retry;
+}
+
+// `t p` with a read refused: the page's chord focuses the view's tree (`useIssueKeymap.ts`'s
+// `reachPart`), which holds nothing while the reads have not answered and hands the focus on to
+// the first Retry, from wherever the reader stood: here a control outside the view.
+test("the view's tree focused with a read refused hands the focus to its Retry", () => {
+  setViewport(1440);
+  const control = document.createElement("button");
+  document.body.append(control);
+  const view = renderBody(issue([task("t1")]), { reads: failed([], "plan") });
+  try {
+    act(() => control.focus());
+    expect(document.activeElement).toBe(control);
+    const tree = view.container.querySelector<HTMLElement>(
+      `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`
+    );
+    act(() => tree?.focus({ preventScroll: true }));
+    expect(document.activeElement, "the tree focused with a read refused keeps the focus").toBe(
+      retryOf(view, "plan")
+    );
+  } finally {
+    view.unmount();
+    control.remove();
   }
 });
 
@@ -716,7 +1048,7 @@ test("tasks that need each other are one line at their place, and rows at that p
     // The address puts the focus on the cycle's row, which stands for the task it names in
     // Details, and the arrows go from it to the steps on either side of it, as they pass over it.
     const cycle = view.container.querySelector<HTMLElement>("[data-plan-cycle-row]");
-    expect(document.activeElement).toBe(cycle);
+    await waitFor(() => expect(document.activeElement).toBe(cycle));
     expect(cycle?.getAttribute("data-plan-cycle-row")).toBe(`${D("t4")} ${D("t5")}`);
     expect(focusedRow()).toBe(D("t5"));
     expect(view.container.querySelector("[data-place]")?.getAttribute("data-focused")).toBe(
@@ -918,7 +1250,7 @@ test("a task with no words is named by its kind, never by its id", async () => {
 // opening line, as for a task whose `needs` holds eleven pointers on one line. While a chip has
 // no name the row draws no need for it, and "· needs" only when it draws a need: an empty need
 // after "· needs" names no task at all.
-test("a need part F has not named draws no empty need and no '· needs' with nothing after it", () => {
+test("a need the tree has not named draws no empty need and no '· needs' with nothing after it", () => {
   setViewport(1440);
   // The third task needs the first two, the fourth the first alone; the tree names the second
   // and not the first.

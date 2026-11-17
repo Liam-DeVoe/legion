@@ -36,43 +36,42 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   // decisions documents too: one of those made while the reader is on Plan opens a read that
   // holds nothing yet, and one whose first read is refused holds nothing at all, and neither
   // changes anything in Plan; and a failed line needs the failed read's own error and Retry.
-  // Each read is watched under the key `useIssueTree` fills, by an observer that is never
-  // enabled, so the view sends no request of its own and sees whatever the tree's observer
-  // fetches; its `refetch` still fetches, which is what Retry asks. A document the issue does not
-  // name needs no read.
+  //
+  // Every read the view watches - these two, and the plan's blocks again for the order they are
+  // written in (`PlanFilterBody`) - is watched under the key `useIssueTree` fills, by an observer
+  // that is never enabled: staleness is an observer's own, so an enabled one mounted past the
+  // app's stale time would fetch again. So the view sends no request of its own and sees
+  // whatever the tree's observer fetches; `refetch` still fetches, which is what Retry asks. A
+  // document the issue does not name needs no read.
   //
   // A read has answered where it holds data, and not by its status: a refetch that fails keeps
   // the data it last answered, so a view drawn by `isSuccess` would empty itself on one failed
   // refetch. A read has failed where it holds no data and its status is error
   // (`failedWithNothing`): refused before it first answered. The view draws its tasks, its
   // switch and its empty line once both have answered, so it never says the issue has no plan
-  // tasks before they are in, and where a read failed it says which, each with a Retry that asks
-  // that read alone again (`PlanFilterBody`). The view stays mounted through all of it, as the
-  // outline does (`slots/body.tsx`), so no read takes from the reader the press of "Steps", the
-  // focused row and its mark, a step being edited, or the address's step having taken the focus,
-  // which it takes once.
+  // tasks before they are in; until then its tree holds nothing, and each read that failed is
+  // one line over the tree, in the order plan, statements, with a Retry that asks that read
+  // alone again (`PlanFilterBody`). The view stays mounted through all of it, as the outline does
+  // (`slots/body.tsx`), so no read takes from the reader the press of "Steps", the focused row
+  // and its mark, a step being edited, or the address's step having taken the focus, which it
+  // takes once.
   const planId = roleDocument(issue, "plan")?.id;
-  // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
   const planBlocks = useQuery({ ...artifactBlocksQuery(planId ?? ""), enabled: false });
   const specId = spec?.id;
-  // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
   const specBlocks = useQuery({ ...artifactBlocksQuery(specId ?? ""), enabled: false });
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
-  const failed: PlanRead[] = [];
-  if (planId !== undefined && failedWithNothing(planBlocks)) failed.push("plan");
-  if (specId !== undefined && failedWithNothing(specBlocks)) failed.push("statements");
+  const failed: { readonly read: PlanRead; readonly retry: () => void }[] = [];
+  if (planId !== undefined && failedWithNothing(planBlocks)) {
+    failed.push({ read: "plan", retry: () => void planBlocks.refetch() });
+  }
+  if (specId !== undefined && failedWithNothing(specBlocks)) {
+    failed.push({ read: "statements", retry: () => void specBlocks.refetch() });
+  }
   const reads: PlanReads =
     failed.length > 0
-      ? {
-          failed,
-          onRetry: (read) => {
-            if (read === "plan") void planBlocks.refetch();
-            else void specBlocks.refetch();
-          },
-          state: "failed",
-        }
+      ? { failed, state: "failed" }
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
@@ -135,9 +134,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   );
 }
 
-/** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
- *  had, which the view still draws from, so only a read that left nothing to draw says it
- *  failed. */
+/** Whether `read` failed with no answer held, by the rule above (`ViewPlanSlot`). */
 function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
   return read.isError && read.data === undefined;
 }

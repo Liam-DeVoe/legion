@@ -248,8 +248,10 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
 /** A first read that fails (`slots/view-plan.tsx`): with every read of the plan document's
  *  blocks refused, the page's two retries included, `t p` from the conversation opens Plan,
  *  which says in the page's words that it could not load the plan, with a Retry that holds the
- *  focus, and draws no bar and no switch. With the read let through, Enter on that Retry asks it
- *  again, and the view draws the chart with the focus on its first row. */
+ *  focus, and draws no bar and no switch. `t p` pressed from a control that holds the focus, the
+ *  Spec control of the view row, puts the focus on that Retry too: the chord focuses the view's
+ *  tree, which hands it on. With the read let through, Enter on that Retry asks it again, and the
+ *  view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let refusing = true;
   const refuse = async (route: Route) => {
@@ -288,6 +290,22 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
       planBody(page).locator("[data-plan-switch]"),
       "the Plan view whose first read of the plan's blocks failed draws its switch"
     ).toHaveCount(0);
+    // The Spec control pressed from the keyboard, which leaves the focus on it: a pointer's press
+    // of a view's control leaves the focus where it was (`IssuePresets.tsx`).
+    await presetToggle(page, "spec").focus();
+    await page.keyboard.press("Enter");
+    await expect(presetToggle(page, "spec")).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      presetToggle(page, "spec"),
+      "Enter on the Spec control leaves the focus off it"
+    ).toBeFocused();
+    await page.keyboard.press("t");
+    await page.keyboard.press("p");
+    await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
+    await expect(
+      retry,
+      "t p from the Spec control with the plan's blocks refused does not put the focus on the plan's Retry"
+    ).toBeFocused();
     refusing = false;
     await page.keyboard.press("Enter");
     await expect(
@@ -896,140 +914,145 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // card the key goes to, so that card is off the screen until its placing puts it on.
     const first = nodeRow(page, step(T.third)).first();
     const last = nodeRow(page, step(T.loose)).first();
-    await page.evaluate(() =>
-      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    /** Puts the page at its `end`, from where `card` stands off the screen (`before` fails the
+     *  row where it does not), runs `press`, which presses a key and reads where it left the
+     *  focus, and reads until `shown` - the card, or the link the key focused - stands on screen
+     *  (`after` fails the row where it never does). */
+    const backOnScreen = async (
+      press: () => Promise<void>,
+      card: Locator,
+      end: "top" | "bottom",
+      before: string,
+      after: string,
+      shown: Locator = card
+    ): Promise<void> => {
+      await page.evaluate(
+        (bottom) =>
+          window.scrollTo({
+            behavior: "instant",
+            top: bottom ? document.documentElement.scrollHeight : 0,
+          }),
+        end === "bottom"
+      );
+      expect(await onScreen(card), before).toBe(false);
+      await press();
+      await expect.poll(() => onScreen(shown), { message: after }).toBe(true);
+    };
+    /** Whether the focus is on a link inside `card`, and not on the card itself. */
+    const onALinkOf = (card: Locator): Promise<boolean> =>
+      card.evaluate(
+        (element) =>
+          element.contains(document.activeElement) &&
+          document.activeElement !== element &&
+          document.activeElement?.tagName === "A"
+      );
+    await backOnScreen(
+      () => reach("Home", step(T.third), "Home"),
+      first,
+      "bottom",
+      `${T.third}'s card is on screen before Home`,
+      "Home leaves the focused card under what stays at the top at 390 px"
     );
-    expect(await onScreen(first), `${T.third}'s card is on screen before Home`).toBe(false);
-    await reach("Home", step(T.third), "Home");
-    await expect
-      .poll(() => onScreen(first), {
-        message: "Home leaves the focused card under what stays at the top at 390 px",
-      })
-      .toBe(true);
-    await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
-    expect(await onScreen(last), `${T.loose}'s card is on screen before End`).toBe(false);
-    await reach("End", step(T.loose), "End");
-    await expect
-      .poll(() => onScreen(last), {
-        message: "End leaves the focused card off the screen at 390 px",
-      })
-      .toBe(true);
+    await backOnScreen(
+      () => reach("End", step(T.loose), "End"),
+      last,
+      "top",
+      `${T.loose}'s card is on screen before End`,
+      "End leaves the focused card off the screen at 390 px"
+    );
     // A move key that lands on the card already holding the focus brings it back on screen, as
-    // the outline's own move keys do (`useTreeKeymap.ts`'s `moveTo`): End on the last card and
+    // the outline's own move keys do (`useTreeKeymap.ts`'s `moveToRow`): End on the last card and
     // Home on the first, each after the reader scrolled that card off the screen, move no focus,
     // so the card's own placing never runs unless the key brings the card back itself. Under
     // "Steps" the outline's rows come back, and the chart's cards must too.
-    await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
-    expect(await onScreen(last), `${T.loose}'s card is on screen before End again`).toBe(false);
-    await reach("End", step(T.loose), "End again");
-    await expect
-      .poll(() => onScreen(last), {
-        message: "End on the focused last card leaves it off the screen at 390 px",
-      })
-      .toBe(true);
-    await reach("Home", step(T.third), "Home");
-    await page.evaluate(() =>
-      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    await backOnScreen(
+      () => reach("End", step(T.loose), "End again"),
+      last,
+      "top",
+      `${T.loose}'s card is on screen before End again`,
+      "End on the focused last card leaves it off the screen at 390 px"
     );
-    expect(await onScreen(first), `${T.third}'s card is on screen before Home again`).toBe(false);
-    await reach("Home", step(T.third), "Home again");
-    await expect
-      .poll(() => onScreen(first), {
-        message: "Home on the focused first card leaves it off the screen at 390 px",
-      })
-      .toBe(true);
+    await reach("Home", step(T.third), "Home");
+    await backOnScreen(
+      () => reach("Home", step(T.third), "Home again"),
+      first,
+      "bottom",
+      `${T.third}'s card is on screen before Home again`,
+      "Home on the focused first card leaves it off the screen at 390 px"
+    );
     // The arrows at the ends of the chart are move keys too: the outline's down arrow on its last
     // row and its up arrow on its first land on the row they are on and bring it back on screen.
     // The chart's must do the same with a card the reader scrolled off the screen.
-    await page.evaluate(() =>
-      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    await backOnScreen(
+      () => reach("ArrowUp", step(T.third), "ArrowUp on the first card"),
+      first,
+      "bottom",
+      `${T.third}'s card is on screen before ArrowUp`,
+      "ArrowUp on the focused first card leaves it off the screen at 390 px"
     );
-    expect(await onScreen(first), `${T.third}'s card is on screen before ArrowUp`).toBe(false);
-    await reach("ArrowUp", step(T.third), "ArrowUp on the first card");
-    await expect
-      .poll(() => onScreen(first), {
-        message: "ArrowUp on the focused first card leaves it off the screen at 390 px",
-      })
-      .toBe(true);
     await reach("End", step(T.loose), "End");
-    await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
-    expect(await onScreen(last), `${T.loose}'s card is on screen before ArrowDown`).toBe(false);
-    await reach("ArrowDown", step(T.loose), "ArrowDown on the last card");
-    await expect
-      .poll(() => onScreen(last), {
-        message: "ArrowDown on the focused last card leaves it off the screen at 390 px",
-      })
-      .toBe(true);
+    await backOnScreen(
+      () => reach("ArrowDown", step(T.loose), "ArrowDown on the last card"),
+      last,
+      "top",
+      `${T.loose}'s card is on screen before ArrowDown`,
+      "ArrowDown on the focused last card leaves it off the screen at 390 px"
+    );
     // A move key pressed from a link of the card works on the card: Home from the first card's
     // statement link focuses that card and brings it back on screen, as it does under "Steps".
     await reach("Home", step(T.third), "Home");
     await page.keyboard.press("f");
     await expect
-      .poll(
-        () =>
-          first.evaluate(
-            (card) =>
-              card.contains(document.activeElement) &&
-              document.activeElement !== card &&
-              document.activeElement?.tagName === "A"
-          ),
-        { message: `f does not reach a link of ${T.third}'s card` }
-      )
+      .poll(() => onALinkOf(first), { message: `f does not reach a link of ${T.third}'s card` })
       .toBe(true);
-    await page.evaluate(() =>
-      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    await backOnScreen(
+      async () => {
+        await reach("Home", step(T.third), "Home from the link");
+        await expect(first, `Home from ${T.third}'s link does not focus its card`).toBeFocused();
+      },
+      first,
+      "bottom",
+      `${T.third}'s card is on screen before Home from its link`,
+      "Home from a link of the focused first card leaves it off the screen at 390 px"
     );
-    expect(await onScreen(first), `${T.third}'s card is on screen before Home from its link`).toBe(
-      false
-    );
-    await reach("Home", step(T.third), "Home from the link");
-    await expect(first, `Home from ${T.third}'s link does not focus its card`).toBeFocused();
-    await expect
-      .poll(() => onScreen(first), {
-        message: "Home from a link of the focused first card leaves it off the screen at 390 px",
-      })
-      .toBe(true);
     // Escape from the link gives the card back, and the card it gives back stands on screen, as
     // the outline's row does under "Steps".
     await page.keyboard.press("f");
     await expect
-      .poll(
-        () =>
-          first.evaluate(
-            (card) =>
-              card.contains(document.activeElement) && document.activeElement?.tagName === "A"
-          ),
-        { message: `f does not reach a link of ${T.third}'s card again` }
-      )
-      .toBe(true);
-    await page.evaluate(() =>
-      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
-    );
-    expect(await onScreen(first), `${T.third}'s card is on screen before Escape`).toBe(false);
-    await page.keyboard.press("Escape");
-    await expect(first, `Escape from ${T.third}'s link does not give its card back`).toBeFocused();
-    await expect
-      .poll(() => onScreen(first), {
-        message: "Escape from a link of the first card leaves the card off the screen at 390 px",
+      .poll(() => onALinkOf(first), {
+        message: `f does not reach a link of ${T.third}'s card again`,
       })
       .toBe(true);
+    await backOnScreen(
+      async () => {
+        await page.keyboard.press("Escape");
+        await expect(
+          first,
+          `Escape from ${T.third}'s link does not give its card back`
+        ).toBeFocused();
+      },
+      first,
+      "bottom",
+      `${T.third}'s card is on screen before Escape`,
+      "Escape from a link of the first card leaves the card off the screen at 390 px"
+    );
     // f is a move key as well: from a card the reader scrolled off the screen it puts the focus
     // on the card's first link and brings that link on screen, as the outline's f does.
-    await page.evaluate(() =>
-      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
-    );
-    expect(await onScreen(first), `${T.third}'s card is on screen before f`).toBe(false);
-    await page.keyboard.press("f");
     const link = first.locator("a[href]").first();
-    await expect(
-      link,
-      `f does not reach a link of ${T.third}'s card from off the screen`
-    ).toBeFocused();
-    await expect
-      .poll(() => onScreen(link), {
-        message: "f on the focused first card leaves its link off the screen at 390 px",
-      })
-      .toBe(true);
+    await backOnScreen(
+      async () => {
+        await page.keyboard.press("f");
+        await expect(
+          link,
+          `f does not reach a link of ${T.third}'s card from off the screen`
+        ).toBeFocused();
+      },
+      first,
+      "bottom",
+      `${T.third}'s card is on screen before f`,
+      "f on the focused first card leaves its link off the screen at 390 px",
+      link
+    );
   });
 });
 
@@ -1038,8 +1061,9 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
 // by an address or a slug. Beyond the check: at 1440 px, with the blocks reads held, the view
 // draws no line saying the issue has no task and no switch, and draws the chart once they are let
 // go (`expectNothingBeforeTheBlocks`); a first read of the plan's blocks that fails draws the
-// page's line for it with a Retry, which `t p` leaves the focus on, and no bar and no switch, and
-// Enter on the Retry draws the chart with the focus on its first row once the read is let through
+// page's line for it with a Retry, which `t p` leaves the focus on, from the page itself and from
+// the Spec control the reader pressed, and no bar and no switch, and Enter on the Retry draws the
+// chart with the focus on its first row once the read is let through
 // (`expectRetryAfterAFailedFirstRead`); and a read of the plan's blocks that fails once the chart
 // is drawn leaves the chart drawn on a return to Plan (`expectChartAfterAFailedRead`).
 // SLOW(>=2s): the whole seeded issue, loaded and read under both drawings at two widths.
