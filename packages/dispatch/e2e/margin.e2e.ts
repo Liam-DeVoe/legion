@@ -713,7 +713,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     await aliceCard.getByLabel("Your answer").fill("Because it is precise.");
     await aliceCard.getByRole("button", { exact: true, name: "Answer" }).click();
-    await expect.poll(() => getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
+    await expect.poll(() => getAsk(ask.id)).toMatchObject({ state: "answered" });
 
     // Bob's browser context has never had this issue open: no inbox history, no prior query
     // cache. He still sees the answered anchored ask in the margin.

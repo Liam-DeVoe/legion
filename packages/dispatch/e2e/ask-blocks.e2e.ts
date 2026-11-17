@@ -254,8 +254,10 @@ test("a reader asks back from a decision block: the question threads under the b
     await expect
       .poll(() => getAsk(blockAsk.id))
       .toMatchObject({
-        ask: { answer: null, state: "open", waiting_on: "agent" },
-        replies: [{ body: question }],
+        answer: null,
+        state: "open",
+        thread: { replies: [{ body: question }] },
+        waiting_on: "agent",
       });
     await block.scrollIntoViewIfNeeded();
     await block.screenshot({
@@ -700,11 +702,9 @@ test("a pasted rendered callout and decision keep attributes, content, and the o
     await expect
       .poll(async () => getAsk(originalAsk.id))
       .toMatchObject({
-        ask: {
-          answer: { selected: ["A"], text: "Go A." },
-          block_id: "decision",
-          state: "answered",
-        },
+        answer: { selected: ["A"], text: "Go A." },
+        block_id: "decision",
+        state: "answered",
       });
     await page.close();
   } finally {

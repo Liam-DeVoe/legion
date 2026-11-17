@@ -167,7 +167,7 @@ export async function seedInbox(): Promise<Seed> {
     { ask_id: replay.id, body: "Cold start from which snapshot?" },
     { login: "alice" }
   );
-  await expect.poll(() => getAsk(replay.id)).toMatchObject({ ask: { waiting_on: "agent" } });
+  await expect.poll(() => getAsk(replay.id)).toMatchObject({ waiting_on: "agent" });
 
   // The shared token holds nobody and names nobody, so this issue falls to MIRROR's own default
   // assignee, dave; no list this file reads is his.

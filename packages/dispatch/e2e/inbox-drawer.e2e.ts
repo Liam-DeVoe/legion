@@ -37,7 +37,7 @@ test("a half-typed message in a live conversation survives opening the drawer, a
     await expect(card).toHaveCount(0);
     await expect
       .poll(() => getAsk(askId))
-      .toMatchObject({ ask: { answer: { selected: ["Yes"], user: "alice" }, state: "answered" } });
+      .toMatchObject({ answer: { selected: ["Yes"], user: "alice" }, state: "answered" });
 
     await page.keyboard.press("Escape");
     await expect(drawer(page)).toHaveCount(0);

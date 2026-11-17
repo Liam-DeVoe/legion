@@ -254,7 +254,7 @@ test("a question waiting on its agent is declined from the Inbox", async ({ page
   await createComment(issue.key, { ask_id: ask.id, body: "Which ledger do you mean?" });
   await expect
     .poll(() => getAsk(ask.id), { intervals: [50, 50, 100, 200, 500] })
-    .toMatchObject({ ask: { waiting_on: "agent" } });
+    .toMatchObject({ waiting_on: "agent" });
 
   await page.goto("/");
   const card = await askCard(page, ask.id);
