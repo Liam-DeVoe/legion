@@ -367,8 +367,11 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	start := implementerStart(daemon)
-	noRole := maps.Clone(start)
-	delete(noRole, "role")
+	without := func(field string) map[string]any {
+		body := maps.Clone(start)
+		delete(body, field)
+		return body
+	}
 
 	for _, row := range []struct {
 		name, id string
@@ -378,9 +381,20 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		{"a kind that is no kind", "", with(start, map[string]any{"kind": "phase"}), "kind"},
 		{"a result that is no result", "", with(start, map[string]any{"result": "done", "ended_at": stepEnd}), "result"},
 		{"an end with no result", "", with(start, map[string]any{"ended_at": stepEnd}), "ended_at"},
+		{"a result with no end", "", with(start, map[string]any{"result": "passed"}), "result"},
 		{"a step returned to by a run that passed", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
 		{"a retro returned to by a run that passed", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
-		{"a first write with no role", "", noRole, "role"},
+		{"a first write with no task", "", without("task"), "task"},
+		{"a first write with no kind", "", without("kind"), "kind"},
+		{"a first write with no step", "", without("step"), "step"},
+		{"a first write with no role", "", without("role"), "role"},
+		{"a first write with no generation", "", without("generation"), "generation"},
+		{"a generation that is no run", "", with(start, map[string]any{"generation": 0}), "generation"},
+		{"a place below 0", "", with(start, map[string]any{"step": -1}), "step"},
+		{"a step of kind step at place 0", "", with(start, map[string]any{"step": 0}), "step"},
+		{"a retro at a step's place", "", with(start, map[string]any{"kind": "retro"}), "step"},
+		{"a role that is no role", "", with(start, map[string]any{"role": "Implementer"}), "role"},
+		{"a type that is no type", "", with(start, map[string]any{"type": "Review"}), "type"},
 		{"a report that is no uuid", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
 		{"a task that is no task id", "", with(start, map[string]any{"task": "Default"}), "task"},
 		{"an id that is no uuid", "not-a-uuid", start, "id"},
