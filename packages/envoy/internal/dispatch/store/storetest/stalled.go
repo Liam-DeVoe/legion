@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 // StalledSocket makes one read of a pool's socket to Postgres time out, which is how a bound of
@@ -33,11 +34,22 @@ type StalledSocket struct {
 	pool  string
 	match atomic.Pointer[func(sent []byte) bool]
 	fired atomic.Bool
+	// frozen makes an armed read wait for the deadline pgx puts on the socket rather than time
+	// out at once (NewFrozenSocket).
+	frozen bool
 }
 
 // NewStalledSocket is a socket for pool's connections that stalls nothing until StallAfter arms
 // it.
 func NewStalledSocket(pool string) *StalledSocket { return &StalledSocket{pool: pool} }
+
+// NewFrozenSocket is a socket for pool's connections whose armed reads answer nothing at all, as
+// a database behind a stopped proxy answers nothing (the load harness's freeze): such a read
+// waits until pgx puts a deadline on the socket - the context of the call that read ended, a
+// bound of the server's among them - and that deadline passes, and only then times out. A test
+// meets with it the bound a call runs under, where NewStalledSocket's reads time out at once,
+// before any bound has passed. It is armed as NewStalledSocket's is (StallAfter, StallAfterSent).
+func NewFrozenSocket(pool string) *StalledSocket { return &StalledSocket{pool: pool, frozen: true} }
 
 // StallAfter arms the socket: from the statement carrying marker, the connection that sent it
 // answers every read with that timeout. marker is something only the statement the test means to
@@ -92,6 +104,9 @@ type stalledConn struct {
 	// pgconn timeout does not close the connection, so the pool keeps it and its next caller
 	// must be served.
 	armed atomic.Bool
+	// deadline is the read deadline pgx last put on the socket, which a frozen socket's armed
+	// read waits out (SetDeadline, SetReadDeadline).
+	deadline atomic.Pointer[time.Time]
 }
 
 func (c *stalledConn) Write(p []byte) (int, error) {
@@ -111,10 +126,34 @@ func (c *stalledConn) Write(p []byte) (int, error) {
 
 func (c *stalledConn) Read(p []byte) (int, error) {
 	if c.armed.Load() {
+		if c.socket.frozen {
+			c.waitOutDeadline()
+		}
 		c.socket.fired.Store(true)
 		return 0, &net.OpError{
 			Op: "read", Net: "tcp", Source: c.LocalAddr(), Addr: c.RemoteAddr(), Err: os.ErrDeadlineExceeded,
 		}
 	}
 	return c.Conn.Read(p)
+}
+
+// waitOutDeadline waits until the read deadline pgx put on the socket has passed: what a read
+// of a socket nothing answers on does before it times out.
+func (c *stalledConn) waitOutDeadline() {
+	for {
+		if deadline := c.deadline.Load(); deadline != nil && !deadline.IsZero() && !time.Now().Before(*deadline) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (c *stalledConn) SetDeadline(t time.Time) error {
+	c.deadline.Store(&t)
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *stalledConn) SetReadDeadline(t time.Time) error {
+	c.deadline.Store(&t)
+	return c.Conn.SetReadDeadline(t)
 }

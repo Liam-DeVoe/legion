@@ -783,20 +783,29 @@ func (s *server) storeArtifact(
 	if kind == "doc" && !created {
 		// This handler serves the project upload as well (uploadProjectArtifact), and a document
 		// upload is an issue's or a project's, so the route both reads below name is the one the
-		// request came in on: a read that failed is logged where it ran.
+		// request came in on: a read that failed is logged where it ran. A report whose savepoint
+		// could not be opened or rolled back has cost the upload its transaction, and the upload
+		// fails with that (endAdviceSavepoint).
 		route := "POST /api/v1/projects/{key}/artifacts"
 		if target.IssueKey != nil {
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
-		superseded = s.supersededApprovalAdvice(
+		var err error
+		if superseded, err = s.supersededApprovalAdvice(
 			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		// The open approval request this upload's own version took back from the person it was
 		// waiting on, read after the move above and after the restore's carry, so a carry that
 		// answered the request reports nothing. A new document carries no request either.
-		moved = s.movedApprovalRequestAdvice(
+		if moved, err = s.movedApprovalRequestAdvice(
 			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1402,20 +1411,28 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The approval this edit's own version superseded, read in the edit's transaction after that
 	// version and any carry it made: a person's approval of a spec is Legion's design gate, and
-	// the writer is the only one who learns in time that this write closed it.
+	// the writer is the only one who learns in time that this write closed it. A report whose
+	// savepoint could not be opened or rolled back has cost the edit its transaction, and the
+	// edit fails with that rather than meeting it at its next statement (endAdviceSavepoint).
 	var superseded *supersededApproval
 	var moved *movedApprovalRequest
 	if written != nil {
-		superseded = s.supersededApprovalAdvice(
+		if superseded, err = s.supersededApprovalAdvice(
 			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		// The open approval request this edit's own version took back from the person it was
 		// waiting on, read after that version moved it (docs.MoveApprovalAsk) and after any
 		// carry: an edit that stored no version moved nothing, and one whose carry answered the
 		// request leaves it with the person and reports nothing.
-		moved = s.movedApprovalRequestAdvice(
+		if moved, err = s.movedApprovalRequestAdvice(
 			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)

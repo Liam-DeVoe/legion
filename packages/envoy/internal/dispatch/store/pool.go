@@ -634,19 +634,22 @@ func (t *trackedTx) Rollback(ctx context.Context) error {
 const commitTimeout = 10 * time.Second
 
 // ErrCommitTimeout is a commit of a transaction that may have written which the database did not
-// answer: the bound of its own context cut it off (CommitContext, commitTimeout), or the socket
-// to Postgres timed out under it, which is a bound of this server's that passed on that
-// connection. Its outcome is unknown - the transaction may have committed, and nothing the
-// server holds says whether it did - so it is neither a pool that could not serve the call
-// (ErrPoolBusy) nor a failure that rolled back: a request answers it 500, naming the unknown
-// outcome, and a client must read what it wrote before sending it again
-// (admission.WriteUnserved, cmd/dispatch/README.md "Load errors"). A commit its own bound cut
-// off wraps context.DeadlineExceeded too, so errors.Is finds both.
+// answer: the bound of its own context cut it off (CommitContext, commitTimeout), the socket to
+// Postgres timed out under it, which is a bound of this server's that passed on that connection,
+// or the connection ended under it once it was sent (connectionLost: Postgres ending the session,
+// or pgconn closing the connection while it read the answer). Its outcome is unknown - the
+// transaction may have committed, and nothing the server holds says whether it did - so it is
+// neither a pool that could not serve the call (ErrPoolBusy) nor a failure that rolled back: a
+// request answers it 500, naming the unknown outcome, and a client must read what it wrote before
+// sending it again (admission.WriteUnserved, cmd/dispatch/README.md "Load errors"). A commit its
+// own bound cut off wraps context.DeadlineExceeded too, so errors.Is finds both.
 //
 // Two unanswered COMMITs are not this and are ErrPoolBusy (commitTimedOut): a read-only
 // transaction's, and one of a stall pgconn marks safe to retry, which the COMMIT was never sent
 // through. Nothing can have committed in either, so the request is refused and may be sent
-// again.
+// again. The same two COMMITs whose connection ended are not this either, and stay the error
+// they are, which ConnectionLost answers as busy: pgconn refuses a COMMIT on a connection it
+// closed earlier at its lock (`conn closed`), before anything is sent.
 var ErrCommitTimeout = errors.New("the commit was not answered; its outcome is unknown")
 
 // IsCommitTimeout reports whether err is a commit the database did not answer (ErrCommitTimeout).
@@ -656,9 +659,10 @@ func IsCommitTimeout(err error) bool { return errors.Is(err, ErrCommitTimeout) }
 // context, is the bound that ended it - pgx answers a statement its context cut off with that
 // context's error and not with its cause, so the cause is read here instead - or the socket
 // timed out while that context was still live, which is a bound of this server's that passed on
-// the connection (stalled). The second is told here rather than left to poolBusy, which never
-// sees a commit, because the outcome of a COMMIT whose answer was lost is unknown where every
-// other lost answer leaves the transaction rolled back.
+// the connection (stalled), or the connection ended under the COMMIT (connectionLost). Each is
+// told here rather than left to poolBusy, which never sees a commit, because the outcome of a
+// COMMIT whose answer was lost is unknown where every other lost answer leaves the transaction
+// rolled back.
 //
 // Unknown, that is, unless the COMMIT never reached the database or the transaction wrote
 // nothing, and both are a busy database like any other the server's bounds ended (ErrPoolBusy) -
@@ -671,19 +675,25 @@ func IsCommitTimeout(err error) bool { return errors.Is(err, ErrCommitTimeout) }
 //   - a read-only transaction's COMMIT commits nothing whether or not it ran, since Postgres
 //     let it write nothing.
 //
-// A commit that failed for any other reason, and one that did not fail at all, is returned as it
-// is.
+// A connection that ended under either of those two is returned as it is, for ConnectionLost to
+// answer busy in the same way. A commit that failed for any other reason, and one that did not
+// fail at all, is returned as it is.
 func commitTimedOut(ctx context.Context, readOnly bool, err error) error {
-	if err == nil || !(errors.Is(context.Cause(ctx), ErrCommitTimeout) || stalled(ctx, err)) {
-		return err
-	}
 	switch {
-	case pgconn.SafeToRetry(err):
-		return fmt.Errorf("%w: the database stopped answering before the COMMIT reached it: %w", ErrPoolBusy, err)
-	case readOnly:
-		return fmt.Errorf("%w: the database did not answer this read-only transaction's COMMIT, which commits nothing: %w", ErrPoolBusy, err)
+	case err == nil:
+		return nil
+	case errors.Is(context.Cause(ctx), ErrCommitTimeout) || stalled(ctx, err):
+		switch {
+		case pgconn.SafeToRetry(err):
+			return fmt.Errorf("%w: the database stopped answering before the COMMIT reached it: %w", ErrPoolBusy, err)
+		case readOnly:
+			return fmt.Errorf("%w: the database did not answer this read-only transaction's COMMIT, which commits nothing: %w", ErrPoolBusy, err)
+		}
+		return fmt.Errorf("%w: %w", ErrCommitTimeout, err)
+	case connectionLost(err) && !pgconn.SafeToRetry(err) && !readOnly:
+		return fmt.Errorf("%w: the connection ended under the COMMIT: %w", ErrCommitTimeout, err)
 	}
-	return fmt.Errorf("%w: %w", ErrCommitTimeout, err)
+	return err
 }
 
 // RanOutTheCommitBound names err a database too busy to serve the call (ErrPoolBusy) when ctx -
@@ -811,6 +821,28 @@ func BoundIdleInTransaction(ctx context.Context, tx pgx.Tx) error {
 // the connection dies, and the connection goes back to the pool idle.
 func RollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), RollbackTimeout)
+}
+
+// RanOutTheRollbackBound names err a database too busy to serve the call (ErrPoolBusy) when ctx,
+// a RollbackContext, ran out its bound before the database answered the rollback. pgx answers a
+// statement its context cut off with that context's error (`timeout: context deadline
+// exceeded`), which no rule reads as the database's, and closes the connection under it
+// (connectionLost): the transaction the rollback was part of has ended without committing, and
+// whatever runs on that connection next is refused `conn closed`. So a write whose own rollback
+// of a savepoint inside its transaction met that is refused 503 DATABASE_BUSY, and the client may
+// send it again (admission.WriteUnserved). INFRA-592's ten-times freeze met it: a document edit's
+// report rolled its savepoint back as the database stopped answering, the rollback's bound passed
+// five seconds later, its error was dropped, and the edit's settlement record met the closed
+// connection and answered 500 INTERNAL (api's endAdviceSavepoint).
+//
+// A failure of any other kind, and one met while the bound still stood - a stall of the socket,
+// which DatabaseStalled names, or a connection that ended, which ConnectionLost names - is returned
+// as it is.
+func RanOutTheRollbackBound(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	return fmt.Errorf("%w: the rollback's bound passed before the database answered it, and the transaction ended with its connection: %w", ErrPoolBusy, err)
 }
 
 // ErrRequestEnded is a commit never started, because the request that would have made it had

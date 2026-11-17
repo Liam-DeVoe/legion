@@ -22,14 +22,15 @@ const (
 	// ran, so any method may be retried.
 	CodeOverloaded = "OVERLOADED"
 	// CodeDatabaseBusy is a request a bound of the server's own stopped before the database
-	// answered it (store.ErrPoolBusy, store.DatabaseStalled): its handler waited its pool's
-	// acquire bound for a connection, or the database stopped answering on the connection it
-	// held. Answered 503. Nothing of the call that failed committed - that is what tells it from
-	// CodeCommitOutcomeUnknown - though a write may have committed an earlier statement of its
-	// own before the bound that failed it, its idempotency key's claim among them. A read whose
-	// call the database never answered is this too, its transaction's COMMIT included: a read
-	// commits nothing, whether or not its transaction was opened read-only, so nothing of it
-	// can be in doubt.
+	// answered it (store.ErrPoolBusy, store.DatabaseStalled), or whose transaction's connection
+	// ended under it before its COMMIT (store.ConnectionLost): its handler waited its pool's
+	// acquire bound for a connection, the database stopped answering on the connection it held,
+	// or that connection was closed or its session ended under it. Answered 503. Nothing of the
+	// call that failed committed - that is what tells it from CodeCommitOutcomeUnknown - though a
+	// write may have committed an earlier statement of its own before the bound that failed it,
+	// its idempotency key's claim among them. A read whose call the database never answered is
+	// this too, its transaction's COMMIT included: a read commits nothing, whether or not its
+	// transaction was opened read-only, so nothing of it can be in doubt.
 	CodeDatabaseBusy = "DATABASE_BUSY"
 	// CodeRequestTimeout is a read that ran past its deadline (WithDeadline,
 	// WithDeadlineUntilAnswer), answered 503. Only reads have a deadline: a write runs to
@@ -143,9 +144,12 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //     (store.IsPoolBusy, of err or of ctx's cause), or the database stopped answering on the
 //     connection the handler held while the request's own context was still live
 //     (store.DatabaseStalled, a pgx socket timeout pgx raises only from a context it was
-//     watching). 503 DATABASE_BUSY. The second is read off the error here as well as inside the
-//     store, because a statement inside a transaction runs on pgx directly, never passes through
-//     a pool's own error mapping, and rolls back with the transaction it was in;
+//     watching); or the connection the handler's transaction ran on ended under one of its
+//     statements before its COMMIT (store.ConnectionLost: pgconn's ErrConnClosed, `conn closed`,
+//     or Postgres ending the session with a FATAL), so the transaction ended with it. 503
+//     DATABASE_BUSY. The last two are read off the error here as well as inside the store,
+//     because a statement inside a transaction runs on pgx directly, never passes through a
+//     pool's own error mapping, and rolls back with the transaction it was in;
 //   - a call the database never answered, met by a request that wrote nothing: its
 //     transaction's COMMIT, or a statement a pool ran outside any transaction. 503
 //     DATABASE_BUSY, since what a read runs commits nothing however the database answered it,
@@ -213,7 +217,7 @@ func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	case context.Cause(ctx) == context.Canceled:
 		slog.Debug("dispatch: request's client went away", "error", err)
 		accesslog.ClientGone(ctx)
-	case store.IsPoolBusy(err), store.IsPoolBusy(context.Cause(ctx)), store.DatabaseStalled(ctx, err):
+	case store.IsPoolBusy(err), store.IsPoolBusy(context.Cause(ctx)), store.DatabaseStalled(ctx, err), store.ConnectionLost(err):
 		writeDatabaseBusy(w, err)
 	default:
 		return false
@@ -222,7 +226,8 @@ func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 }
 
 // writeDatabaseBusy answers a request 503 DATABASE_BUSY with Retry-After: a pool that could not
-// serve a call, and a stall after which nothing of the request can have committed.
+// serve a call, a stall, and a connection that ended under the request's transaction, after each
+// of which nothing of the request can have committed.
 func writeDatabaseBusy(w http.ResponseWriter, err error) {
 	slog.Debug("dispatch: request found the database busy", "error", err)
 	writeRetryable(w, http.StatusServiceUnavailable, CodeDatabaseBusy, "the database did not answer this request in time; retry after Retry-After")
