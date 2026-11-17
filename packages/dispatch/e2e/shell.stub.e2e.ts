@@ -329,6 +329,12 @@ test("a bar whose prefetch failed reloads for its chunk when the reader opens it
   // Read across the reload: a read made while the old document is being left has no page to
   // run in, and is asked again.
   await expect.poll(() => tabReloads(page).catch(() => null)).toHaveLength(1);
+  // Load 2 asks for the bar's chunk again, as a prefetch, and its route handler can still be
+  // polling the page in `settled()` (`failAssetWhen`, `shell.ts`). Teardown closing the context
+  // under that poll rejects its evaluate, which `expect.poll` does not catch
+  // (playwright/lib/matchers/expect.js:13397), so the handler would reject outside any await and
+  // fail the row or stop the worker (playwright/lib/worker/workerProcessEntry.js:1459-1475).
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
 // The main stylesheet is linked after the inline recovery script, so one a server that never built

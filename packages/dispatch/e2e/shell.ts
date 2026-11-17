@@ -98,15 +98,18 @@ interface FailureHandling {
 const FAILURE_HANDLING_KEY = "e2e.failure-handling";
 
 /** How often the waits below look again. Each waits on a fact that turns true within a frame or a
- *  round trip of the page, and Playwright's default ladder would not look again until 350 ms and
- *  then 850 ms, so a row would wait up to half a second past it; the suite's short ladder, as in
- *  `block-references.e2e.ts`. */
+ *  round trip of the page. Playwright's default intervals are `[100, 250, 500, 1000]`
+ *  (playwright/lib/matchers/expect.js:13404), so the default looks again at 100 ms, then at
+ *  350 ms and 850 ms: a fact that turns true just after the look at 100 ms is read 250 ms past
+ *  it, and one just after the look at 350 ms half a second past it. The suite's short ladder, as
+ *  in `block-references.e2e.ts`, looks again at 50, 100, 200 and 400 ms. */
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 /**
  * Records what each document load of the tab does with a chunk failure, from before any script
- * of the page runs, and returns a wait for the `load`th load (from 1) to have judged one, which
- * answers whether each load up to then began a reload.
+ * of the page runs, and returns a wait for the `load`th load (from 1) to have judged one - both
+ * judges have, or one of them began a reload - which answers whether each load up to then began
+ * a reload.
  *
  * A chunk the bundle imports fails twice. Vite asks for it through a
  * `<link rel="modulepreload">` beside the import, so its download fails as that link's `error`
@@ -118,6 +121,11 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
  * the wait is for both: once both have passed their judges, a reload either judge was going to
  * begin has begun, and a row about a failure that must reload nothing reads that at that moment
  * rather than after a margin of the wall clock.
+ *
+ * The wait ends at a reload too. A load whose first judge began one can lose the other event
+ * with its document, and so never count both; a row whose failure must reload nothing would
+ * then, the moment the failure did reload, wait out the poll's timeout and name the judges. Ended
+ * at the reload, the wait answers `true` for that load at once.
  */
 export async function recordFailureHandling(
   page: Page
@@ -176,11 +184,14 @@ export async function recordFailureHandling(
             )
             .catch(() => loads);
           const record = loads[load - 1];
-          return record !== undefined && record.assetErrors > 0 && record.preloadErrors > 0;
+          return (
+            record !== undefined &&
+            (record.reloaded || (record.assetErrors > 0 && record.preloadErrors > 0))
+          );
         },
         {
           ...PROBE,
-          message: `both judges of a chunk failure judged one in load ${load} of the tab`,
+          message: `in load ${load} of the tab, both judges judged a chunk failure or one reloaded`,
         }
       )
       .toBe(true);
@@ -228,9 +239,19 @@ declare global {
  *  has committed: the component rendered, so the import that loaded it settled. */
 function lazyComponentsRendered(page: Page, urls: readonly string[]): Promise<boolean> {
   return page.evaluate(async (chunks) => {
+    const roots = window.__shellReactRoots;
+    // Only a hook that no longer works leaves no root here. `settled()` polls only once the
+    // reference-preview chunk has come down, and that chunk is asked for by the render an effect
+    // of a committed tree begins (`web/src/features/refs/RefPreviewLayer.tsx`, `setWanted`), so
+    // React has committed a root by then. Read as "not rendered yet", a hook React never found
+    // would hold the poll to its timeout; a throw ends it at once, since `expect.poll` does not
+    // catch an error of the function it polls (playwright/lib/matchers/expect.js:13397).
+    if (roots === undefined || roots.size === 0) {
+      throw new Error("React committed no root to the DevTools hook `shellLoads` installs");
+    }
     const lazy = Symbol.for("react.lazy");
     const rendered = new Set<unknown>();
-    for (const root of window.__shellReactRoots ?? []) {
+    for (const root of roots) {
       const stack = [root.current];
       for (let fiber = stack.pop(); fiber !== undefined; fiber = stack.pop()) {
         const element = fiber.elementType;
@@ -277,12 +298,17 @@ function shellLoad(page: Page) {
     const chunks = await Promise.all([margin.promise, preview.promise]);
     // A chunk's response is in before the import it answers has settled - the margin's chunk
     // imports chunks of its own - and before `renderChunk`'s count of it has dropped. React
-    // renders a lazy component only once its import has settled, and the count drops in the
-    // first callbacks of that import, which `renderChunk` registers before React registers its
-    // own (`web/src/features/shell/chunk-loads.ts`), so a rendered component is a count already
-    // down. Neither draws anything on the pages these rows open - the margin is null on a route
-    // that has none, and the layer is null until a card opens - so the tree React committed is
-    // where they are read.
+    // renders a lazy component only once its import has settled. The count drops in a `.finally`
+    // chained after a `.catch` of that import (`web/src/features/shell/chunk-loads.ts:61-65`),
+    // which runs after React's own `then` on it; but that `then` renders nothing. A settled import
+    // wakes its boundary through `pingSuspendedRoot` or `retryTimedOutBoundary`, and each ends in
+    // `ensureRootIsScheduled`, which schedules the render - as a task of React's own scheduler, or
+    // at the earliest in a microtask queued there, behind the `.finally` the `.catch` queued
+    // before it (`react-dom-client.production.js`, `ensureRootIsScheduled` and
+    // `scheduleImmediateRootScheduleTask`). So by the time a lazy component is in a committed
+    // tree the count has dropped. Neither draws anything on the pages these rows open - the margin
+    // is null on a route that has none, and the layer is null until a card opens - so the tree
+    // React committed is where they are read.
     await expect
       .poll(() => lazyComponentsRendered(page, chunks), {
         ...PROBE,
