@@ -116,7 +116,9 @@ tmux_debs=(
   "j/jemalloc/libjemalloc2_5.3.1-2_amd64.deb 115b797f5a25d70cbe81373c9f1cce78536ed2a8a6d9dd5a061682a2340a25df"
 )
 # nats-server at packages/envoy/go.mod's own pin, installed with `go install` so its pid is its own.
-nats_version=v2.10.29
+# The Envoy listener and the daemon refuse a nats-server below v2.11.12, v2.12.4 or v2.14.0
+# (packages/envoy/natsversion).
+nats_version=v2.15.1
 # Claude Code at the repository's own .claude-code-pin, the file every other caller reads.
 claude_code_version=$(tr -d '[:space:]' <"$root/.claude-code-pin")
 # Anthropic's list prices, USD per million tokens: input, output, cache write (5 minutes), cache read.
@@ -962,12 +964,14 @@ await_turn() {
   note "$name: session ${agent[$store:$name.session]}, conversation ${agent[$store:$name.file]}"
 }
 
-# write_claude_route TOKEN LABEL gives a Claude Code claim its model before the claim exists:
-# settings.json in its claim directory names the model, the model route's key command (the one
-# that prints the run's key copy under `key-file`, the gateway route's own under `gateway`), and
-# ANTHROPIC_BASE_URL at the recording proxy. Claude Code sends what its apiKeyHelper prints as
+# write_claude_route TOKEN LABEL [EFFORT] gives a Claude Code claim its model before the claim
+# exists: settings.json in its claim directory names the model, the model route's key command (the
+# one that prints the run's key copy under `key-file`, the gateway route's own under `gateway`),
+# and ANTHROPIC_BASE_URL at the recording proxy. Claude Code sends what its apiKeyHelper prints as
 # x-api-key; a gateway that reads `Authorization: Bearer` gets it from the proxy
-# (lib/recording-proxy.ts, --api-key-as-bearer).
+# (lib/recording-proxy.ts, --api-key-as-bearer). EFFORT, when given, is the effort the claim's
+# Claude Code runs at, as CLAUDE_CODE_EFFORT_LEVEL in the same file's `env`, which outranks every
+# other effort source; without it Claude Code sends its own default, `medium` on the run's model.
 write_claude_route() {
   local dir=$state/claude/$1 helper=$model_key_command
   if [ -n "$model_key_file" ]; then
@@ -977,8 +981,9 @@ write_claude_route() {
   fi
   (umask 077 && mkdir -p "$dir" &&
     jq -n --arg helper "$helper" --arg model "$(jq -r .model "$questions_file")" \
-      --arg base "http://127.0.0.1:$port_proxy/tag/$2" \
-      '{apiKeyHelper: $helper, model: $model, env: {ANTHROPIC_BASE_URL: $base}}' >"$dir/settings.json")
+      --arg base "http://127.0.0.1:$port_proxy/tag/$2" --arg effort "${3:-}" \
+      '{apiKeyHelper: $helper, model: $model,
+        env: ({ANTHROPIC_BASE_URL: $base} + if $effort == "" then {} else {CLAUDE_CODE_EFFORT_LEVEL: $effort} end)}' >"$dir/settings.json")
 }
 
 # ---- the issues' workspaces ------------------------------------------------------------------------
@@ -1095,12 +1100,25 @@ open_tree_lifecycle() {
 # The base daemon runs in the run's mode, so with the workflow on both issues' workspaces are
 # provisioned first (provision_workspace): the base daemon starts the reviewer there, and the branch
 # daemon resumes it there (A10).
+#
+# The reviewer is made to think so that its transcript holds thinking for A10 to replay byte for
+# byte. Its task was once one short restatement, which at Claude Code's default on the run's model
+# (`medium`) it answered with no thinking at all in proof run 43996451813. On that model thinking
+# is adaptive and cannot be given a budget (the API refuses `thinking.type: enabled`, so
+# MAX_THINKING_TOKENS changes nothing): effort is what makes it think, the more readily the higher
+# it is, and the task is what gives it something to think about. So it runs at effort `xhigh`, and
+# its task (questions.json, agents.pre_change) has it weigh, in one sentence and with no tool,
+# whether the missing SBOM alone blocks the release before it restates the blocker and its marker,
+# the two facts pre-change-scan reads. `xhigh` and not `max`, since the loop answers this reviewer
+# at the effort its transcript last ran at (A2, A10, A15, A17) within answers.bounds.output_tokens,
+# thinking included. Neither guarantees a thinking block, so the note below says what the
+# transcript holds, and A10 fails a transcript with no signature.
 produce_pre_change() {
-  local token architect tree=${agent[$store:pre_change.tree]}
+  local token architect tree=${agent[$store:pre_change.tree]} transcript
   write_legion_config "$work/base-$store.yaml" base
   token=$(claim_token "${agent[$store:pre_change.issue]}" reviewer)
   architect=$(claim_token "$tree" architect)
-  write_claude_route "$token" "claude-$store"
+  write_claude_route "$token" "claude-$store" xhigh
   start_daemon "$work/base/legion" "$work/base-$store.yaml" "$evidence/logs/base-daemon-$store.log" "$base_home" "$base_profile" \
     "$base_plugin"
   provision_workspace "$tree"
@@ -1113,6 +1131,8 @@ produce_pre_change() {
   until_true 120 "the pre-change tree's architect to be suspended" claim_is "$architect" '.state == "suspended"'
   stop_daemon
   note "the base daemon ran the Claude Code reviewer ${agent[$store:pre_change.session]} and stopped"
+  transcript=$(conversation_text pre_change 2>/dev/null) || transcript=
+  note "the pre-change reviewer's transcript: effort \"$(transcript_effort "$transcript")\", $(transcript_thinking "$transcript") thinking blocks, $(grep -c . <<<"$(transcript_signatures "$transcript")" || true) thinking signatures (A10 replays each byte for byte)"
 }
 
 # produce_agents runs the branch daemon's own agents and stops each the way its kind is made:
@@ -1520,11 +1540,26 @@ soft_wait() {
   return 1
 }
 
-# hold_at LABEL N lets LABEL's calls through up to ordinal N and holds the next (recording proxy);
-# held LABEL N: the call of ordinal N is waiting.
+# hold_at LABEL N lets LABEL's calls through up to ordinal N and holds the next (recording proxy).
 hold_at() { printf '%s\n' "$2" >"$work/proxy-hold/$1"; }
-held() { grep -qx "$2" "$work/proxy-hold/$1.held" 2>/dev/null; }
 release() { rm -f "$work/proxy-hold/$1"; }
+# held_count LABEL: how many calls of LABEL the proxy has held so far, the lines of <label>.held,
+# to which it appends each call's ordinal as the call starts waiting and from which it removes
+# none. held_since LABEL K prints the ordinal of the first call it held after those K, and fails
+# while it has held none since: a check reads the call it holds here, never as the ordinal after
+# the records' count (proxy_ordinal), which only bounds the ordinals the proxy has given.
+held_count() {
+  local lines=()
+  [ ! -f "$work/proxy-hold/$1.held" ] || mapfile -t lines <"$work/proxy-hold/$1.held"
+  printf '%s\n' "${#lines[@]}"
+}
+held_since() {
+  local lines=()
+  [ -f "$work/proxy-hold/$1.held" ] || return 1
+  mapfile -t lines <"$work/proxy-hold/$1.held"
+  [ "${#lines[@]}" -gt "$2" ] && [ -n "${lines[$2]}" ] || return 1
+  printf '%s\n' "${lines[$2]}"
+}
 
 # smoke_gh ARG...: one gh call on the smoke repository as the implement App, printing gh's own
 # output. The rig's own gh reads nothing there: in a Legion pane the first gh on PATH is the
@@ -1591,15 +1626,18 @@ check_a2() {
 # (the Legion agent registry's entries for the issue, the list the mention picker offers stopped
 # agents from), and asks on the closed issue's own thread with a role mention of that tester; the
 # answer is the tester's reply to that comment, in its own name, holding what only the replacing
-# tester's conversation holds. Control: a mention of a session nobody ever registered, on the same
-# closed issue, fails its delivery `no live session <id>`: the listener answers such a send 404 and
-# the Legion agent registry names no such session. A role nobody holds is no control: the listener
-# keeps a role message with no live holder for an hour, for the role's next holder, on the base
-# commit as on the branch, so that mention's delivery stays pending. Dispatch settles the refusal
-# only after it has waited out a listener take-over (takeoverRetry, 12 s), so the control's
-# delivery is read again until it is refused. Then the second leg, a3_conversation_page: the same
-# person, in a browser, opens the closed issue's Collaborators view, follows the tester's own link
-# to its conversation page and asks a second question there. A3 passes only on both legs.
+# tester's conversation holds. The mention's delivery is read again from Dispatch until it is sent
+# to that tester (comment_delivered_to): the comment's own POST answer carries it pending, since
+# Dispatch settles a mention after it answers. Control: a mention of a session nobody ever
+# registered, on the same closed issue, fails its delivery `no live session <id>`: the listener
+# answers such a send 404 and the Legion agent registry names no such session. A role nobody holds
+# is no control: the listener keeps a role message with no live holder for an hour, for the role's
+# next holder, on the base commit as on the branch, so that mention's delivery stays pending.
+# Dispatch settles the refusal only after it has waited out a listener take-over (takeoverRetry,
+# 12 s), so the control's delivery is read again until it is refused. Then the second leg,
+# a3_conversation_page: the same person, in a browser, opens the closed issue's Collaborators
+# view, follows the tester's own link to its conversation page and asks a second question there.
+# A3 passes only on both legs.
 a3_control_refused() { one_delivery_in "$(comment_deliveries "$1")" failed "no live session $2"; }
 check_a3() {
   criterion A3 "a question on a closed issue's own thread, by a role mention of its stopped tester, is answered there, and a second asked from the tester's conversation page reached through the issue's Collaborators view is answered there" infra448 || return 0
@@ -1622,18 +1660,20 @@ check_a3() {
     reply=$(comment_reply_by "$issue" "$id" "$session")
     note "answered after $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   fi
+  soft_wait 60 "comment $id's mention to be delivered to tester $session" comment_delivered_to "$id" "$session" || true
+  note "comment $id's deliveries as Dispatch holds them now: $(dispatch_get "comments/$id" 2>/dev/null | jq -c '[.comment.deliveries[]? | {target, state, session_id, error}]' || true)"
   control_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg t "session:$nobody" \
     '{body: "control: a session nobody registered", mentions: [{target: $t}]}')" | jq -r '.id // empty') || control_id=
   soft_wait 60 "the control's mention of session $nobody to be refused" a3_control_refused "$control_id" "$nobody" || true
   control=$(comment_deliveries "$control_id")
   note "control: a mention of session $nobody, which nobody registered, on closed $issue (comment $control_id): $control"
   if [ -n "$reply" ] && answer_holds tester-closed-thread "$reply" >/dev/null &&
-    comment_delivered_to "$comment" "$session" &&
+    comment_delivered_to "$id" "$session" &&
     one_delivery_in "$control" failed "no live session $nobody"; then
     thread_leg=1
     note "thread leg: the role mention on closed $issue reached tester $session, which answered in the thread; the mention of a session nobody registered failed no live session"
   else
-    note "thread leg: no reply with the answer key from $session to comment $id, or its delivery was not sent to it, or the control was not refused no live session $nobody"
+    note "thread leg: no reply with the answer key from $session to comment $id, or Dispatch does not record its delivery as sent to it, or the control was not refused no live session $nobody"
   fi
   a3_conversation_page "$issue" "$session" && page_leg=1
   if [ -n "$thread_leg" ] && [ -n "$page_leg" ]; then
@@ -1843,7 +1883,7 @@ resume_agent() {
 
 check_a7() {
   criterion A7 "a question to a running agent reaches it alone; a resume during generation appends nothing and forwards the question" || return 0
-  local token=${agent[$store:architect.token]} label=daemon-$store before after sent event n appended_before appended_after first_ok=0 second_ok=0
+  local token=${agent[$store:architect.token]} label=daemon-$store before after sent event n k appended_before appended_after first_ok=0 second_ok=0
   if ! resume_agent architect; then
     record_result A7 FAIL "the architect did not run again"
     return 0
@@ -1861,15 +1901,20 @@ check_a7() {
     return 0
   fi
   appended_before=$(appended_exchanges architect)
+  # The loop's model call is the first call the proxy holds once the hold is placed, at whatever
+  # ordinal it came: the records' count is only a floor of the ordinals the proxy has given
+  # (hold_after_tool), so the call after it is not waited for by its number.
   n=$(proxy_ordinal "$label")
+  k=$(held_count "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask session "${agent[$store:architect.session]}" in-order-2)
   event=${sent#* }
-  if ! soft_wait 240 "the loop's model call to be held at the proxy" held "$label" "$((n + 1))"; then
+  if ! soft_wait 240 "the loop's model call to be held at the proxy" held_since "$label" "$k"; then
     release "$label"
     record_result A7 FAIL "the loop made no model call for the question to the stopped architect (listener $sent)"
     return 0
   fi
+  note "the proxy holds the loop's model call for the question at $label ordinal $(held_since "$label" "$k")"
   claims_cmd resume --claim "$token" >/dev/null
   soft_wait 300 "the architect to start" claim_is "$token" '.state | IN("launching", "shim_connected", "registered", "ready", "working", "idle")' || true
   release "$label"
@@ -1997,7 +2042,7 @@ check_a9() {
   first=$(first_reply_of "$e1" "$e2")
   q1=$(answer_question_id "$(inbox_reply "$e1")")
   q2=$(answer_question_id "$(inbox_reply "$e2")")
-  note "answers: 1: $(inbox_message "$e1" | head -c 200 | tr '\n' ' ') | 2: $(inbox_message "$e2" | head -c 200 | tr '\n' ' ')"
+  note "answers: 1: $(head -c 200 <<<"$(inbox_message "$e1")" | tr '\n' ' ') | 2: $(head -c 200 <<<"$(inbox_message "$e2")" | tr '\n' ' ')"
   m=$(proxy_count agents)
   resume_agent architect || true
   claims_cmd deliver --claim "$token" --task "$(question_text after-resume)" >/dev/null
@@ -2005,10 +2050,12 @@ check_a9() {
   soft_wait 600 "the resumed architect's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents "$m")
   counts="question 1 $(occurrences "$request" "in-order-1 of run $run_tag, A9"), question 2 $(occurrences "$request" "in-order-2 of run $run_tag, A9"), exchange 1 $(appended_exchanges architect "$q1"), exchange 2 $(appended_exchanges architect "$q2")"
-  reply=$(last_assistant_text architect)
+  # Every reply the architect gave since the task was delivered, not its last one: on resume it may
+  # also answer a person's earlier reply in the same turn, and its last words then answer that.
+  reply=$(assistant_texts_after architect "$(question_text after-resume)")
   note "the first reply on the asker's topic answers question 1: $(grep -qF "In Reply To: $e1" <<<"$first" && echo yes || echo no)"
   note "the resumed architect's first request (agents, after its first $m model calls) holds each question, and its conversation the exchange appended for each (questions $q1 and $q2): $counts"
-  note "the resumed architect: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
+  note "the resumed architect, since the task: $(head -c 800 <<<"$reply" | tr '\n' ' ')"
   suspend_agent architect || true
   if grep -qF "In Reply To: $e1" <<<"$first" && [ -n "$q1" ] && [ -n "$q2" ] && [ "$counts" = "question 1 1, question 2 1, exchange 1 1, exchange 2 1" ] &&
     answer_holds after-resume "$reply" >/dev/null; then
@@ -2023,14 +2070,27 @@ check_a9() {
 # signature it holds, byte for byte; the second reads the conversation from cache; resumed after,
 # its first request holds both exchanges) and its compaction leg (the architect's session compacted
 # by the daemon's own compaction, is answered from the compacted conversation, and resumes after
-# holding the exchange). The GPT-6.1 leg waits on the OpenAI API.
+# holding the exchange). The GPT-6.1 leg waits on the OpenAI API. The byte-for-byte clause needs
+# thinking to replay, which is why the pre-change reviewer runs at a raised effort
+# (produce_pre_change); a transcript with no thinking signature fails the leg and says why, since
+# any request carries every signature of a transcript that holds none.
 check_a10() {
   criterion A10 "a GPT-6.1 conversation's reasoning replayed byte-equal and its cache read" openai || true
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
-  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
+  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs thinking unexercised='' missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
   transcript=$(conversation_text pre_change)
   want_effort=$(transcript_effort "$transcript")
   sigs=$(transcript_signatures "$transcript")
+  thinking=$(transcript_thinking "$transcript")
+  if [ -z "$sigs" ]; then
+    if [ "$thinking" = 0 ]; then
+      unexercised="the pre-change transcript holds no thinking"
+    else
+      unexercised="the pre-change transcript's $thinking thinking blocks carry no signature"
+    fi
+    unexercised+=", so the clause that the replay carries each thinking signature byte for byte is unexercised"
+    note "$unexercised: the Claude Code leg fails"
+  fi
   t1="$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, A10-1)"
   t2="$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, A10-2)"
   s1=$(envoy_ask_text session "$session" "$t1")
@@ -2053,8 +2113,8 @@ check_a10() {
   while IFS= read -r sig; do
     [ -z "$sig" ] || grep -qF -- "$sig" <<<"$request" || missing=$((missing + 1))
   done <<<"$sigs"
-  note "the transcript's last effort \"$want_effort\", the first answer's request effort \"$effort\"; the transcript's thinking signatures $(grep -c . <<<"$sigs" || true), missing from the request $missing"
-  note "answers: $(inbox_reply "$e1" | head -c 200 | tr '\n' ' ') | $(inbox_reply "$e2" | head -c 200 | tr '\n' ' ')"
+  note "the transcript's last effort \"$want_effort\", the first answer's request effort \"$effort\"; the transcript's thinking blocks $thinking, its thinking signatures $(grep -c . <<<"$sigs" || true), missing from the request $missing"
+  note "answers: $(head -c 200 <<<"$(inbox_reply "$e1")" | tr '\n' ' ') | $(head -c 200 <<<"$(inbox_reply "$e2")" | tr '\n' ' ')"
   note "the second answer's cost line: $line"
   m=$(proxy_count "claude-$store")
   resume_agent pre_change || true
@@ -2088,7 +2148,7 @@ check_a10() {
   s3=$(envoy_ask_text session "${agent[$store:architect.session]}" "$t3")
   e3=${s3#* }
   soft_wait 240 "the answer from the compacted conversation" inbox_reply "$e3" || true
-  note "from the compacted conversation: $(inbox_reply "$e3" 2>/dev/null | head -c 300 | tr '\n' ' ')"
+  note "from the compacted conversation: $(head -c 300 <<<"$(inbox_reply "$e3" 2>/dev/null)" | tr '\n' ' ')"
   m=$(proxy_count agents)
   resume_agent architect || true
   claims_cmd deliver --claim "${agent[$store:architect.token]}" --task "Reply with one word: ready." >/dev/null
@@ -2099,9 +2159,9 @@ check_a10() {
     [ "$(occurrences "$request" "A10 after compaction)")" = 1 ] && ok_compact=1
   suspend_agent architect || true
   if [ "$ok_claude$ok_compact" = 11 ]; then
-    record_result A10 PASS "Claude Code: effort $effort and every thinking signature replayed, the second answer read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
+    record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the second answer read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
   else
-    record_result A10 FAIL "Claude Code leg $ok_claude, compaction leg $ok_compact (1 = shown)"
+    record_result A10 FAIL "Claude Code leg $ok_claude, compaction leg $ok_compact (1 = shown)${unexercised:+; $unexercised}"
   fi
 }
 
@@ -2337,28 +2397,38 @@ check_a17() {
   fi
 }
 
-# hold_after_tool LABEL N: with LABEL held at N (hold_at), the loop's first model call (ordinal N+1)
-# is let through and the one after its tool call (N+2) held, so the loop stands between the gh call
-# and its reply.
+# hold_after_tool LABEL K: with LABEL held (hold_at) from when its <label>.held named K calls
+# (held_count), the first call the proxy holds after those, the loop's first model call, is let
+# through and the next one it holds, the call after the loop's gh call, waited for, so the loop
+# stands between the gh call and its reply. Each is read off what the proxy holds and not reckoned
+# from the records: the proxy numbers a call as it arrives and records it only once it ends, so the
+# records' count is a floor of the ordinals it has given. In the resume leg of proof run
+# 43996451813 the loop's first call came at another ordinal than the one after that count, nothing
+# let it through, and the leg gave up.
 hold_after_tool() {
-  soft_wait 300 "the loop's first model call" held "$1" "$(($2 + 1))" || return 1
-  hold_at "$1" "$(($2 + 1))"
-  soft_wait 300 "the loop's model call after its gh call" held "$1" "$(($2 + 2))"
+  local first
+  soft_wait 300 "the loop's first model call" held_since "$1" "$2" || return 1
+  first=$(held_since "$1" "$2")
+  note "the proxy holds the loop's first model call at $1 ordinal $first; letting it through and holding the next"
+  hold_at "$1" "$first"
+  soft_wait 300 "the loop's model call after its gh call" held_since "$1" "$(($2 + 1))" || return 1
+  note "the proxy holds the loop's model call after its gh call at $1 ordinal $(held_since "$1" "$(($2 + 1))")"
 }
 
 check_a18() {
   criterion A18 "a restart after the comment's gh call posts the answer once and the comment once; a resume at that point hands the agent the call" || return 0
-  local label=daemon-$store marker=answer-loop-a18-$run_tag-$store sent event n comments token ok_restart=0 ok_resume=0 id
+  local label=daemon-$store marker=answer-loop-a18-$run_tag-$store sent event n k comments token ok_restart=0 ok_resume=0 id
   implementer_with_pull_request || {
     record_result A18 FAIL "no implementer with a pull request could be made"
     return 0
   }
   token=${agent[$store:implementer.token]}
   n=$(proxy_ordinal "$label")
+  k=$(held_count "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker-restart")" "a18-restart-$run_tag-$store")
   event=${sent#* }
-  if hold_after_tool "$label" "$n"; then
+  if hold_after_tool "$label" "$k"; then
     note "the comment's gh line before the kill: $(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "implementer")' | tail -1)"
     kill -KILL "$daemon_pid" 2>/dev/null || note "the daemon $daemon_pid was already gone before the kill"
     daemon_pid=
@@ -2372,10 +2442,11 @@ check_a18() {
   fi
   release "$label"
   n=$(proxy_ordinal "$label")
+  k=$(held_count "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker-resume")" "a18-resume-$run_tag-$store")
   event=${sent#* }
-  if hold_after_tool "$label" "$n"; then
+  if hold_after_tool "$label" "$k"; then
     claims_cmd resume --claim "$token" >/dev/null
     soft_wait 300 "the implementer to start" claim_is "$token" '.state | IN("launching", "shim_connected", "registered", "ready", "working", "idle")' || true
     release "$label"
@@ -2444,9 +2515,12 @@ check_a19() {
   note "recorded $issue's review round open on #$number at $head, the reviewer $token (session $session) completed undecided: $(review_record "$issue")"
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   note "the daemon keeps the round's tree live: $(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase}')"
+  # The control's footer names the pull request's head, as the reviewer's own approval will, so the
+  # session is the one thing that differs: a footer naming no head decides nothing whoever submits
+  # it (main's refusesRound), and a control refused for that would show nothing about the session.
   control=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" approve "$work/github-apps.yaml" "$repo" "$number" "$head" \
-    "Approved (control: another session's footer). <!-- legion: {\"session\":\"legion-e2eal-another-session-$run_tag\",\"phase\":\"reviewing\"} -->") || control=
-  note "control: the review App's approval with another session's footer: $control"
+    "Approved (control: another session's footer). <!-- legion: {\"session\":\"legion-e2eal-another-session-$run_tag\",\"phase\":\"reviewing\",\"head\":\"$head\"} -->") || control=
+  note "control: the review App's approval at $head with another session's footer: $control"
   sleep 270
   control_after=$(review_record "$issue")
   note "after two of the daemon's review reads: $control_after; the reviewer's claim: $(claim_json "$token" | jq -c '{state, session}')"

@@ -1350,7 +1350,7 @@ CI does not run it.
   One server holds Dispatch's databases, each daemon's, and the session database the postgres pass's panes keep their Oh My Pi sessions in.
   SQL goes through Bun's own Postgres client.
 
-- `nats-server` v2.10.29 (`packages/envoy/go.mod`'s pin), installed with `go install` so its pid is its own;
+- `nats-server` v2.15.1 (`packages/envoy/go.mod`'s pin, above the floor the listener and the daemon hold every nats-server to), installed with `go install` so its pid is its own;
   tmux 3.5a from Debian's packages with a wrapper binding its libraries when the host has none ([the worker-pod note](../../docs/solutions/testing/a-worker-pod-ships-no-go-or-tmux-provision-them-under-home-each-relaunch-and-record-every-figure-in-the-handoff.md));
   Claude Code at the repository's own `.claude-code-pin` (`bun add --exact`, the release `.github/actions/install-claude-code` installs);
   Oh My Pi from `LEGION_E2E_OMP_BIN`, else `/opt/omp/bin/omp`, else the `.omp-pin` mise resolves (the run prints which, and the pin beside it, since a pod's build can differ from the pin).
@@ -1374,7 +1374,8 @@ CI does not run it.
   the listener refuses a registration that asks for none (`409 not_requested`), and no session receives from a plain NATS subscription ("Session consumers" in `packages/envoy/AGENTS.md`).
   The asker's consumer carries the answers to its questions.
   The controller stand-in holds both passes' controller roles, `legion-<project token>-controller`, since the listener stores a project's controller lane, `notifications.legion.<project token>.controller`, only for the session holding that role, so its consumer carries the notices the daemons publish there.
-  The inbox writes each envelope it is relayed as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice — and then answers the frame `done`, which acknowledges it to the consumer.
+  The inbox writes each envelope it is relayed as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice on one topic — and then answers the frame `done`, which acknowledges it to the consumer.
+  A dedupe key names one envelope on one topic and not one across the run: each daemon keys its controller notices by its own outbox row, so the second pass's daemon repeats the first one's keys on its own lane, and each of those notices is recorded.
   It answers the listener's connection probe on the same subject (`Envoy-Probe: 1`) `done` too, and records nothing of it.
 
 - The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`, `DISPATCH_*`, `LEGION_*` and model keys reach none of them.
@@ -1440,7 +1441,8 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   Thread leg: the tester's issue is closed;
   its role token is read from `GET /issues/{key}/collaborators` (the list the mention picker offers stopped agents from);
   a person's comment on the closed issue mentions `role:<token>`;
-  the delivery is `sent` to that tester's session and its reply in the thread holds the answer key.
+  its one delivery is `sent` to that tester's session and its reply in the thread holds the answer key.
+  The delivery is read again from `GET /comments/{id}` until it is sent, never off the comment's own `POST` answer, which carries it `pending`: Dispatch settles a mention after it answers.
   Control: a mention of a session nobody registered, on the same closed issue, fails `no live session <id>`, read again from `GET /comments/{id}` until it settles, since Dispatch first waits out a listener take-over (12 s).
   A mention of a role nobody holds is no control since main's #4079: the listener keeps such a role message for an hour for the role's next holder, on the base commit as on the branch, so its delivery stays `pending`.
   Conversation-page leg: the same person, in Playwright's Chromium signed in by the trusted identity header, opens the closed issue's Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one no later session replaced) by its link to `/agents/<session>/live`, sends a second question there in the mode the page offers a stopped agent (Aside), and waits four minutes for the answer;
@@ -1483,12 +1485,17 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   the resumed architect's first captured request holds each question once, and its conversation holds exactly one appended exchange per question
   — the `legion-answer` marker entry naming that question id, which each reply carries in its `<!-- legion-answer:<id> -->` marker.
   The exchange is counted there and not by the answer's own words in the request, because an architect that answered the same thing itself before it stopped holds those words in its own earlier turns.
-  Its turn after the resume quotes both answers.
+  Its turn after the resume quotes both answers:
+  every reply it gave after the task was delivered is read (`assistant_texts_after`), not its last, since a resumed architect may also answer a person's earlier reply in the same turn, and its last words then answer that.
 
 - A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime:
   the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >
   0`, and the resumed reviewer's first model call holds both exchanges once
   — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
+  The byte-for-byte clause needs thinking to replay, and at Claude Code's default on the run's model, `medium`, the reviewer once restated its finding with no thinking at all:
+  on that model thinking is adaptive and takes no budget, so effort decides how readily it thinks and the task whether there is anything to think about.
+  The pre-change reviewer runs at effort `xhigh`, set as `CLAUDE_CODE_EFFORT_LEVEL` in its claim's `settings.json`, and its task has it weigh, in one sentence and with no tool, whether the missing SBOM alone blocks the release before it restates the blocker and its marker, the two facts A2's and A10's question reads.
+  The run notes the thinking blocks and signatures the transcript holds once the base daemon stops, and a transcript with no signature fails the leg, which then says the clause went unexercised.
   The second question is asked once the first answer is posted and ten seconds after that, since a cache entry is not always readable the moment it is written (in the run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s earlier), and the cache-read clause judges the loop's cache policy, not the provider's propagation delay.
   Compaction leg: the resumed architect's session is compacted as Legion compacts one, by the daemon's own `legion claims compact`, which has Oh My Pi write the summary as text to the daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`), and its conversation must then hold a compaction whose summary is text (`text_compactions`).
   A person's bare `/compact` is no such compaction: under the pinned Oh My Pi a compaction that carries no instructions is the image-based snapcompact, which the loop's reader declines, so the question is passed on (docs/kubernetes.md, "The answer loop").
@@ -1528,14 +1535,19 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
 
 - A18: the proxy holds the loop's model call after the comment's `gh` call;
   the daemon is killed and restarted (one comment, one answer), and in a second run the claim is resumed there (the question is forwarded with the call, one comment, no reply from the loop).
+  Each leg reads the call to hold off the proxy's own `<label>.held` list, not off the records' count:
+  the first call the proxy holds once the hold is placed, the loop's first model call at whatever ordinal it came, is let through and the next one held.
+  The proxy records a call only once it ends, so a call still in flight gives the loop's first call a later ordinal than the one after the count (the resume leg of proof run 43996451813 gave up waiting for that one).
 
 - A19: a smoke pull request, the issue's architect (no task) and a Claude Code reviewer told its round is complete, both suspended.
   **Departure:** with the daemon stopped the run writes the open round into the daemon's record (issue phase `reviewing`, its tree's `tree_lifecycles` row open under the workflow as A6's is, the reviewer's `phases` row with its claim, handoff commit and completion, the `pull_requests` row at the head), as the workflow writes it when a reviewer completes undecided;
   driving a tree there with real agents is the stage proofs' work.
   Without the lifecycle row the next boot's admission pass would take the whole round out of the workflow before the control could read it.
-  Control: a review-App approval whose footer names another session leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s.
+  Control: a review-App approval whose footer names another session, and the pull request's head, so that the session is the one thing that differs, leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s.
   Then the stopped reviewer approves with its `gh` tool:
-  the review App's single approval of the head carries its session's footer, the phase leaves `reviewing`, and `review_seen` is that review's id.
+  the review App's single approval of the head carries its session's footer and names the head its recorded round read (the `phases` row's handoff commit, which is the pull request's head), the phase leaves `reviewing`, and `review_seen` is that review's id.
+  A review footed with no head, or with a head the pull request has moved past, decides nothing (main's `refusesRound`), which is why the `gh` tool reads the pull request's head before it submits and refuses on a mismatch;
+  the daemon's unit tests hold that refusal and its control (`internal/ghtool`).
   The rig reads the approvals back as the implement App, as A17 reads the comments (**GitHub** below).
 
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it;

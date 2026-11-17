@@ -15,8 +15,8 @@
 // came, the session the subject was watched for, and its text as a session's deliverer renders it —
 // `In Reply To: <event id>` when the envelope answers one, `Message:`, the payload (its summary
 // when it carries no payload), a blank line and `Topic: <topic>`. An envelope whose dedupe key was
-// already recorded is left out, so a proof counting the answers to one question counts deliveries,
-// not the copies a redelivery makes.
+// already recorded on its topic is left out, so a proof counting the answers to one question counts
+// deliveries, not the copies a redelivery makes.
 //
 // A relay frame carries a reply subject, and the inbox answers it `done` once the frame is
 // recorded, or left out as a repeat or as no envelope: the listener acknowledges the message to
@@ -47,7 +47,10 @@ export function renderDelivery(envelope: InboxEnvelope): string {
 }
 
 /** The recorder the subscriptions share: it appends one line per envelope to `record`, and leaves
- * out an envelope whose dedupe key it has already written (the first write wins). It answers true
+ * out an envelope whose topic and dedupe key it has already written together (the first write
+ * wins). A dedupe key names one envelope on one topic, not one across the run: each of the run's
+ * daemons keys its notices by its own outbox row, so the second daemon's keys repeat the first
+ * one's on another controller lane, and each of those is a message of its own. It answers true
  * when it wrote the line. A frame that is not an envelope is named on stderr and recorded as
  * nothing: the subjects watched here carry envelopes only. */
 export function makeRecorder(record: string): (session: string, frame: string) => boolean {
@@ -62,8 +65,9 @@ export function makeRecorder(record: string): (session: string, frame: string) =
     }
     const key = envelope.dedupe_key ?? "";
     if (key !== "") {
-      if (written.has(key)) return false;
-      written.add(key);
+      const pair = JSON.stringify([envelope.topic ?? "", key]);
+      if (written.has(pair)) return false;
+      written.add(pair);
     }
     const line = { at: new Date().toISOString(), session, text: renderDelivery(envelope) };
     appendFileSync(record, `${JSON.stringify(line)}\n`);

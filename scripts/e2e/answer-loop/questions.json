@@ -22,7 +22,7 @@
       "role": "reviewer",
       "kind": "pre-change",
       "harness": "claude",
-      "task": "Record this release finding and keep it: the release was blocked by the missing SBOM, tracked under the marker SBOM-ZINC-512. Reply with one short paragraph restating the blocker and the marker. Run no tool."
+      "task": "Record this release finding and keep it: the release was blocked by the missing SBOM, tracked under the marker SBOM-ZINC-512. Before you restate it, weigh in one sentence whether the missing SBOM alone blocks the release or another release gate could block it too. Then reply with one short paragraph restating the blocker and the marker. Run no tool."
     },
     "a6_child": {
       "role": "tester",

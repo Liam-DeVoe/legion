@@ -102,6 +102,54 @@
     },
     "replies": []
   },
+  "comments/comment-77": {
+    "comment": {
+      "id": "comment-77",
+      "body": "@tester which rerun gate did you settle on? (question tester-closed-thread of run 4242)",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:ALX-3-tester",
+          "state": "sent",
+          "error": null,
+          "session_id": "session-tester"
+        }
+      ]
+    },
+    "replies": [{ "id": "comment-78", "author": { "id": "session-tester", "kind": "agent" } }]
+  },
+  "comments/comment-80": {
+    "comment": {
+      "id": "comment-80",
+      "body": "@tester a mention Dispatch has not settled yet",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:ALX-3-tester",
+          "state": "pending",
+          "error": null,
+          "session_id": null
+        }
+      ]
+    },
+    "replies": []
+  },
+  "comments/comment-81": {
+    "comment": {
+      "id": "comment-81",
+      "body": "@tester a mention the replaced session took",
+      "deliveries": [
+        {
+          "attempt": 1,
+          "target": "role:ALX-3-tester",
+          "state": "sent",
+          "error": null,
+          "session_id": "session-tester-old"
+        }
+      ]
+    },
+    "replies": []
+  },
   "comments/comment-404": { "error": { "code": "NOT_FOUND", "message": "comment not found" } },
   "issues/ALX-3/collaborators": {
     "legion_registry": "available",

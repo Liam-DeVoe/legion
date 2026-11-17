@@ -195,8 +195,17 @@ conversation_text() {
     cat -- "$file"
   fi
 }
-# conversation_holds NAME NEEDLE: NAME's conversation holds NEEDLE, whatever entry carries it.
-conversation_holds() { conversation_text "$1" | grep -qF -- "$2"; }
+# conversation_holds NAME NEEDLE: NAME's conversation holds NEEDLE, whatever entry carries it. The
+# whole conversation is read before it is searched, never piped into a search that stops at its
+# first match: under the session table it is one jq string, and a `grep -q` that closes the pipe
+# early fails jq's write, which `pipefail` makes the read's answer (A7 and A15 read a conversation
+# holding the needle as one that did not, beside `jq: error: writing output failed: Broken pipe`).
+# A session file longer than the pipe's buffer does the same to `cat`.
+conversation_holds() {
+  local text
+  text=$(conversation_text "$1") || return 1
+  grep -qF -- "$2" <<<"$text"
+}
 # text_compactions NAME: how many compactions NAME's Oh My Pi conversation holds whose summary is
 # text the loop's reader reads. The reader declines the two others (compactionSummary in
 # packages/daemon/internal/conversation/omp/context.go): Oh My Pi's image-based snapcompact, an
@@ -226,12 +235,20 @@ appended_exchanges() {
     | select((.type == "custom" and .customType == "legion-answer" and ($q == "" or (.data.questionId? // "") == $q))
       or (.type == "legion-answer" and ($q == "" or (.questionId? // "") == $q)))] | length'
 }
-# last_assistant_text NAME: the words of the last thing NAME's Oh My Pi conversation holds as its
-# own reply, which is what an agent resumed after its answers says next (A9).
-last_assistant_text() {
-  conversation_text "$1" |
-    jq -R -r 'fromjson? | select(.type == "message" and .message.role == "assistant") | [.message.content[]? | .text? // empty] | join(" ")' |
-    tail -1
+# assistant_texts_after NAME NEEDLE prints, one a line, the words of every reply NAME's Oh My Pi
+# conversation holds after the last entry not its own that holds NEEDLE: everything the agent said
+# in the turn that entry started, which is what an agent resumed after its answers says next (A9,
+# whose NEEDLE is the task it was delivered). Every reply of the turn is read and not the last: a
+# resumed agent may answer a person's earlier reply in the same turn, and its last words then
+# answer that. A reply holding no text (a tool call alone) prints no line, and a conversation with
+# no such entry prints nothing.
+assistant_texts_after() {
+  conversation_text "$1" | jq -R -s -r --arg n "$2" '[split("\n")[] | fromjson?] as $entries
+    | ([range($entries | length) | select(($entries[.].message.role? // "") != "assistant" and ($entries[.] | tojson | contains($n)))] | last) as $at
+    | if $at == null then empty else
+        $entries[$at + 1:][] | select(.type == "message" and .message.role == "assistant")
+          | [.message.content[]? | .text? // empty] | join(" ") | select(. != "")
+      end'
 }
 # transcript_effort TRANSCRIPT: the effort a Claude Code transcript last ran at, which the loop's
 # replay of it must carry; empty for a transcript that records none.
@@ -240,6 +257,12 @@ transcript_effort() { jq -R -r 'fromjson? | select(.type == "assistant") | .effo
 # line, which the loop's replay must carry byte for byte.
 transcript_signatures() {
   jq -R -r 'fromjson? | select(.type == "assistant") | .message.content[]? | select(.type == "thinking") | .signature // empty' <<<"${1:-}"
+}
+# transcript_thinking TRANSCRIPT: how many thinking blocks a Claude Code transcript's own turns
+# hold. None leaves A10's byte-for-byte clause with nothing to replay, which the check reads as a
+# FAIL rather than as every signature carried.
+transcript_thinking() {
+  jq -R -s '[split("\n")[] | fromjson? | select(.type == "assistant") | .message.content[]? | select(.type? == "thinking")] | length' <<<"${1:-}"
 }
 # answer_question_id REPLY prints the question id of the loop's answer REPLY: the id in the
 # `<!-- legion-answer:<id> -->` marker every reply the loop posts carries (intake.AnswerMarker).
@@ -345,7 +368,9 @@ proxy_count() {
   printf '%s\n' "${count:-0}"
 }
 # proxy_ordinal LABEL: the ordinal LABEL has reached, every request the proxy recorded for it
-# counted, model call or not, which is what a hold names (hold_at, held, hold_after_tool).
+# counted, model call or not, which is what a hold names (hold_at). The proxy records a request
+# once it ends, so a request still in flight has an ordinal past this count: a check that must
+# know the ordinal of a held call reads it off the proxy's own held list (held_since).
 proxy_ordinal() {
   local count
   count=$(jq -s --arg l "$1" '[.[] | select(.label == $l)] | length' "$evidence/model-calls.jsonl" 2>/dev/null) || count=
@@ -445,10 +470,15 @@ collaborator_role_token() {
     '[.agents[]? | select(.session_id == $s and .legion.role == "tester" and .legion.replaced_by == null) | .legion.role_token] | first // empty' \
     <<<"${1:-null}" 2>/dev/null || true
 }
-# comment_delivered_to COMMENT SESSION: the comment Dispatch answered with records its one
-# delivery as sent to SESSION.
+# comment_delivered_to COMMENT SESSION: Dispatch's record of COMMENT as it holds it now (GET
+# comments/<id>, as comment_deliveries reads it) holds one delivery, sent to SESSION. The comment's
+# own POST answer is no such record: Dispatch settles a mention after it answers, so that answer
+# carries the delivery pending (A3 waits for this read, as it waits for its control's refusal).
 comment_delivered_to() {
-  jq -e --arg s "$2" '.deliveries[0].state == "sent" and .deliveries[0].session_id == $s' <<<"${1:-null}" >/dev/null 2>&1
+  local body
+  body=$(dispatch_get "comments/$1" 2>/dev/null) || body=
+  jq -e --arg s "$2" '(.comment.deliveries? // null) | type == "array" and length == 1 and .[0].state == "sent" and .[0].session_id == $s' \
+    <<<"${body:-null}" >/dev/null 2>&1
 }
 # comment_deliveries COMMENT prints COMMENT's delivery records as Dispatch holds them now
 # (GET comments/<id>), each as {state, error}, and `[]` for a comment it answers no record of. A

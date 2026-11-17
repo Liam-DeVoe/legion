@@ -394,6 +394,17 @@ describe("the stopped agents' conversations", () => {
     expect(run(`${body}; conversation_holds architect never-written`).code).toBe(1);
   });
 
+  // The same read under the files store: a session file longer than the pipe's buffer, whose
+  // `cat` a search that stops early would leave writing into a closed pipe.
+  test("conversation_holds finds a needle early in a long session file", () => {
+    const file = join(dir, "long-conversation.jsonl");
+    writeFileSync(file, `stage4b-fixture\n${"x".repeat(1 << 20)}\n`);
+    const body = `agent[files:long.file]=${shq(file)}`;
+    expect(run(`${body}; conversation_holds long stage4b-fixture`).code).toBe(0);
+    expect(run(`${body}; conversation_holds long never-written`).code).toBe(1);
+    expect(run("conversation_holds gone stage4b-fixture").code).toBe(1);
+  });
+
   test("text_compactions counts the compactions the loop's reader reads, never a snapcompact", () => {
     expect(read("text_compactions twice")).toEqual({ code: 0, text: "1" });
     // A person's bare /compact is the image-based snapcompact, and a rollover is no summary the
@@ -428,25 +439,57 @@ describe("the stopped agents' conversations", () => {
     expect(read("appended_exchanges empty")).toEqual({ code: 0, text: "0" });
   });
 
-  test("last_assistant_text is the last thing the agent itself said", () => {
-    expect(read("last_assistant_text architect").text).toBe(
-      "Both answers are in my conversation now: VIOLET-OTTER-88 and the 20-run rerun."
-    );
-    expect(read("last_assistant_text twice").text).toBe(
+  // A9 judged the resumed architect by its last reply, and in proof run 43996451813 that reply
+  // answered a person's earlier reply the architect took in the same turn, not the task. The read
+  // takes every reply after the task, the last entry not the agent's own that holds the needle.
+  test("assistant_texts_after reads every reply of the turn the needle's entry started", () => {
+    const inOrder = "'question in-order-1 of run 4242'";
+    // Both replies after it are read, the key in the first, and the reply before it is not.
+    expect(read(`assistant_texts_after architect ${inOrder}`)).toEqual({
+      code: 0,
+      text: "The write-through cache, codename VIOLET-OTTER-88.\nBoth answers are in my conversation now: VIOLET-OTTER-88 and the 20-run rerun.",
+    });
+    expect(
+      run(`answer_holds architect-decision "$(assistant_texts_after architect ${inOrder})"`).code
+    ).toBe(0);
+    // The last reply alone lacks the key: a read of it alone fails a turn that answered.
+    expect(
+      run(
+        `answer_holds architect-decision 'Both answers are in my conversation now: VIOLET-OTTER-88 and the 20-run rerun.'`
+      ).code
+    ).toBe(1);
+    // Asked twice, the turn read is the one the last of the two started.
+    expect(read(`assistant_texts_after twice ${inOrder}`).text).toBe(
       "The write-through cache, codename VIOLET-OTTER-88."
     );
-    expect(read("last_assistant_text empty")).toEqual({ code: 0, text: "" });
+    // No entry holds the needle, or only the agent's own words do: nothing is read.
+    expect(read("assistant_texts_after architect 'question after-resume of run 4242'")).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(read("assistant_texts_after architect 'opened the ask'")).toEqual({ code: 0, text: "" });
+    expect(read(`assistant_texts_after empty ${inOrder}`)).toEqual({ code: 0, text: "" });
+    expect(
+      read(`store=postgres; pg_rows='[]'; assistant_texts_after architect ${inOrder}`)
+    ).toEqual({ code: 0, text: "" });
   });
 
-  test("transcript_effort and transcript_signatures read the replay's inputs", () => {
+  test("transcript_effort, transcript_signatures and transcript_thinking read the replay's inputs", () => {
     expect(read(`transcript_effort "$(conversation_text pre_change)"`).text).toBe("high");
     expect(read(`transcript_signatures "$(conversation_text pre_change)"`).text).toBe(
       "c2lnbmF0dXJlLW9uZS1mb3ItdGhlLXJlcGxheQ=="
     );
+    expect(read(`transcript_thinking "$(conversation_text pre_change)"`).text).toBe("1");
+    // A transcript that holds no thinking leaves A10's byte-for-byte clause nothing to replay.
     expect(read(`transcript_effort "$(conversation_text plain)"`).text).toBe("");
     expect(read(`transcript_signatures "$(conversation_text plain)"`).text).toBe("");
+    expect(read(`transcript_thinking "$(conversation_text plain)"`)).toEqual({
+      code: 0,
+      text: "0",
+    });
     expect(read('transcript_effort ""')).toEqual({ code: 0, text: "" });
     expect(read('transcript_signatures ""')).toEqual({ code: 0, text: "" });
+    expect(read('transcript_thinking ""')).toEqual({ code: 0, text: "0" });
   });
 
   test("answer_question_id reads the question out of the loop's marker", () => {
@@ -797,11 +840,18 @@ describe("Dispatch", () => {
     expect(read(`collaborator_role_token '' session-tester`)).toEqual({ code: 0, text: "" });
   });
 
+  // A3 read the mention's delivery off the comment's own POST answer, which Dispatch gives before
+  // it settles the mention, so the delivery read pending in proof run 43996451813. The read is of
+  // the comment as Dispatch holds it now.
   test("comment_delivered_to and one_delivery_in read Dispatch's delivery records", () => {
-    const sent = `{"id":"c","deliveries":[{"state":"sent","session_id":"session-tester"}]}`;
-    expect(run(`comment_delivered_to '${sent}' session-tester`).code).toBe(0);
-    expect(run(`comment_delivered_to '${sent}' session-planner`).code).toBe(1);
-    expect(run(`comment_delivered_to '' session-tester`).code).toBe(1);
+    expect(run("comment_delivered_to comment-77 session-tester").code).toBe(0);
+    // Not settled yet, sent to another session, or no record at all: not delivered to the tester.
+    expect(run("comment_delivered_to comment-80 session-tester").code).toBe(1);
+    expect(run("comment_delivered_to comment-81 session-tester").code).toBe(1);
+    expect(run("comment_delivered_to comment-77 session-planner").code).toBe(1);
+    expect(run("comment_delivered_to comment-404 session-tester").code).toBe(1);
+    expect(run("comment_delivered_to comment-never session-tester").code).toBe(1);
+    expect(run("comment_delivered_to '' session-tester").code).toBe(1);
     const refused = `[{"state":"failed","error":"no live session legion-e2eal-nobody-4242"}]`;
     expect(run(`one_delivery_in '${refused}' failed`).code).toBe(0);
     expect(
