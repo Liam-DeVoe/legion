@@ -1426,3 +1426,96 @@ test("a table whose rows are all one height counts the rows it has not drawn at 
     `${(60 - drawn) * LINE_PX}px`
   );
 });
+
+/** A ResizeObserver the test delivers by hand: the unit DOM has none, and the virtualizer measures
+ *  a drawn line again only when its observer reports the line's new size. */
+class HandResizeObserver {
+  static readonly made: HandResizeObserver[] = [];
+  readonly targets = new Set<Element>();
+  constructor(readonly callback: ResizeObserverCallback) {
+    HandResizeObserver.made.push(this);
+  }
+  observe(target: Element, _options?: ResizeObserverOptions): void {
+    this.targets.add(target);
+  }
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+  disconnect(): void {
+    this.targets.clear();
+  }
+}
+
+/** Reports `line` at `height` px to the observer that watches it, as a browser does once the
+ *  line has been laid out at that height. */
+function reportHeight(line: Element, height: number): void {
+  const observer = HandResizeObserver.made.find((made) => made.targets.has(line));
+  if (observer === undefined) throw new Error("no observer watches that line");
+  const size = { blockSize: height, inlineSize: 600 };
+  const entry: ResizeObserverEntry = {
+    borderBoxSize: [size],
+    contentBoxSize: [size],
+    contentRect: new DOMRect(0, 0, 600, height),
+    devicePixelContentBoxSize: [size],
+    target: line,
+  };
+  act(() => observer.callback([entry], observer));
+}
+
+// R11 (k13, "a title above R changed"): a row the box has drawn that then changes height is a
+// change the anchor answers in the commit that draws it (`ViewportAnchor`), so the virtualizer
+// moves the box for it no more. The two together moved it twice: at 1440 px a title that wrapped
+// a row 12 px taller left the row under the pointer 12 px above where the reader saw it. A row
+// the virtualizer measures for the first time, drawn as the reader scrolls, is still put where
+// its height says: no commit of the anchor's answers that one.
+test("a drawn row that changes height above the box's top leaves the box to the anchor, and a row first measured there still moves it", async () => {
+  linesTall();
+  HandResizeObserver.made.length = 0;
+  const native = Object.getOwnPropertyDescriptor(window, "ResizeObserver");
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    value: HandResizeObserver,
+    writable: true,
+  });
+  restores.push(() => {
+    if (native) Object.defineProperty(window, "ResizeObserver", native);
+    else Reflect.deleteProperty(window, "ResizeObserver");
+  });
+  // The unit DOM lays nothing out, so the box would hold nothing to scroll, and a correction past
+  // its end would be held rather than written: give it more height than the test scrolls.
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.testid?.endsWith("-scroll")
+        ? 10_000
+        : (scrollHeight?.get?.call(this) ?? 0);
+    },
+  });
+  restores.push(() => {
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+  });
+  const point = spyOn(document, "elementFromPoint").mockReturnValue(null);
+  restores.push(() => point.mockRestore());
+  draw(<Deploys pageSize={100} pager={null} rowHeight={LINE_PX} rows={manyDeploys(60)} />);
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const box = screen.getByTestId("deploys-scroll");
+  const line = (index: number) => {
+    const found = table.querySelector(`tbody tr[data-index="${index}"]`);
+    if (found === null) throw new Error(`line ${index} is not drawn`);
+    return found;
+  };
+
+  // Line 20 was drawn and measured at the first draw, and lies wholly above the box's top once
+  // the box is 1000 px down. It grows by 20 px, which the anchor answers in its own commit.
+  scrollBoxTo(box, 1000);
+  reportHeight(line(20), LINE_PX + 20);
+  expect(box.scrollTop).toBe(1000);
+
+  // Line 45 is first drawn by the scroll to 1000 and measured for the first time once the box
+  // is 2000 px down, above its top: the box moves by what it takes over its estimate.
+  scrollBoxTo(box, 2000);
+  reportHeight(line(45), LINE_PX + 20);
+  expect(box.scrollTop).toBe(2020);
+});

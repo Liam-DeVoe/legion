@@ -24,7 +24,7 @@ import {
   type Row as TableRow,
   useReactTable,
 } from "@tanstack/react-table";
-import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
+import { measureElement, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
 import {
@@ -309,6 +309,17 @@ export function useDataTable<Row>({
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
   // neither the rows this page holds nor a notice above the table is measured from here.
+  //
+  // A drawn line that changes height is the anchor's (`ViewportAnchor` below): a row another
+  // reader changed is redrawn in a commit, which the anchor answers by moving the box. So the
+  // virtualizer moves it only for a line it measures for the first time - one drawn as the
+  // reader scrolls, whose height it had guessed - and never for a line it had measured; the two
+  // together moved the box twice for one change. The virtualizer measures a line from its node
+  // just before it asks, so the node it has met before is the line it measured before; a line
+  // drawn again after it left the box is a new node, measured from its first draw again. Its own
+  // record of sizes cannot say this: it records a size only where it differs from the guess.
+  const measured = useRef(new WeakSet<Element>());
+  const measuredBefore = useRef(false);
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => layout.scrollRef.current,
@@ -317,7 +328,15 @@ export function useDataTable<Row>({
       `${displayRows[index]?.continued ? "continued-" : ""}${displayRows[index]?.row.id}`,
     initialRect: { width: 1000, height: 600 },
     overscan: 12,
+    measureElement: (element, entry, instance) => {
+      measuredBefore.current = measured.current.has(element);
+      measured.current.add(element);
+      return measureElement(element, entry, instance);
+    },
   });
+  // A field of the instance, not an option: the virtualizer reads it on each measurement.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    !measuredBefore.current && item.start < (instance.scrollOffset ?? 0);
 
   const focusRow = useRowKeymap({
     displayRows,
