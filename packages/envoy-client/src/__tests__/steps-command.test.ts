@@ -265,6 +265,33 @@ describe("dispatch steps", () => {
       expect(result.details, JSON.stringify(answer)).toEqual({ issue: "LEG-1", tasks: [] });
     }
   });
+
+  // The generated type lets one task's own list be null too, which reads as a task with no run.
+  test("a task whose list of runs is null holds no run, beside a task that holds one", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        { task: "docs", steps: null },
+        { task: "default", steps: [implementer] },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 1 steps in 2 tasks",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+      ].join("\n")
+    );
+    expect(result.details).toEqual({
+      issue: "LEG-1",
+      tasks: [
+        { task: "docs", steps: [] },
+        { task: "default", steps: [implementer] },
+      ],
+    });
+  });
 });
 
 describe("dispatch steps on the command line", () => {
