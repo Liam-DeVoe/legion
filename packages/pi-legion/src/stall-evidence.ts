@@ -563,7 +563,7 @@ export interface StallTellerDeps {
   readonly readState: (signal: AbortSignal) => Promise<LegionState>;
   /** The Envoy listener the notice goes to, or undefined when Envoy is off for this session.
    * Built lazily and once by the caller, as the phase reminder's is. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** Writes one record to the session's transcript (`pi.appendEntry`). */
   readonly appendEntry: (customType: string, data: unknown) => void;
   readonly log: StallWatchdogLog;
@@ -640,7 +640,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       return false;
     }
     const claim = deps.claim();
-    const publish = deps.publisher();
+    const publish = await deps.publisher();
     if (publish === undefined || claim === undefined) {
       deps.log.warn("legion: Envoy is off for this session, so its owner was not told", {
         ...context,

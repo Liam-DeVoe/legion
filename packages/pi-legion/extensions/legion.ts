@@ -242,9 +242,9 @@ export default function legionExtension(pi: PiApi): void {
   // reaches no listener of its own otherwise. Envoy off for the session leaves it undefined, and
   // the reminder keeps coming without a notice.
   let noticePublisher: { readonly publish: EnvoyPublish | undefined } | undefined;
-  const publisher = (): EnvoyPublish | undefined => {
+  const publisher = async (): Promise<EnvoyPublish | undefined> => {
     if (noticePublisher === undefined) {
-      const envoy = sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
+      const envoy = await sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
         cwd: process.cwd(),
         nats: false,
         session: currentSessionID,
@@ -940,10 +940,12 @@ export default function legionExtension(pi: PiApi): void {
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
           const config = activeDispatchSettings(
-            sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
-              cwd: process.cwd(),
-              session: currentSessionID,
-            }).dispatch
+            (
+              await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
+                cwd: process.cwd(),
+                session: currentSessionID,
+              })
+            ).dispatch
           );
           if (config === null) {
             throw new Error(

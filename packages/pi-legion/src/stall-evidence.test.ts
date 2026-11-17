@@ -318,7 +318,7 @@ function tellerRig(
       if (typeof state.state === "string") throw new Error(state.state);
       return state.state;
     },
-    publisher: () => (state.envoy ? publish : undefined),
+    publisher: async () => (state.envoy ? publish : undefined),
     appendEntry: (customType, data) => {
       expect(customType).toBe(STALL_WATCH_ENTRY);
       if (!state.transcriptWritable) throw new Error("the transcript is not writable");

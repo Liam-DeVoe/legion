@@ -125,7 +125,7 @@ export interface RulesCheckDeps {
    * The session's Dispatch as the directory the call runs in configures it, every request ending
    * with the gated call's stop; undefined when the session has no Dispatch configuration.
    */
-  dispatchClient: (directory: string, signal: AbortSignal) => DispatchSession | undefined;
+  dispatchClient: (directory: string, signal: AbortSignal) => Promise<DispatchSession | undefined>;
   /** The charter call's own walk: the role's chain under the call's deadline, dumped and raced by the core. */
   walk: (prompt: { system: string; user: () => string; label: string }) => Promise<Walked>;
 }
@@ -453,7 +453,7 @@ async function readDocument(
   try {
     const directory = await call.directory();
     if (directory === undefined) return "failed";
-    const session = deps.dispatchClient(directory, call.signal);
+    const session = await deps.dispatchClient(directory, call.signal);
     if (session === undefined) return "failed";
     return await readDocumentBlocks(session.client, target, {
       cwd: directory,

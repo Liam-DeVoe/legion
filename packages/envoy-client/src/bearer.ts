@@ -147,16 +147,17 @@ export function bearerSource(
  * names the origin of the server written beside it, which only `<SECTION>_URL` can make differ, and
  * is otherwise refused naming the variables that give another server its bearer. Then a checkout's
  * `!` value is refused, an empty value is refused, and the value is read (`fileValue`, which runs a
- * chosen file's `!` command and refuses whitespace inside a value; with `commands: "kept"` it only
- * takes the outcome a run already kept). Throws naming the field and the file, never the value.
+ * chosen file's `!` command, without holding the event loop, and refuses whitespace inside a value;
+ * with `commands: "kept"` it only takes the outcome a run already kept). Rejects naming the field
+ * and the file, never the value.
  */
-export function fileBearer(
+export async function fileBearer(
   bearer: FileBearer,
   url: string,
   section: BearerSection,
   env: EnvoyConfigEnvironment,
   commands: CommandMode = "run"
-): string {
+): Promise<string> {
   const named = httpUrl(url)?.origin;
   const paired = httpUrl(bearer.server)?.origin;
   if (named !== paired) {

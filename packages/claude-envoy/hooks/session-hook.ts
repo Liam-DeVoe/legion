@@ -306,7 +306,7 @@ async function openAsks(raw: unknown): Promise<void> {
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
     input.cwd ?? process.cwd(),
   )
-  const { dispatch, warnings, missing } = sessionDispatchSettings(chosen, process.env, {
+  const { dispatch, warnings, missing } = await sessionDispatchSettings(chosen, process.env, {
     cwd: directory,
     session: input.session_id,
   })
@@ -334,14 +334,16 @@ async function openAsks(raw: unknown): Promise<void> {
   }
 }
 
-function dispatchFirst(raw: unknown): void {
+async function dispatchFirst(raw: unknown): Promise<void> {
   const input = DispatchFirstInput.parse(raw)
   const directory = claudeProjectDirectory(
     { CLAUDE_PROJECT_DIR: process.env["CLAUDE_PROJECT_DIR"] },
     input.cwd ?? process.cwd(),
   )
   const chosen = sessionConfigFile("claude", process.env)
-  if (!sessionDispatchSettings(chosen, process.env, { cwd: directory }).dispatch.enabled) return
+  if (!(await sessionDispatchSettings(chosen, process.env, { cwd: directory })).dispatch.enabled) {
+    return
+  }
   const pluginRoot = configuredValue(process.env["CLAUDE_PLUGIN_ROOT"])
   if (pluginRoot === undefined) {
     throw new Error("CLAUDE_PLUGIN_ROOT is unset; Claude Code sets it for every plugin hook")
@@ -489,7 +491,7 @@ async function answersMessage(
   by: number,
 ): Promise<{ readonly text: string | undefined; readonly notice?: string | undefined }> {
   const file = sessionConfigFile("claude", process.env)
-  let { dispatch } = sessionDispatchSettings(file, process.env, {
+  let { dispatch } = await sessionDispatchSettings(file, process.env, {
     cwd,
     commands: "kept",
     session,
@@ -587,7 +589,7 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
       // hook carries what it read, and when the token command fails, the hook for the same URL
       // carries this refresher's failure line naming why.
       const dispatchUrl = sessionDispatchUrl(file, process.env, { cwd }) ?? null
-      const { dispatch } = sessionDispatchSettings(file, process.env, { cwd, session })
+      const { dispatch } = await sessionDispatchSettings(file, process.env, { cwd, session })
       const read = await readSessionAnswers({
         session,
         dispatch,
@@ -625,4 +627,4 @@ const text = await Bun.stdin.text()
 if (mode === "answers") await answers(text)
 const input: unknown = JSON.parse(text)
 if (mode === "open-asks") await openAsks(input)
-else dispatchFirst(input)
+else await dispatchFirst(input)

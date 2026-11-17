@@ -80,7 +80,7 @@ export interface PhaseReminderDeps {
   readonly readState: (signal: AbortSignal) => Promise<LegionState>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** `LEGION_PROJECT`: the project token every role topic carries. */
   readonly project: string | undefined;
   readonly limits: StallLimits;
@@ -308,7 +308,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   const tellArchitect = async (record: LegionIssue | undefined): Promise<void> => {
     const claim = deps.claim();
     if (claim === undefined) return;
-    const publish = deps.publisher();
+    const publish = await deps.publisher();
     if (publish === undefined) {
       deps.log.debug("legion: Envoy is off for this session; the architect is not told", {
         issue: claim.issue,

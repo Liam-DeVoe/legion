@@ -650,7 +650,7 @@ interface Deps {
    * reads a retyped block's text and an upload's current ask ids through it, and the decision
    * record writes through it.
    */
-  dispatchClient: (directory: string, signal: AbortSignal) => DispatchSession | undefined;
+  dispatchClient: (directory: string, signal: AbortSignal) => Promise<DispatchSession | undefined>;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,

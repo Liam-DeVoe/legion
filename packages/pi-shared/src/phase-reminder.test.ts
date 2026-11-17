@@ -49,7 +49,7 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
       handed.push(signal);
       return new Promise<LegionState>(() => {});
     },
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },
@@ -105,7 +105,7 @@ function rig(options: {
     saveEntry: (entry) => entries.push(entry),
     claim: () => implementer,
     readState: async () => options.state ?? ({ issues: {} } as unknown as LegionState),
-    publisher: () => async (input) => {
+    publisher: async () => async (input) => {
       published.push(input);
       return options.publish === undefined ? {} : options.publish(input);
     },
@@ -449,7 +449,7 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
     saveEntry: () => {},
     claim: () => implementer,
     readState: async () => claimFailed,
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: (message) => debugged.push(message), warn: () => {} },

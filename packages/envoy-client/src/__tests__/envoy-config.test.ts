@@ -48,16 +48,18 @@ type EnvoyWithToken =
   | (Omit<EnabledEnvoySettings, "credential"> & { readonly token: string | undefined });
 
 /** `dispatchSettings`, with an enabled resolution's credential flattened to its bearer. */
-function dispatchSettings(...args: Parameters<typeof resolveDispatch>): DispatchWithToken {
-  const resolution = resolveDispatch(...args);
+async function dispatchSettings(
+  ...args: Parameters<typeof resolveDispatch>
+): Promise<DispatchWithToken> {
+  const resolution = await resolveDispatch(...args);
   if (!resolution.enabled) return resolution;
   const { credential, ...rest } = resolution;
   return { ...rest, token: credential.secret() };
 }
 
 /** `envoySettings`, the same way. */
-function envoySettings(...args: Parameters<typeof resolveEnvoy>): EnvoyWithToken {
-  const settings = resolveEnvoy(...args);
+async function envoySettings(...args: Parameters<typeof resolveEnvoy>): Promise<EnvoyWithToken> {
+  const settings = await resolveEnvoy(...args);
   if (!settings.enabled) return settings;
   const { credential, ...rest } = settings;
   return { ...rest, token: credential?.secret() };
@@ -294,7 +296,7 @@ describe("readEnvoyConfig", () => {
     );
   });
 
-  test("a missing neutral file beside the OpenCode-era file reads nothing of it, and its notice names the move", () => {
+  test("a missing neutral file beside the OpenCode-era file reads nothing of it, and its notice names the move", async () => {
     const home = tempDir();
     const marker = path.join(home, "old-token-ran");
     const old = writeFile(path.join(home, ".config", "opencode", "envoy.json"), {
@@ -321,12 +323,15 @@ describe("readEnvoyConfig", () => {
     expect(missingNotice(config, "Dispatch and Envoy are off")).toBe(
       `no envoy.json at ${neutral}: Dispatch and Envoy are off; ${notice}`
     );
-    expect(dispatchSettings({ HOME: home }, config)).toEqual({
+    expect(await dispatchSettings({ HOME: home }, config)).toEqual({
       enabled: false,
       notice: `no envoy.json at ${neutral}: Dispatch is off; ${notice}`,
       error: null,
     });
-    expect(envoySettings({ HOME: home }, config)).toMatchObject({ enabled: false, error: null });
+    expect(await envoySettings({ HOME: home }, config)).toMatchObject({
+      enabled: false,
+      error: null,
+    });
     // XDG_CONFIG_HOME set to $HOME/.config is the same file, and says the same.
     const sameHome = { HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") };
     expect(readEnvoyConfig(neutral, sameHome, { cwd: tempDir() })).toEqual(unread);
@@ -492,7 +497,7 @@ describe("readEnvoyConfig", () => {
     }
   );
 
-  test("a harness directory at the default config directory gets the default file's move, reading nothing", () => {
+  test("a harness directory at the default config directory gets the default file's move, reading nothing", async () => {
     const home = tempDir();
     const directory = path.join(home, ".config", "legion");
     const marker = path.join(home, "old-token-ran");
@@ -519,7 +524,7 @@ describe("readEnvoyConfig", () => {
         expect(missingNotice(config, "Dispatch and Envoy are off")).toBe(
           `no envoy.json at ${chosen}: Dispatch and Envoy are off; ${old} is not read: mkdir -p ~/.config/legion && mv ~/.config/opencode/envoy.json ~/.config/legion/`
         );
-        expect(dispatchSettings(env, config)).toMatchObject({ enabled: false, error: null });
+        expect(await dispatchSettings(env, config)).toMatchObject({ enabled: false, error: null });
       }
     }
     expect(existsSync(marker)).toBe(false);
@@ -682,7 +687,7 @@ describe("readEnvoyConfig", () => {
     });
   });
 
-  test("a checkout's .opencode/envoy.json is not read, and a warning names the rename", () => {
+  test("a checkout's .opencode/envoy.json is not read, and a warning names the rename", async () => {
     const cwd = tempDir();
     const old = writeFile(path.join(cwd, ".opencode", "envoy.json"), {
       dispatch: { enabled: true, serverUrl: "https://old.internal.example", token: "t" },
@@ -702,8 +707,8 @@ describe("readEnvoyConfig", () => {
         `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`,
       ],
     });
-    expect(dispatchSettings({}, config)).toMatchObject({ enabled: false, error: null });
-    expect(envoySettings({}, config)).toMatchObject({ enabled: false, error: null });
+    expect(await dispatchSettings({}, config)).toMatchObject({ enabled: false, error: null });
+    expect(await envoySettings({}, config)).toMatchObject({ enabled: false, error: null });
     // A .envoy/envoy.json beside it is the one read, and the old one is not named.
     const current = writeFile(path.join(cwd, ".envoy", "envoy.json"), {
       dispatch: { enabled: false },
@@ -740,12 +745,12 @@ describe("readEnvoyConfig", () => {
     }
   });
 
-  test("a chosen file that is the checkout's own is read once, as the chosen file", () => {
+  test("a chosen file that is the checkout's own is read once, as the chosen file", async () => {
     const cwd = tempDir();
     const own = writeFile(path.join(cwd, ".envoy", "envoy.json"), { envoy: envoyOn });
     const config = readEnvoyConfig(own, { HOME: tempDir() }, { cwd });
     expect(config).toMatchObject({ kind: "read", envoy: envoyOn, checkout: null });
-    expect(envoySettings({}, config)).toMatchObject({ enabled: true, token: LISTENER_TOKEN });
+    expect(await envoySettings({}, config)).toMatchObject({ enabled: true, token: LISTENER_TOKEN });
   });
 
   test("an unknown key in either section is refused naming the key", () => {
@@ -795,19 +800,19 @@ const envoyOn = {
 };
 
 describe("each section of envoy.json", () => {
-  test("enabled: false turns that section off and leaves the other", () => {
+  test("enabled: false turns that section off and leaves the other", async () => {
     const env = { HOME: tempDir() };
     const dispatchOff = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { ...dispatchOn, enabled: false },
       envoy: envoyOn,
     });
     const offDispatch = readEnvoyConfig(dispatchOff, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, offDispatch)).toEqual({
+    expect(await dispatchSettings(env, offDispatch)).toEqual({
       enabled: false,
       notice: `${dispatchOff} sets dispatch.enabled to false: Dispatch is off`,
       error: null,
     });
-    expect(envoySettings(env, offDispatch)).toMatchObject({
+    expect(await envoySettings(env, offDispatch)).toMatchObject({
       enabled: true,
       token: LISTENER_TOKEN,
     });
@@ -817,25 +822,28 @@ describe("each section of envoy.json", () => {
       envoy: { ...envoyOn, enabled: false },
     });
     const offEnvoy = readEnvoyConfig(envoyOff, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, offEnvoy)).toMatchObject({ enabled: true, token: USER_TOKEN });
-    expect(envoySettings(env, offEnvoy)).toMatchObject({ enabled: false, error: null });
+    expect(await dispatchSettings(env, offEnvoy)).toMatchObject({
+      enabled: true,
+      token: USER_TOKEN,
+    });
+    expect(await envoySettings(env, offEnvoy)).toMatchObject({ enabled: false, error: null });
   });
 
   // One rule for both sections: enabled: false is off; otherwise the section's fields apply, and
   // it is on when its address resolves, from the file or a variable.
-  test("without enabled, a section is on when its address resolves, and its fields apply", () => {
+  test("without enabled, a section is on when its address resolves, and its fields apply", async () => {
     const env = { HOME: tempDir() };
     const addressed = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { serverUrl: "https://dispatch.example", token: USER_TOKEN },
       envoy: { url: "http://listener.internal.example:9020", token: LISTENER_TOKEN },
     });
     const fromFile = readEnvoyConfig(addressed, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, fromFile)).toEqual({
+    expect(await dispatchSettings(env, fromFile)).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: USER_TOKEN,
     });
-    expect(envoySettings(env, fromFile)).toMatchObject({
+    expect(await envoySettings(env, fromFile)).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: LISTENER_TOKEN,
@@ -848,32 +856,32 @@ describe("each section of envoy.json", () => {
       ENVOY_URL: "http://listener.internal.example:9020",
     };
     const launched = readEnvoyConfig(addressed, launcher, { cwd: tempDir() });
-    expect(dispatchSettings(launcher, launched)).toMatchObject({ token: USER_TOKEN });
-    expect(envoySettings(launcher, launched)).toMatchObject({ token: LISTENER_TOKEN });
+    expect(await dispatchSettings(launcher, launched)).toMatchObject({ token: USER_TOKEN });
+    expect(await envoySettings(launcher, launched)).toMatchObject({ token: LISTENER_TOKEN });
 
     const nats = writeFile(path.join(tempDir(), "envoy.json"), {
       envoy: { natsUrls: ["nats://nats.internal.example:4222"] },
     });
-    expect(envoySettings(env, readEnvoyConfig(nats, env, { cwd: tempDir() }))).toMatchObject({
+    expect(await envoySettings(env, readEnvoyConfig(nats, env, { cwd: tempDir() }))).toMatchObject({
       enabled: true,
       url: "http://127.0.0.1:9020",
       inbound: { natsUrls: ["nats://nats.internal.example:4222"] },
     });
   });
 
-  test("a section whose address resolves nowhere is off; enabled: true names the default", () => {
+  test("a section whose address resolves nowhere is off; enabled: true names the default", async () => {
     const env = { HOME: tempDir() };
     const tokensOnly = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { token: USER_TOKEN },
       envoy: { token: LISTENER_TOKEN },
     });
     const config = readEnvoyConfig(tokensOnly, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, config)).toEqual({
+    expect(await dispatchSettings(env, config)).toEqual({
       enabled: false,
       notice: `${tokensOnly} names no Dispatch server, and DISPATCH_URL is not set: Dispatch is off`,
       error: null,
     });
-    expect(envoySettings(env, config)).toEqual({
+    expect(await envoySettings(env, config)).toEqual({
       enabled: false,
       notice: `${tokensOnly} names no Envoy listener or NATS server, and neither ENVOY_URL nor ENVOY_NATS_URL is set: Envoy is off`,
       error: null,
@@ -886,20 +894,20 @@ describe("each section of envoy.json", () => {
       ENVOY_URL: "http://127.0.0.1:9020",
     };
     const named = readEnvoyConfig(tokensOnly, defaults, { cwd: tempDir() });
-    expect(dispatchSettings(defaults, named)).toMatchObject({ token: USER_TOKEN });
-    expect(envoySettings(defaults, named)).toMatchObject({ token: LISTENER_TOKEN });
+    expect(await dispatchSettings(defaults, named)).toMatchObject({ token: USER_TOKEN });
+    expect(await envoySettings(defaults, named)).toMatchObject({ token: LISTENER_TOKEN });
 
     const enabled = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: { enabled: true, token: USER_TOKEN },
       envoy: { enabled: true, token: LISTENER_TOKEN },
     });
     const on = readEnvoyConfig(enabled, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, on)).toEqual({
+    expect(await dispatchSettings(env, on)).toEqual({
       enabled: true,
       url: "http://localhost:8766",
       token: USER_TOKEN,
     });
-    expect(envoySettings(env, on)).toMatchObject({
+    expect(await envoySettings(env, on)).toMatchObject({
       enabled: true,
       url: "http://127.0.0.1:9020",
       token: LISTENER_TOKEN,
@@ -908,7 +916,7 @@ describe("each section of envoy.json", () => {
 });
 
 describe("a ! command in envoy.json", () => {
-  test("is its command's trimmed stdout, run when its section is resolved", () => {
+  test("is its command's trimmed stdout, run when its section is resolved", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const dispatchSecret = fixtureSecret("dsp");
@@ -922,11 +930,11 @@ describe("a ! command in envoy.json", () => {
       },
     });
     const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, config)).toMatchObject({
+    expect(await dispatchSettings(env, config)).toMatchObject({
       enabled: true,
       token: dispatchSecret,
     });
-    expect(envoySettings(env, config)).toMatchObject({
+    expect(await envoySettings(env, config)).toMatchObject({
       enabled: true,
       token: listenerSecret,
       inbound: {
@@ -938,9 +946,69 @@ describe("a ! command in envoy.json", () => {
     });
   });
 
+  /** Whether a timer due 20 ms from now fired while `work` was still under way, and how late it
+   * fired: what a process holding a NATS connection or a delivery timer sees of `work`. A real
+   * timer on purpose: a fake clock fires when told to, and only the real one shows whether the
+   * event loop was free to serve it. */
+  async function timerDuring(work: () => unknown): Promise<{ during: boolean; lateMs: number }> {
+    let finished = false;
+    let during = false;
+    let lateMs = 0;
+    const due = Date.now() + 20;
+    const { promise: fired, resolve } = Promise.withResolvers<void>();
+    setTimeout(() => {
+      during = !finished;
+      lateMs = Date.now() - due;
+      resolve();
+    }, 20);
+    await work();
+    finished = true;
+    await fired;
+    return { during, lateMs };
+  }
+
+  // A read that waited for its command synchronously held the whole process for as long as the
+  // command ran, up to its 10 s timeout: no timer, delivery or NATS ping of the session was served.
+  test("runs while the process goes on serving its timers, for every field that names one", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const slow = (value: string) => `!sleep 1; echo ${value} # ${home}`;
+    // The control: the same command waited for synchronously holds the timer until it ends.
+    const held = await timerDuring(() => Bun.spawnSync(["/bin/sh", "-c", slow("x").slice(1)]));
+    expect(held.during).toBe(false);
+    expect(held.lateMs).toBeGreaterThanOrEqual(900);
+
+    const dispatchSecret = fixtureSecret("dsp");
+    const listenerSecret = fixtureSecret("listener");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: slow(dispatchSecret) },
+      envoy: { ...envoyOn, token: slow(listenerSecret), natsSeed: slow("SUSEED") },
+    });
+    const config = readEnvoyConfig(file, env, { cwd: tempDir() });
+    let dispatch: DispatchWithToken | undefined;
+    let envoy: EnvoyWithToken | undefined;
+    const dispatchRead = await timerDuring(async () => {
+      dispatch = await dispatchSettings(env, config);
+    });
+    expect(dispatchRead.during).toBe(true);
+    expect(dispatchRead.lateMs).toBeLessThan(500);
+    expect(dispatch).toMatchObject({ enabled: true, token: dispatchSecret });
+    // Envoy's two fields: its listener's bearer, then its NATS seed, each a slow command.
+    const envoyRead = await timerDuring(async () => {
+      envoy = await envoySettings(env, config);
+    });
+    expect(envoyRead.during).toBe(true);
+    expect(envoyRead.lateMs).toBeLessThan(500);
+    expect(envoy).toMatchObject({
+      enabled: true,
+      token: listenerSecret,
+      inbound: { natsCredential: { kind: "seed", seed: { value: "SUSEED" } } },
+    });
+  }, 20_000);
+
   // A command relative to a directory, or one a directory configures (a mise or direnv shim), must
   // resolve against the file that names it, never whatever repository the session started in.
-  test("runs in its envoy.json's directory, never the session's", () => {
+  test("runs in its envoy.json's directory, never the session's", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const directory = path.join(home, "config");
@@ -959,14 +1027,14 @@ describe("a ! command in envoy.json", () => {
     process.chdir(session);
     try {
       const config = readEnvoyConfig(file, env, { cwd: session });
-      expect(dispatchSettings(env, config)).toMatchObject({ token: relativeSecret });
-      expect(envoySettings(env, config)).toMatchObject({ token: realpathSync(directory) });
+      expect(await dispatchSettings(env, config)).toMatchObject({ token: relativeSecret });
+      expect(await envoySettings(env, config)).toMatchObject({ token: realpathSync(directory) });
     } finally {
       process.chdir(original);
     }
   });
 
-  test("keeps its value for the process, and a failure for 60 s, then runs again", () => {
+  test("keeps its value for the process, and a failure for 60 s, then runs again", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
@@ -978,14 +1046,17 @@ describe("a ! command in envoy.json", () => {
       dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${cachedSecret}` },
       envoy: { ...envoyOn, token: `!echo run >> ${failures}; cat ${late}` },
     });
-    const resolve = () => {
+    const resolve = async () => {
       const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-      return { dispatch: dispatchSettings(env, config), envoy: envoySettings(env, config) };
+      return {
+        dispatch: await dispatchSettings(env, config),
+        envoy: await envoySettings(env, config),
+      };
     };
     const start = Date.now();
     try {
       for (let resolution = 0; resolution < 2; resolution += 1) {
-        expect(resolve()).toMatchObject({
+        expect(await resolve()).toMatchObject({
           dispatch: { token: cachedSecret },
           envoy: { enabled: false },
         });
@@ -993,10 +1064,10 @@ describe("a ! command in envoy.json", () => {
       // The cause goes away, as a keyring unlocked after the session started.
       writeFileSync(late, `${lateSecret}\n`);
       setSystemTime(new Date(start + 59_000));
-      expect(resolve().envoy).toMatchObject({ enabled: false });
+      expect((await resolve()).envoy).toMatchObject({ enabled: false });
       expect(readFileSync(failures, "utf-8")).toBe("run\n");
       setSystemTime(new Date(start + 61_000));
-      expect(resolve()).toMatchObject({
+      expect(await resolve()).toMatchObject({
         dispatch: { token: cachedSecret },
         envoy: { enabled: true, token: lateSecret },
       });
@@ -1009,7 +1080,7 @@ describe("a ! command in envoy.json", () => {
 
   // A failure that ended on its own is kept for 60 s and then retried: whatever caused it (a
   // locked keyring, a file not yet written) may clear without a restart.
-  test("a failure that ended on its own (non-zero exit, empty output, more than one line) is kept 60 s, then runs again", () => {
+  test("a failure that ended on its own (non-zero exit, empty output, more than one line) is kept 60 s, then runs again", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const late = path.join(home, "late-token");
@@ -1032,17 +1103,17 @@ describe("a ! command in envoy.json", () => {
           dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; ${command}` },
         });
         const resolve = () => dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
-        expect(resolve()).toEqual({
+        expect(await resolve()).toEqual({
           enabled: false,
           notice: null,
           error: `${file}: dispatch.token's command ${failure}`,
         });
         writeFileSync(late, `${lateSecret}\n`);
         setSystemTime(new Date(start + 59_000));
-        expect(resolve()).toMatchObject({ enabled: false });
+        expect(await resolve()).toMatchObject({ enabled: false });
         expect(readFileSync(runs, "utf-8")).toBe("run\n");
         setSystemTime(new Date(start + 61_000));
-        expect(resolve()).toMatchObject({ enabled: true, token: lateSecret });
+        expect(await resolve()).toMatchObject({ enabled: true, token: lateSecret });
         expect(readFileSync(runs, "utf-8")).toBe("run\nrun\n");
       }
     } finally {
@@ -1050,9 +1121,9 @@ describe("a ! command in envoy.json", () => {
     }
   });
 
-  // Each run of a command that hangs blocks the process for the whole timeout, since it runs
-  // synchronously: retrying it once a minute would freeze the session that often.
-  test("one that ran out of time is kept failed for the life of the process", () => {
+  // Each run of a command that hangs holds every read waiting on it for the whole timeout:
+  // retrying it once a minute would stall the session's reads that often.
+  test("one that ran out of time is kept failed for the life of the process", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
@@ -1062,10 +1133,10 @@ describe("a ! command in envoy.json", () => {
     const resolve = () => dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
     const start = Date.now();
     try {
-      const first = resolve();
+      const first = await resolve();
       for (const later of [61_000, 24 * 60 * 60_000]) {
         setSystemTime(new Date(start + later));
-        expect(resolve()).toEqual(first);
+        expect(await resolve()).toEqual(first);
       }
       expect(readFileSync(runs, "utf-8")).toBe("run\n");
       expect(first).toEqual({
@@ -1079,7 +1150,8 @@ describe("a ! command in envoy.json", () => {
   }, 45_000);
 
   // Oh My Pi loads each extension instance as a fresh module: a cache held by one module instance
-  // would run every command again in each, blocking the parent's event loop at a subagent's start.
+  // would run every command again in each, holding each subagent's start for as long as the
+  // command runs.
   test("is kept for every copy of the module in the process, by command, file and directory", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
@@ -1099,19 +1171,46 @@ describe("a ! command in envoy.json", () => {
     ];
     expect(copies[0]).not.toBe(copies[1]);
     for (const copy of copies) {
-      expect(copy.fileValue(command, "dispatch.token", first, env)).toBe(sharedToken);
+      expect(await copy.fileValue(command, "dispatch.token", first, env)).toBe(sharedToken);
     }
     expect(readFileSync(runs, "utf-8")).toBe("run\n");
     // Another file is another key, and its command runs in its own directory.
     for (const copy of copies) {
-      expect(copy.fileValue(command, "dispatch.token", second, env)).toBe(sharedToken);
+      expect(await copy.fileValue(command, "dispatch.token", second, env)).toBe(sharedToken);
     }
     expect(readFileSync(runs, "utf-8")).toBe("run\nrun\n");
   });
 
+  // A read waits for its command without holding the process, so another read of the same value
+  // can start while the command runs: it waits for that run rather than running the command again,
+  // and a read that only takes kept outcomes still finds none.
+  test("read again while its command runs, by any copy of the module, waits for that one run", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const runs = path.join(home, "runs");
+    const sharedToken = fixtureSecret("dsp");
+    const command = `!echo run >> ${runs}; echo ${sharedToken}`;
+    const file = writeFile(path.join(home, "envoy.json"), { dispatch: { token: command } });
+    // Two fresh copies of the module, as the host's loader makes them (see the test above).
+    const source = "../envoy-config.ts";
+    const one: typeof EnvoyConfigModule = await import(`${source}?c`);
+    const two: typeof EnvoyConfigModule = await import(`${source}?d`);
+    const reads = [one, two, one].map((copy) =>
+      copy.fileValue(command, "dispatch.token", file, env)
+    );
+    const kept = two
+      .fileValue(command, "dispatch.token", file, env, "kept")
+      .catch((error: unknown) => String(error));
+    expect(await Promise.all(reads)).toEqual([sharedToken, sharedToken, sharedToken]);
+    expect(await kept).toContain(
+      `${file}: dispatch.token's command has not run in this process yet`
+    );
+    expect(readFileSync(runs, "utf-8")).toBe("run\n");
+  });
+
   // The per-request feed of people's answers resolves Dispatch on a deadline a 10 s command would
   // blow, so it takes only an outcome another call already kept.
-  test("read with commands: kept, never runs: it fails saying so until a run keeps a value, then takes it", () => {
+  test("read with commands: kept, never runs: it fails saying so until a run keeps a value, then takes it", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
@@ -1122,18 +1221,18 @@ describe("a ! command in envoy.json", () => {
     const resolve = (commands?: "kept") =>
       dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
 
-    expect(resolve("kept")).toEqual({
+    expect(await resolve("kept")).toEqual({
       enabled: false,
       notice: null,
       error: `${file}: dispatch.token's command has not run in this process yet, and this read does not run it`,
     });
     expect(existsSync(runs)).toBe(false);
-    expect(resolve()).toMatchObject({ enabled: true, token: keptSecret });
-    expect(resolve("kept")).toMatchObject({ enabled: true, token: keptSecret });
+    expect(await resolve()).toMatchObject({ enabled: true, token: keptSecret });
+    expect(await resolve("kept")).toMatchObject({ enabled: true, token: keptSecret });
     expect(readFileSync(runs, "utf-8")).toBe("run\n");
   });
 
-  test("read with commands: kept, takes a kept failure however old, and never runs it again", () => {
+  test("read with commands: kept, takes a kept failure however old, and never runs it again", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
@@ -1149,9 +1248,9 @@ describe("a ! command in envoy.json", () => {
     };
     const start = Date.now();
     try {
-      expect(resolve()).toEqual(failed);
+      expect(await resolve()).toEqual(failed);
       setSystemTime(new Date(start + 61_000));
-      expect(resolve("kept")).toEqual(failed);
+      expect(await resolve("kept")).toEqual(failed);
       expect(readFileSync(runs, "utf-8")).toBe("run\n");
     } finally {
       setSystemTime();
@@ -1159,7 +1258,7 @@ describe("a ! command in envoy.json", () => {
   });
 
   // A failing natsSeed command turns off only inbound messages: the seed is for NATS alone.
-  test("that fails or prints nothing turns off only what it is for, naming the field and the file, never its output", () => {
+  test("that fails or prints nothing turns off only what it is for, naming the field and the file, never its output", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const canary = `canary-${path.basename(home)}`;
@@ -1169,21 +1268,21 @@ describe("a ! command in envoy.json", () => {
       envoy: envoyOn,
     });
     const brokenDispatch = readEnvoyConfig(dispatchFails, env, { cwd: tempDir() });
-    const dispatch = dispatchSettings(env, brokenDispatch);
+    const dispatch = await dispatchSettings(env, brokenDispatch);
     if (dispatch.enabled) throw new Error("dispatch.token's failing command was accepted");
     expect(dispatch.error).toContain(`${dispatchFails}: dispatch.token's command exited with`);
     expect(dispatch.error).not.toContain("canary");
-    expect(envoySettings(env, brokenDispatch)).toMatchObject({ enabled: true });
+    expect(await envoySettings(env, brokenDispatch)).toMatchObject({ enabled: true });
 
     const tokenFails = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: dispatchOn,
       envoy: { ...envoyOn, token: `!printf '  \\n' # ${home}` },
     });
     const brokenToken = readEnvoyConfig(tokenFails, env, { cwd: tempDir() });
-    const envoy = envoySettings(env, brokenToken);
+    const envoy = await envoySettings(env, brokenToken);
     if (envoy.enabled) throw new Error("envoy.token's failing command was accepted");
     expect(envoy.error).toContain(`${tokenFails}: envoy.token's command`);
-    expect(dispatchSettings(env, brokenToken)).toEqual({
+    expect(await dispatchSettings(env, brokenToken)).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: USER_TOKEN,
@@ -1194,7 +1293,7 @@ describe("a ! command in envoy.json", () => {
       envoy: { ...envoyOn, natsSeed: `!echo ${canary} >&2; echo ${canary}; false` },
     });
     const brokenSeed = readEnvoyConfig(seedFails, env, { cwd: tempDir() });
-    const inboundOff = envoySettings(env, brokenSeed);
+    const inboundOff = await envoySettings(env, brokenSeed);
     if (!inboundOff.enabled || !("off" in inboundOff.inbound)) {
       throw new Error(`a failing natsSeed turned Envoy off, or was taken`);
     }
@@ -1204,11 +1303,11 @@ describe("a ! command in envoy.json", () => {
     });
     expect(inboundOff.inbound.off).toContain(`${seedFails}: envoy.natsSeed's command exited with`);
     expect(inboundOff.inbound.off).not.toContain("canary");
-    expect(dispatchSettings(env, brokenSeed)).toMatchObject({ enabled: true });
+    expect(await dispatchSettings(env, brokenSeed)).toMatchObject({ enabled: true });
   });
 
   // A multi-line bearer reaches fetch, whose refusal of the header quotes it whole.
-  test("that prints more than one line, or a value with whitespace inside, is refused without echoing it", () => {
+  test("that prints more than one line, or a value with whitespace inside, is refused without echoing it", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     for (const [token, refusal] of [
@@ -1223,7 +1322,7 @@ describe("a ! command in envoy.json", () => {
       const file = writeFile(path.join(tempDir(), "envoy.json"), {
         dispatch: { ...dispatchOn, token },
       });
-      const dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
+      const dispatch = await dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
       if (dispatch.enabled) throw new Error(`${JSON.stringify(token)} was accepted`);
       expect(dispatch.error).toContain(`${file}: ${refusal}`);
       expect(dispatch.error).not.toContain("S3CRET");
@@ -1232,12 +1331,12 @@ describe("a ! command in envoy.json", () => {
 
   /** Runs `body` with TMPDIR a scratch directory, where a `!` command keeps its output, and
    * returns what is left in it afterwards. */
-  function inScratchTmp(body: () => void): string[] {
+  async function inScratchTmp(body: () => Promise<void>): Promise<string[]> {
     const scratch = tempDir();
     const original = process.env.TMPDIR;
     process.env.TMPDIR = scratch;
     try {
-      body();
+      await body();
     } finally {
       if (original === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = original;
@@ -1258,7 +1357,7 @@ describe("a ! command in envoy.json", () => {
     return false;
   }
 
-  test("that exits 0 is its value at once, and a process it left running is killed", () => {
+  test("that exits 0 is its value at once, and a process it left running is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
@@ -1272,9 +1371,9 @@ describe("a ! command in envoy.json", () => {
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
     let elapsed = 0;
-    const left = inScratchTmp(() => {
+    const left = await inScratchTmp(async () => {
       const started = Date.now();
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      dispatch = await dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
       elapsed = Date.now() - started;
     });
     expect(dispatch).toEqual({
@@ -1289,7 +1388,7 @@ describe("a ! command in envoy.json", () => {
     expect(left).toEqual([]);
   }, 20_000);
 
-  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", () => {
+  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
@@ -1302,9 +1401,9 @@ describe("a ! command in envoy.json", () => {
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
     let elapsed = 0;
-    const left = inScratchTmp(() => {
+    const left = await inScratchTmp(async () => {
       const started = Date.now();
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      dispatch = await dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
       elapsed = Date.now() - started;
     });
     expect(elapsed).toBeLessThan(15_000);
@@ -1317,7 +1416,7 @@ describe("a ! command in envoy.json", () => {
     expect(left).toEqual([]);
   }, 20_000);
 
-  test("whose field a variable overrides, or whose section is off, is not run", () => {
+  test("whose field a variable overrides, or whose section is off, is not run", async () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
@@ -1331,8 +1430,10 @@ describe("a ! command in envoy.json", () => {
     });
     const env = { ...commandEnvironment(home), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
     const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-    expect(dispatchSettings(env, config)).toMatchObject({ token: ENVIRONMENT_DISPATCH_TOKEN });
-    expect(envoySettings(env, config)).toMatchObject({ enabled: false, error: null });
+    expect(await dispatchSettings(env, config)).toMatchObject({
+      token: ENVIRONMENT_DISPATCH_TOKEN,
+    });
+    expect(await envoySettings(env, config)).toMatchObject({ enabled: false, error: null });
     expect(existsSync(runs)).toBe(false);
   });
 });
@@ -1349,18 +1450,18 @@ describe("a checkout's .envoy/envoy.json", () => {
     return { user, checkout, cwd };
   }
 
-  test("merges its dispatch section over the chosen file, and Envoy is the chosen file's", () => {
+  test("merges its dispatch section over the chosen file, and Envoy is the chosen file's", async () => {
     const env = { HOME: tempDir() };
     const repo = withCheckout({
       dispatch: { serverUrl: "https://repo.internal.example", token: REPO_TOKEN },
     });
     const repoConfig = readEnvoyConfig(repo.user, env, { cwd: repo.cwd });
-    expect(dispatchSettings(env, repoConfig)).toEqual({
+    expect(await dispatchSettings(env, repoConfig)).toEqual({
       enabled: true,
       url: "https://repo.internal.example",
       token: REPO_TOKEN,
     });
-    expect(envoySettings(env, repoConfig)).toMatchObject({
+    expect(await envoySettings(env, repoConfig)).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: LISTENER_TOKEN,
@@ -1369,14 +1470,14 @@ describe("a checkout's .envoy/envoy.json", () => {
 
     const off = withCheckout({ dispatch: { enabled: false } });
     const offConfig = readEnvoyConfig(off.user, env, { cwd: off.cwd });
-    expect(dispatchSettings(env, offConfig)).toMatchObject({ enabled: false, error: null });
-    expect(envoySettings(env, offConfig)).toMatchObject({ enabled: true });
+    expect(await dispatchSettings(env, offConfig)).toMatchObject({ enabled: false, error: null });
+    expect(await envoySettings(env, offConfig)).toMatchObject({ enabled: true });
   });
 
   // A cloned repository must not choose where a session's deliveries come from, nor which servers
   // the user's NATS seed signs in to, nor take away the Envoy the session's file and environment
   // configure.
-  test("an envoy section is not read, whatever it holds, runs nothing, and leaves Envoy as configured", () => {
+  test("an envoy section is not read, whatever it holds, runs nothing, and leaves Envoy as configured", async () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
     const seedFile = writeFile(path.join(home, "seed"), "SUENVSEED\n");
@@ -1395,13 +1496,13 @@ describe("a checkout's .envoy/envoy.json", () => {
     ]) {
       const { user, cwd } = withCheckout({ envoy });
       const config = readEnvoyConfig(user, commandEnvironment(home), { cwd });
-      expect(envoySettings(commandEnvironment(home), config)).toMatchObject({
+      expect(await envoySettings(commandEnvironment(home), config)).toMatchObject({
         enabled: true,
         url: "http://listener.internal.example:9020",
         token: LISTENER_TOKEN,
         inbound: { natsUrls: ["nats://nats.internal.example:4222"] },
       });
-      expect(envoySettings(pane, readEnvoyConfig(user, pane, { cwd }))).toMatchObject({
+      expect(await envoySettings(pane, readEnvoyConfig(user, pane, { cwd }))).toMatchObject({
         enabled: true,
         token: ENVIRONMENT_ENVOY_TOKEN,
         inbound: {
@@ -1409,7 +1510,7 @@ describe("a checkout's .envoy/envoy.json", () => {
           natsCredential: { kind: "seed", seed: { value: "SUENVSEED" } },
         },
       });
-      expect(dispatchSettings(pane, config)).toEqual({
+      expect(await dispatchSettings(pane, config)).toEqual({
         enabled: true,
         url: "https://dispatch.example",
         token: USER_TOKEN,
@@ -1420,7 +1521,7 @@ describe("a checkout's .envoy/envoy.json", () => {
 
   // Decision 55's rule for a file that cannot be read: a repository cannot turn off what the
   // session's environment configured.
-  test("a file that cannot be used turns Dispatch off while it would be read, and never Envoy", () => {
+  test("a file that cannot be used turns Dispatch off while it would be read, and never Envoy", async () => {
     const tokenFile = writeFile(path.join(tempDir(), "dispatch-token"), `${DAEMON_TOKEN}\n`);
     for (const contents of [
       "{",
@@ -1431,10 +1532,10 @@ describe("a checkout's .envoy/envoy.json", () => {
       const repo = withCheckout(contents);
       const quiet = { HOME: tempDir() };
       const config = readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd });
-      const dispatch = dispatchSettings(quiet, config);
+      const dispatch = await dispatchSettings(quiet, config);
       if (dispatch.enabled) throw new Error(`${JSON.stringify(contents)} left Dispatch on`);
       expect(dispatch.error).toStartWith(`${repo.checkout}: `);
-      expect(envoySettings(quiet, config)).toMatchObject({
+      expect(await envoySettings(quiet, config)).toMatchObject({
         enabled: true,
         token: LISTENER_TOKEN,
       });
@@ -1448,12 +1549,12 @@ describe("a checkout's .envoy/envoy.json", () => {
         ENVOY_TOKEN: ENVIRONMENT_ENVOY_TOKEN,
       };
       const paneConfig = readEnvoyConfig(repo.user, pane, { cwd: repo.cwd });
-      expect(dispatchSettings(pane, paneConfig)).toEqual({
+      expect(await dispatchSettings(pane, paneConfig)).toEqual({
         enabled: true,
         url: "https://daemon.internal.example",
         token: DAEMON_TOKEN,
       });
-      expect(envoySettings(pane, paneConfig)).toMatchObject({
+      expect(await envoySettings(pane, paneConfig)).toMatchObject({
         enabled: true,
         url: "http://pane-listener.internal.example:9020",
         token: ENVIRONMENT_ENVOY_TOKEN,
@@ -1463,7 +1564,7 @@ describe("a checkout's .envoy/envoy.json", () => {
 
   // One message for each refusal of a checkout's token. DISPATCH_URL replaces the checkout's server,
   // and its token with it: the chosen file's token is the one paired with DISPATCH_URL.
-  test("an empty or unsendable token beside its server is refused with one message, and not used under DISPATCH_URL", () => {
+  test("an empty or unsendable token beside its server is refused with one message, and not used under DISPATCH_URL", async () => {
     const refusals = [
       ["", (checkout: string) => `dispatch.token in ${checkout} must be a non-empty bearer token`],
       [
@@ -1476,38 +1577,40 @@ describe("a checkout's .envoy/envoy.json", () => {
         dispatch: { serverUrl: "https://repo.internal.example", token },
       });
       const quiet = { HOME: tempDir() };
-      expect(dispatchSettings(quiet, readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))).toEqual(
-        { enabled: false, notice: null, error: refusal(repo.checkout) }
-      );
+      expect(
+        await dispatchSettings(quiet, readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))
+      ).toEqual({ enabled: false, notice: null, error: refusal(repo.checkout) });
       const named = { HOME: tempDir(), DISPATCH_URL: "https://repo.internal.example" };
-      expect(dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))).toEqual(
-        {
-          enabled: false,
-          notice: null,
-          error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
-        }
-      );
+      expect(
+        await dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))
+      ).toEqual({
+        enabled: false,
+        notice: null,
+        error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
+      });
     }
   });
 
-  test("a server without its own token is refused", () => {
+  test("a server without its own token is refused", async () => {
     const env = { HOME: tempDir() };
     const server = withCheckout({ dispatch: { serverUrl: "https://collector.attacker.test" } });
     const serverConfig = readEnvoyConfig(server.user, env, { cwd: server.cwd });
-    expect(dispatchSettings(env, serverConfig)).toEqual({
+    expect(await dispatchSettings(env, serverConfig)).toEqual({
       enabled: false,
       notice: null,
       error: `${server.checkout}: dispatch.serverUrl requires dispatch.token in the same file`,
     });
-    expect(envoySettings(env, serverConfig)).toMatchObject({ enabled: true });
+    expect(await envoySettings(env, serverConfig)).toMatchObject({ enabled: true });
   });
 
   // The token belongs to the server its file names: beside the user's server it would make the
   // session act as the repository's author on the user's Dispatch.
-  test("a token without its own server is refused when it would be used", () => {
+  test("a token without its own server is refused when it would be used", async () => {
     const repo = withCheckout({ dispatch: { token: REPO_TOKEN } });
     const quiet = { HOME: tempDir() };
-    expect(dispatchSettings(quiet, readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))).toEqual({
+    expect(
+      await dispatchSettings(quiet, readEnvoyConfig(repo.user, quiet, { cwd: repo.cwd }))
+    ).toEqual({
       enabled: false,
       notice: null,
       error: `${repo.checkout}: dispatch.token requires dispatch.serverUrl in the same file`,
@@ -1515,14 +1618,19 @@ describe("a checkout's .envoy/envoy.json", () => {
     // DISPATCH_URL or a token from the environment replaces it, so it is not used, and not
     // refused: under DISPATCH_URL the chosen file's token goes to its own server.
     const named = { HOME: tempDir(), DISPATCH_URL: "https://dispatch.example" };
-    expect(dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))).toEqual({
+    expect(
+      await dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))
+    ).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: USER_TOKEN,
     });
     const environment = { HOME: tempDir(), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
     expect(
-      dispatchSettings(environment, readEnvoyConfig(repo.user, environment, { cwd: repo.cwd }))
+      await dispatchSettings(
+        environment,
+        readEnvoyConfig(repo.user, environment, { cwd: repo.cwd })
+      )
     ).toEqual({
       enabled: true,
       url: "https://dispatch.example",
@@ -1530,7 +1638,7 @@ describe("a checkout's .envoy/envoy.json", () => {
     });
   });
 
-  test("a server DISPATCH_URL replaces is not refused, and the variables are used", () => {
+  test("a server DISPATCH_URL replaces is not refused, and the variables are used", async () => {
     const server = withCheckout({ dispatch: { serverUrl: "https://collector.attacker.test" } });
     const dispatchEnv = {
       HOME: tempDir(),
@@ -1538,15 +1646,15 @@ describe("a checkout's .envoy/envoy.json", () => {
       DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN,
     };
     const serverConfig = readEnvoyConfig(server.user, dispatchEnv, { cwd: server.cwd });
-    expect(dispatchSettings(dispatchEnv, serverConfig)).toEqual({
+    expect(await dispatchSettings(dispatchEnv, serverConfig)).toEqual({
       enabled: true,
       url: "https://other.internal.example",
       token: ENVIRONMENT_DISPATCH_TOKEN,
     });
-    expect(envoySettings(dispatchEnv, serverConfig)).toMatchObject({ enabled: true });
+    expect(await envoySettings(dispatchEnv, serverConfig)).toMatchObject({ enabled: true });
   });
 
-  test("a command in it is refused beside its own server, and never runs", () => {
+  test("a command in it is refused beside its own server, and never runs", async () => {
     const home = tempDir();
     const ran = path.join(home, "ran");
     const env = commandEnvironment(home);
@@ -1561,28 +1669,28 @@ describe("a checkout's .envoy/envoy.json", () => {
         notice: null,
         error: `${repo.checkout}: dispatch.token is a command, which a checkout's envoy.json cannot run`,
       } as const;
-      expect(dispatchSettings(env, config)).toEqual(refusal);
+      expect(await dispatchSettings(env, config)).toEqual(refusal);
       // DISPATCH_URL replaces the checkout's server and its token: the command is neither used nor
       // refused, and the chosen file's token is paired with DISPATCH_URL instead.
       const named = { ...env, DISPATCH_URL: "https://repo.internal.example" };
-      expect(dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))).toEqual(
-        {
-          enabled: false,
-          notice: null,
-          error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
-        }
-      );
-      expect(envoySettings(env, config)).toMatchObject({ enabled: true });
+      expect(
+        await dispatchSettings(named, readEnvoyConfig(repo.user, named, { cwd: repo.cwd }))
+      ).toEqual({
+        enabled: false,
+        notice: null,
+        error: `DISPATCH_URL names https://repo.internal.example, but ${repo.user}'s dispatch.token is for https://dispatch.example; set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE for it`,
+      });
+      expect(await envoySettings(env, config)).toMatchObject({ enabled: true });
     }
     expect(existsSync(ran)).toBe(false);
   });
 
-  test("its dispatch.enabled: false yields to DISPATCH_URL", () => {
+  test("its dispatch.enabled: false yields to DISPATCH_URL", async () => {
     const tokenFile = writeFile(path.join(tempDir(), "dispatch-token"), `${DAEMON_TOKEN}\n`);
     const off = withCheckout({ dispatch: { enabled: false } });
     const quiet = { HOME: tempDir() };
     const quietConfig = readEnvoyConfig(off.user, quiet, { cwd: off.cwd });
-    expect(dispatchSettings(quiet, quietConfig)).toEqual({
+    expect(await dispatchSettings(quiet, quietConfig)).toEqual({
       enabled: false,
       notice: `${off.checkout} sets dispatch.enabled to false: Dispatch is off`,
       error: null,
@@ -1594,7 +1702,7 @@ describe("a checkout's .envoy/envoy.json", () => {
       DISPATCH_TOKEN_FILE: tokenFile,
     };
     const daemonConfig = readEnvoyConfig(off.user, daemon, { cwd: off.cwd });
-    expect(dispatchSettings(daemon, daemonConfig)).toEqual({
+    expect(await dispatchSettings(daemon, daemonConfig)).toEqual({
       enabled: true,
       url: "https://daemon.internal.example",
       token: DAEMON_TOKEN,
@@ -1603,25 +1711,25 @@ describe("a checkout's .envoy/envoy.json", () => {
 
   // A checkout contributes only its enabled: false, or a server with its own token. Its
   // enabled: true alone would name the default server and draw a variable's token to it.
-  test("its dispatch.enabled: true alone turns nothing on", () => {
+  test("its dispatch.enabled: true alone turns nothing on", async () => {
     const cwd = tempDir();
     writeFile(path.join(cwd, ".envoy", "envoy.json"), { dispatch: { enabled: true } });
     const env = { HOME: tempDir(), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
     const quiet = writeFile(path.join(tempDir(), "envoy.json"), { envoy: envoyOn });
-    expect(dispatchSettings(env, readEnvoyConfig(quiet, env, { cwd }))).toEqual({
+    expect(await dispatchSettings(env, readEnvoyConfig(quiet, env, { cwd }))).toEqual({
       enabled: false,
       notice: `${quiet} names no Dispatch server, and DISPATCH_URL is not set: Dispatch is off`,
       error: null,
     });
     const missing = path.join(tempDir(), "envoy.json");
-    expect(dispatchSettings(env, readEnvoyConfig(missing, env, { cwd }))).toEqual({
+    expect(await dispatchSettings(env, readEnvoyConfig(missing, env, { cwd }))).toEqual({
       enabled: false,
       notice: `no envoy.json at ${missing}: Dispatch is off`,
       error: null,
     });
     // The chosen file's own enabled: true is what turns it on.
     const own = writeFile(path.join(tempDir(), "envoy.json"), { dispatch: { enabled: true } });
-    expect(dispatchSettings(env, readEnvoyConfig(own, env, { cwd }))).toEqual({
+    expect(await dispatchSettings(env, readEnvoyConfig(own, env, { cwd }))).toEqual({
       enabled: true,
       url: "http://localhost:8766",
       token: ENVIRONMENT_DISPATCH_TOKEN,
@@ -1676,7 +1784,7 @@ describe("askgateSetting", () => {
     expect(unreadable.error).toEndWith("askgate.enabled is not read; AskGate stays on");
   });
 
-  test("the section never changes Dispatch's settings", () => {
+  test("the section never changes Dispatch's settings", async () => {
     const env = { HOME: tempDir() };
     const cwd = tempDir();
     const dispatch = { enabled: true, serverUrl: "https://dispatch.example", token: "t" };
@@ -1687,10 +1795,10 @@ describe("askgateSetting", () => {
       );
       return dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
     };
-    const plain = read();
+    const plain = await read();
     expect(plain.enabled).toBe(true);
     for (const askgate of [{ enabled: false }, { enabled: "no" }, { on: false }]) {
-      expect(read(askgate)).toEqual(plain);
+      expect(await read(askgate)).toEqual(plain);
     }
   });
 });

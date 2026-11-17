@@ -482,7 +482,11 @@ A `token` or `natsSeed` value starting with `!` is a command (`fileValue`): it r
 `/bin/sh -c` in the directory of the envoy.json that names it, never the session's working
 directory, so `./bin/token` or a directory-configured shim (mise, direnv) resolves against that
 file and not whatever repository the session started in. It runs in its own process group for at
-most 10 s, and its trimmed stdout is the value. Its
+most 10 s, and its trimmed stdout is the value. The read waits for it without holding the process:
+every resolver that can run one (`fileValue`, `fileBearer`, `dispatchSettings`, `envoySettings`,
+`sessionSettings`, `sessionDispatchSettings`, `sessionEnvoySettings`) returns a Promise, so the
+session's timers, deliveries and NATS pings are served while it runs, and a process that exits
+first kills its group. Its
 exit status decides: a command that exited 0 has printed its value even when a process it left
 running holds stdout open; a timeout kills the whole group. It runs only when its section's
 resolver is about to use the value (the section on, no variable overriding the field). Its value
@@ -490,9 +494,12 @@ is kept for the process, shared across module instances (one map on `globalThis`
 `Symbol.for("legion.envoy-config.commands.v1")`, since Oh My Pi loads each extension instance, a
 `task` subagent's included, as a fresh module, and pi-envoy and pi-legion, released separately,
 each bundle this module; a change to an entry's shape takes a new key), and keyed by the command,
-its file and its working directory. A command that ran out of time is kept as failed for the life
-of the process: a hanging
-command never runs again in that process, since each run would block it for the whole 10 s. A
+its file and its working directory. A read that starts while the same command runs, in any of
+those instances, waits for that run rather than starting another (a second map, of the runs under
+way, under `Symbol.for("legion.envoy-config.command-runs.v1")`). A command that ran out of time is
+kept as failed for the life of the process: a hanging
+command never runs again in that process, since each run would hold every read waiting on it for
+the whole 10 s. A
 failure that ended on its own (a non-zero exit, empty output, more than one line) is kept for 60 s
 and then the command runs again, so a cause that clears (a keyring unlocked after the session
 started) needs no restart. The `dispatch` command is one process per call, and each Claude Code

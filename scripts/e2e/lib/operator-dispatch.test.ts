@@ -54,45 +54,45 @@ const brokerEnv = {
 };
 
 describe("operatorDispatch", () => {
-  test("the neutral file's own server, with its own bearer", () => {
-    expect(operatorDispatch({ HOME: home }, cwd)).toEqual({
+  test("the neutral file's own server, with its own bearer", async () => {
+    expect(await operatorDispatch({ HOME: home }, cwd)).toEqual({
       file: join(home, ".config", "legion", "envoy.json"),
       url: "https://dispatch.internal.example",
       token: "neutral-1",
     });
   });
 
-  test("a named omp profile's file comes before the neutral one, as for every command", () => {
+  test("a named omp profile's file comes before the neutral one, as for every command", async () => {
     const env = { HOME: home, OMP_PROFILE: "work", PI_CODING_AGENT_DIR: profile };
-    expect(operatorDispatch(env, cwd)).toMatchObject({
+    expect(await operatorDispatch(env, cwd)).toMatchObject({
       file: join(profile, "envoy.json"),
       token: "profile-2",
     });
   });
 
-  test("a file's bearer never goes to the server DISPATCH_URL names instead", () => {
+  test("a file's bearer never goes to the server DISPATCH_URL names instead", async () => {
     const env = { HOME: home, DISPATCH_URL: "https://other.internal.example" };
-    expect(() => operatorDispatch(env, cwd)).toThrow(
+    await expect(operatorDispatch(env, cwd)).rejects.toThrow(
       "DISPATCH_URL names https://other.internal.example, but"
     );
-    expect(() => operatorDispatch(env, cwd)).not.toThrow(/neutral-1/);
+    await expect(operatorDispatch(env, cwd)).rejects.not.toThrow(/neutral-1/);
   });
 
-  test("nothing configured is off, saying why", () => {
-    expect(operatorDispatch({ HOME: join(dir, "empty-home") }, cwd)).toEqual({
+  test("nothing configured is off, saying why", async () => {
+    expect(await operatorDispatch({ HOME: join(dir, "empty-home") }, cwd)).toEqual({
       file: join(dir, "empty-home", ".config", "legion", "envoy.json"),
       notice: `no envoy.json at ${join(dir, "empty-home", ".config", "legion", "envoy.json")}: Dispatch is off`,
     });
   });
 
-  test("the secrets broker's credential is refused by name, the file's bearer being passed over", () => {
-    expect(() => operatorDispatch(brokerEnv, cwd)).toThrow(
+  test("the secrets broker's credential is refused by name, the file's bearer being passed over", async () => {
+    await expect(operatorDispatch(brokerEnv, cwd)).rejects.toThrow(
       "this machine's Dispatch credential is the access token it trades its own identity for at the secrets broker"
     );
-    expect(() => operatorDispatch(brokerEnv, cwd)).toThrow(
+    await expect(operatorDispatch(brokerEnv, cwd)).rejects.toThrow(
       `set DISPATCH_TOKEN, or write dispatch.token in ${join(home, ".config", "legion", "envoy.json")}, with DISPATCH_TOKEN_BROKER unset`
     );
-    expect(() => operatorDispatch(brokerEnv, cwd)).not.toThrow(/neutral-1/);
+    await expect(operatorDispatch(brokerEnv, cwd)).rejects.not.toThrow(/neutral-1/);
   });
 });
 

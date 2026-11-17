@@ -705,14 +705,15 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * for one session hands that session in, since the live read moves to whichever session the host
  * is on by the time the request goes out.
  */
-const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
-  sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
+const timedDispatchClient = async (ms: number, session: () => string = currentSessionID) =>
+  (await sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session))
+    ?.client;
 
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
  *  process holds (`../src/scrubbed-host`). */
 const logger = scrubbedLogger(hostLogger);
 
-export default function envoyExtension(hostApi: PiApi): void {
+export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
   // the secrets this process holds, the backstop under the rules that name no peer's text.
   const pi = scrubbedHost(hostApi);
@@ -722,12 +723,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // Legion finds, and this instance pushes no claim instance onto it (first wins).
   const publishedInterface = publishEnvoyPluginInterface(import.meta.url);
   // Dispatch and Envoy as this session starts with them, each resolved on its own from the
-  // session's envoy.json (`CONFIG_FILE`) and the variables over it. The dispatch-first context is
+  // session's envoy.json (`CONFIG_FILE`) and the variables over it, awaited so a `!` command in it
+  // runs while the process goes on serving everything else it holds. The dispatch-first context is
   // injected only where Dispatch is on at load. Dispatch's URL and token are re-read on every use
   // (`dispatchConfigFor`), so a Dispatch that moved - a new dispatch.serverUrl in envoy.json -
   // takes effect without /reload-plugins, and a file that has since broken fails with its own
   // error instead of quietly using the stale endpoint.
-  const atStart = sessionSettings(CONFIG_FILE, process.env, {
+  const atStart = await sessionSettings(CONFIG_FILE, process.env, {
     cwd: process.cwd(),
     session: currentSessionID,
   });
@@ -738,11 +740,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // answers 403 to a session presenting another's token. Every reply to a person's message
   // resolves through here for the session that reply names (`postDispatchReply`), so the actor a
   // reply names and the configuration it goes out under are one session and never two.
-  const dispatchConfigFor = (session: BrokerSessionName): ActiveDispatchConfig => {
-    const resolution = sessionDispatchSettings(CONFIG_FILE, process.env, {
-      cwd: process.cwd(),
-      session,
-    }).dispatch;
+  const dispatchConfigFor = async (session: BrokerSessionName): Promise<ActiveDispatchConfig> => {
+    const resolution = (
+      await sessionDispatchSettings(CONFIG_FILE, process.env, {
+        cwd: process.cwd(),
+        session,
+      })
+    ).dispatch;
     const config = activeDispatchSettings(resolution);
     if (config === null) {
       throw new Error(
@@ -777,12 +781,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // on: the file object the session resolved, not a path rebuilt from it.
   let askgateFile: Extract<SessionConfigFile, { error: null }> | null = null;
   const configFile = CONFIG_FILE.error === null ? CONFIG_FILE : null;
-  const ownDispatch = (file: string): boolean => {
+  const ownDispatch = async (file: string): Promise<boolean> => {
     const own = readEnvoyConfig(file, process.env, { cwd: process.cwd() });
-    return dispatchSettings(process.env, own.kind === "read" ? { ...own, checkout: null } : own)
-      .enabled;
+    return (
+      await dispatchSettings(process.env, own.kind === "read" ? { ...own, checkout: null } : own)
+    ).enabled;
   };
-  if (configFile !== null && (atStart.dispatch.enabled || ownDispatch(configFile.path))) {
+  if (configFile !== null && (atStart.dispatch.enabled || (await ownDispatch(configFile.path)))) {
     const setting = askgateSetting(configFile.path);
     if (setting.error !== null) askgateNotices.push(setting.error);
     if (setting.enabled) askgateFile = configFile;
@@ -987,7 +992,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     requestedSessionID: string,
     since?: string
   ): Promise<OpenAsksResponse | null> => {
-    const dispatch = timedDispatchClient(OPEN_ASKS_TIMEOUT_MS);
+    const dispatch = await timedDispatchClient(OPEN_ASKS_TIMEOUT_MS);
     if (dispatch === undefined) return null;
     const snapshot = await dispatch.openAsks(requestedSessionID, since);
     availabilityWarningSessionIDs.delete(requestedSessionID);
@@ -1278,7 +1283,12 @@ export default function envoyExtension(hostApi: PiApi): void {
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    await postDeliveryReply(
+      await dispatchConfigFor(replySessionID),
+      replySessionID,
+      delivery,
+      result
+    );
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -1913,7 +1923,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // frame nobody sees costs a read. A switch landing in that read must not have this session
     // read one person's message as another conversation, with that conversation's credential.
     if (rendered.cutItem !== undefined) {
-      const dispatch = timedDispatchClient(WHOLE_BODY_TIMEOUT_MS, () => session);
+      const dispatch = await timedDispatchClient(WHOLE_BODY_TIMEOUT_MS, () => session);
       const body =
         dispatch === undefined
           ? undefined
@@ -4328,11 +4338,13 @@ export default function envoyExtension(hostApi: PiApi): void {
     try {
       const read = await readSessionAnswers({
         session,
-        dispatch: sessionDispatchSettings(CONFIG_FILE, process.env, {
-          cwd: process.cwd(),
-          commands: "kept",
-          session: currentSessionID,
-        }).dispatch,
+        dispatch: (
+          await sessionDispatchSettings(CONFIG_FILE, process.env, {
+            cwd: process.cwd(),
+            commands: "kept",
+            session: currentSessionID,
+          })
+        ).dispatch,
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);

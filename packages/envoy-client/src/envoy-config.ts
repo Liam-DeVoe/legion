@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
-import type { SyncSubprocess } from "bun";
+import type { Subprocess } from "bun";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
@@ -332,8 +332,9 @@ type KeptOutcome = CommandOutcome & { readonly at: number };
 
 /** How long a `!` command's failure that ended on its own is kept before it runs again: a transient
  * cause (a locked keyring, a file not yet written) clears without a restart. A command that ran out
- * of time is kept failed for the life of the process instead: each run blocks the process for the
- * whole timeout, so a hanging command retried once a minute would freeze its session that often. */
+ * of time is kept failed for the life of the process instead: each run holds every read waiting on
+ * it for the whole timeout, so a hanging command retried once a minute would stall its session's
+ * Dispatch and Envoy reads that often. */
 const FAILURE_KEPT_MS = 60_000;
 
 /** The process-wide store of kept outcomes, by command, file and working directory. It lives on
@@ -343,13 +344,34 @@ const FAILURE_KEPT_MS = 60_000;
  * that shape takes a new key (`.v2`), so an older bundle in the same process never misreads an
  * entry a newer one wrote. */
 const COMMAND_OUTCOMES: unique symbol = Symbol.for("legion.envoy-config.commands.v1");
+/** The runs under way, by the same key, beside the kept outcomes and shared the same way: a read
+ * that starts while its command runs, in any bundle of this module, waits for that run rather than
+ * starting another. An entry, a promise of the `KeptOutcome` its run keeps, lives only while the run
+ * does; its shape is its contract across bundles, under the same rule as the outcomes'. */
+const COMMAND_RUNS: unique symbol = Symbol.for("legion.envoy-config.command-runs.v1");
 const processGlobal = globalThis as typeof globalThis & {
   [COMMAND_OUTCOMES]?: Map<string, KeptOutcome>;
+  [COMMAND_RUNS]?: Map<string, Promise<KeptOutcome>>;
 };
 const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES] ?? new Map();
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
+const commandRuns: Map<string, Promise<KeptOutcome>> = processGlobal[COMMAND_RUNS] ?? new Map();
+processGlobal[COMMAND_RUNS] = commandRuns;
 
-function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
+/** Kills every process of the group `pid` leads, if any is left. */
+function killGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // The group is already gone.
+  }
+}
+
+async function runCommand(
+  command: string,
+  env: EnvoyConfigEnvironment,
+  cwd: string
+): Promise<CommandOutcome> {
   const childEnv: Record<string, string> = {};
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;
@@ -361,16 +383,15 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     chmodSync(directory, 0o700);
     const output = path.join(directory, "stdout");
     const fd = openSync(output, "wx", 0o600);
-    let result: SyncSubprocess<number, "ignore">;
+    let child: Subprocess<"ignore", number, "ignore">;
     try {
       // Its own process group, so every process the command started is killed with it.
-      result = Bun.spawnSync(["/bin/sh", "-c", command], {
+      child = Bun.spawn(["/bin/sh", "-c", command], {
         cwd,
         env: childEnv,
         stdin: "ignore",
         stdout: fd,
         stderr: "ignore",
-        timeout: COMMAND_TIMEOUT_MS,
         detached: true,
       });
     } catch (error) {
@@ -378,22 +399,33 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     } finally {
       closeSync(fd);
     }
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup(child.pid);
+    }, COMMAND_TIMEOUT_MS);
+    // A process that exits while the command runs takes the command's group with it, as the
+    // timeout would have.
+    const killOnExit = () => killGroup(child.pid);
+    process.once("exit", killOnExit);
+    try {
+      await child.exited;
+    } finally {
+      clearTimeout(timer);
+      process.off("exit", killOnExit);
+    }
     // Whatever the outcome, nothing the command started outlives it, and so nothing it left
     // running can change the value read below.
-    try {
-      process.kill(-result.pid, "SIGKILL");
-    } catch {
-      // The group is already gone.
-    }
-    if (result.exitedDueToTimeout) {
+    killGroup(child.pid);
+    if (timedOut) {
       return {
         failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
         timedOut: true,
       };
     }
-    if (!result.success) {
+    if (child.exitCode !== 0) {
       return {
-        failure: `exited with ${result.signalCode ?? `status ${result.exitCode}`}`,
+        failure: `exited with ${child.signalCode ?? `status ${child.exitCode}`}`,
         timedOut: false,
       };
     }
@@ -420,26 +452,28 @@ export type CommandMode = "run" | "kept";
  * A value from the chosen file: as written, or, for one starting with `!`, its command's trimmed
  * stdout. The command runs under `/bin/sh -c` with `env`, in the directory of the file that names
  * it (never the session's working directory, so a relative command or a directory-configured shim
- * resolves against that file), in its own process group, for at most 10 s. Its value is kept for
- * the process, shared by every copy of this module loaded in it, keyed by the command, its file and
- * its working directory; so is a run out of time, while a failure that ended on its own (a non-zero
- * exit, empty output, more than one line) is kept for 60 s, then the command runs again. Its exit
- * status decides, and the wait is for the shell alone: once it exits or runs out of time, every
- * process of its group still running is killed, then its output is read. A non-zero exit, a
- * timeout or empty output throws naming the field and the file. A value with whitespace or a
- * control character inside it, as written or as printed, throws too, since it cannot be sent as one
- * bearer. No error carries the value or either stream.
+ * resolves against that file), in its own process group, for at most 10 s, while the process goes
+ * on serving its timers and connections: the read awaits it and nothing else does, and a read that
+ * starts while it runs awaits that same run. Its value is kept for the process, shared by every
+ * copy of this module loaded in it, keyed by the command, its file and its working directory; so
+ * is a run out of time, while a failure that ended on its own (a non-zero exit, empty output, more
+ * than one line) is kept for 60 s, then the command runs again.
+ * Its exit status decides, and the wait is for the shell alone: once it exits or runs out of time,
+ * or the process exits first, every process of its group still running is killed, then its output
+ * is read. A non-zero exit, a timeout or empty output rejects naming the field and the file. A
+ * value with whitespace or a control character inside it, as written or as printed, rejects too,
+ * since it cannot be sent as one bearer. No error carries the value or either stream.
  *
- * With `commands: "kept"` the command never runs: the kept outcome answers, a kept failure throws
- * as above however old it is, and a command with no kept outcome throws saying it has not run.
+ * With `commands: "kept"` the command never runs: the kept outcome answers, a kept failure rejects
+ * as above however old it is, and a command with no kept outcome rejects saying it has not run.
  */
-export function fileValue(
+export async function fileValue(
   value: string,
   field: string,
   filePath: string,
   env: EnvoyConfigEnvironment,
   commands: CommandMode = "run"
-): string {
+): Promise<string> {
   if (!value.startsWith("!")) {
     if (!sendable(value)) {
       throw new Error(`${filePath}: ${field} holds whitespace or a control character`);
@@ -460,8 +494,18 @@ export function fileValue(
     outcome === undefined ||
     ("failure" in outcome && !outcome.timedOut && Date.now() - outcome.at >= FAILURE_KEPT_MS)
   ) {
-    outcome = { ...runCommand(command, env, cwd), at: Date.now() };
-    commandOutcomes.set(key, outcome);
+    let run = commandRuns.get(key);
+    if (run === undefined) {
+      run = runCommand(command, env, cwd)
+        .then((ran) => {
+          const kept = { ...ran, at: Date.now() };
+          commandOutcomes.set(key, kept);
+          return kept;
+        })
+        .finally(() => commandRuns.delete(key));
+      commandRuns.set(key, run);
+    }
+    outcome = await run;
   }
   if ("failure" in outcome) throw new Error(`${filePath}: ${field}'s command ${outcome.failure}`);
   return outcome.value;

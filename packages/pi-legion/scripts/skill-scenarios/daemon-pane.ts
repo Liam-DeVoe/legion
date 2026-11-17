@@ -122,15 +122,15 @@ export interface PaneSource {
  * `legion` from bash; and, with `systemPrompt`, the system prompt argument. An inherited
  * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value and the caller's own GitHub
  * variables are dropped first. The profile's agent directory, and so its envoy.json, is under the
- * inherited `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound
- * messages off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim
- * refuses then. */
-export function workerPane(
+ * inherited `HOME`. Rejects `envoy: <why>` when that Envoy is off with an error, or on with
+ * inbound messages off (`inbound.off`: no NATS server, or its seed refused), since the pane's
+ * Legion claim refuses then. */
+export async function workerPane(
   launch: WorkerLaunch,
   inherited: NodeJS.ProcessEnv,
   claim: WorkerClaim,
   source: PaneSource
-): DaemonPane {
+): Promise<DaemonPane> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(inherited)) {
     if (value === undefined) continue;
@@ -148,7 +148,7 @@ export function workerPane(
     OMP_PROFILE: launch.profile,
     PI_CODING_AGENT_DIR: path.join(home, ".omp", "profiles", launch.profile, "agent"),
   };
-  const envoy = sessionEnvoySettings(sessionConfigFile("omp", profileEnv), profileEnv, {
+  const envoy = await sessionEnvoySettings(sessionConfigFile("omp", profileEnv), profileEnv, {
     cwd: workspace,
   });
   if (!envoy.enabled && envoy.error !== null) throw new Error(`envoy: ${envoy.error}`);

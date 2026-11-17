@@ -284,7 +284,7 @@ function bind(opts: BindOptions = {}): BoundGate {
   const complete = opts.complete ?? (async () => ({ text: ALLOW, usage: USAGE }));
   // The session's Dispatch, which a test that drives a document read or a decision record binds;
   // with none, a document read gives nothing and no decision record is written.
-  const dispatchClient = (directory: string, signal: AbortSignal) => {
+  const dispatchClient = async (directory: string, signal: AbortSignal) => {
     dispatchReads.push({ directory, signal });
     return opts.dispatch?.(directory, signal);
   };

@@ -21,18 +21,18 @@ export interface DispatchSession {
  * The session's Dispatch as `file` and the configuration under `cwd` resolve it (a checkout's own
  * `.envoy/envoy.json` names its own server), with `signal` on every request of it, so the caller's
  * stop or timeout ends each one; undefined when Dispatch is not configured. A configuration that
- * cannot be read throws, as `activeDispatchSettings` does. `session` is the session this plugin
+ * cannot be read rejects, as `activeDispatchSettings` throws. `session` is the session this plugin
  * instance is acting as, read at each call, which a broker trade writes under: the token this
  * session presents names this session and no other of this process.
  */
-export function sessionDispatchClient(
+export async function sessionDispatchClient(
   file: SessionConfigFile,
   cwd: string,
   signal: AbortSignal,
   session: () => string
-): DispatchSession | undefined {
+): Promise<DispatchSession | undefined> {
   const config = activeDispatchSettings(
-    sessionDispatchSettings(file, process.env, { cwd, session }).dispatch
+    (await sessionDispatchSettings(file, process.env, { cwd, session })).dispatch
   );
   return config === null
     ? undefined

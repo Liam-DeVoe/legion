@@ -135,18 +135,18 @@ export type SessionNameOption = { readonly session?: BrokerSessionName | undefin
  * the session's start notice. A file whose location could not be worked out turns both off with
  * that error. `nats: false` is for a session that opens no NATS connection (`envoySettings`), whose
  * notice says nothing of inbound messages. */
-export function sessionSettings(
+export async function sessionSettings(
   file: SessionConfigFile,
   env: EnvoyEnvironment,
   options: { readonly cwd: string; readonly nats?: boolean | undefined } & SessionNameOption
-): SessionSettings {
+): Promise<SessionSettings> {
   if (file.path === null) {
     const off = offWithError(file.error);
     return { dispatch: off, envoy: off, notice: `${file.error}: Dispatch and Envoy are off` };
   }
   const config = readEnvoyConfig(file.path, env, options);
-  const dispatch = dispatchSettings(env, config, { session: options.session });
-  const envoy = envoySettings(env, config, { nats: options.nats, session: options.session });
+  const dispatch = await dispatchSettings(env, config, { session: options.session });
+  const envoy = await envoySettings(env, config, { nats: options.nats, session: options.session });
   return {
     dispatch,
     envoy,
@@ -177,16 +177,16 @@ export interface SessionDispatch {
  * command: it takes the outcome one of the session's other Dispatch calls already kept in this
  * process, and with none Dispatch reads as off with an error saying so (`dispatchSettings`), for a
  * caller on a deadline such as the per-request feed of people's answers. */
-export function sessionDispatchSettings(
+export async function sessionDispatchSettings(
   file: SessionConfigFile,
   env: DispatchEnvironment,
   options: { readonly cwd: string; readonly commands?: CommandMode | undefined } & SessionNameOption
-): SessionDispatch {
+): Promise<SessionDispatch> {
   if (file.path === null)
     return { dispatch: offWithError(file.error), warnings: [], missing: null };
   const config = readEnvoyConfig(file.path, env, options);
   return {
-    dispatch: dispatchSettings(env, config, {
+    dispatch: await dispatchSettings(env, config, {
       commands: options.commands,
       session: options.session,
     }),
@@ -211,11 +211,11 @@ export function sessionDispatchUrl(
 
 /** Envoy from `file` (`envoySettings`), for a command that resolves Envoy alone. A file whose
  * location could not be worked out turns Envoy off with that error. */
-export function sessionEnvoySettings(
+export async function sessionEnvoySettings(
   file: SessionConfigFile,
   env: EnvoyEnvironment,
   options: { readonly cwd: string; readonly nats?: boolean | undefined } & SessionNameOption
-): EnvoySettings {
+): Promise<EnvoySettings> {
   if (file.path === null) return offWithError(file.error);
   return envoySettings(env, readEnvoyConfig(file.path, env, options), {
     nats: options.nats,
