@@ -15,7 +15,7 @@ name: CI caches
 #
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the Go version the
 # family's own module installs: go-notices (lint's notices step), go-daemon (typecheck,
-# daemon-go and pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs,
+# daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs,
 # envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and envoy-session-stall),
 # go-envoy-test (envoy-go, and the binaries job of .github/workflows/dispatch-browser.yaml, which
 # ci.yaml's dispatch-browser job calls: it builds the Dispatch server, the real broker's commands
