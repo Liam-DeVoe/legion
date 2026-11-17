@@ -102,10 +102,13 @@ need from the planner's plan into your task's text.
 
 ## The notices
 
-- **`task-stopped`:** a step failed and no earlier step of the type implementation can take the
-  work back, so Legion stopped the task. Its reason names the task and the step. Read the failed
-  step's report, then give a later version that changes the task, or end the work: `park_child`
-  for a child, under the park rule; `dispatch ask` on the root for a root.
+- **`task-stopped`:** Legion stopped the task and holds the issue. Either a step failed and no
+  earlier step of the type implementation can take the work back, and the reason names the task
+  and the step: read the failed step's report. Or another architect of your tree stopped it with
+  `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step
+  failed. A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the
+  record. Then give a later version that changes the task, or end the work: `park_child` for a
+  child, under the park rule; `dispatch ask` on the root for a root.
 - **`retro-held`:** a parent's task passed its last step with no `acceptance:owner` step to wait
   in, while issues beneath it are still in the workflow. Legion holds it before its retro, because
   a parent's head proves its children's merged work, and starts the retro when the last one

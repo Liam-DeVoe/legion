@@ -913,9 +913,11 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 // The owner of an issue picks which of Legion's step roles its one task runs. Its prompt therefore
 // lists each role with the type of its step, the owner's own acceptance step, the two operations
 // that give and stop a plan, the notices that a stopped task, a parent held before its retro and a
-// plan of an earlier owner send it, and the three sentences that say when a plan must be given and
-// how a plan replaces the default steps once the work started. Both architect compositions share
-// that part, so both are read. This shows the text is loaded, never that an owner follows it.
+// plan of an earlier owner send it, the two stops a task-stopped notice tells of (a failed step's,
+// and another architect's stop_task, whose notice names that architect) and the stop it is not
+// sent for (its own), and the three sentences that say when a plan must be given and how a plan
+// replaces the default steps once the work started. Both architect compositions share that part,
+// so both are read. This shows the text is loaded, never that an owner follows it.
 func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -943,6 +945,8 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"Give each issue its plan before its work starts. For the root, call register_plan before register_gate: the gate's opening starts the root's first step. For a child, call register_plan before release_children releases it: Legion keeps the plan and starts the child's first step from it.",
 				"An issue whose work started before you gave it a plan runs the task default, the project's default steps. To give it a plan, call stop_task on the task default, then register_plan with a version whose one task replaces it: Legion starts that task at its first step.",
 				"A task you stop stays held until you give a later version of the plan that changes it, and Legion then starts it at its first step. retry_or_escalate refuses that hold, and refuses an issue held before its retro for the issues beneath it.",
+				"Where another architect of your tree stopped it with `stop_task`, its reason names that architect, the notice carries `stoppedBy`, and no step failed.",
+				"A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.",
 			} {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
