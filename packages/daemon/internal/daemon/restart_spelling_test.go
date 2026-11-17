@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -89,13 +90,16 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := consumer.Info(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.NumPending != 1 {
-		t.Fatalf("pending on the GitHub consumer after GitHub's event = %d, want the event", info.NumPending)
-	}
+	// The server counts a stored message toward a consumer's pending once its stream signals the
+	// consumer, on a goroutine of the server's own, so the count is waited for: a consumer whose
+	// filters miss GitHub's spelling never counts it, and the wait's give-up names the last count.
+	testwait.Until(t, "the GitHub consumer to count GitHub's event as pending", func() (uint64, bool) {
+		info, err := consumer.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.NumPending, info.NumPending == 1
+	})
 }
 
 // A record written before the record carried GitHub's spelling of its repository is named at boot
