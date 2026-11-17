@@ -17,6 +17,8 @@
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   update outbox set payload = payload - 'claim'
+--   where kind in ('supervise', 'issue_bundle', 'update_ask') and payload ? 'claim';
 --   alter table plan_steps drop column if exists agent;
 --   delete from schema_version where version = 20261117213545;
 --   commit;
@@ -24,12 +26,23 @@
 --
 -- The release before this one boots over the column: its plan_steps reads and writes name each
 -- column they touch (record's PutPlan, Plan and CarryPlan), so the column would stand there unread,
--- and every row that release inserts would take the default. Both statements are owed to the roll
--- forward: with the column dropped and the row deleted, store.apply finds no row of this version and
--- runs this file again, which adds the column again at its default. What the drop costs is each
--- name a key was given, so after the roll forward each key of a plan given before is named again
--- from the plan in force, and a key whose name came from an earlier version can take another name.
+-- and every row that release inserts would take the default. The drop and the delete are owed to
+-- the roll forward: with the column dropped and the row deleted, store.apply finds no row of this
+-- version and runs this file again, which adds the column again at its default. What the drop
+-- costs is each name a key was given, so after the roll forward each key of a plan given before is
+-- named again from the plan in force, and a key whose name came from an earlier version can take
+-- another name.
 -- A rollback past 20261117034837_issue_plans, which drops plan_steps whole, runs this way back
 -- first: its row would otherwise stand after that table is gone, and the roll forward would create
 -- plan_steps again with no agent column, which every plan read names.
+--
+-- The update is owed to the release before, not to the roll forward. This release names the claim
+-- a row acts on where the row's producer holds it: a supervise request, a release's workspace save
+-- and an update round's ask each carry the key claim (record.SuperviseRequest.Claim,
+-- IssueBundle.Claim and UpdateAsk.Claim). The release before knows no such key and decodes an
+-- outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so a row still
+-- queued with it would fail its decode at every attempt and retry until the roll forward. The
+-- update takes the key off each such row, and the release before then acts on the claim of the
+-- row's role, as it did. Only the top-level key of those three kinds goes: a notice's update
+-- round names claims of its own under the same key, which that release reads.
 alter table plan_steps add column agent text not null default '';
