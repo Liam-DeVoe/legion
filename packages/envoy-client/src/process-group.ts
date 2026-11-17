@@ -17,12 +17,14 @@ export function killGroup(pid: number): void {
 /**
  * The shell script `groupWatchedBy` runs. It moves its stdin, the pipe this process holds, to fd 3,
  * starts the watch in the background (it reads fd 3 until the pipe's last writer is gone, then
- * kills the whole group, itself included), and replaces itself with the caller's argv (`"$0"
- * "$@"`), which reads /dev/null and holds no end of the pipe. The watch writes nowhere, so it holds
- * none of the command's output open.
+ * kills the group whose leader is the command's own pid, `-$$`, itself included), and replaces
+ * itself with the caller's argv (`"$0" "$@"`), which reads /dev/null and holds no end of the pipe.
+ * A caller that did not spawn it detached leaves the command in the caller's own group, which
+ * `-$$` does not name: the watch then kills nothing rather than the caller. The watch writes
+ * nowhere, so it holds none of the command's output open.
  */
 const WATCH =
-  'exec 3<&0; (while read -r line <&3; do :; done; kill -9 0) </dev/null >/dev/null 2>&1 & exec "$0" "$@" </dev/null 3<&-';
+  'exec 3<&0; (while read -r line <&3; do :; done; kill -s KILL -- -$$) </dev/null >/dev/null 2>&1 & exec "$0" "$@" </dev/null 3<&-';
 
 /**
  * The argv that runs `argv` in a process group that ends with this process, however this process

@@ -970,20 +970,22 @@ describe("a ! command in envoy.json", () => {
 
   // A read leaves the process serving its timers while its command runs: waiting for the command
   // synchronously would hold every timer, delivery and NATS ping of the session for up to 10 s.
+  // Each command takes 2 s, so a held loop stalls the ticks 1.8 s or more, and a free one, on a
+  // machine loaded enough to delay a tick by most of a second, still stalls them under 1 s.
   test("runs while the process goes on serving its timers, for every field that names one", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
-    const slow = (value: string) => `!sleep 1; echo ${value} # ${home}`;
+    const slow = (value: string) => `!sleep 2; echo ${value} # ${home}`;
     const wait = ["/bin/sh", "-c", slow("x").slice(1)];
     // The controls: the same command waited for synchronously stalls the ticks, at the start of
     // the work and after its first ticks alike, as a second field's command would.
-    expect(await longestStall(() => Bun.spawnSync(wait))).toBeGreaterThanOrEqual(900);
+    expect(await longestStall(() => Bun.spawnSync(wait))).toBeGreaterThanOrEqual(1_800);
     expect(
       await longestStall(async () => {
         await Bun.sleep(100);
         Bun.spawnSync(wait);
       })
-    ).toBeGreaterThanOrEqual(900);
+    ).toBeGreaterThanOrEqual(1_800);
 
     const dispatchSecret = fixtureSecret("dsp");
     const listenerSecret = fixtureSecret("listener");
@@ -998,20 +1000,20 @@ describe("a ! command in envoy.json", () => {
       await longestStall(async () => {
         dispatch = await dispatchSettings(env, config);
       })
-    ).toBeLessThan(500);
+    ).toBeLessThan(1_000);
     expect(dispatch).toMatchObject({ enabled: true, token: dispatchSecret });
     // Envoy's two fields: its listener's bearer, then its NATS seed, each a slow command.
     expect(
       await longestStall(async () => {
         envoy = await envoySettings(env, config);
       })
-    ).toBeLessThan(500);
+    ).toBeLessThan(1_000);
     expect(envoy).toMatchObject({
       enabled: true,
       token: listenerSecret,
       inbound: { natsCredential: { kind: "seed", seed: { value: "SUSEED" } } },
     });
-  }, 30_000);
+  }, 60_000);
 
   // A command relative to a directory, or one a directory configures (a mise or direnv shim), must
   // resolve against the file that names it, never whatever repository the session started in.
