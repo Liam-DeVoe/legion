@@ -281,6 +281,21 @@ function twoDecisionsText(intro: string): string {
   return `# Decisions of CORE-1\n\n${intro}\n\n${ABOVE.text}\n\n${OWN.text}`;
 }
 
+/** The 409 Dispatch answers a comment whose anchor quote stands in `places` places of the
+ *  document and whose occurrence names none of them: `TARGET_AMBIGUOUS` with each place, as
+ *  `writeAmbiguousTarget` writes `pmdoc.ErrTargetAmbiguous` (`api/handler_errors.go`). */
+function ambiguousQuote(quote: string, places: number): ApiError {
+  return new ApiError(409, {
+    candidates: Array.from({ length: places }, (_unused, at) => ({
+      context: quote,
+      from: 40 * at + 1,
+      to: 40 * at + 1 + quote.length,
+    })),
+    code: "TARGET_AMBIGUOUS",
+    error: `"${quote}" matches ${places} places; pass a zero-based occurrence, or quote more of the surrounding text`,
+  });
+}
+
 // Decision 92: two decisions can open with the same sentence, and Dispatch refuses a quote that
 // matches more than one place unless the write names which. A Change names its own decision's
 // place: here the quote also stands, earlier, in the decision above it, so it is the second.
@@ -317,10 +332,7 @@ test("a Change names which place of the quote is its decision's own", async () =
 // still makes is drawn in the page's words, the draft kept.
 test("a Change's send reads the decisions document once and counts its quote's places over it", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
-    new ApiError(409, {
-      code: "QUOTE_AMBIGUOUS",
-      error: "anchor quote matches 3 places; pass a zero-based occurrence to choose one of them",
-    })
+    ambiguousQuote("Draw it once.", 3)
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions(
@@ -361,10 +373,7 @@ test("a Change's send reads the decisions document once and counts its quote's p
 // counted without the document.
 test("a Change whose document read fails names no place, and its refusal keeps the draft", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
-    new ApiError(409, {
-      code: "QUOTE_AMBIGUOUS",
-      error: "anchor quote matches 2 places; pass a zero-based occurrence to choose one of them",
-    })
+    ambiguousQuote("Draw it once.", 2)
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions(
