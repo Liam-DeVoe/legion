@@ -81,6 +81,9 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the late approval the issue is in %s, want reviewing: the approval waits on GitHub's merge state", got)
 	}
+	if row := reviewerRow(t, pool); row.Decision == nil || row.Decision.State != "approved" || row.Decision.Head != headOne {
+		t.Fatalf("after the late approval the reviewer's row holds the decision %+v, want the approval at %s: the review reached the write", row.Decision, headOne)
+	}
 	if got := reviewerRow(t, pool).ReviewedHead; got != "" {
 		t.Fatalf("after the late approval the reviewer's row reads the reviewed commit %q, want none: the approval was submitted before the re-admission cleared the generation", got)
 	}
