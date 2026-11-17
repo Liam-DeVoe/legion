@@ -2,7 +2,7 @@ import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -14,7 +14,7 @@ import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { NodeOptions, NodeRow } from "./NodeRow";
+import { NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -1383,5 +1383,45 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
     }
   } finally {
     createComment.mockRestore();
+  }
+});
+
+/** A focused row whose box the browser lays out at `top`, 24 px tall, placed by the hook every
+ *  row of the outline places itself with. */
+function FocusedRowAt({ top }: { top: number }): ReactNode {
+  const row = useRef<HTMLDivElement | null>(null);
+  useRowOnScreen(row, true);
+  return (
+    <div
+      ref={(element) => {
+        row.current = element;
+        if (element !== null) element.getBoundingClientRect = () => new DOMRect(0, top, 320, 24);
+      }}
+    />
+  );
+}
+
+// Decision 113: a focused row stands below everything that stays at the top of the screen. At
+// 760 px and below the view row stays there and publishes its height (`slots/view-row.tsx`),
+// which the page's `scroll-padding-top` holds, while a header that publishes no band of its own
+// leaves `bringOnScreen` nothing to clear: so a focused row 10 px from the top lay under the view
+// row. It is scrolled to 8 px below it, and a row already below it is left where it is.
+test("a focused row under the view row that stays is placed below it, and one below it is left", () => {
+  document.documentElement.style.setProperty("--issue-view-row-height", "44px");
+  const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const under = render(<FocusedRowAt top={10} />);
+    expect(
+      scrollBy,
+      "the focused row was left under the view row that stays"
+    ).toHaveBeenCalledTimes(1);
+    expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 8 });
+    under.unmount();
+    scrollBy.mockClear();
+    render(<FocusedRowAt top={60} />).unmount();
+    expect(scrollBy, "a row already below the view row was scrolled").not.toHaveBeenCalled();
+  } finally {
+    scrollBy.mockRestore();
+    document.documentElement.style.removeProperty("--issue-view-row-height");
   }
 });

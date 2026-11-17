@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 
+import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
@@ -18,6 +19,7 @@ import {
   expectRowLayouts,
   expectSeedDrawn,
   focusRow,
+  focusThePage,
   nodeRow,
   nodeRows,
   ONE_LINE_WORDS,
@@ -259,6 +261,58 @@ test("a node draws its kind at the right of its row and every node starts at one
     await page.setViewportSize(PHONE);
     const comment = await focusRow(page, seeded.comment);
     expect((await rowAct(comment, "reply").boundingBox())?.height ?? 1e6).toBeLessThan(44);
+  });
+});
+
+/** How far the focused row's top stands below the bottom of the band that stays at the top of
+ *  the screen above the rows, in CSS pixels: the view row at 390 px, the sticky box that holds
+ *  the view controls (`[data-filter-row]`), as part D's padding row finds it. Undefined while no
+ *  row holds the focus or nothing above the rows stays. */
+async function focusedRowBelowWhatStays(page: Page): Promise<number | undefined> {
+  return page.evaluate(() => {
+    const row = document.activeElement?.closest("[data-node-row]");
+    let band = document.querySelector("[data-filter-row]");
+    while (band !== null && getComputedStyle(band).position !== "sticky") {
+      band = band.parentElement;
+    }
+    if (row == null || band === null) return undefined;
+    return row.getBoundingClientRect().top - band.getBoundingClientRect().bottom;
+  });
+}
+
+// Decision 113: a focused row stands below everything that stays at the top of the screen. At
+// 390 px the view row stays there; `t s` puts the focus on the outline's first row, which the
+// chord shows and the row places (`useRowOnScreen`), so that row's top is below the view row's
+// bottom once the page has settled. The page starts scrolled to its foot, so the row the chord
+// focuses is above the screen. The chord's own placement (part D's `showPart`) reads the page's
+// scroll padding as well, so this row guards the two together.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then a
+// chord and its settling frames waited out.
+test("after t s at 390 px the focused row stands below the view row that stays at the top", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    await page.setViewportSize(PHONE);
+    await openIssue(page, seeded.key);
+    await expectSeedDrawn(page, seeded);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("s");
+    await expect(page, "t s did not open Spec").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "spec")}$`)
+    );
+    await expect(page.locator("[data-node-row]:focus"), "t s focused no row").toHaveCount(1);
+    // The chord keeps what it showed on screen for 20 frames (`useIssueKeymap.ts`); the reading
+    // is of the page after them.
+    for (let frames = 0; frames < 15; frames += 1) await nextFrames(page);
+    const below = await focusedRowBelowWhatStays(page);
+    expect(below, "nothing above the rows stays at the top at 390 px").toBeDefined();
+    expect(
+      below ?? -1,
+      "the focused row's top lies under the view row that stays at the top"
+    ).toBeGreaterThanOrEqual(0);
   });
 });
 
