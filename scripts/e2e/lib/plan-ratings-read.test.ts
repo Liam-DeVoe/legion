@@ -11,7 +11,9 @@ import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch
 // answer would print, and exits FAKE_DISPATCH_EXIT. The whole answer below is what `dispatch plans`
 // (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed finished issues, rendered
 // by that command itself, so a line the command prints and the script cannot read fails here: a
-// header, then one finished issue per line, newest close first.
+// header, then one finished issue per line, newest close first. Bun drops the answer's types when
+// it runs this file, so packages/envoy-client's typecheck, whose tsconfig includes it, holds the
+// answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
 const dir = temporaryDirectory("plan-ratings-read-test");
 
@@ -139,12 +141,7 @@ exit "\${FAKE_DISPATCH_EXIT:-0}"
     cwd: dir,
     host: "omp",
     sessionId: "session-1",
-    config: {
-      enabled: true,
-      url: "http://dispatch.test",
-      credential: bearerCredential("secret"),
-      error: null,
-    },
+    config: { url: "http://dispatch.test", credential: bearerCredential("secret") },
     env: {},
     exec: async (file, argv) => {
       throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
