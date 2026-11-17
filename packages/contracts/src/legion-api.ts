@@ -1184,7 +1184,7 @@ const taskReadingFields = {
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 156). */
+ * (contract 157). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1246,7 +1246,7 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 156). */
+ * the wait before its value is written again (contract 157). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1323,20 +1323,20 @@ function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
 const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 156). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 157). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 156). */
+ * finished, 0 for none (contract 157). */
 export const LegionTaskResponse = z.object(taskReadingFields);
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 156). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 157). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1345,7 +1345,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * host is idle, to take the task its value names. A take with no answer — a refused, reset or
  * closed connection, a DNS failure, no answer in 5 minutes, or a 502, 503 or 504 that names no
  * `code` — is sent again unchanged, and a take of a number already accepted whose turn has not
- * started is answered the same text again (contract 156). */
+ * started is answered the same text again (contract 157). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1357,7 +1357,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `adoption`), since a worker acts
  * on none of them by name and a hold a later daemon adds must not refuse the answer (contract
- * 156). */
+ * 157). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
