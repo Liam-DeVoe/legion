@@ -13,8 +13,10 @@ body: |-
   resolves Dispatch and Envoy at once.
   A command's process group ends with the process however the process ends, a signal or a crash
   included, and its output is in a file with no name, so no exit leaves the value on disk.
-  `@legion/envoy-client/process-group` holds the group kill (`killGroup`) and the watch that ends a
-  group with its process (`groupWatchedBy`), which every detached shell command of the plugins uses.
+  `@legion/envoy-client/process-group` holds the group kill (`killGroup`) and `spawnWatched`, which
+  starts a command detached in a group a watch ends with the process; every detached shell command
+  of the plugins starts that way. `readEnvoyConfig` reads the chosen file, the checkout's and the
+  OpenCode-era checkout file at once.
 time: 2026-11-17T12:31:04Z
 custom:
   Issue: pr4318

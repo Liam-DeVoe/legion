@@ -512,9 +512,9 @@ describe("running a person's command", () => {
   // the session, which runs nothing as it goes. Proved as the reviewer proved the defect - a
   // process that ends well before the command's limit, which is the case the limit cannot cover -
   // and read off this machine's own process table, which again no fake clock can drive.
-  for (const { how, end } of [
-    { how: "exits", end: "process.exit(0);" },
-    { how: "is killed by SIGKILL", end: 'process.kill(process.pid, "SIGKILL");' },
+  for (const { how, end, code } of [
+    { how: "exits", end: "process.exit(0);", code: 0 },
+    { how: "is killed by SIGKILL", end: 'process.kill(process.pid, "SIGKILL");', code: null },
   ]) {
     test(`leaves nothing running when the process that started the command ${how} first`, async () => {
       const directory = scratch();
@@ -540,8 +540,8 @@ describe("running a person's command", () => {
         const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
         await runs.exited;
         expect(await new Response(runs.stderr).text()).toBe("");
-        if (end.includes("SIGKILL")) expect(runs.signalCode).toBe("SIGKILL");
-        else expect(runs.exitCode).toBe(0);
+        if (code === null) expect(runs.signalCode).toBe("SIGKILL");
+        else expect(runs.exitCode).toBe(code);
         const pid = Number(readFileSync(pidFile, "utf8").trim());
         expect(Number.isInteger(pid)).toBe(true);
         expect(await untilTrue(() => !alive(pid))).toBe(true);

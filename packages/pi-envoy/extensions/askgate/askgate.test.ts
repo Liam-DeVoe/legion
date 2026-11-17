@@ -1554,7 +1554,7 @@ describe("deadline and abandonment", () => {
       started = Promise.withResolvers<void>();
       const gated = g.device(id, "dispatch_comment", COMMENT);
       await started.promise;
-      g.event("tool_execution_end", { toolCallId: id, toolName: "write", isError: true });
+      await g.event("tool_execution_end", { toolCallId: id, toolName: "write", isError: true });
       // Warn mode lets it go, and says it went out unreviewed (the attack review, non-blocking 2).
       const result = await gated;
       expect(result?.block).toBeUndefined();
@@ -1569,7 +1569,7 @@ describe("deadline and abandonment", () => {
     started = Promise.withResolvers<void>();
     const next = g.device("d", "dispatch_comment", COMMENT);
     await started.promise;
-    g.event("tool_execution_end", { toolCallId: "d", toolName: "write", isError: true });
+    await g.event("tool_execution_end", { toolCallId: "d", toolName: "write", isError: true });
     await next;
     expect(signals).toHaveLength(4);
   });
@@ -1591,7 +1591,11 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    g.event("tool_execution_end", { toolCallId: "toolu_eval", toolName: "eval", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "toolu_eval",
+      toolName: "eval",
+      isError: true,
+    });
     expect(signals[0].aborted).toBe(false);
     return { g, gated, signals };
   }
@@ -1869,7 +1873,11 @@ console.log(JSON.stringify(args, null, 2));
     });
     const gated = g.bash("dry-ended", ONE_LINE_ASK);
     const signal = await running.promise;
-    g.event("tool_execution_end", { toolCallId: "dry-ended", toolName: "bash", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "dry-ended",
+      toolName: "bash",
+      isError: true,
+    });
     expect(signal.aborted).toBe(true);
     // Warn mode lets the abandoned call go, saying it went out unreviewed.
     const result = await gated;
@@ -1898,7 +1906,11 @@ console.log(JSON.stringify(args, null, 2));
     expect(g.dryRuns).toHaveLength(1);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
     expect(g.calls.filter(isRules)).toHaveLength(1);
-    g.event("tool_execution_end", { toolCallId: "models-ended", toolName: "bash", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "models-ended",
+      toolName: "bash",
+      isError: true,
+    });
     // Both at once, before either call settles: the one stop the call holds aborts them together.
     expect(signals.map((s) => s.aborted)).toEqual([true, true]);
     const result = await gated;
@@ -3290,6 +3302,27 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(result.timedOut).toBe(true);
     expect(Date.now() - began).toBeLessThan(2_000);
   });
+  /** Whether the process with this pid has ended within `ms`: it no longer exists, or it is a
+   *  zombie waiting for whatever adopted it to reap it, which is ended all the same. */
+  function endsWithin(pid: number, ms: number): boolean {
+    const zombie = (): boolean => {
+      try {
+        return /\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, "utf8"));
+      } catch {
+        // No /proc here (macOS), or the process is already gone: `kill` below answers.
+        return false;
+      }
+    };
+    for (const deadline = Date.now() + ms; Date.now() < deadline; Bun.sleepSync(20)) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      if (zombie()) return true;
+    }
+    return false;
+  }
   test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
     const pidFile = path.join(work, "dry-run-helper.pid");
     const began = Date.now();
@@ -3304,16 +3337,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     try {
       expect(result).toMatchObject({ exitCode: 0, stdout: "out\n", timedOut: false });
       expect(Date.now() - began).toBeLessThan(2_000);
-      // A killed orphan answers `kill(pid, 0)` as a zombie until whatever adopted it reaps it.
-      let alive = true;
-      for (const deadline = Date.now() + 1_000; alive && Date.now() < deadline; Bun.sleepSync(20)) {
-        try {
-          process.kill(helper, 0);
-        } catch {
-          alive = false;
-        }
-      }
-      expect(alive).toBe(false);
+      expect(endsWithin(helper, 1_000)).toBe(true);
     } finally {
       try {
         process.kill(helper, "SIGKILL");
@@ -3348,17 +3372,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     try {
       expect(await new Response(runs.stderr).text()).toBe("");
       expect(runs.signalCode).toBe("SIGKILL");
-      // A killed orphan answers `kill(pid, 0)` as a zombie until whatever adopted it reaps it.
-      let alive = true;
-      for (const deadline = Date.now() + 2_000; alive && Date.now() < deadline; Bun.sleepSync(20)) {
-        try {
-          process.kill(helper, 0);
-          alive = !/\) Z /.test(fs.readFileSync(`/proc/${helper}/stat`, "utf8"));
-        } catch {
-          alive = false;
-        }
-      }
-      expect(alive).toBe(false);
+      expect(endsWithin(helper, 2_000)).toBe(true);
     } finally {
       try {
         process.kill(helper, "SIGKILL");
@@ -5008,7 +5022,7 @@ describe("sessions", () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d"]) await g.device(id, "dispatch_comment", COMMENT);
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout", "timeout", "timeout", "halted"]);
-    g.event("session_switch", { reason: "new" });
+    await g.event("session_switch", { reason: "new" });
     await g.device("e", "dispatch_comment", COMMENT);
     expect(g.entries.at(-1)?.outcome).toBe("timeout");
     expect(g.calls).toHaveLength(4);
@@ -5022,7 +5036,7 @@ describe("sessions", () => {
     );
     await g.device("a", "dispatch_comment", { issue: "X-1", body: "one" });
     await g.device("b", "dispatch_comment", { issue: "X-1", body: "two" });
-    g.event("session_branch");
+    await g.event("session_branch");
     await g.device("c", "dispatch_comment", { issue: "X-1", body: "three" });
     await g.device("r1", "dispatch_comment", { issue: "X-2", body: "b" });
     expect(g.entries.map((e) => e.outcome)).toEqual(["verdict", "verdict", "verdict", "verdict"]);
@@ -7150,7 +7164,7 @@ describe("rules check", () => {
       });
       const gated = g.device("t1", "dispatch_ask", KEEP_INPUT);
       await started.promise;
-      g.event("tool_execution_end", { toolCallId: "t1" });
+      await g.event("tool_execution_end", { toolCallId: "t1" });
       expect((await gated)?.block).toBe(blocked);
       expect(g.entries).toMatchObject([
         {
@@ -7303,7 +7317,7 @@ describe("rules check", () => {
     await g.device("h", "dispatch_ask", KEEP_INPUT);
     expect(g.notices).toEqual([RULES_NOTICE, RULES_NOTICE]);
     // A session switch resets it too: the three failures after the switch raise a third.
-    g.event("session_switch", { reason: "new" });
+    await g.event("session_switch", { reason: "new" });
     for (const id of ["i", "j"]) await g.device(id, "dispatch_ask", KEEP_INPUT);
     expect(g.notices).toHaveLength(2);
     await g.device("k", "dispatch_ask", KEEP_INPUT);

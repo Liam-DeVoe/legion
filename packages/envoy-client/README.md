@@ -502,7 +502,7 @@ the two sections' commands at once. The command's exit status decides: a command
 has printed its value even when a process it left running holds stdout open; a timeout kills the
 whole group. The group also ends with the process however the process ends: its own exit, a
 signal it handles through `process.reallyExit` (as Oh My Pi's SIGINT, SIGTERM, SIGHUP and
-fatal-error handlers do), or a SIGKILL. A watch in the group (`groupWatchedBy` in
+fatal-error handlers do), or a SIGKILL. A watch in the group (`spawnWatched` in
 `src/process-group.ts`) reads a pipe the process holds and kills the group once the kernel has
 closed it. The command's stdout goes to a file whose name is removed before the command starts,
 so no exit leaves the value on disk under a name. It runs only when its section's resolver is

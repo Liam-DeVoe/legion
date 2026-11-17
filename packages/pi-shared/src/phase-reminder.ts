@@ -296,6 +296,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     return { reminds: true, record };
   };
 
+  /** Whether the run has reached the threshold and its architect has not been told yet. */
+  const architectDue = (): boolean => !reported && stall.count >= deps.limits.architectAfter;
+
   /**
    * D6: one Envoy message to the issue's architect, when a delivered reminder brought the count to
    * the threshold. `reportKey` is minted at the first attempt of a run of reminders and kept until
@@ -310,7 +313,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     // turn may end the run meanwhile. What is read after it is the run as it stands, which may
     // need no notice any more.
     const publish = await deps.publisher();
-    if (reported || stall.count < deps.limits.architectAfter) return;
+    if (!architectDue()) return;
     const claim = deps.claim();
     if (claim === undefined) return;
     if (publish === undefined) {
@@ -420,7 +423,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       if (generation === sentAt) armReminder(reminder, deps.limits.reminderMs);
       return;
     }
-    if (reported || stall.count < deps.limits.architectAfter) return;
+    if (!architectDue()) return;
     await tellArchitect(record);
   };
 

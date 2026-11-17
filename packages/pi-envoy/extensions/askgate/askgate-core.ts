@@ -256,7 +256,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
-import { groupWatchedBy, killGroup } from "@legion/envoy-client/process-group";
+import { killGroup, spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -1794,19 +1794,17 @@ export interface UnreadableCommand {
 
 /** Runs `script` under bash in a process group of its own, which is killed at the limit, on the
  *  signal and once the script's own shell exits, and which ends with this process however it ends
- *  (`groupWatchedBy`): a helper the script left running neither outlives the dry run nor holds its
+ *  (`spawnWatched`): a helper the script left running neither outlives the dry run nor holds its
  *  pipes, and so its answer, open until the limit. */
 export async function spawnDryRun(
   script: string,
   { cwd, env, timeoutMs, signal }: DryRunOptions
 ): Promise<DryRunResult> {
-  const child = Bun.spawn(groupWatchedBy(["bash", "-c", script]), {
+  const { child, endGroup } = spawnWatched(["bash", "-c", script], {
     cwd,
     env,
-    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    detached: true,
   });
   let timedOut = false;
   const kill = () => killGroup(child.pid);
@@ -1825,7 +1823,7 @@ export async function spawnDryRun(
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", kill);
-    void child.stdin.end();
+    endGroup();
   }
 }
 

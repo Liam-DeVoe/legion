@@ -4,6 +4,7 @@
 // jj-attribution). Each starts its command detached, in a group of its own, so only a kill of the
 // group reaches every process the command started. Both host plugins depend on this package, so
 // the one copy lives here.
+import type { Spawn, Subprocess } from "bun";
 
 /** Kills every process of the group `pid` leads, if any is left. */
 export function killGroup(pid: number): void {
@@ -33,13 +34,54 @@ const WATCH =
  * nothing can handle. The process need not run anything as it goes: the kernel closes the pipe it
  * held, and the watch in the group sees that.
  *
- * Spawn it detached, with `stdin: "pipe"`, and keep the returned subprocess's stdin open while the
- * command may run; close it (`end()`) once the caller is done with the group, after its own
- * `killGroup`. `argv` replaces the watching shell under the same pid, so `exited`, the exit status
- * and `killGroup` are the command's own; `argv` reads /dev/null. A first word the shell cannot run
+ * `spawnWatched` is how a caller starts one; this is its argv, and what the watch's own test
+ * starts. `argv` replaces the watching shell under the same pid, so `exited`, the exit status and
+ * `killGroup` are the command's own; `argv` reads /dev/null. A first word the shell cannot run
  * exits 127 rather than failing the spawn. Linux and macOS: `/bin/sh` and its `read` and `kill`
  * builtins.
  */
 export function groupWatchedBy(argv: readonly string[]): string[] {
   return ["/bin/sh", "-c", WATCH, ...argv];
+}
+
+/** `Bun.spawn`'s options for a watched command: all but the two `spawnWatched` sets itself. */
+export type WatchedSpawnOptions<Out extends Spawn.Readable, Err extends Spawn.Readable> = Omit<
+  Spawn.SpawnOptions<"pipe", Out, Err>,
+  "stdin" | "detached"
+>;
+
+/** A command `spawnWatched` started. */
+export interface WatchedCommand<Out extends Spawn.Readable, Err extends Spawn.Readable> {
+  /** The command's own process: its pid leads the group, and `exited`, the exit status and a
+   *  `killGroup(child.pid)` are the command's. Its stdin is the watch's pipe, not the command's. */
+  readonly child: Subprocess<"pipe", Out, Err>;
+  /** Kills every process of the group still running, then closes the watch's pipe. A caller runs
+   *  it on every path once it is done with the command; each call kills, and the pipe closes once. */
+  readonly endGroup: () => void;
+}
+
+/**
+ * Starts `argv` detached, in a process group of its own that ends with this process however this
+ * process ends (`groupWatchedBy`), its stdin the pipe the group's watch reads. The spawn is
+ * synchronous, as `Bun.spawn` is, and throws what it throws.
+ */
+export function spawnWatched<const Out extends Spawn.Readable, const Err extends Spawn.Readable>(
+  argv: readonly string[],
+  options: WatchedSpawnOptions<Out, Err>
+): WatchedCommand<Out, Err> {
+  const child = Bun.spawn<"pipe", Out, Err>(groupWatchedBy(argv), {
+    ...options,
+    stdin: "pipe",
+    detached: true,
+  });
+  let closed = false;
+  return {
+    child,
+    endGroup: () => {
+      killGroup(child.pid);
+      if (closed) return;
+      closed = true;
+      void child.stdin.end();
+    },
+  };
 }

@@ -13,7 +13,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type ActiveDispatchConfig,
@@ -31,6 +33,7 @@ import {
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
+import { killGroup } from "../process-group";
 
 // Both sections resolve one `credential` object (`ActiveDispatchConfig`, `EnabledEnvoySettings`).
 // What this file is about is which file and which variable a section reads, so each resolution is
@@ -1240,13 +1243,12 @@ describe("a ! command in envoy.json", () => {
       dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${secret}` },
     });
     const config = await readEnvoyConfig(file, env, { cwd: tempDir() });
-    const original = process.env.TMPDIR;
+    const restore = captureEnvironment(["TMPDIR"]);
     process.env.TMPDIR = path.join(home, "no-such-directory");
     try {
       expect(await dispatchSettings(env, config)).toMatchObject({ enabled: false });
     } finally {
-      if (original === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = original;
+      restore();
     }
     expect(existsSync(runs)).toBe(false);
     expect(await dispatchSettings(env, config)).toMatchObject({ enabled: true, token: secret });
@@ -1381,13 +1383,12 @@ describe("a ! command in envoy.json", () => {
    * returns what is left in it afterwards. */
   async function inScratchTmp(body: () => Promise<void>): Promise<string[]> {
     const scratch = tempDir();
-    const original = process.env.TMPDIR;
+    const restore = captureEnvironment(["TMPDIR"]);
     process.env.TMPDIR = scratch;
     try {
       await body();
     } finally {
-      if (original === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = original;
+      restore();
     }
     return readdirSync(scratch);
   }
@@ -1420,10 +1421,6 @@ describe("a ! command in envoy.json", () => {
     return false;
   }
 
-  /** What one `bun` start may take before it runs a line: three times the 7.3 s one start took on a
-   * devbox at 1-minute load ~1035, as a bound three times a measurement under load is sized
-   * (docs/testing.md). */
-  const BUN_START_MS = 22_000;
   /** How long a command's group may take to end once its process has: the watch in the group
    * (`groupWatchedBy`) must be scheduled, see its pipe close and kill the group, and that is no
    * faster than any other process on a loaded machine. The command runner's own bound. */
@@ -2011,13 +2008,7 @@ describe("a file the settings read reads", () => {
     }, 10);
     return () => {
       clearInterval(ticker);
-      for (const writer of writers) {
-        try {
-          process.kill(-writer.pid, "SIGKILL");
-        } catch {
-          // Gone already.
-        }
-      }
+      for (const writer of writers) killGroup(writer.pid);
     };
   }
 

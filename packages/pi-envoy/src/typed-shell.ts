@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
-import { groupWatchedBy, killGroup } from "@legion/envoy-client/process-group";
+import { killGroup, spawnWatched } from "@legion/envoy-client/process-group";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
 /**
@@ -144,7 +144,7 @@ function shellInvocation(command: string): {
  *  output stream, which this module reads to its end so the command is never blocked by a full
  *  one. The CLI gives a zsh or fish bang command a pty; these two are what answering through a
  *  Dispatch reply needs, where the answer is text and there is no terminal and nobody at one. Its
- *  stdin is the pipe its group's watch reads (`groupWatchedBy`); the command itself reads nothing. */
+ *  stdin is the pipe its group's watch reads (`spawnWatched`); the command itself reads nothing. */
 type ShellSubprocess = Bun.Subprocess<"pipe", "pipe", "pipe">;
 
 /**
@@ -231,7 +231,7 @@ async function drained(reads: readonly StreamRead[]): Promise<void> {
  * timeout (300 s by default) does not reach it. It runs in a process group of its own for the
  * same reason, so nothing it left running outlives it or holds the session: the group is killed
  * when the command ends and when `stop` is called before it ends, and it ends with this process
- * however this process ends (`groupWatchedBy`): the CLI leaves a bang command in the session's
+ * however this process ends (`spawnWatched`): the CLI leaves a bang command in the session's
  * own group, under the eye of the person who typed it, and a command answered through a Dispatch
  * reply, which nobody watches, must not outlive the session or fill the pod's disk. A `stop` that
  * arrives after the command ended is nothing: the command answered for itself, and a session
@@ -257,6 +257,7 @@ export async function runShellCommand(
   }
 ): Promise<ShellCommandResult> {
   let child: ShellSubprocess;
+  let endGroup: () => void;
   try {
     // Inside the try with the spawn: the host's own configuration is what answers here, and a
     // shell it cannot resolve is a command that did not start rather than a throw at the caller.
@@ -267,14 +268,12 @@ export async function runShellCommand(
     // anywhere on that path lets a `/new` or a `/resume` land inside it, and the whole command
     // then runs for the conversation the host moved to, in its directory.
     const invocation = shellInvocation(command);
-    child = Bun.spawn(groupWatchedBy(invocation.argv), {
+    ({ child, endGroup } = spawnWatched(invocation.argv, {
       cwd: options.cwd,
-      detached: true,
       env: invocation.env,
       stderr: "pipe",
-      stdin: "pipe",
       stdout: "pipe",
-    });
+    }));
   } catch (error) {
     return {
       cut: false,
@@ -305,8 +304,7 @@ export async function runShellCommand(
     clearTimeout(limit);
     // Whatever the outcome, nothing the command started outlives it - and the pipes close with
     // the last process holding them, which is what ends the reads.
-    killGroup(child.pid);
-    void child.stdin.end();
+    endGroup();
   }
   await drained(reads);
   const output = printable(printed.text());

@@ -1273,15 +1273,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // is held from the delivery's start (`deliverRelayed`) until the last work it handed off ends
   // (`offWorker`, the shell and typed-input runners), and the pass leaves a held session in
   // `leftSessions` for a later pass, which forgets it once nothing holds it.
-  const callsUnderWay = new Map<string, number>();
+  const heldSessions = new Map<string, number>();
   const underWay = async <T>(session: string, call: () => Promise<T>): Promise<T> => {
-    callsUnderWay.set(session, (callsUnderWay.get(session) ?? 0) + 1);
+    heldSessions.set(session, (heldSessions.get(session) ?? 0) + 1);
     try {
       return await call();
     } finally {
-      const remaining = (callsUnderWay.get(session) ?? 1) - 1;
-      if (remaining > 0) callsUnderWay.set(session, remaining);
-      else callsUnderWay.delete(session);
+      const remaining = (heldSessions.get(session) ?? 1) - 1;
+      if (remaining > 0) heldSessions.set(session, remaining);
+      else heldSessions.delete(session);
     }
   };
 
@@ -3847,7 +3847,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // trading under it.
     leftSessions.delete(host);
     for (const other of leftSessions) {
-      if (callsUnderWay.has(other)) continue;
+      if (heldSessions.has(other)) continue;
       forgetBrokerSession(other);
       leftSessions.delete(other);
     }

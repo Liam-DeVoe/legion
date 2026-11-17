@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorDispatch } from "./operator-dispatch";
 
@@ -96,14 +97,8 @@ describe("operatorDispatch", () => {
   });
 });
 
-/** What one `bun lib/operator-dispatch.ts` start is given, rather than Bun's 5 s per case: three
- *  times the 7.3 s one start took on a devbox at 1-minute load ~1035 (#4318's acceptance run, the
- *  first case below), as a bound three times a measurement under load is sized
- *  (docs/testing.md, "A test that waits for the event feed's first frame"). A case that starts
- *  `bun` is given its own budget for the real starts it makes, as a test of real process I/O carries
- *  its own (docs/solutions/testing/await-the-event-not-a-tick-budget.md, "Two clock pitfalls"). */
-const BUN_START_MS = 22_000;
-/** The budget of a case, or a hook, that starts `bun` `starts` times. */
+/** The budget of a case, or a hook, that starts `bun` `starts` times, rather than Bun's 5 s per
+ *  case (`BUN_START_MS`). */
 const startsBudget = (starts: number): number => starts * BUN_START_MS;
 
 // The bearer never reaches stdout, where an agent running the command would put it in its

@@ -11,7 +11,7 @@ tags:
   - child-process
 date: 2026-10-13
 status: active
-module: packages/envoy-client/src/envoy-config.ts, packages/pi-legion/src/jj-attribution.ts
+module: packages/envoy-client/src/envoy-config.ts, packages/pi-shared/src/jj-attribution.ts
 related_issues:
   - "LEGION-707"
   - "sjawhar/legion#1934"
@@ -59,38 +59,39 @@ not the runtime's spawn timeout (which signals the leader alone), kills the grou
 After the leader exits it kills the negative PID process group regardless of success, failure, or
 timeout. Only then does it read and validate the output, by position from the start of the file.
 
-The group also ends with the caller however the caller ends (`groupWatchedBy`,
+The group also ends with the caller however the caller ends (`spawnWatched`,
 `packages/envoy-client/src/process-group.ts`): a watch in the group reads a pipe the caller holds
 and kills the group once its last writer is gone. An `exit` listener is not enough: Oh My Pi's
 SIGINT, SIGTERM, SIGHUP and fatal-error handlers end through `process.reallyExit`, which skips the
 `exit` event, and nothing runs on a SIGKILL.
 
 ```ts
-const fd = unnamedFile(); // opened "wx+", 0o600, in a directory removed at once
-const child = Bun.spawn(groupWatchedBy(["/bin/sh", "-c", command]), {
-  stdin: "pipe", // the watch's pipe: closed by the kernel when this process ends
-  stdout: fd,
-  stderr: "ignore",
-  detached: true,
-});
-let timedOut = false;
-const timer = setTimeout(() => {
-  timedOut = true;
-  killGroup(child.pid);
-}, COMMAND_TIMEOUT_MS);
+const file = await unnamedFile(); // opened "wx+", 0o600, in a directory removed at once
 try {
-  await child.exited;
+  const { child, endGroup } = spawnWatched(["/bin/sh", "-c", command], {
+    stdout: file.fd,
+    stderr: "ignore",
+  }); // detached, its stdin the watch's pipe, which the kernel closes when this process ends
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    killGroup(child.pid);
+  }, COMMAND_TIMEOUT_MS);
+  try {
+    await child.exited;
+  } finally {
+    clearTimeout(timer);
+  }
+  endGroup(); // kills what is left of the group, then closes the watch's pipe
+  const value = (await readOutput(file)).trim(); // FileHandle.read at explicit positions: the offset is shared
 } finally {
-  clearTimeout(timer);
+  await file.close();
 }
-killGroup(child.pid);
-void child.stdin.end();
-const value = readOutput(fd).trim(); // readSync at explicit positions: the offset is shared
 ```
 
 For an asynchronous command that needs streams, the pending change in
 [sjawhar/legion#1934](https://github.com/cybermonklabs/legion/pull/1934) applies the same ownership
-rule in `packages/pi-legion/src/jj-attribution.ts`: spawn detached, race the leader and both
+rule in `packages/pi-shared/src/jj-attribution.ts`: spawn detached, race the leader and both
 streams against the deadline, and attach group cleanup to `child.exited.finally`. That finalizer
 runs before either a successful value or a non-zero result can resolve, so the process group is
 also reaped when the leader exits before the timer.
@@ -98,8 +99,8 @@ also reaped when the leader exits before the timer.
 ## Why This Works
 
 The value is meaningful only after the command's descendants no longer own resources that could
-extend the wait or outlive the caller. Redirecting stdout to a private file decouples synchronous
-leader completion from descendant-held pipes. An isolated process group gives the caller one
+extend the wait or outlive the caller. Redirecting stdout to a private file decouples the
+leader's completion from descendant-held pipes. An isolated process group gives the caller one
 handle for every descendant. Killing that group on every terminal path establishes the lifetime
 invariant; reading the value after cleanup prevents a successful result from racing a still-live
 helper.
@@ -109,6 +110,6 @@ helper.
 Test the three failure shapes separately and record the helper PID in each case. The regression
 rows in `packages/envoy-client/src/__tests__/envoy-config.test.ts` prove both successful and
 timed-out commands return within their bound and that the recorded child is gone afterwards. The
-pending `packages/pi-legion/src/jj-attribution.test.ts` coverage in #1934 adds both a helper that
+pending `packages/pi-shared/src/jj-attribution.test.ts` coverage in #1934 adds both a helper that
 holds inherited streams and a successful wrapper whose helper closes them. A test that observes
 only the leader's exit cannot prove group cleanup.

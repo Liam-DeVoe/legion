@@ -12,11 +12,10 @@ import {
 } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
-import type { Subprocess } from "bun";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
-import { groupWatchedBy, killGroup } from "./process-group";
+import { killGroup, spawnWatched, type WatchedCommand } from "./process-group";
 import { sendable } from "./secret-file";
 
 /** Where a caller runs: one of the two plugins (and the `dispatch` command, which takes its host
@@ -303,7 +302,8 @@ async function parseFile<Settings>(
     raw = await readFile(filePath, "utf-8");
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) {
-      return { kind: "absent", link: await danglingLink(filePath) };
+      // A missing checkout file names no link: only the chosen file's notice reads it.
+      return { kind: "absent", link: checkout ? null : await danglingLink(filePath) };
     }
     return { kind: "invalid", reason: `${filePath}: could not be read (${messageFor(error)})` };
   }
@@ -411,21 +411,20 @@ async function runCommand(
   // process the command left running, until the timeout.
   const file = await unnamedFile();
   try {
-    let child: Subprocess<"pipe", number, "ignore">;
+    let watched: WatchedCommand<number, "ignore">;
     try {
       // Its own process group, so every process the command started is killed with it, and a
-      // group that ends with this process, however it ends (`groupWatchedBy`).
-      child = Bun.spawn(groupWatchedBy(["/bin/sh", "-c", command]), {
+      // group that ends with this process, however it ends (`spawnWatched`).
+      watched = spawnWatched(["/bin/sh", "-c", command], {
         cwd,
         env: childEnv,
-        stdin: "pipe",
         stdout: file.fd,
         stderr: "ignore",
-        detached: true,
       });
     } catch (error) {
       return { failure: `could not start: ${messageFor(error)}`, timedOut: false };
     }
+    const { child, endGroup } = watched;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -438,8 +437,7 @@ async function runCommand(
     }
     // Whatever the outcome, nothing the command started outlives it, and so nothing it left
     // running can change the value read below.
-    killGroup(child.pid);
-    void child.stdin.end();
+    endGroup();
     if (timedOut) {
       return {
         failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
@@ -482,9 +480,10 @@ export type CommandMode = "run" | "kept";
  * is a run out of time, while a failure that ended on its own (a non-zero exit, empty output, more
  * than one line) is kept for 60 s, then the command runs again.
  * Its exit status decides, and the wait is for the shell alone: once it exits or runs out of time,
- * every process of its group still running is killed, then its output is read; a process that
- * exits while it runs (not by a signal it does not handle) kills the group and removes the output
- * first. A non-zero exit, a timeout or empty output rejects naming the field and the file. A
+ * every process of its group still running is killed, then its output is read. However this
+ * process ends while the command runs, a SIGKILL included, the group ends with it
+ * (`spawnWatched`), and the output was never in a file anyone can name (`unnamedFile`). A
+ * non-zero exit, a timeout or empty output rejects naming the field and the file. A
  * value with whitespace or a control character inside it, as written or as printed, rejects too,
  * since it cannot be sent as one bearer. No error carries the value or either stream.
  *
@@ -651,14 +650,19 @@ export async function readEnvoyConfig(
   options: { readonly cwd: string; readonly deviceOf?: DeviceOf | undefined }
 ): Promise<EnvoyConfig> {
   const deviceOf = options.deviceOf ?? statDevice;
-  const chosen = await parseFile(filePath, EnvoyFileSchema, false);
-  if (chosen.kind === "invalid") return { kind: "failed", path: filePath, error: chosen.reason };
   const resolvedChosen = path.resolve(filePath);
   const checkoutPath = path.resolve(options.cwd, ".envoy", "envoy.json");
-  const checkoutFile =
+  const oldCheckout = path.resolve(options.cwd, ".opencode", "envoy.json");
+  // Three reads that wait on the disk and on nothing of each other, so they run at once: this read
+  // comes before every Dispatch call a session makes.
+  const [chosen, checkoutFile, oldCheckoutThere] = await Promise.all([
+    parseFile(filePath, EnvoyFileSchema, false),
     checkoutPath === resolvedChosen
-      ? { kind: "absent" as const, link: null }
-      : await parseFile(checkoutPath, CheckoutFileSchema, true);
+      ? Promise.resolve({ kind: "absent" as const, link: null })
+      : parseFile(checkoutPath, CheckoutFileSchema, true),
+    oldCheckout === resolvedChosen ? Promise.resolve(false) : exists(oldCheckout),
+  ]);
+  if (chosen.kind === "invalid") return { kind: "failed", path: filePath, error: chosen.reason };
   const own: EnvoyFile = chosen.kind === "valid" ? chosen.settings : {};
   let checkout: CheckoutEnvoyConfig | null = null;
   if (checkoutFile.kind === "invalid") {
@@ -676,9 +680,15 @@ export async function readEnvoyConfig(
         : null,
     };
   }
-  const oldCheckout = path.resolve(options.cwd, ".opencode", "envoy.json");
+  // Whether the checkout's own file is there: what its read found, or, for one that could not be
+  // read or parsed, whether anything is at its path.
+  const checkoutMissing =
+    checkoutPath === resolvedChosen
+      ? chosen.kind === "absent"
+      : checkoutFile.kind === "absent" ||
+        (checkoutFile.kind === "invalid" && !(await exists(checkoutPath)));
   const warnings =
-    oldCheckout !== resolvedChosen && !(await exists(checkoutPath)) && (await exists(oldCheckout))
+    oldCheckout !== resolvedChosen && checkoutMissing && oldCheckoutThere
       ? [
           await moveNotice(
             oldCheckout,
