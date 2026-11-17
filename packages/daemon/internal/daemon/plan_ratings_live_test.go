@@ -34,7 +34,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -50,12 +49,7 @@ type planRatingsLive struct {
 // its retro, whose completion is refused until it rates the plan. The fourth goes no further than
 // merging, so the read by project lists the three alone.
 func TestPlanRatingsLive(t *testing.T) {
-	fixtureenv.Live(t)
-	root := liveCheckout(t)
-	proof := newLiveProof(t, "scripts/e2e/plan-ratings.sh")
-	requireBun(t)
-	l := &planRatingsLive{&stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, 4), root: root, cliHome: t.TempDir()}}
-	l.mintReader("plans-reader")
+	l := &planRatingsLive{newStepRecordsLive(t, "scripts/e2e/plan-ratings.sh", 4, "plans-reader")}
 	keys := make([]string, 0, len(l.issues))
 	for _, issue := range l.issues {
 		keys = append(keys, issue.key)

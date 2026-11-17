@@ -219,9 +219,9 @@ func newStepRecordsRig(t *testing.T) *stepRecordsRig {
 	return newStepRecordsRigOn(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}))
 }
 
-// newStepRecordsRigOn is newStepRecordsRigWith for a run of one issue. The package's tests give it
-// the package's broker; the live driver (step_records_live_test.go) gives it the broker and the
-// Dispatch its script names.
+// newStepRecordsRigOn is newStepRecordsRigWith for a run of one issue, which newStepRecordsRig
+// gives the package's broker. The live drivers call newStepRecordsRigWith themselves, through
+// newStepRecordsLive (step_records_live_test.go).
 func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatch) *stepRecordsRig {
 	t.Helper()
 	return newStepRecordsRigWith(t, proof, dispatch, 1)

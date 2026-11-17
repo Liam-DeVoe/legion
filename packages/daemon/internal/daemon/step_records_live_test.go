@@ -67,18 +67,28 @@ type stepRecordsLive struct {
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
-	fixtureenv.Live(t)
-	root := liveCheckout(t)
-	proof := newLiveProof(t, "scripts/e2e/step-records.sh")
-	requireBun(t)
-	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigOn(t, proof, startHandoffDispatch(t, root).scratchDispatch), root: root, cliHome: t.TempDir()}
-	l.mintReader("steps-reader")
+	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
 	l.step("a-phase-moves-while-dispatch-is-down", l.outage)
 	l.step("walk-to-done-with-one-failed-review", l.readByIssue)
 	l.step("a-write-that-names-another-session-is-refused", l.writerRefused)
+}
+
+// newStepRecordsLive is the run a live driver of the walk makes around its steps: the checkout its
+// script runs from, the broker the script names (or a skip naming script), bun on PATH, the walk's
+// rig over issues issues on a Dispatch this checkout builds, the person's CLI home, and a personal
+// token named reader minted for the person, which every read of the CLI carries.
+func newStepRecordsLive(t *testing.T, script string, issues int, reader string) *stepRecordsLive {
+	t.Helper()
+	fixtureenv.Live(t)
+	root := liveCheckout(t)
+	proof := newLiveProof(t, script)
+	requireBun(t)
+	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues), root: root, cliHome: t.TempDir()}
+	l.mintReader(reader)
+	return l
 }
 
 // liveCheckout is the checkout the proof's script runs from, whose packages/envoy the driver builds
