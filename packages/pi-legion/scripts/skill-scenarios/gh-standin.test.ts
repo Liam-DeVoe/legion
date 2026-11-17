@@ -2761,6 +2761,26 @@ test("a review update changes that review's body and answers it, and a write Git
   }
 }, 60_000);
 
+// `gh pr view --json files` is one of gh's own JSON fields for a pull request: the files the pull
+// request changes, each with its `path`, `additions` and `deletions`. Measured in INFRA-764 round
+// 25 (runs/2b44667b6a7a, reviewer-text-findings-defect-base-2, calls.jsonl:10): the reviewer's
+// `gh pr view 1001 --repo fernbrook/widgets --json files --jq '.files[].path'` was answered with
+// no `files` at all, and jq exited 1 with "Cannot iterate over null", where GitHub lists the
+// files. Catches: a field gh answers for every pull request answered as null, and a list that is
+// not the files of the pull request's diff as the run's own remote holds it.
+test("pr view's files are the files the pull request's diff changes", () => {
+  const dir = worldDir("review_world");
+  const names = ghCall(dir, "pr", "diff", "1001", "--repo", "example/widgets", "--name-only");
+  expect(names.code).toBe(0);
+  expect(names.out).not.toBe("");
+  const files = ghCall(
+    dir,
+    ...["pr", "view", "1001", "--repo", "example/widgets", "--json", "files"],
+    ...["--jq", ".files[].path"]
+  );
+  expect([files.code, files.out, files.err]).toEqual([0, names.out, ""]);
+}, 60_000);
+
 // GitHub answers `gh api repos/<o>/<r>/contents/<path>?ref=<sha>` with the file at that commit:
 // its own bytes under the raw media type, and GitHub's JSON of it otherwise. The first call is
 // the tester's, word for word but the head (INFRA-764 round 24,
