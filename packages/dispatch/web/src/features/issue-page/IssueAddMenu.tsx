@@ -12,7 +12,7 @@ import { blockedByControlName } from "./BlockedByControl";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
@@ -158,11 +158,13 @@ export function IssueAddMenu({
     // exports: neither side spells it, so renaming one renames both and the entry cannot go
     // missing on a word nobody meant to change. A control of the header - the assignee - is
     // reached with Details closed, since on a phone Details covers it; a control of Details is
-    // reached with Details open, since shut it takes neither a press nor the focus.
+    // reached with Details open, since shut it takes neither a press nor the focus. The control is
+    // scrolled into view first, since its popover is placed from the control's place on the screen.
     const atControl = (name: string) => ({
       open: () => {
         const control = pageControl(name);
         const reach = () => {
+          control?.scrollIntoView({ block: "nearest" });
           if (control instanceof HTMLSelectElement) control.focus();
           else control?.click();
         };
@@ -194,11 +196,17 @@ export function IssueAddMenu({
     if ((details.labels ?? []).length === 0) {
       // Listed only while the issue has no label, so the control is found by the name it has
       // then: the words it draws and the issue's key ("Add a label to CORE-1"). A save in flight
-      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so no saving
-      // words are passed.
+      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so the name
+      // is the one it has with no save in flight (`saving: false`).
       fields.push({
         label: PROPERTY_LABELS.labels,
-        ...atControl(labelsControlName([], details.key, CONTROL_LABELS)),
+        ...atControl(
+          labelsControlName(details.key, {
+            labels: [],
+            saving: false,
+            words: { ANSWER_LINES, CONTROL_LABELS },
+          })
+        ),
       });
     }
     if (details.route === null || details.route === "") {
@@ -224,13 +232,15 @@ export function IssueAddMenu({
       // Listed only while the issue names no component, so the picker's trigger is found by the
       // name it has then, from the attachment the components line draws: the words it draws
       // and the issue's key ("Set components of CORE-1" on an issue not attached, or attached
-      // to none). A save in flight renames it, and the busy trigger is not reached.
+      // to none). A save in flight renames it, and the busy trigger is not reached, so the name
+      // is the one it has with no save in flight (`saving: false`).
       fields.push({
         label: PROPERTY_LABELS.components,
         ...atControl(
           componentsControlName(details.key, {
             components: details.components,
-            controlLabels: CONTROL_LABELS,
+            saving: false,
+            words: { ANSWER_LINES, CONTROL_LABELS },
           })
         ),
       });

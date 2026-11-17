@@ -132,10 +132,10 @@ function StepState({
       ? undefined
       : approvalLinkVersion(document, versions.asks);
   // Where `actionsOn` names two or more documents the list holds more than one Approve and
-  // Request changes, so each says the document it reviews, in the new issue page's words
-  // (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside
-  // `NoTooltips` no caller passes `actionsOn` today, so there each keeps `main`'s name
-  // (dispatch://INFRA-3935 R1), as it does with one document or none given.
+  // Request changes, so inside `NoTooltips` each says the document it reviews, in the new issue
+  // page's words (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md).
+  // Outside `NoTooltips` (`page === null`) each keeps `main`'s name whatever `actionsOn` holds
+  // (dispatch://INFRA-3935 R1), as it does inside with one document or none given.
   const actionsDocument =
     page === null || actionsOn === undefined || actionsOn.length < 2
       ? undefined
