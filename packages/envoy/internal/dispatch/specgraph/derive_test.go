@@ -11,8 +11,9 @@ import (
 // nowhere, a subject with no now as one at which no time limit ends, an approved text with no time
 // as one that makes no result suspect, a commit of the history with no files and a known tie with no
 // path as no change between two commits, a job run with no job, no commit or not ended as no run of
-// the check's job, and no list of job runs or of the checks that CI refused as none. Each turns a
-// state toward true or hides a failure (R7: "A pass and a failure on one such subject and one
+// the check's job, no list of job runs or of the checks that CI refused as none, and no ties or no
+// history as a caller that knows none, with which a failure at another commit counts nowhere. Each
+// turns a state toward true or hides a failure (R7: "A pass and a failure on one such subject and one
 // procedure make the state unknown", "a later failure cancels an earlier pass"), and so do an
 // approved node under another key than its id, which Current leaves out, and a subject that is no
 // subject of R10, so Derive and CheckStates give an error and no state, in the words that the
@@ -174,16 +175,28 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{"go.work": ""}}}}
 		}, want: `specgraph: history: commit "c1": the content label of "go.work" is empty, and a label has at least one character`},
 		// A nil value of each type that implements History, a type of the package or of the caller,
-		// would panic where a result carries, and an Input with no history sets no History.
+		// would panic where a result carries, and an Input with no history gives a FixtureHistory of
+		// no commit, with which no result carries.
 		{name: "a nil *FixtureHistory", change: func(in *Input) { in.History = (*FixtureHistory)(nil) },
-			want: "specgraph: history: a nil *specgraph.FixtureHistory is no history; an Input with no history sets no History"},
+			want: "specgraph: history: a nil *specgraph.FixtureHistory is no history; an Input with no history sets a FixtureHistory of no commit"},
 		{name: "a nil *GitHistory", change: func(in *Input) { in.History = (*GitHistory)(nil) },
-			want: "specgraph: history: a nil *specgraph.GitHistory is no history; an Input with no history sets no History"},
+			want: "specgraph: history: a nil *specgraph.GitHistory is no history; an Input with no history sets a FixtureHistory of no commit"},
 		{name: "a nil History of a type of the caller", change: func(in *Input) { in.History = historyOfTheCaller(nil) },
-			want: "specgraph: history: a nil specgraph.historyOfTheCaller is no history; an Input with no history sets no History"},
+			want: "specgraph: history: a nil specgraph.historyOfTheCaller is no history; an Input with no history sets a FixtureHistory of no commit"},
 		{name: "a GitHistory with no Dir", change: func(in *Input) { in.History = GitHistory{} },
 			want: "specgraph: history: a GitHistory sets no Dir, so git would read the clone of the working directory of the process"},
-		{name: "control: no History", change: func(in *Input) { in.History = nil }},
+		// A caller that gives no History, or no Ties, is not one that knows that it has none: with no
+		// carry a failure at another commit says nothing about the subject's, so the state could read
+		// true where the whole input reads unknown. So it states each, empty for none.
+		{name: "no History", change: func(in *Input) { in.History = nil },
+			want: "specgraph: it sets no History; an Input with no history sets a FixtureHistory of no commit"},
+		{name: "control: a FixtureHistory of no commit", change: func(in *Input) { in.History = FixtureHistory{} }},
+		{name: "no Ties", change: func(in *Input) { in.Ties = nil },
+			want: "specgraph: it sets no Ties; an Input that knows no tie sets an empty map"},
+		{name: "control: an empty map of ties", change: func(in *Input) { in.Ties = CommitTies{} }},
+		{name: "a commit of Ties with no map", change: func(in *Input) { in.Ties = CommitTies{"c1": nil} },
+			want: `specgraph: ties: commit "c1": it sets no map of the ties there, and a commit where no tie is known has an empty map or no key`},
+		{name: "control: a commit of Ties with an empty map", change: func(in *Input) { in.Ties = CommitTies{"c1": {}} }},
 		{name: "a known tie with no path", change: func(in *Input) { in.Ties = CommitTies{"c1": {checkStateCheck.ID: {Known: true}}} },
 			want: `specgraph: ties: commit "c1": check "a-restart-loses-no-message": specgraph: a tie holds no path`},
 		{name: "control: a tie that is not known has no path", change: func(in *Input) { in.Ties = CommitTies{"c1": {checkStateCheck.ID: {}}} }},

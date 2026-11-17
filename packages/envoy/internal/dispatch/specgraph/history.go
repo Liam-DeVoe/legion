@@ -102,19 +102,22 @@ func (h FixtureHistory) check() error {
 	return nil
 }
 
-// historyFault is the fault of h that the entry of the derivation refuses, or nil: a nil value of
-// any type that implements History, whose Changed could panic where a result carries, checked once
-// for the value whatever its type; a FixtureHistory that FixtureHistory.check refuses; and a
-// GitHistory with no Dir, with which git would read the clone of the working directory of the
-// process. No History is no history, with which nothing carries.
+// historyFault is the fault of h that the entry of the derivation refuses, or nil: no History, since
+// a caller that gives none is not one that knows that it has none, and a nil value of any type that
+// implements History, whose Changed could panic where a result carries, checked once for the value
+// whatever its type; a FixtureHistory that FixtureHistory.check refuses; and a GitHistory with no
+// Dir, with which git would read the clone of the working directory of the process. A caller with no
+// history gives a FixtureHistory of no commit, which holds neither commit of a carry, so no result
+// carries.
 func historyFault(h History) error {
+	const none = "an Input with no history sets a FixtureHistory of no commit"
 	if h == nil {
-		return nil
+		return errors.New("specgraph: it sets no History; " + none)
 	}
 	switch v := reflect.ValueOf(h); v.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
 		if v.IsNil() {
-			return fmt.Errorf("specgraph: history: a nil %T is no history; an Input with no history sets no History", h)
+			return fmt.Errorf("specgraph: history: a nil %T is no history; %s", h, none)
 		}
 	}
 	switch h := h.(type) {

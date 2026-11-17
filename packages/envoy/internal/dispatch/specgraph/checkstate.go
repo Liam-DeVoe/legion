@@ -48,16 +48,19 @@ func subjectFault(p Point, now time.Time) string {
 // commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
 // marks how each member reads when the caller does not set it (memberMark): a run of a job and a
 // refusal by CI only lower a state, so the caller gives JobRuns and Uncited, empty for none, and
-// Input.check refuses nil. A caller that gives no History gets no carry: a result counts only at its
-// own commit, so a failure at another commit then says nothing about this one (R8: "A check whose
-// tie to its code is unknown runs on each push to the branch"); the command always gives one.
+// Input.check refuses nil. With no tie, or no history, no result carries: a result counts only at
+// its own commit, so a failure at another commit then says nothing about this one. So a caller that
+// gives no Ties or no History is refused too, and one that states that it has none gives an empty
+// CommitTies, or a FixtureHistory of no commit, and gets no carry, as R8 reads a tie that is not
+// known ("A check whose tie to its code is unknown runs on each push to the branch"). The command
+// gives the ties and the history of its scenario.
 type Input struct {
 	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
 	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
 	Results  []Result                     `input:"zero: no result, so each check reads unknown"`
 	JobRuns  []JobRun                     `input:"nonzero"`
-	Ties     CommitTies                   `input:"zero: no tie is known, so no result carries (R18)"`
-	History  History                      `input:"zero: no history, so no result carries"`
+	Ties     CommitTies                   `input:"nonzero"`
+	History  History                      `input:"nonzero"`
 	Subject  Point                        `input:"nonzero"`
 	Now      time.Time                    `input:"nonzero"`
 	Uncited  map[string]map[string]string `input:"nonzero"`
@@ -514,7 +517,7 @@ func (j *checkJudge) carries(check, commit string) bool {
 		return true
 	}
 	from, to := j.in.Ties[commit][check], j.in.Ties[j.in.Subject.Commit][check]
-	if !from.Known || !to.Known || j.in.History == nil {
+	if !from.Known || !to.Known {
 		return false
 	}
 	changed, read := j.changed[commit]
