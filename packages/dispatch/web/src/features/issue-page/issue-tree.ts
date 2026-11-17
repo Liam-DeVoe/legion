@@ -23,6 +23,7 @@ import {
   BLANK_LINE,
   type Draft,
   plainWords,
+  plainWordsRaw,
   type TreeContext,
   treeContext,
   treeDrafts,
@@ -225,6 +226,10 @@ export interface TreeNode {
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
+  /** The id the tree read gives the node this one was drawn from (`tree-read/tree-nodes.ts`), on
+   *  each of its placements, so a later part finds a node by the read's own id; absent on a node
+   *  drawn from another read. */
+  readonly readId?: string;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
   /** The parent a filter draws as no row, where it draws this node as one (R2): every parent
@@ -405,11 +410,30 @@ export function nodeWords(node: TreeNode): string {
  * stays the whole reading, which is what a body draws and what a node's citations are read
  * from.
  */
-export function lineWords(node: TreeNode): string {
-  if (node.tree !== undefined) return firstBlockWords(node.tree);
+export function lineWords(node: Pick<TreeNode, "text" | "tree">): string {
+  return lineWordsBy(node, firstBlockWords, plainWords);
+}
+
+/** The words a node's one line is cut from, as `lineWords` walks them but with no address
+ *  written short: the first block of a reading read by `firstBlockWordsRaw` and a stored block by
+ *  `plainWordsRaw`, so a bare address stays as written (dispatch://INFRA-1196 decision 140). A
+ *  caller that names each reference itself reads these, since a short form leaves it no address
+ *  to name. A `TreeNode` passes as it is, and a decision as `{ text, tree: text_tree }`. */
+export function lineWordsRaw(node: { readonly text: string; readonly tree?: DisplayTree }): string {
+  return lineWordsBy(node, firstBlockWordsRaw, plainWordsRaw);
+}
+
+/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: the first block of a
+ *  reading read to words by `firstBlock`, and a stored block read to plain words by `plain`. */
+function lineWordsBy(
+  node: { readonly text: string; readonly tree?: DisplayTree },
+  firstBlock: (reading: DisplayTree) => string,
+  plain: (markdown: string) => string
+): string {
+  if (node.tree !== undefined) return firstBlock(node.tree);
   for (const stored of node.text.split(BLANK_LINE)) {
     const block = stored.trimStart();
-    const words = plainWords(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
+    const words = plain(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
     if (!NO_WORDS.test(words)) return words;
   }
   return "";
@@ -424,9 +448,24 @@ const NO_WORDS = /^[\s*_-]*$/u;
  *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
  *  for a reading none of whose blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
+  return firstBlockRead(reading, (block) => wordsOf(withShortAddresses(block)));
+}
+
+/** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
+ *  reads them but with no address written short (`wordsOf`): a bare address stays as written
+ *  (dispatch://INFRA-1196 decision 140). A caller that names each reference itself reads these,
+ *  since a short form leaves it no address to name. `""` for a reading none of whose blocks
+ *  holds a word. */
+export function firstBlockWordsRaw(reading: DisplayTree): string {
+  return firstBlockRead(reading, wordsOf);
+}
+
+/** The words of the first top-level block of `reading` that holds any, each block read to words
+ *  by `read`; `""` for a reading none of whose blocks holds a word. */
+function firstBlockRead(reading: DisplayTree, read: (block: DisplayTree) => string): string {
   const content = reading.content;
   for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
-    const words = wordsOf(withShortAddresses(block));
+    const words = read(block);
     if (words.trim() !== "") return words;
   }
   return "";
@@ -537,7 +576,7 @@ function drawOrder(one: Draft, other: Draft): number {
  * is absent goes (R4). A draft the issue cannot reach is the same case one step further out,
  * and `bringHome` answers it the same way.
  */
-function assemble(
+export function assemble(
   issue: IssueDetails,
   drafts: readonly Draft[],
   chipOf: (reference: string) => NodeChip
@@ -592,6 +631,7 @@ function assemble(
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
+      ...(draft.readId === undefined ? {} : { readId: draft.readId }),
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
       ...(draft.source === undefined ? {} : { source: draft.source }),

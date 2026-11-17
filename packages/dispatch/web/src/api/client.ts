@@ -35,12 +35,15 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
+  Actor,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
   CreateArtifactInput,
+  Decision,
   DispatchEvent,
   DispatchUser,
+  DisplayTree,
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
@@ -727,6 +730,85 @@ function watchBody(response: Response, arrived: () => void): Response {
   });
 }
 
+/**
+ * One node of the issue's tree read (`getIssueTree`). The route is INFRA-1253's plan task t16a,
+ * which the OpenAPI document does not hold yet, so its answer is named here from the prose of
+ * that issue's R8, by the prose's own names where it gives one; INFRA-4062's task t11 moves this
+ * and the two types below onto the generated contract once INFRA-1253 pushes it.
+ */
+export interface IssueTreeNode {
+  /** The node's own id: a block's id, an ask's, a comment's, a message's, a child issue's key. */
+  id: string;
+  /** The node's kind: a block type of the block schema, or `ask`, `comment`, `message`, `issue`. */
+  supertag: string;
+  /** The parent's id: the nearest ancestor the reader may see, the issue at worst; null for the
+   *  issue itself. */
+  parent: string | null;
+  /** The node's place among its siblings, compared byte by byte; null for a sibling that has
+   *  none (an ask, a comment, a message, a lens, a risk), which comes after the ranked ones. */
+  rank: string | null;
+  author: Actor | null;
+  state: "live" | "proposed" | "overtaken" | "settled";
+  visibility: "project" | "author";
+  /** When the node was made (RFC 3339), kept through a move. */
+  made_at: string;
+  attributes: Record<string, unknown>;
+  text: string;
+  /** The server's reading of `text`, sent because this client asks every read for its display
+   *  trees (`Dispatch-Trees`, in `answered`). */
+  text_tree?: DisplayTree;
+  /** On a typed block of a role document: that document's id and slug, and the block's place in
+   *  it as the document's blocks read places it. */
+  document?: { artifact_id: string; slug: string; position: number };
+  /** The key of the issue the node belongs to, where that is not the issue read. */
+  issue?: string;
+  /** On a view's node: whether the view's query took it, or it is there as context. */
+  mark?: "query" | "context";
+  /** On a view's node: its parent's id, kind and first line, so a row names that parent with no
+   *  read of its own. */
+  parent_line?: { id: string; supertag: string; line: string };
+  /** On a decision node: what INFRA-1150's decisions read answers for that decision
+   *  (`model.Decision`), by the same names and values: `kept` is the Keep that stands, or null,
+   *  and each link names the node it reaches. Who decided is no member: it is a `decided_by`
+   *  tuple, with the person node it names as context. */
+  text_sha256?: Decision["text_sha256"];
+  kind?: Decision["kind"];
+  unsure?: Decision["unsure"];
+  replaced?: Decision["replaced"];
+  waiting_review?: Decision["waiting_review"];
+  changed_version?: Decision["changed_version"];
+  changed_at?: Decision["changed_at"];
+  kept?: Decision["kept"];
+  asks?: Decision["asks"];
+  links?: Decision["links"];
+}
+
+/** One tuple of the tree read (`serves`, `shaped`, `needs` and the rest), between two nodes the
+ *  answer holds. */
+export interface IssueTreeTuple {
+  kind: string;
+  from: string;
+  to: string;
+}
+
+/** One page of the tree read (`getIssueTree`), or of one of its views. */
+export interface IssueTreeAnswer {
+  /** The page's nodes in the walk's order: a parent before its children, siblings by rank. */
+  nodes: IssueTreeNode[];
+  /** Every tuple whose near end is one of the page's nodes. */
+  tuples: IssueTreeTuple[];
+  /** Whether the issue's documents have become nodes of the issue's own tree. */
+  converted: boolean;
+  /** The id of the issue's own tree artifact; null while the issue has not converted. */
+  tree: string | null;
+  /** The ancestor issue whose requirements this issue is a view of; null where it holds its own. */
+  view_of: string | null;
+  /** While `converted` is false, the ids of the issue's spec, plan and Verification documents. */
+  documents?: { spec?: string; plan?: string; verification?: string };
+  /** What the next page's read sends as its `cursor`; null on the last page. */
+  cursor: string | null;
+}
+
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
    *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
@@ -1189,6 +1271,18 @@ export class DispatchApiClient {
     query: Query<"/api/v1/issues/{key}/events", "get"> = {}
   ): Promise<DispatchEvent[]> {
     return this.json<DispatchEvent[]>(routeUrl("/api/v1/issues/{key}/events", { key }, query));
+  }
+
+  /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree, or of one of its views
+   *  (`view`), from the node `cursor` names on (`IssueTreeAnswer.cursor`). The route is
+   *  INFRA-1253's plan task t16a, which the document does not hold yet, so its answer's shape is
+   *  named here (`IssueTreeAnswer`) and it goes through `json` with `routeUrl`, as the events
+   *  read does; INFRA-4062's task t11 moves both onto the generated contract. */
+  async getIssueTree(
+    key: string,
+    query: { cursor?: string; view?: "spec" | "verification" | "plan" } = {}
+  ): Promise<IssueTreeAnswer> {
+    return this.json<IssueTreeAnswer>(routeUrl("/api/v1/issues/{key}/tree", { key }, query));
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in

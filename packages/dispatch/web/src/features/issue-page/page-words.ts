@@ -89,6 +89,10 @@ export const NODE_TYPE_NAMES = freeze({
   /** A constraint of the issue or of the lens catalogue: a standard the work keeps, or a
    *  measurement taken of it (dispatch://INFRA-4065 R5). */
   constraint: "constraint",
+  /** A `criterion` block, and a `reading` below: block types INFRA-1253's block schema
+   *  (version 6) declares, named here so every type the schema declares has a name. Part Y of
+   *  dispatch://INFRA-1196 draws them (decision 130). */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   /** One block a lens wrote under itself: a `block` node whose parent is a lens, which the model
@@ -102,6 +106,7 @@ export const NODE_TYPE_NAMES = freeze({
   lens: "lens",
   message: "message",
   plan_task: "plan task",
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -701,6 +706,9 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
+  /** What the Verification view says when its Verification document's blocks could not be
+   *  read, so it cannot say which statement each check serves. */
+  checks_unreadable: "Could not load the checks.",
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
@@ -712,6 +720,9 @@ export const ANSWER_LINES = freeze({
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What a decision's Change form says when Dispatch refused its send, whatever the server
+   *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
+  change_not_sent: "Could not send the change.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -1199,20 +1210,31 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  decided_by: "decided by",
+  /** The question a decision answers: an `ask` is a question on the page (`NODE_TYPE_NAMES`). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  kept_by: "kept by",
+  kept_text_sum: "kept text sum",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  parent: "parent",
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  shaped: "shaped",
+  size: "size",
   state: "state",
   surface: "surface",
   title: "title",
+  uncertainty: "uncertainty",
+  uncertainty_reason: "uncertainty reason",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1367,6 +1389,7 @@ export const GLYPH_TOKENS = freeze({
     child_issue: "child-issue",
     comment: "comment",
     constraint: "constraint",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     finding: "finding",
@@ -1376,6 +1399,7 @@ export const GLYPH_TOKENS = freeze({
     lens: "lens",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
     risk: "risk",

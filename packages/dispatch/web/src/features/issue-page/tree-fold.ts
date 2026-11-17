@@ -143,6 +143,11 @@ function unanswered(node: TreeNode): boolean {
     // and the page knows nothing about what proves it, so it says nothing either.
     case "requirement":
       return node.counts !== undefined && node.counts.checks === 0;
+    // A criterion and a reading: kinds the block schema declares and the page names, but the
+    // tree drafts no node of either, so neither is on the frontier.
+    case "criterion":
+    case "reading":
+      return false;
     // Nothing else holds an answer of its own for the reader to wait on. A note is what
     // somebody wrote; a child issue is read and answered on its own page, and is one row of
     // the outline's group of children (R12); a comment and a message are what somebody

@@ -22,6 +22,7 @@ import {
 import { blockNodeId, checkState } from "../web/src/features/issue-page/tree-drafts";
 import { DRAWN_LEVELS } from "../web/src/features/issue-page/tree-fold";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
+import { pageFocusedRow } from "../web/src/theme/classes";
 import {
   answerAsk,
   claimIssue,
@@ -1930,10 +1931,31 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
   });
 });
 
+/** Reads that the outline holds no row the focus left any more, `after` something: no body is
+ *  drawn, no row draws its acts and no row has the focused look (`pageFocusedRow`), each of which
+ *  the row kept while it was held (the architect's decision 105, as amended). */
+async function expectRowLetGo(page: Page, after: string): Promise<void> {
+  await expect(nodeBodies(page), `a row's body is still drawn after ${after}`).toHaveCount(0);
+  await expect(
+    nodeRows(page).locator("[data-row-acts]"),
+    `a row still draws its acts after ${after}`
+  ).toHaveCount(0);
+  expect(
+    await nodeRows(page)
+      .locator("[data-node-card]")
+      .evaluateAll(
+        (cards, look) => cards.filter((card) => card.className.includes(look)).length,
+        pageFocusedRow
+      ),
+    `a row still looks focused after ${after}`
+  ).toBe(0);
+}
+
 // c-focus-opens.
 // SLOW(>=2s): the whole issue seeded and loaded, every row hovered, every link rested on past the
-// delay a card opens after, the rows read three times, two controls outside the outline pressed,
-// one of them a view's, which the outline is waited for after, and the Inbox loaded.
+// delay a card opens after, the rows read three times, three controls outside the outline pressed,
+// one of them the header's and one a view's, which the outline is waited for after, and the Inbox
+// loaded.
 test("a body opens on focus and nothing opens on hover", async ({ browser }) => {
   // The row rests the pointer on every reference the page draws, each for longer than a card
   // takes to open elsewhere, which is a second or two of absences on top of the row's own walk.
@@ -1969,15 +1991,35 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     expect(await pinnedBodies(page).count(), "o did not close the pinned body").toBe(0);
 
     // A press on a control of the page outside the outline fires with a row's body open (the
-    // architect's decision 105). The press focuses the control as it goes down, and the body
-    // closing as the focus left the outline shortened the page under the pointer: the press
-    // ended on something else, and the control never fired. The body stays drawn until another
-    // row takes the focus or the reader presses Escape.
+    // architect's decision 105, as amended). The press focuses the control as it goes down, and
+    // the body closing as the focus left the outline shortened the page under the pointer: the
+    // press ended on something else, and the control never fired. The body stays drawn while the
+    // press is held and through its click, and the row is let go once the press has ended.
     //
-    // First a control under the focused row, which a body closing above it moves. Nothing of the
-    // page's own stands under the outline at this head, so a stand-in does
-    // (`standInControlBelow`), in the middle of the screen, under the outline's last row, which
-    // End focuses.
+    // First a control of P's header: the issue's actions control, which opens the issue's
+    // actions.
+    await focusRow(page, focused ?? "");
+    const actions = issuePage(page)
+      .locator("[data-issue-header]")
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
+    await actions.click();
+    await expect(
+      actions,
+      "a press on the header's actions control, with a row's body open, did not open the actions"
+    ).toHaveAttribute("aria-expanded", "true");
+    await expectRowLetGo(page, "the press on the header's actions control ended");
+    await page.keyboard.press("Escape");
+    await expect(actions, "Escape did not close the issue's actions").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    // Then a control under the focused row, which a body closing above it moves. Nothing of the
+    // page's own stands under the outline at this head - Details is a drawer fixed at the right
+    // of the screen, whose controls stand at its top and move with nothing the outline draws - so
+    // a stand-in does (`standInControlBelow`), in the middle of the screen, under the outline's
+    // last row, which End focuses.
+    await focusRow(page, focused ?? "");
     await page.keyboard.press("End");
     const last = tabStopRow(page);
     await expect(rowBody(last), "End opened no body on the outline's last row").toHaveCount(1);
@@ -1988,11 +2030,14 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await below.presses(),
       "a press on a control under the focused row, with the row's body open, did not fire it"
     ).toBe(1);
-    await expect(rowBody(last), "the press closed the focused row's body").toHaveCount(1);
-    // Escape on the page closes the body the press kept.
-    await page.keyboard.press("Escape");
-    await expect(nodeBodies(page), "Escape on the page left the kept body drawn").toHaveCount(0);
+    await expectRowLetGo(page, "the press on the control under the focused row ended");
     await below.remove();
+
+    // Tab is no press: the focus leaving the outline by it lets go of the row at once.
+    await focusRow(page, focused ?? "");
+    await page.keyboard.press("Tab");
+    expect(await focusedNodeId(page), "Tab left the focus on a row of the outline").toBeNull();
+    await expectRowLetGo(page, "Tab left the outline");
 
     // Then a view control above the outline: Spec, pressed with a row's body open, draws the
     // Spec view in the outline's place, and Conversation draws the outline again.

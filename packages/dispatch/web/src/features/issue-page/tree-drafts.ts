@@ -125,6 +125,9 @@ export interface Draft {
    *  name; empty for a node that is no block. */
   pointers: Readonly<Record<string, readonly string[]>>;
   question: boolean;
+  /** The id the tree read (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`) gives the node this
+   *  draft was made from (`TreeNode.readId`); absent on a draft made from another read. */
+  readId?: string;
   reference?: string;
   replaced: boolean;
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
@@ -489,12 +492,26 @@ function putBack(text: string, range: (typeof KEPT)[keyof typeof KEPT]): string 
  * `dispatch read dispatch://CORE-2` keeps its address.
  */
 export function plainWords(markdown: string): string {
+  return plainWordsWith(markdown, addressesAsShortForms);
+}
+
+/** The words of a stored markdown text as `plainWords` reads them, with no address written
+ *  short: its marks, markers, links, images, escapes and code spans read as they read there, and
+ *  a bare address and an autolink's URL stay as written (dispatch://INFRA-1196 decision 140). A
+ *  caller that names each reference itself reads these, since a short form leaves it no address
+ *  to name. */
+export function plainWordsRaw(markdown: string): string {
+  return plainWordsWith(markdown, (words) => words);
+}
+
+/** The words `plainWords` reads, each bare address in them and each autolink's URL written by
+ *  `shorten` where `plainWords` writes it short (`addressesAsShortForms`). */
+function plainWordsWith(markdown: string, shorten: (words: string) => string): string {
   const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
     let words = paragraph
       .replace(LITERAL, (written, escaped?: string, _run?: string, code?: string, url?: string) => {
         const range = escaped === undefined ? KEPT.verbatim : KEPT.escaped;
-        const literal =
-          escaped ?? code ?? (url === undefined ? undefined : addressesAsShortForms(url));
+        const literal = escaped ?? code ?? (url === undefined ? undefined : shorten(url));
         return (
           literal?.replace(PUNCTUATION, (character) =>
             String.fromCharCode(range.start + character.charCodeAt(0))
@@ -517,7 +534,7 @@ export function plainWords(markdown: string): string {
     return putBack(words, KEPT.escaped);
   });
   const words = paragraphs.join(" ").replace(/\s+/gu, " ").trim();
-  return putBack(addressesAsShortForms(words), KEPT.verbatim);
+  return putBack(shorten(words), KEPT.verbatim);
 }
 
 /**
@@ -627,7 +644,7 @@ function orderConversation(drafts: Map<string, Draft>): void {
  * filter's address. A citation of one block of a document names that block, which the text's
  * own link opens, and no chip.
  */
-function addDocumentChips(
+export function addDocumentChips(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext
@@ -679,7 +696,7 @@ function add(drafts: Map<string, Draft>, draft: Draft): Draft {
 }
 
 /** A draft with nothing on it but its id and its type, for a builder to fill in. */
-function blank(id: string, type: NodeType, order: number): Draft {
+export function blank(id: string, type: NodeType, order: number): Draft {
   return {
     chips: [],
     facts: [],
@@ -837,7 +854,7 @@ function addAsks(
 
 /** An ask's answer as the tree holds it: the person it is theirs, with the agent they answered
  *  through where they did, and their choices and words as stored. */
-function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
+export function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
   return {
     at: answer.at,
     by: { id: answer.user, kind: "user", ...(answer.act === undefined ? {} : { act: answer.act }) },
@@ -854,7 +871,7 @@ function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
  * `AskResolution.kind`), and a token the page declares no word for is drawn as no state rather
  * than as the server's own token (R21).
  */
-function askState(ask: Ask): AskState | undefined {
+export function askState(ask: Ask): AskState | undefined {
   const words: Readonly<Record<string, string | undefined>> = NODE_STATE_WORDS.ask;
   const token =
     ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
@@ -1098,7 +1115,7 @@ function addRequirements(
 
 /** The gaps on one requirement: the one the coverage read carries that the page draws, and a
  *  decision claiming to have shaped a requirement that came from elsewhere. */
-function requirementGaps(
+export function requirementGaps(
   coverage: readonly string[],
   origin: string | undefined,
   shaped: boolean

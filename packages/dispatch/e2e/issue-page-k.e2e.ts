@@ -218,12 +218,12 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
     }, "a version of the plan document sends no read of its blocks again").toPass({
       timeout: 30_000,
     });
-    // An absence window longer than the wait between two retries: no read of the plan's blocks
-    // is sent in it, so the last one has failed and none is still to come.
     await expect
       .poll(
         async () => {
           const at = failed;
+          // An absence window longer than the wait between two retries: no read of the plan's
+          // blocks is sent in it, so the last one has failed and none is still to come.
           await page.waitForTimeout(750);
           return failed - at;
         },
@@ -438,7 +438,10 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     );
     await expectPlainView(page, "the chart");
 
-    // The columns from 1240 px down, and the prototype's from 1241 px up (R5).
+    // The columns from 1240 px down, and the prototype's from 1241 px up (R5). Each statement
+    // chip's border holds its 18 px lines alone at each width: below 1280 px a link takes 6 px
+    // of padding above and below (`styles.css`'s `.dispatch-inline-link`), which the chip's
+    // link takes inside the chip's line, so a linked chip is as tall as an unlinked one.
     for (const [width, first, third] of [
       [1000, 260, 220],
       [1240, 260, 220],
@@ -455,6 +458,14 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
         )
         .toEqual([first, third]);
       if (width <= 1240) await assertPageFits(page);
+      const chips = (await stepLayouts(page)).flatMap((layout) => layout.chips);
+      expect(chips.length, `at ${width} px the chart draws no statement chip`).toBeGreaterThan(0);
+      expect(
+        chips
+          .map((chip) => chip.height - 2)
+          .filter((lines) => Math.abs(lines - 18 * Math.max(1, Math.round(lines / 18))) > 0.5),
+        `at ${width} px a statement chip's border is taller than its lines`
+      ).toEqual([]);
     }
     // At 760 px and below each step is a card, and the chart has no head row; at 761 px it has.
     const headRow = planChart(page).locator("[data-plan-head]");
