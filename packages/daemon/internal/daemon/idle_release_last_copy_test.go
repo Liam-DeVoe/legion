@@ -21,7 +21,9 @@ func (r *copyRig) saveRelease(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	r.w.releaseIdlePods(ctx)
-	due, err := r.runner.listDue(ctx, "", nil, r.runner.now().UTC())
+	// The release's rows are the lifecycle lane's. The rig's seed also leaves a role-holder
+	// publication queued (newIdleRig, queuedBy), a board row no release writes.
+	due, err := r.runner.listDue(ctx, "", record.LaneKinds(record.LaneLifecycle), r.runner.now().UTC())
 	if err != nil {
 		t.Fatalf("list the release's rows: %v", err)
 	}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,7 +32,9 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 
 	// The release is queued, and its save runs alone: the role stops behind it have not.
 	rig.w.releaseIdlePods(ctx)
-	due, err := rig.runner.listDue(ctx, "", nil, rig.runner.now().UTC())
+	// The release's rows are the lifecycle lane's; the seed's role-holder publication is a board
+	// row no release writes (newIdleRig, queuedBy).
+	due, err := rig.runner.listDue(ctx, "", record.LaneKinds(record.LaneLifecycle), rig.runner.now().UTC())
 	if err != nil {
 		t.Fatalf("list the release's rows: %v", err)
 	}
@@ -44,7 +47,9 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 	if !rig.bundled(t) {
 		t.Fatal("the release's save stored no bundle")
 	}
-	if rows := rig.rows(t); len(rows) < 2 || rows[0] != "supervise:release" || rows[len(rows)-1] != "issue_release" {
+	// What is left of the release, without the seed's role-holder publication (queuedBy).
+	rows := slices.DeleteFunc(rig.rows(t), func(row string) bool { return row == string(record.OutboxKindRoleHoldersPublish) })
+	if len(rows) < 2 || rows[0] != "supervise:release" || rows[len(rows)-1] != "issue_release" {
 		t.Fatalf("queued rows after the save = %v, want the role stops still ahead", rows)
 	}
 

@@ -1049,8 +1049,8 @@ func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhen
 		t.Fatal("the confirmed restore left the bundle standing")
 	}
 
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
+	if got := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) }); len(got) != 3 ||
+		got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
 		t.Fatalf("queued rows = %v, want the save, the role stop and the teardown: the restored bundle holds the pod no longer", got)
 	}
 	rig.drain(t)
