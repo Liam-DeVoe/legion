@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -38,17 +39,44 @@ var projectKinds = []string{
 
 // authorParty is, for an actor stored as jsonb at column, the party graphstore.AuthorOf names it
 // as: a person by their canonical login, a session by its id, a personal token's owner by theirs,
-// or null for an actor that names nobody. lower(btrim()) is model.CanonicalLogin.
+// or null for an actor that names nobody. The login is canonical by model.CanonicalLogin's rule,
+// spelled in SQL (canonicalLoginSQL).
 func authorParty(column string) string {
 	return `case
 		when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
-			then '` + graphstore.KindPerson + `:' || lower(btrim(` + column + `->>'id'))
+			then '` + graphstore.KindPerson + `:' || ` + canonicalLoginSQL(column+`->>'id'`) + `
 		when ` + column + `->>'kind' = 'session' and coalesce(` + column + `->>'id', '') <> ''
 			then '` + graphstore.KindSession + `:' || (` + column + `->>'id')
 		when coalesce(` + column + `->>'owner', '') <> ''
-			then '` + graphstore.KindPerson + `:' || lower(btrim(` + column + `->>'owner'))
+			then '` + graphstore.KindPerson + `:' || ` + canonicalLoginSQL(column+`->>'owner'`) + `
 	end`
 }
+
+// canonicalLoginSQL is model.CanonicalLogin spelled in SQL over the text expression login: every
+// Unicode white space trimmed from both ends, as strings.TrimSpace trims it, and the ASCII letters
+// lowered and nothing else, as fold.ASCII lowers them. Postgres's lower() would fold a non-ASCII
+// letter too (U+212A KELVIN SIGN to "k"), and a btrim() with no set trims the space alone, so
+// either would name a person other than the one the writer names.
+func canonicalLoginSQL(login string) string {
+	return `translate(btrim(` + login + `, '` + whiteSpaceSQL + `'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`
+}
+
+// whiteSpaceSQL is every character unicode.IsSpace reports, the set strings.TrimSpace trims, as
+// the body of a SQL string literal. None of them is a quote.
+var whiteSpaceSQL = func() string {
+	var set strings.Builder
+	for _, span := range unicode.White_Space.R16 {
+		for r := rune(span.Lo); r <= rune(span.Hi); r += rune(span.Stride) {
+			set.WriteRune(r)
+		}
+	}
+	for _, span := range unicode.White_Space.R32 {
+		for r := rune(span.Lo); r <= rune(span.Hi); r += rune(span.Stride) {
+			set.WriteRune(r)
+		}
+	}
+	return set.String()
+}()
 
 // partiesOf is the parties array the given party expressions make, as graphstore.PartiesValue
 // orders them - each once, in byte order (collate "C") - or null for none.
@@ -119,14 +147,22 @@ var scopedRowsSQL = strings.NewReplacer(
 	"BLOCK_PARTIES", sessionParties("a.session_id"),
 ).Replace(scopedRows)
 
-// The classes the census and ProjectComplete name a row by. missing is a row whose node the store
-// does not hold; unscoped a node holding neither a project nor parties; differs a node holding
-// another project, or other parties, than its row's.
+// The classes the census and ProjectComplete name a row or a node by. missing is a row whose node
+// the store does not hold; unscoped a node holding neither a project nor parties; differs a node
+// holding another project, or other parties, than its row's; orphaned a live node of a kind whose
+// rows only its own creates write (orphanKinds) that no row stands behind.
 const (
 	classMissing  = "missing"
 	classUnscoped = "unscoped"
 	classDiffers  = "differs"
+	classOrphaned = "orphaned"
 )
+
+// orphanKinds are the kinds the census reads the node side of too: an issue, a document, an ask
+// and a message, whose rows only their own creates write and only a document's removal deletes,
+// which states the node gone first. The store census reads that direction for a comment and a
+// block already (projections), so the project census reads it for these four alone.
+var orphanKinds = []string{graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage}
 
 // rowClass is the class of one row of scopedRows against its node n, null for a complete one.
 const rowClass = `case
@@ -135,31 +171,44 @@ const rowClass = `case
 		when n.project_key is distinct from scoped.project or n.parties is distinct from scoped.parties then '` + classDiffers + `'
 	end`
 
+// classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
+// a complete one, and every live node of an orphan kind that no row of scoped stands behind, as
+// orphaned, each with whether it is a row.
+var classedRows = `,
+	classed (kind, id, class, is_row) as (
+		select scoped.kind, scoped.id, ` + rowClass + `, true
+		from scoped
+		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id
+		union all
+		select n.kind, n.id, '` + classOrphaned + `', false
+		from graph_nodes n
+		where n.kind in ('` + strings.Join(orphanKinds, "', '") + `') and n.state = '` + graphstore.StateLive + `'
+		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
+	)`
+
 // ProjectKindReport is what the project census read of one kind: how many rows it holds, and how
-// many of them are in each class.
+// many of them are in each class, and, for a kind whose rows only its own creates write, how many
+// of its live nodes no row stands behind.
 type ProjectKindReport struct {
-	Kind                       string
-	Rows                       int64
-	Missing, Differs, Unscoped int64
+	Kind                                 string
+	Rows                                 int64
+	Missing, Differs, Unscoped, Orphaned int64
 }
 
-// Findings is how many rows of the kind are incomplete, over the three classes.
-func (r ProjectKindReport) Findings() int64 { return r.Missing + r.Differs + r.Unscoped }
+// Findings is how many rows and nodes of the kind are incomplete, over the four classes.
+func (r ProjectKindReport) Findings() int64 { return r.Missing + r.Differs + r.Unscoped + r.Orphaned }
 
 // ProjectCensus reads, for every project-owned kind, how many rows it holds and how many of them
 // have no node, a node with no project or parties, or a node in another project or between other
-// parties than the row's, in one statement over q, which the store census runs in its snapshot.
+// parties than the row's, and how many live nodes of an orphan kind no row stands behind, in one
+// statement over q, which the store census runs in its snapshot.
 func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindReport, error) {
-	rows, err := q.Query(ctx, scopedRowsSQL+`,
-		classed as (
-			select scoped.kind, `+rowClass+` as class
-			from scoped
-			left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id
-		)
-		select kind, count(*),
+	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
+		select kind, count(*) filter (where is_row),
 		       count(*) filter (where class = '`+classMissing+`'),
 		       count(*) filter (where class = '`+classDiffers+`'),
-		       count(*) filter (where class = '`+classUnscoped+`')
+		       count(*) filter (where class = '`+classUnscoped+`'),
+		       count(*) filter (where class = '`+classOrphaned+`')
 		from classed group by kind
 	`)
 	if err != nil {
@@ -169,7 +218,7 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 	read := map[string]ProjectKindReport{}
 	for rows.Next() {
 		var kind ProjectKindReport
-		if err := rows.Scan(&kind.Kind, &kind.Rows, &kind.Missing, &kind.Differs, &kind.Unscoped); err != nil {
+		if err := rows.Scan(&kind.Kind, &kind.Rows, &kind.Missing, &kind.Differs, &kind.Unscoped, &kind.Orphaned); err != nil {
 			return nil, fmt.Errorf("read the project census: %w", err)
 		}
 		read[kind.Kind] = kind
@@ -190,21 +239,21 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 // (cmd/dispatch/README.md, "The node and tuple store census").
 func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 	for _, kind := range kinds {
-		fmt.Fprintf(w, "census: project kind=%s rows=%d missing=%d differs=%d unscoped=%d\n",
-			kind.Kind, kind.Rows, kind.Missing, kind.Differs, kind.Unscoped)
+		fmt.Fprintf(w, "census: project kind=%s rows=%d missing=%d differs=%d unscoped=%d orphaned=%d\n",
+			kind.Kind, kind.Rows, kind.Missing, kind.Differs, kind.Unscoped, kind.Orphaned)
 	}
 }
 
-// ProjectComplete answers every project-owned row whose node is not complete, as
-// `<kind> <id>: <class>` (missing, unscoped or differs), in one read: the rows a read limited by a
-// node's project would answer wrongly. An empty answer is every row of every kind complete.
+// ProjectComplete answers every project-owned row whose node is not complete, and every live node
+// of an orphan kind no row stands behind, as `<kind> <id>: <class>` (missing, unscoped, differs or
+// orphaned), in one read: the rows and the nodes a read limited by a node's project would answer
+// wrongly. An empty answer is every row and every node of every kind complete.
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
-	rows, err := q.Query(ctx, scopedRowsSQL+`
-		select scoped.kind || ' ' || scoped.id || ': ' || `+rowClass+`
-		from scoped
-		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id
-		where `+rowClass+` is not null
-		order by scoped.kind, scoped.id
+	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
+		select kind || ' ' || id || ': ' || class
+		from classed
+		where class is not null
+		order by kind, id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)

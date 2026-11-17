@@ -10,11 +10,13 @@
 # sent in an agent's conversation, a direct message to that agent and a broadcast's copy to it -
 # and reads each one's node between its parties, with the `parties` value tuple that states them:
 # the conversation's session for the file, and for each message the session that sent it and the
-# one it went to. It then runs `envoy-dispatch backfill-graph-store` and `envoy-dispatch census
-# --store` and holds the census to `missing=0 differs=0 unscoped=0` for every project-owned kind.
-# Last, the control: it takes the ask's node away and holds the census to naming exactly that ask,
-# `missing=1` on the ask kind and `census: project incomplete ask <id>: missing`, so the zeros
-# before are read from an instrument that sees a missing node.
+# one it went to. It removes an empty document and reads its node gone. It then runs
+# `envoy-dispatch backfill-graph-store` and `envoy-dispatch census --store` and holds the census to
+# `missing=0 differs=0 unscoped=0 orphaned=0` for every project-owned kind. Last, the control: it
+# takes the ask's node away and holds the census to naming exactly that ask, `missing=1` on the ask
+# kind and `census: project incomplete ask <id>: missing`, so the zeros before are read from an
+# instrument that sees a missing node; then the backfill writes the node again and the census reads
+# zeros, so the run leaves its database complete.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
@@ -273,6 +275,18 @@ copy="$answer"
 sender_party "$copy"
 node_names_parties "$section" message "$copy" "$answer" "session:$agent"
 
+section=removal
+send_as_person POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "Scratch $stamp.md" '{name: $n}')"
+want_status 201 "$section" "$person makes an empty document"
+scratch="$(jq -r .artifact.id "$work/body")"
+scratch_ref="$(jq -r .artifact.ref_key "$work/body")"
+send_as_person DELETE "/api/v1/artifacts/$scratch"
+want_status 204 "$section" "$person removes the empty document"
+query "$section" "the removed document's node is gone" \
+  "select coalesce((select state from graph_nodes where kind = 'artifact' and id = '$scratch_ref'), '(no node)')"
+[[ "$answer" == gone ]] || fail "$section" "the removed document's node is gone" "it reads '$answer'"
+pass "$section" "the node of removed document $scratch_ref is gone"
+
 section=census
 envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
   fail "$section" "backfill-graph-store runs" "$(tail -n 5 "$work/backfill")"
@@ -280,7 +294,7 @@ pass "$section" "backfill-graph-store runs"
 envoy-dispatch census --store >"$work/census" 2>&1 || true
 for kind in issue artifact ask message comment block; do
   line="$(census_line "$kind")"
-  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ differs=0\ unscoped=0$ ]] ||
+  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
     fail "$section" "the $kind census reads zeros over rows it read" "${line:-no line for $kind}"
   pass "$section" "the $kind census reads zeros: ${line#census: project }"
 done
@@ -293,8 +307,18 @@ query "$section" "take the ask's node away" "
 pass "$section" "took the ask's node away"
 envoy-dispatch census --store >"$work/census" 2>&1 && fail "$section" "the census refuses" "it exited 0" || true
 line="$(census_line ask)"
-[[ "$line" =~ missing=1\ differs=0\ unscoped=0$ ]] || fail "$section" "the ask census reads one missing node" "${line:-no line for ask}"
+[[ "$line" =~ missing=1\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads one missing node" "${line:-no line for ask}"
 pass "$section" "the ask census reads one missing node"
 grep -qxF "census: project incomplete ask $ask: missing" "$work/census" ||
   fail "$section" "the census names the ask" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 pass "$section" "the census names ask $ask"
+
+# The backfill writes the ask's node again, so the database is left as complete as the run found
+# it, and a later census over it reads zeros with no backfill of its own.
+envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+  fail "$section" "backfill-graph-store writes the ask's node again" "$(tail -n 5 "$work/backfill")"
+envoy-dispatch census --store >"$work/census" 2>&1 ||
+  fail "$section" "the census after the backfill reads no finding" "$(grep -E '^census: (project|store REFUSED)' "$work/census" | head -n 8)"
+line="$(census_line ask)"
+[[ "$line" =~ missing=0\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads zeros again" "${line:-no line for ask}"
+pass "$section" "the backfill wrote the ask's node again and the census reads zeros: ${line#census: project }"

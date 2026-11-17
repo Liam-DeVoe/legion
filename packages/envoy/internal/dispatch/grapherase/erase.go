@@ -116,6 +116,14 @@ func ParseNode(value string) (kind, id string, err error) {
 // keeps addressing it, so deleting it leaves the census a difference no erase can close
 // (graphcensus's addressedRoles reads the roles every event ever named).
 //
+// It refuses an issue, a document, an ask and a message the same way, before it opens a
+// connection. A node of one of those kinds holds its text in its own row - an issue's title, a
+// document's name and versions, an ask's question, a message's body - and the erase reads text
+// only from the comments and the document blocks that derive from a node. A run over one would
+// delete the node and its tuples, record an erasure and answer applied with every byte of that
+// text still in place, the project census would read the row as missing its node, and the
+// backfill would write the node again (graphcensus.ProjectComplete).
+//
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.
 //
@@ -133,6 +141,10 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 	if kind == graphstore.KindRole || kind == graphstore.KindPage || kind == graphstore.KindSession {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a %s node holds no text anybody wrote, so no erasure is owed for it, "+
 			"and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close", kind, id, kind)
+	}
+	if kind == graphstore.KindIssue || kind == graphstore.KindArtifact || kind == graphstore.KindAsk || kind == graphstore.KindMessage {
+		return nil, fmt.Errorf("the erase refuses %s:%s: a %s node's text is in its own row, which the erase does not reach, so "+
+			"erasing the node alone would report an erasure that left that text in place", kind, id, kind)
 	}
 	confirm = strings.TrimPrefix(strings.TrimSpace(confirm), "sha256:")
 	conn, err := connect(ctx, databaseURL)

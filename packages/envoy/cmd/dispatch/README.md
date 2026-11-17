@@ -2956,8 +2956,9 @@ The kinds are:
 
 - The project of every node: `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
   Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
-  It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> differs=<n> unscoped=<n>`: a row whose node the store does not hold, a row whose node names another project or other parties than the row's, and a row whose node names neither.
-  Any count of the three refuses the census, and the first rows of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
+  It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> differs=<n> unscoped=<n> orphaned=<n>`: a row whose node the store does not hold, a row whose node names another project or other parties than the row's, a row whose node names neither, and a live node no row stands behind.
+  The last is read for an issue, a document, an ask and a message, whose rows only their own creates write and only a document's removal deletes, which states the node gone first; the store census above reads that direction for a comment and a block.
+  Any count of the four refuses the census, and the first rows and nodes of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
   An address past the store's bound is left out, as its writer leaves it out of the store.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
@@ -3012,7 +3013,7 @@ The report counts them on its `kind=role` line, and `remaining=` is how many rol
 It then writes the node of every issue, document, ask and message written before its kind's writer wrote one, and gives every comment and block node written before a node named its project that project, or its conversation's party.
 Each pass walks only the rows its marker does not mark - the node itself for an issue, a document, an ask and a message, whose rows name no node in a column of their own, and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
 A node is dated at its row's own `created_at` and made by its row's own author; a filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
-The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 differs=0 unscoped=0` for every project-owned kind.
+The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 differs=0 unscoped=0 orphaned=0` for every project-owned kind.
 
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.
@@ -3046,6 +3047,7 @@ It migrates the database first, as the other backfills do, and exits 1 when it s
 It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
 It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
 It refuses a `role`, a `page` and a `session` the same way: a node of that kind holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close.
+It refuses an `issue`, an `artifact`, an `ask` and a `message` the same way: a node of that kind holds its text in its own row - the issue's title, the document's name and versions, the ask's question, the message's body - which the erase does not reach, so erasing the node alone would report an erasure that left the text in place.
 
 It changes only the rows that derive from the node, and what derives from a node is fixed by the node, never by a search for its bytes.
 Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, its own embedding rows and window state, and the events about it.

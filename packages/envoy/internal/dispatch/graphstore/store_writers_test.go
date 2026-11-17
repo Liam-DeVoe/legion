@@ -100,6 +100,10 @@ var storeWriteCallSites = []string{
 	"api/messages.go#writeMessageNode",
 	"api/reviews.go#openApprovalAsk",
 	"docs/ask_blocks.go#createAskBlock",
+	// The removal of an untouched document states its node gone, before its row goes, caused by
+	// the artifact.removed event it appends after the row, by the same write (WriteUncaused,
+	// then Caused). api's TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain holds it.
+	"api/artifact_removal.go#removeArtifact",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,

@@ -95,7 +95,7 @@ type StoreReport struct {
 	Sizing *SizingReport
 }
 
-// ProjectFindings is how many rows the project census found incomplete over every kind.
+// ProjectFindings is how many rows and nodes the project census found incomplete over every kind.
 func (r *StoreReport) ProjectFindings() int64 {
 	var found int64
 	for _, kind := range r.Projects {
@@ -859,7 +859,7 @@ func (r *StoreReport) Write(w io.Writer) {
 	case r.Differences() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
 	case r.ProjectFindings() > 0:
-		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one)\n",
+		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or live node(s) no row stands behind)\n",
 			pgmigrate.Thousands(r.ProjectFindings()))
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",

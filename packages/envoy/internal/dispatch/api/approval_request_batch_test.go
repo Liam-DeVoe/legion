@@ -156,7 +156,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (graphstore.WriteUncaused); the project is the document's, read with it, so it costs no
 //     round trip of its own;
 //  19. the ask row (openApprovalAsk);
-//  20. the question's references, none of which it names (replaceReferences);
+//  20. the question's references, none of which it names (refs' replaceItemRefs);
 //  21. the row the ask owes the grammar's re-index queue, deleted where it has one
 //     (refs.settleOwed): the write holds the source's row and has just read its text with the
 //     whole grammar, so nothing is owed for it any more (INFRA-869);
@@ -165,7 +165,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  23. that state row, read and locked;
 //  24. the part rows of the new ask - its question and each option (writeItemBlocks);
 //  25. the text of each part at the new revision;
-//  26. the state the parts were indexed at (storeItemState);
+//  26. the state the parts were indexed at (refs' recordItemIndexed);
 //  27. the thread's followers, for the event payload (events.AskEventPayload);
 //  28. the issue's sequence, locked (appendEvent);
 //  29. the ask.opened event row, inserted with its id and time returned in one statement

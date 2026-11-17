@@ -2,10 +2,12 @@ package graphstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -97,16 +99,28 @@ func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
 
 // PartiesValue is the value the `parties` attribute of a node between parties carries: its parties
 // sorted, each once, and joined by one space, which is what graph_nodes.parties is split back from.
-// No party is ever written with a space in it: a login and a session id hold none. Nil parties are
-// the empty value, which no write states.
-func PartiesValue(parties []string) string {
+// It is the one place the parties are joined, so it refuses a party that is empty or holds white
+// space with ErrBadParty: such a party would come back from the column as two parties, or none. A
+// login and a path's session id hold none, but a broadcast's session ids are only trimmed, so the
+// refusal is here rather than at each source. Nil parties are the empty value, which no write
+// states.
+func PartiesValue(parties []string) (string, error) {
 	if len(parties) == 0 {
-		return ""
+		return "", nil
+	}
+	for _, party := range parties {
+		if party == "" || strings.IndexFunc(party, unicode.IsSpace) >= 0 {
+			return "", fmt.Errorf("party %q: %w", party, ErrBadParty)
+		}
 	}
 	sorted := slices.Clone(parties)
 	slices.Sort(sorted)
-	return strings.Join(slices.Compact(sorted), " ")
+	return strings.Join(slices.Compact(sorted), " "), nil
 }
+
+// ErrBadParty is a party that is empty or holds white space (PartiesValue). A node write that
+// names one is refused before it binds anything, and the caller's transaction ends.
+var ErrBadParty = errors.New("a party is empty or holds white space")
 
 // ScopeOf is the project, or for a thing no project owns the parties, of an ask or a comment that
 // belongs to an issue or a document: the issue's project where it names an issue, else the

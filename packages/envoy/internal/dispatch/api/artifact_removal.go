@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -42,6 +44,13 @@ import (
 // cascade. The artifact.removed event is appended after them and outlives the document: an issue
 // document's events are the issue's (events_one_owner, ownerForArtifact), so that row carries no
 // artifact id.
+//
+// The document's node is stated gone before its row goes, in the store's order (node, row, event,
+// facts), and the state tuple waits for the artifact.removed event (graphstore.Caused). The node
+// is addressed by the document's ref_key, which a later document of the same issue and slug takes
+// again: that document's create finds the node gone and states it live under its own event,
+// rather than finding a live node that states nothing and keeps this document's cause. A node
+// keeps its made_at and made_by over its life, as every node of the store does.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -96,6 +105,17 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The document's node, stated gone before its row goes; its state tuple waits for the event.
+	gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, time.Now().UTC())
+	gone.State = graphstore.StateGone
+	var goneNode graphstore.Uncaused
+	if graphstore.AddressFits(artifact.RefKey) {
+		var err error
+		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
+			return
+		}
+	}
 	if _, err := tx.Exec(r.Context(), `delete from artifacts where id = $1`, artifact.ID); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
 		return
@@ -111,6 +131,10 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, goneNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -306,7 +306,10 @@ create temporary table corpus_nodes as
   select node_kind as kind, node_id as id from document_blocks
    where artifact_id in (select id from corpus_documents)
   union
-  select kind, id from graph_nodes where id in (select id::text from corpus_documents);
+  select kind, id from graph_nodes where id in (select id::text from corpus_documents)
+  union
+  -- A document's own node is addressed by its ref_key, not its id.
+  select 'artifact', ref_key from artifacts where id in (select id from corpus_documents);
 -- A temporary table the planner has no statistics for is read as a handful of rows, and both
 -- deletes below then run as nested loops over the whole of graph_tuples and graph_nodes: 14
 -- minutes and 2 against the 2 seconds an index and one analyze buy.
@@ -557,6 +560,17 @@ while :; do
   sleep 0.2
 done
 pass C2 "$key's documents hold ${answer%%|*} block reference(s), and the store holds role $census_role's node and its page"
+
+# C2: the rows an earlier build or a seed wrote without their node. A database this driver runs
+# over may hold issues, documents, asks or messages that no node writer wrote, and the project
+# census refuses on each of them, so the backfill writes their nodes, as an operator runs it
+# before the census, and the store C3 reads is the store after it.
+backfill_code=0
+env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
+  envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_code=$?
+[[ "$backfill_code" == 0 ]] ||
+  fail C2 "run the backfill before the census" "envoy-dispatch backfill-graph-store exited $backfill_code: $(tail -n 5 "$work/backfill")"
+pass C2 "envoy-dispatch backfill-graph-store ran, so every row the census reads has its node"
 
 # C3: the store before the census, which must be the store after it.
 query C3 "read the highest tuple sequence" "select coalesce(max(seq), 0) from graph_tuples"

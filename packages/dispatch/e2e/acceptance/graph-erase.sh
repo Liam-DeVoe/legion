@@ -13,8 +13,8 @@
 # comment, is listed and left with its version and its approval. The second is the block of the
 # document that holds the secret: its rows, its document's version holding the text and the
 # approval over it, its document's live state, search rows, windows and events. It proves, in
-# order: each run without --confirm refuses; a run against a role, a page, a session or a
-# supertag node is refused, with --confirm too, and changes no row; a run whose --confirm names
+# order: each run without --confirm refuses; a run against a role, a page, a session, a
+# supertag node, an issue or a document is refused, with --confirm too, and changes no row; a run whose --confirm names
 # the digest of another listing is refused and changes no row; the block's listing holds the
 # version and the review it would end and the document whose live state it would replace; after
 # the erases a read of the comment's address answers what a deleted node answers, byte for byte,
@@ -576,6 +576,18 @@ readonly -a store_reads=(
   "block excerpt|select count(*) from document_blocks where artifact_id = '$document' and excerpt like '%$secret%'"
 )
 
+# The rows an earlier build or a seed wrote without their node. A database this driver runs over
+# may hold issues, documents, asks or messages that no node writer wrote, and E8's census refuses
+# on each of them, so the backfill writes their nodes, as an operator runs it before an erase.
+# It runs before the first erase and not after the last, so a node an erase took from a row that
+# stayed is a difference E8 still reads.
+backfill_code=0
+env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
+  envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_code=$?
+[[ "$backfill_code" == 0 ]] ||
+  fail E2 "run the backfill before the erases" "envoy-dispatch backfill-graph-store exited $backfill_code: $(tail -n 5 "$work/backfill")"
+pass E2 "envoy-dispatch backfill-graph-store ran, so every row the census reads has its node"
+
 # E3: each erase refuses until it has listed what it would remove, and each listing names what
 # derives from its node and what it leaves.
 #
@@ -645,13 +657,16 @@ query E3 "read the id, time and actor of each event row holding the secret" \
 readonly events_before="$answer"
 
 # The nodes no erase may remove: a role, a page, a session and a supertag node, each one this
-# run's database holds. None of them holds text anybody wrote, so no erasure is owed for it, and
-# the event log keeps addressing a role, a page and a session while a type is data the block
-# schema seeds. Each run against one, with --confirm too, is refused, and the store read whole is
-# what it was after both.
+# run's database holds, and this run's issue and its document. None of the first four holds text
+# anybody wrote, so no erasure is owed for it, and the event log keeps addressing a role, a page
+# and a session while a type is data the block schema seeds. An issue and a document hold their
+# text in their own rows, which the erase does not reach, so erasing the node alone would report
+# an erasure that left that text in place. Each run against one, with --confirm too, is refused,
+# and the store read whole is what it was after both.
 query E3 "read a supertag node of the store" "select id from graph_nodes where kind = 'supertag' order by id limit 1"
 [[ -n "$answer" ]] || fail E3 "read a supertag node of the store" "the store holds no supertag node"
-readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:$answer")
+readonly -a kept_nodes=("role:$census_role" "page:role/$census_role" "session:$session" "supertag:$answer"
+  "issue:$key" "artifact:$document_ref")
 for kept in "${kept_nodes[@]}"; do
   want_rows E3 "the store holds $kept" 1 \
     "select count(*) from graph_nodes where kind = '${kept%%:*}' and id = '${kept#*:}'"

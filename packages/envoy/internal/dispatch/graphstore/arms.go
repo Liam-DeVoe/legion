@@ -375,7 +375,11 @@ func nodeParams(nodes []Node) ([]any, error) {
 		if node.Project != "" {
 			projects[index] = &nodes[index].Project
 		}
-		if value := PartiesValue(node.Parties); value != "" {
+		value, err := PartiesValue(node.Parties)
+		if err != nil {
+			return nil, fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
+		}
+		if value != "" {
 			parties[index] = &value
 		}
 	}

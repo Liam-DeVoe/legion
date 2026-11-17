@@ -506,6 +506,9 @@ var indexPasses = map[string]string{
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
+	// The removal of an untouched document states its node gone before its row goes, caused by
+	// the artifact.removed event it appends.
+	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

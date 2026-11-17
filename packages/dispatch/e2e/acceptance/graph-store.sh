@@ -6,10 +6,12 @@
 # for a session that is not running, and then reads the store back and checks each tuple: what
 # each person authored, what reached each session, that a failed or pending attempt earns no
 # tuple and that a queued one earns one. It checks the role, the session and the page, and it holds
-# every read against a table of identities a person wrote into this driver. A message earns no
-# tuple in this child - only a comment has a node on the near end of a delivery, and
-# dispatch://INFRA-1152 gives a message its own - so what the driver reads of the message is the
-# role it reaches and that role's page, and that nothing stands on the message itself (G10).
+# every read against a table of identities a person wrote into this driver. A message is a node
+# of its project, written with its own create and carrying that node's base attributes, and
+# earns no delivery or authorship tuple in this child - only a comment has a node on the near end
+# of a delivery, and a later change gives a message those tuples - so what the driver reads of
+# the message is its node, the role it reaches and that role's page, and that no other tuple
+# stands on the message itself (G10).
 #
 # Which clause is read which way, and why:
 #
@@ -617,12 +619,15 @@ want_status 200 G9 "read $person's page after the role delivery"
 expect G9 "a delivery to a role is on no person's page as received" '["authored_by"]' \
   --arg id "$role_comment" '.rows[] | select(.id == $id) | .relations'
 
-# G10: a message earns no tuple in this child. Only a comment has a node on the near end of a
-# delivery today (outbox.deliveredItem), so the record of what a batch delivered appends no
-# delivered_to tuple for a message, and no writer appends its authored_by. What a message on a
-# role-routed issue does have in the store is that role, its page and the page's part_of: the
-# outbox writes a role and its page for every role an event names, and the first event to name
-# this one is the write that routed the issue to it, so that write is the cause the store records.
+# G10: a message is a node of its project and earns no delivery or authorship tuple in this child.
+# Its create writes its node before its row, in the issue's project, and the message.created event
+# causes that node and its three base attributes: its visibility, its state and its project. Only
+# a comment has a node on the near end of a delivery today (outbox.deliveredItem), so the record
+# of what a batch delivered appends no delivered_to tuple for a message, and no writer appends its
+# authored_by. What else a message on a role-routed issue has in the store is that role, its page
+# and the page's part_of: the outbox writes a role and its page for every role an event names, and
+# the first event to name this one is the write that routed the issue to it, so that write is the
+# cause the store records.
 #
 # The message is on an issue of its own, routed to a role of this run's own, so the role it
 # reaches is named by that route and that message alone. It names no target: a targeted message
@@ -664,26 +669,33 @@ want_value G10 "the role's page hangs under the role" 1 \
   "select count(*) from graph_tuples where from_kind = 'page' and from_id = 'role/$message_role'
      and kind = 'part_of' and to_kind = 'role' and to_id = '$message_role' and asserted
      and source_event = $route_event"
-# The two reads of nothing, each beside the same read of something: the route's event caused the
-# role's and the page's tuples, and the comment G9 delivered to a role stands in tuples, so a zero
-# for the message is the message earning nothing and not a read that matched nothing.
+# The reads of the message, each beside a read of something: the route's event caused the role's
+# and the page's tuples, and the comment G9 delivered to a role stands in tuples, so the message's
+# own node and base attributes, and nothing more, are what its event caused, and a zero for any
+# other tuple on the message is the message earning nothing more and not a read that matched
+# nothing.
 query G10 "count the tuples the route's event caused" \
   "select count(*) from graph_tuples where source_event = $route_event"
 [[ "$answer" -gt 0 ]] ||
   fail G10 "the route's event caused the role's tuples" "no tuple names event $route_event as its cause"
 route_caused="$answer"
-want_value G10 "the message's event caused no node and no tuple (the route's caused $route_caused tuple(s))" "0|0" \
+want_value G10 "the message is a node of $project, live, made by its own write" 1 \
+  "select count(*) from graph_nodes where kind = 'message' and id = '$message'
+     and project_key = '$project' and parties is null and state = 'live' and source_event = $message_event"
+want_value G10 "the message's event caused its node and the node's visibility, state and project (the route's caused $route_caused tuple(s))" "1|3|3" \
   "select (select count(*) from graph_nodes where source_event = $message_event) || '|'
-          || (select count(*) from graph_tuples where source_event = $message_event)"
+          || (select count(*) from graph_tuples where source_event = $message_event) || '|'
+          || (select count(*) from graph_tuples where source_event = $message_event
+                and from_kind = 'message' and from_id = '$message' and to_kind = 'value' and asserted
+                and kind in ('visibility', 'state', 'project'))"
 query G10 "count the tuples that stand on the comment G9 delivered" \
   "select count(*) from graph_tuples where from_id = '$role_comment' or to_id = '$role_comment'"
 [[ "$answer" -gt 0 ]] ||
   fail G10 "the comment G9 delivered stands in tuples" "no tuple names $role_comment"
 comment_tuples="$answer"
-want_value G10 "no tuple stands on the message (the comment G9 delivered stands in $comment_tuples)" 0 \
-  "select count(*) from graph_tuples where from_id = '$message' or to_id = '$message'"
-want_value G10 "the message is no node of this child" 0 \
-  "select count(*) from graph_nodes where id = '$message'"
+want_value G10 "no delivered_to, authored_by or other tuple but its base attributes stands on the message (the comment G9 delivered stands in $comment_tuples)" 0 \
+  "select count(*) from graph_tuples where (from_id = '$message' or to_id = '$message')
+     and kind not in ('visibility', 'state', 'project', 'parties')"
 
 # G11: an ask a session follows records that session, and a session the store never recorded
 # answers no node at all, read through the server's own node reader. An ask's followers are the
