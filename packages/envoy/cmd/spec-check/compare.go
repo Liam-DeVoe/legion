@@ -68,7 +68,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	case err != nil:
 		return cannotJudge(stderr, dir, err)
 	case len(j.problems) > 0:
-		// A block that does not parse is missing from the tree, so a comparison of the tree would
+		// A document that does not read is missing from the tree, so a comparison of the tree would
 		// pass it.
 		j.sayProblems(stderr)
 		say(stderr, "%s: the files do not parse, so no comparison was made", dir)
@@ -81,7 +81,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		say(stdout, "%s: the comparison fails on %s", dir, count(len(c.Problems), "node"))
 		return 1
 	}
-	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
+	current, _ := a.Current() // ReadApproved refused every document that would be a problem here
 	others, held := notCurrentLines(current, c, a)
 	all := len(current.Statements)
 	// The verb and its pronoun take the number of held. The noun is in the singular only for 1 of

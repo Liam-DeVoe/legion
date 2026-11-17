@@ -417,9 +417,9 @@ func nodeID(node any) string {
 const FileSuffix = ".yaml"
 
 // IsFile reports whether one entry of the spec directory is a spec file: a regular file (kind
-// notes.KindFile) directly in the directory, whose name ends in FileSuffix. Every reader of the
-// spec files takes its entries by this rule: spec-check, the reporter of CI results and the
-// results route of Dispatch.
+// notes.KindFile) directly in the directory, whose name ends in FileSuffix. Each reader of the
+// spec files takes its entries by this rule: spec-check, through notes.ReadSet, and ReadScenario
+// for the files of each commit.
 func IsFile(name string, kind notes.Kind) bool {
 	return kind == notes.KindFile && !strings.Contains(name, "/") && strings.HasSuffix(name, FileSuffix)
 }

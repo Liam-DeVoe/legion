@@ -31,7 +31,7 @@ type Comparison struct {
 }
 
 // Compare compares the spec files at one commit with the approved spec (R2). A node's text is its
-// Digest, and an approved version's is the Digest of its block's node, so a move to another file or
+// Digest, and an approved version's is the Digest of its document's node, so a move to another file or
 // another order changes no text. Each problem names the node with its file and line, sorted as
 // Validate sorts them:
 //

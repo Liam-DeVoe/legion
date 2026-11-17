@@ -98,7 +98,7 @@ type scenarioResult struct {
 //     that a subject sets has a letter or a digit (hasWord), since one with none names nothing.
 //     A check of production or of the graph is judged only at a deploy, and a check of the graph
 //     reads unknown there when graph_tx is absent or names a transaction that no result read;
-//   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
+//   - files/<commit>/: the spec files at the commit of each subject, each a *.yaml file directly in
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it;
@@ -274,7 +274,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 // approvedLoop is a cycle of parent and serves relations among the current statements of a, as
 // Validate's loop rule writes it, or nil when there is none.
 func approvedLoop(a Approved) []string {
-	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
+	current, _ := a.Current() // ReadApproved refused every document that would be a problem here
 	if loops := findLoops(statementEdges(current.Statements)); len(loops) > 0 {
 		return loops[0]
 	}

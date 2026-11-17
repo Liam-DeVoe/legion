@@ -79,7 +79,7 @@ func runState(args []string, stdout, stderr io.Writer) int {
 // starts with fixed text and passes through runnerlog.Printable, so no text of the scenario starts
 // a line of the runner's log or names a workflow command.
 func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgraph.State, cycle []string) {
-	current, _ := scenario.Approved.Current() // ReadApproved refused every block that would be a problem here
+	current, _ := scenario.Approved.Current() // ReadApproved refused every document that would be a problem here
 	serves := make(map[string]string, len(current.Checks))
 	for _, c := range current.Checks {
 		serves[c.ID] = c.Serves
