@@ -11,9 +11,9 @@ import (
 )
 
 // The content blockTextContent cuts from a block of a comment, a message or an ask reads as the
-// item's own parse reads what the block holds, for every text of three corpora (decision 175):
-// the hand-written texts and the nested texts of the deep review of PR #4178, and a fixed-seed
-// generator of blocks whose opening line stands one to three spaces in. It needs no database.
+// item's own parse reads what the block holds, for every text of three corpora: the hand-written
+// texts and the nested texts of the deep review of PR #4178, and a fixed-seed generator of blocks
+// whose opening line stands one to three spaces in. It needs no database.
 // A text is read only where it reads as one typed block, the shape blockTextContent cuts; the
 // others it answers as they stand. Of the texts it cuts, one whose block holds only blank lines
 // has no content, and every other is compared but one shape:

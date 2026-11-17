@@ -68,7 +68,7 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose fence stands three spaces in, over a line at column 0", item,
 			":::callout{}\nText of the callout, its fence three spaces in.\n   :::",
 			"Text of the callout, its fence three spaces in.\n"},
-		{"an item's block whose fence and lines stand two spaces in, with a code line four spaces in (decision 100)", item,
+		{"an item's block whose fence and lines stand two spaces in, with a line four spaces in that the item reads as code", item,
 			":::callout{}\n  Intro\n\n    # Not a heading\n  :::",
 			"  Intro\n\n    # Not a heading\n"},
 		{"an item's block whose fence and every line stand two spaces in", item,
