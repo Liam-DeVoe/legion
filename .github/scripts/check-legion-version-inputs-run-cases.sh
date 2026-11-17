@@ -296,6 +296,43 @@ run_check "$root"
 check "exits 1 on a pattern GitHub reads another way" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "release.yaml's on.push.paths pattern \`!go.work+\` uses")"
 
+# GitHub's filter docs give a `.` or `..` segment and a `[!` class no meaning, and matchers differ
+# on them: minimatch matches `!./go.work` against go.work, and glob_regex does not. Each is refused,
+# whatever its literal part (the round-11 review's G1 to G4, and round 10's R10).
+odd_rule="which GitHub's filter docs give no meaning, and matchers differ on it"
+echo "case: a push pattern with a . or .. segment or a [! class (G1 to G4, R10)"
+root=$(written paths-dotdot-in-exclude)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["**", "!packages/envoy/infra/**", "!packages/envoy/infra/../alpha/**"]\n'
+run_check "$root"
+check "exits 1 on a .. segment whose literal part starts inside the exclude (G1)" "$(is "$status" 1)"
+check "names it" \
+  "$(contains "$out" "release-envoy-listener.yaml's on.push.paths pattern \`!packages/envoy/infra/\.\./alpha/\*\*\` holds a \`.\` or \`..\` segment, $odd_rule")"
+check "and not the pattern inside the exclude" "$(is "$(contains "$out" "pattern \`!packages/envoy/infra/\*\*\`")" false)"
+root=$(written paths-bang-class)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!.github/go-release-target[!x].json"]\n'
+run_check "$root"
+check "exits 1 on a [! class (G2, R10)" "$(is "$status" 1)"
+check "names it" \
+  "$(contains "$out" "release.yaml's on.push.paths pattern \`!.github/go-release-target\[!x\].json\` holds a \`\[!\` class, $odd_rule")"
+root=$(written paths-dot-slash)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!./go.work"]\n'
+run_check "$root"
+check "exits 1 on a . segment (G3)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "pattern \`!\./go.work\` holds a \`.\` or \`..\` segment")"
+root=$(written paths-dotdot-dir)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["**", "!packages/daemon/../envoy/alpha/**"]\n'
+run_check "$root"
+check "exits 1 on a .. segment reaching out of another directory (G4)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "pattern \`!packages/daemon/\.\./envoy/alpha/\*\*\` holds a \`.\` or \`..\` segment")"
+root=$(written paths-dotdot-cover)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "packages/../go.work"]\n'
+run_check "$root"
+check "exits 1 on a .. segment in a pattern without !" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release.yaml's on.push.paths pattern \`packages/\.\./go.work\` holds")"
+check "and nothing else, as ** still covers every path" "$(is "$(grep -c '::error' <<< "$out")" 1)"
+
 # The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
 # false` there skips every reader of the job at once.
 echo "case: a decision job's own if: false"

@@ -78,8 +78,9 @@
 #      directory it lies in or the directory itself (never a file X, since `**` keeps the `/`
 #      before it), with no later `!` pattern that can drop a change to it but one inside an
 #      exclude of those paths; a push pattern GitHub reads another way than the check's glob
-#      (`?`, `+`, `\`, `{`, `}`) is refused. A commit that touches only an uncovered path runs
-#      no release. Free are the if: of a job in neither chain, where it reads no decision; the
+#      (`?`, `+`, `\`, `{`, `}`) is refused, and so is one with a `.` or `..` segment or a `[!`
+#      class, which GitHub's docs give no meaning. A commit that touches only an uncovered path
+#      runs no release. Free are the if: of a job in neither chain, where it reads no decision; the
 #      values of concurrency:, cache-mode: and timeout-minutes:; and the runner image behind the
 #      label; and so is the decision passed on through the env context or another step's output,
 #      env: or run:; and GitHub's own limit stays: a push whose diff holds more than 3,000 files
@@ -851,6 +852,14 @@ def push_paths(path, doc, key, required, excludes):
         problem(f"{path}'s on.push.paths pattern `{pattern}` uses `?`, `+`, `\\`, `{{` or `}}`, which GitHub reads "
                 f"another way than this check's glob does, so the check cannot say which changes it covers or drops; "
                 f"write it without them", path)
+    for pattern in patterns:
+        body = pattern.removeprefix("!")
+        forms = (["a `.` or `..` segment"] if any(part in (".", "..") for part in body.split("/")) else []) + (
+            ["a `[!` class"] if "[!" in body else [])
+        if forms:
+            problem(f"{path}'s on.push.paths pattern `{pattern}` holds {' and '.join(forms)}, which GitHub's filter "
+                    f"docs give no meaning, and matchers differ on it, so the check cannot say which changes it covers "
+                    f"or drops; write the path with plain segments, and a class as `[...]`", path)
     dropped = [exclude.rstrip("/") + "/" for _, exclude in excludes]
     why = ("a commit that touches it alone runs no release workflow, so nothing releases until a later commit "
            "does, and no release step changes")
