@@ -26,11 +26,13 @@ const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 /** Runs `./cmd/daemon-pane` in `module` and returns its stdout: for `run`, the program, `go run`,
  * with `args`; for `test`, its test binary, built by `go test -c`, with `args`, the binary's flags
  * (`-test.run`, `-test.v`). `input` is its stdin, the caller's own when there is none. Each key of
- * `files` is a file name under `<module>/cmd/daemon-pane/`, and the overlay stands the rig's file
- * its value names there: `daemon-pane.go` as `main.go`, and for a test `daemon-pane_test.go` as
- * `main_test.go` beside it. That directory is the overlay's alone, never made in the checkout, and
- * `go test` runs a test binary and its vet in the package's directory on disk, so a test is built
- * with vet off and its binary run in the run's scratch directory. */
+ * `files` is a file name under `<module>/cmd/daemon-pane/`, or a path of the module where it holds
+ * a `/`, and the overlay stands the rig's file its value names there: `daemon-pane.go` as
+ * `main.go`, for a test `daemon-pane_test.go` as `main_test.go` beside it, and a file of the module
+ * for a run against a daemon that differs from this checkout's in that file alone. The
+ * `cmd/daemon-pane` directory is the overlay's alone, never made in the checkout, and `go test`
+ * runs a test binary and its vet in the package's directory on disk, so a test is built with vet
+ * off and its binary run in the run's scratch directory. */
 export function goInDaemonModule(
   module: string,
   files: Record<string, string>,
@@ -43,7 +45,9 @@ export function goInDaemonModule(
     const overlay = path.join(scratch, "overlay.json");
     const replace = Object.fromEntries(
       Object.entries(files).map(([name, file]) => [
-        path.join(module, "cmd", "daemon-pane", name),
+        name.includes("/")
+          ? path.join(module, name)
+          : path.join(module, "cmd", "daemon-pane", name),
         file,
       ])
     );

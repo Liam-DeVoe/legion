@@ -328,3 +328,68 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// A checkout whose daemon has no key `plan_guidance` gives no launch a plan guidance, so the tool
+// refuses the flag by name rather than printing a prompt that daemon would not give. The daemon it
+// runs against is this checkout's with the key's row taken out of its table, which the overlay
+// stands in place of internal/config/keytable.go: a checkout before the key, read where a reader
+// of its prompts would be, without a clone of one.
+test.skipIf(skip)(
+  "refuses a plan guidance file in a checkout whose daemon has no plan_guidance key",
+  () => {
+    const guidance = path.join(rig, "plan-guidance-unkeyed.md");
+    writeFileSync(guidance, "Plant 7f3a.\n");
+    const keyTable = path.join("internal", "config", "keytable.go");
+    const without = path.join(rig, "keytable-without-plan-guidance.go");
+    writeFileSync(
+      without,
+      keyTableWithout(readFileSync(path.join(DAEMON_MODULE, keyTable), "utf8"), "plan_guidance")
+    );
+    const unkeyed = {
+      "main.go": path.join(import.meta.dir, "daemon-pane.go"),
+      [keyTable.split(path.sep).join("/")]: without,
+    };
+
+    // The same prompt as this checkout's: the row above holds the key's own effect, and this
+    // daemon differs from it in the key alone, so a fixture that broke the prompt would fail here.
+    expect(goInDaemonModule(DAEMON_MODULE, unkeyed, "run", ["prompt", "architect", "root"])).toBe(
+      composeRolePrompt(DAEMON_MODULE, "architect", true)
+    );
+    expect(() =>
+      goInDaemonModule(DAEMON_MODULE, unkeyed, "run", [
+        "prompt",
+        "architect",
+        "root",
+        "--plan-guidance",
+        guidance,
+      ])
+    ).toThrow(
+      "daemon-pane prompt: this checkout's daemon has no key plan_guidance, so no launch of it carries a plan guidance"
+    );
+  },
+  600_000
+);
+
+/** `table`, the daemon's table of its top-level keys, without the row of `key`: the lines of that
+ * row's own brace block, which the row's `Name:` line stands in. A table whose row is not one such
+ * block throws, so a reshaped table fails the row that reads this rather than passing with a
+ * fixture that still holds the key. */
+function keyTableWithout(table: string, key: string): string {
+  const lines = table.split("\n");
+  const named = lines.findIndex((line) => line.includes(`Name: "${key}"`));
+  if (named < 0) {
+    throw new Error(`the daemon's key table names no row \`Name: "${key}"\``);
+  }
+  let open = named;
+  while (open >= 0 && lines[open].trim() !== "{") {
+    open--;
+  }
+  let close = named;
+  while (close < lines.length && lines[close].trim() !== "},") {
+    close++;
+  }
+  if (open < 0 || close >= lines.length) {
+    throw new Error(`the row of ${key} in the daemon's key table is no brace block of its own`);
+  }
+  return [...lines.slice(0, open), ...lines.slice(close + 1)].join("\n");
+}
