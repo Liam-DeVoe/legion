@@ -28,16 +28,16 @@ import {
 import { plainWords } from "../tree-drafts";
 
 /**
- * A command bar run's own page (dispatch://INFRA-4064 R3), read without a browser: its address,
- * its one read, and what the page draws of the answer. A run is an `interaction` node, which only
- * the person who asked it can read; the page draws the asker's whole question, each frame of the
- * answer in its own order and words, and the nodes the run changed.
+ * A command bar run's own page, read without a browser: its address, its one read, and what the
+ * page draws of the answer. A run is an `interaction` node, which only the person who asked it
+ * can read; the page draws the asker's whole question, each frame of the answer in its own order
+ * and words, and the nodes the run changed.
  */
 
 /**
- * One frame of a run's answer, as the graph read carries it on the run's node. This is
- * INFRA-1950's generated `GraphFrame`, written here until that branch reaches this stack; the
- * merge which brings it replaces `RunFrame` with `GraphFrame` from `../../../api/types`.
+ * One frame of a run's answer, as the graph read carries it on the run's node. This is the
+ * server's generated `GraphFrame`, which this branch's contracts do not hold yet; the merge that
+ * brings it replaces `RunFrame` with `GraphFrame` from `../../../api/types`.
  */
 export interface RunFrame {
   data: { [key: string]: unknown } | null;

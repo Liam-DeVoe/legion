@@ -32,37 +32,36 @@ import { watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
 /**
- * Part Z of dispatch://INFRA-1196 (dispatch://INFRA-4064): a command bar run that changed an
- * issue is a row of its asker's Referenced by in Details, and the run's own page at `/runs/<id>`
- * is its asker's alone.
+ * A command bar run that changed an issue is a row of its asker's Referenced by in Details, and
+ * the run's own page at `/runs/<id>` is its asker's alone.
  *
  * Both rows seed the run through the server (`seedRunIssue`, `e2e/issue-page-z.ts`) and read it
  * on the real stack: the run's writes carry its header, the outline's tree read answers the run
  * to its asker alone, and the run's page reads it at its own address. The stack this branch
- * builds serves none of the three yet - INFRA-1950's run header on a write, INFRA-1253's tree
- * read (`GET /api/v1/issues/{key}/tree`) and the run's read by its address
+ * builds serves none of the three yet - the run header on a write, the issue's tree read
+ * (`GET /api/v1/issues/{key}/tree`) and the run's read by its address
  * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`) reach it with
- * those branches. So each row asks the server, once the seed is written, for the reads it needs,
- * and while one is not served the row is skipped with an annotation that says what it owes
- * (decision 170): a skip, never a pass, and no tag, so the row runs once those branches reach
- * the stack.
+ * the server's branches that add them. So each row asks the server, once the seed is written,
+ * for the reads it needs, and while one is not served the row is skipped with an annotation that
+ * says what it owes: a skip, never a pass, and no tag, so the row runs once the server serves
+ * those reads.
  */
 
 // SLOW(>=2s): three issues, a run and its three writes seeded, then three loads of the issue:
 // alice's, hers again with the tree read refused until its retries run out, and bob's in a
 // context of his own.
-// R2 and R4 of dispatch://INFRA-4064: the run alice asked that changed the issue is a row of her
-// Referenced by, after the list's own row, in the page's words and none of the graph's, read
-// from the outline's tree read with no request of its own and counted in the control; a tree
-// read that fails leaves the list's own row drawn with the failure and its Retry under it; and
-// bob, who asked no run, reads the list's own row alone.
+// The run alice asked that changed the issue is a row of her Referenced by, after the list's own
+// row, in the page's words and none of the graph's, read from the outline's tree read with no
+// request of its own and counted in the control; a tree read that fails leaves the list's own
+// row drawn with the failure and its Retry under it; and bob, who asked no run, reads the list's
+// own row alone.
 test("a command bar run that changed the issue is a reference for the person who ran it", async ({
   browser,
 }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
     test.skip(
       !(await treeRunServed(seeded.key)),
-      "owed: the run's row in Details' Referenced by needs INFRA-1253's t16a tree read with the run context of its R8 and INFRA-1950's R4 (the issue PATCH's changed_by_run tuple and the run's whole words) on this branch's stack"
+      "owed: the run's row in Details' Referenced by needs the server's issue tree read to answer the reader's command bar runs, and an issue update made for a run to link the issue to it"
     );
     const traffic = watchApiRequests(page);
     await gotoIssue(page, seeded.path);
@@ -84,7 +83,7 @@ test("a command bar run that changed the issue is a reference for the person who
     ).toHaveCount(1);
     await expect(listed).toContainText(seeded.citing);
     expect(await follows(listed, runRow), "the run's row stands before the list's own").toBe(true);
-    // The run's row's "Only you" is part X's to draw, so no assertion reads it until that lands.
+    // The run's row's "Only you" mark is drawn by later work, so no assertion reads it yet.
     await expect(runRow).toContainText(RUN_QUESTION);
     await expect(runRow).toContainText(NODE_REFERENCES_WORDS.edges.changed_by_run);
     const time = runRow.locator("time");
@@ -172,17 +171,16 @@ test("a command bar run that changed the issue is a reference for the person who
 // SLOW(>=2s): the seed of the row above, the run's page and the issue's in alice's context, and
 // two contexts of their own - bob's, and alice's on today's page - each reading the not-found
 // page.
-// R3 of dispatch://INFRA-4064: the run's page draws its asker's question, its answer's one line
-// and what it changed from one read by the run's own address, and the issue's run row leads to
-// it; to bob, and to alice on today's page, the run's address is the page an unknown address
-// draws.
+// The run's page draws its asker's question, its answer's one line and what it changed from one
+// read by the run's own address, and the issue's run row leads to it; to bob, and to alice on
+// today's page, the run's address is the page an unknown address draws.
 test("the run's page is its asker's alone", async ({ browser }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
     // The row reads the run's page by its own read, then opens it from the issue's run row,
     // which the tree read draws: it needs both served.
     test.skip(
       !((await runReadServed(seeded.run)) && (await treeRunServed(seeded.key))),
-      "owed: the run's own page and the run row that opens it need INFRA-1253's t16a tree read with the run context of its R8 and INFRA-1950's R4 (the issue PATCH's changed_by_run tuple and the run's whole words) on this branch's stack"
+      "owed: the run's own page and the run row that opens it need the server to answer a run's own read with its whole question, and the issue tree read to answer the reader's runs"
     );
     const traffic = watchApiRequests(page);
     const address = buildRunPath(seeded.run);

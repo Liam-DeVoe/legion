@@ -23,14 +23,14 @@ const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
 const QUESTION = "When does the release ship?\n\nAnd who **owns** it?";
 
-/** The run's read: its node, carrying `frames` as INFRA-1950's answer does, and `edges`. */
+/** The run's read: its node, carrying `frames` as the server's answer does, and `edges`. */
 function answerOf(frames: readonly RunFrame[], edges: readonly GraphEdge[] = []): GraphReferences {
   return {
     edges: [...edges],
     node: Object.assign(
       graphNode({
         id: RUN,
-        // Not in this stack's `GraphNode["kind"]` until INFRA-1950's tip that adds it, as
+        // Not in this branch's `GraphNode["kind"]` until the contracts that add it are merged, as
         // `RunFrame` says; that merge drops the cast.
         kind: "interaction" as GraphReferences["node"]["kind"],
         made_at: ASKED_AT,

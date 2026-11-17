@@ -582,7 +582,7 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     {
       // A run's own page is drawn only for a reader with the new issue page turned on, so this
-      // visit is last for the same reason as the one before it. Until INFRA-1950's run node
+      // visit is last for the same reason as the one before it. Until the server's run node
       // reaches this stack the server answers no run's read, and the run's address draws the page
       // of an unknown address; that page still loads `RunRoute`'s and `RunPage`'s chunks for the
       // walk.

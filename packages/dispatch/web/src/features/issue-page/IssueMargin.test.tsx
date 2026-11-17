@@ -851,7 +851,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
 
 // A command bar run the reader asked is in no reader's `referenced_by_count`, so Details' control
 // of Referenced by is a control at every count, and it reads the rows its list shows, the list's
-// own and the reader's runs, only once both reads have answered (dispatch://INFRA-4064 R2).
+// own and the reader's runs, only once both reads have answered.
 test("Referenced by counts the reader's runs once both reads answer, and is a control at zero", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -1037,8 +1037,8 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
 });
 
 // A Retry of the tree read that holds no answer goes with its line as the read starts again,
-// and the focus on it fell to the page's body (decision 162 of dispatch://INFRA-1196): it goes
-// to Referenced by's own control instead.
+// and the focus on it fell to the page's body, where no keyboard action may leave it: it goes to
+// Referenced by's own control instead.
 test("the tree read's Retry hands the focus to Referenced by's control when its line goes", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -1084,8 +1084,8 @@ test("the tree read's Retry hands the focus to Referenced by's control when its 
 
 // A Retry of the tree read that holds an answer keeps its line under the rows, disabled while
 // the read runs, and a browser moves the focus off a control that becomes disabled to the page's
-// body (decision 162 of dispatch://INFRA-1196): once the read fails again, the focus goes back
-// to the line's Retry.
+// body, where no keyboard action may leave it: once the read fails again, the focus goes back to
+// the line's Retry.
 test("the tree read's Retry gives the focus back to its line when the read fails again", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();

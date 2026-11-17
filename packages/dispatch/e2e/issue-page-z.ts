@@ -15,13 +15,11 @@ import { marginSection } from "./issue-page-h";
 import type { ApiRequests } from "./traffic";
 
 /**
- * What the rows of part Z of dispatch://INFRA-1196 (dispatch://INFRA-4064,
- * `e2e/issue-page-z.e2e.ts`) seed and read: a command bar run that changed an issue, the run's
- * row in Details' Referenced by, and the run's own page.
+ * What the rows of `e2e/issue-page-z.e2e.ts` seed and read: a command bar run that changed an
+ * issue, the run's row in Details' Referenced by, and the run's own page.
  *
- * This is part Z's file (decision 2 of dispatch://INFRA-1196/artifact/part-decisions-md): it
- * imports part H's `e2e/issue-page-h.ts` for Details' sections, its rows open the page through
- * part D's `e2e/issue-page.ts`, and it copies none of their readers.
+ * This file is those rows' own: it imports `e2e/issue-page-h.ts` for Details' sections, its rows
+ * open the page through `e2e/issue-page.ts`, and it copies none of their readers.
  *
  * The DOM a row reads:
  *
@@ -42,8 +40,8 @@ import type { ApiRequests } from "./traffic";
 
 /**
  * The header a write carries to say it is made inside a command bar run, naming the run. This is
- * INFRA-1950's `GOING_RUN_HEADER` of `packages/contracts/src/going.ts`, written here until that
- * branch reaches this stack; the merge which brings it replaces this constant with the import.
+ * the server's `GOING_RUN_HEADER` of `packages/contracts/src/going.ts`, which this branch's
+ * contracts do not hold yet; the merge which brings it replaces this constant with the import.
  */
 const RUN_HEADER = "Dispatch-Going-Run";
 
@@ -149,10 +147,9 @@ function commentInRun(
 
 /**
  * The issue a command bar run changed, as alice: she opens it, opens a second issue whose
- * comment cites the first by its reference, so the list's own read of the first holds one row
- * (decision 71 of the parts), and then asks the command bar `RUN_QUESTION`. At once, inside the
- * run's 30 s window and before any browser step, the run changes the first issue's labels twice
- * and writes one comment on it.
+ * comment cites the first by its reference, so the list's own read of the first holds one row,
+ * and then asks the command bar `RUN_QUESTION`. At once, inside the run's 30 s window and before
+ * any browser step, the run changes the first issue's labels twice and writes one comment on it.
  */
 export async function seedRunIssue(): Promise<RunSeed> {
   await createProject({ key: PROJECT, name: "Core" });
@@ -273,8 +270,8 @@ export function referenceReads(traffic: ApiRequests): ReferenceRead[] {
 
 /**
  * Whether the server answers alice, who asked the run `run`, the run's own read
- * (`GET /api/v1/references?to=<address>&kind=changed_by_run`), which INFRA-1950 adds: a 200 says
- * this stack serves runs, and any other answer says it does not yet.
+ * (`GET /api/v1/references?to=<address>&kind=changed_by_run`), which the server's run context
+ * adds: a 200 says this stack serves runs, and any other answer says it does not yet.
  */
 export async function runReadServed(run: string): Promise<boolean> {
   const path = routeUrl(REFERENCES_ROUTE, {}, { kind: "changed_by_run", to: runReference(run) });
@@ -284,10 +281,9 @@ export async function runReadServed(run: string): Promise<boolean> {
 }
 
 /**
- * Whether the server's tree read of the issue `key` (`GET /api/v1/issues/{key}/tree`,
- * INFRA-1253's t16a) answers alice with a 200 that holds a command bar run, a node of the
- * `interaction` supertag (`run-references/run-references.ts`), which the run context of
- * INFRA-1950 writes.
+ * Whether the server's tree read of the issue `key` (`GET /api/v1/issues/{key}/tree`) answers
+ * alice with a 200 that holds a command bar run, a node of the `interaction` supertag
+ * (`run-references/run-references.ts`), which the server's run context writes.
  */
 export async function treeRunServed(key: string): Promise<boolean> {
   const response = await fetch(new URL(routeUrl("/api/v1/issues/{key}/tree", { key }), baseUrl), {

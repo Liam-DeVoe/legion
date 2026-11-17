@@ -40,7 +40,7 @@ const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
 const RUN_WORD = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
 
-/** The run's read: its node, carrying `frames` as INFRA-1950's answer does, and `edges`. */
+/** The run's read: its node, carrying `frames` as the server's answer does, and `edges`. */
 function answerOf(
   frames: readonly RunFrame[],
   edges: readonly GraphEdge[] = [],
@@ -51,7 +51,7 @@ function answerOf(
     node: Object.assign(
       graphNode({
         id: RUN,
-        // Not in this stack's `GraphNode["kind"]` until INFRA-1950's tip that adds it, as
+        // Not in this branch's `GraphNode["kind"]` until the contracts that add it are merged, as
         // `RunFrame` says; that merge drops the cast.
         kind: "interaction" as GraphReferences["node"]["kind"],
         made_at: ASKED_AT,
@@ -232,8 +232,8 @@ test("a failed read other than 404 draws its one sentence with Retry", async () 
 });
 
 // A retry of a read that holds no answer drops the read's failure as it starts, so the line and
-// the Retry the reader's focus is on went with it, and the focus fell to the page's body
-// (decision 162 of dispatch://INFRA-1196).
+// the Retry the reader's focus is on went with it, and the focus fell to the page's body, where
+// no keyboard action may leave it.
 test("a Retry the reader pressed keeps its line until the read lands, then hands the focus to the heading", async () => {
   const user = userEvent.setup();
   const { getReferences } = draw(() => Promise.reject(new ApiError(500, {})));
@@ -267,7 +267,7 @@ test("a Retry the reader pressed keeps its line until the read lands, then hands
 
 // A Retry whose read the server answers 404 draws the not-found page in place of the line and
 // the Retry the reader's focus is on, and the focus goes to that page's link rather than fall
-// to the page's body (decision 162 of dispatch://INFRA-1196).
+// to the page's body, where no keyboard action may leave it.
 test("a Retry the server answers 404 hands the focus to the not-found page's link", async () => {
   const alone = notFoundAlone();
   const user = userEvent.setup();

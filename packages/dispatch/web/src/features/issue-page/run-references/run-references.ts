@@ -9,11 +9,11 @@ import { plainWords } from "../tree-drafts";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
- * The command bar runs that changed the issue or a node of it, as rows of Details' Referenced by
- * (dispatch://INFRA-4064). A run writes one `changed_by_run` tuple from each node it created or
- * changed to itself, and the tree read answers the run as a node of the `interaction` supertag
- * with the asker's whole question as its text. Only the asker's tree read answers a run at all,
- * so another reader's tree holds none and draws no row.
+ * The command bar runs that changed the issue or a node of it, as rows of Details' Referenced by.
+ * A run writes one `changed_by_run` tuple from each node it created or changed to itself, and the
+ * tree read answers the run as a node of the `interaction` supertag with the asker's whole
+ * question as its text. Only the asker's tree read answers a run at all, so another reader's tree
+ * holds none and draws no row.
  */
 
 /** The supertag the tree read answers a command bar run with. */
@@ -91,9 +91,8 @@ export interface RunRowsRead {
 /**
  * The rows of the runs that changed `issue` or a node of it, from the tree read the outline made.
  * It observes that read without enabling it, so it sends no request of its own: the page's first
- * load and the reader opening Referenced by send none for runs (dispatch://INFRA-4064 R4), and
- * only `retry` reads the tree again. Only the asker's tree read holds a run, so another reader's
- * rows are none.
+ * load and the reader opening Referenced by send none for runs, and only `retry` reads the tree
+ * again. Only the asker's tree read holds a run, so another reader's rows are none.
  */
 export function useRunRows(issue: IssueDetails): RunRowsRead {
   const read = useQuery({ ...issueTreeQuery(issue.key), enabled: false, select: runRows });

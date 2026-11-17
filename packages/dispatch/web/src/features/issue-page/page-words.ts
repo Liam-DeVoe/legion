@@ -463,8 +463,8 @@ export const NODE_REFERENCES_WORDS = freeze({
     block: "document",
     comment: "comment",
     component: "component",
-    /** A run of the command bar, which only its asker reads (dispatch://INFRA-4064). It is
-     *  lowercase, as this table holds its words, and the row draws it with `sentenceCase`. */
+    /** A run of the command bar, which only its asker reads. It is lowercase, as this table
+     *  holds its words, and the row draws it with `sentenceCase`. */
     interaction: "command bar run",
     issue: "issue",
     message: "message",
@@ -477,10 +477,10 @@ export const NODE_REFERENCES_WORDS = freeze({
 } as const);
 
 /**
- * The headings of a command bar run's own page (`run-page/RunPage.tsx`, dispatch://INFRA-4064 R3):
- * the asker's whole question, and the nodes the run changed. The page's heading is the run's
- * kind word, `NODE_REFERENCES_WORDS.kinds.interaction`, and what each frame of its answer says is
- * in `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`.
+ * The headings of a command bar run's own page (`run-page/RunPage.tsx`): the asker's whole
+ * question, and the nodes the run changed. The page's heading is the run's kind word,
+ * `NODE_REFERENCES_WORDS.kinds.interaction`, and what each frame of its answer says is in
+ * `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`.
  */
 export const RUN_PAGE_WORDS = freeze({
   question: "Question",

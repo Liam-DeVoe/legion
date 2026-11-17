@@ -247,13 +247,13 @@ export function IssueMarginPanel({
   // this observes that read and sends no request of its own (`useRunRows`).
   const runs = useRunRows(issue);
   // A Retry of the tree read takes the focus off itself, and the focus would be left on the
-  // page's body, where no keyboard action may leave it (decision 162 of dispatch://INFRA-1196).
-  // Where the read holds no answer, the failure's line goes as the read starts again; where it
-  // holds one, the line stays under the rows with its Retry disabled until the read ends, and a
-  // browser moves the focus off a control that becomes disabled. So once no Retry of the line
-  // waits on the read the reader's press sent, a focus left on the body goes back to the line's
-  // Retry where that read failed again, and to the list's own control where the line has gone,
-  // as a focused row's list hands it to its control (`NodeReferences.tsx`).
+  // page's body, where no keyboard action may leave it. Where the read holds no answer, the
+  // failure's line goes as the read starts again; where it holds one, the line stays under the
+  // rows with its Retry disabled until the read ends, and a browser moves the focus off a control
+  // that becomes disabled. So once no Retry of the line waits on the read the reader's press sent,
+  // a focus left on the body goes back to the line's Retry where that read failed again, and to
+  // the list's own control where the line has gone, as a focused row's list hands it to its
+  // control (`NodeReferences.tsx`).
   const referencesToggle = useRef<HTMLButtonElement>(null);
   const runsFailure = useRef<HTMLDivElement>(null);
   const runsRetryHeld = useRef(false);
@@ -553,8 +553,7 @@ export function IssueMarginPanel({
               application's `ReferencedByToggle`, in the page's ink rather than its link blue. It
               is a control at every count: a command bar run the reader asked is in no reader's
               `referenced_by_count`, so a zero is no reason to shut the list. It reads the rows
-              the list shows once both its reads have answered, the list's own and the runs'
-              (dispatch://INFRA-4064 R2). */}
+              the list shows once both its reads have answered, the list's own and the runs'. */}
           <button
             aria-controls={referencesPanelId}
             aria-expanded={referencesOpen}
