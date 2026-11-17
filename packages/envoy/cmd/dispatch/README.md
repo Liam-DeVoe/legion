@@ -4607,7 +4607,7 @@ Each item below names a path with its method and identity, then its purpose.
     With a request open, they are the documents that the open request names.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
     Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
-    The reviewer of R25 reads each text for what these rules cannot refuse.
+    R49 leaves what these rules cannot refuse to the reviewer of R25.
 
     - Which texts Dispatch judges: a statement, the claim and the procedure of a check, the purpose of a component and the definition of a term.
       A statement is a `requirement` block or an entry line, and a check is a `check` block with its `run` and its `negative_control`.
@@ -4615,7 +4615,7 @@ Each item below names a path with its method and identity, then its purpose.
       It is also a row of the components table, by its Name and Purpose cells.
       A term is a term line under a heading `Terms`.
       Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
-      The reviewer of R25 reads the page for that prose.
+      R49 leaves that prose to the reviewer of R25.
 
     - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
       A block in a code block or in a table cell is no block.
@@ -4691,7 +4691,7 @@ Each item below names a path with its method and identity, then its purpose.
       Under 1,000 approved documents of 100 statements each, one judgment took 0.8 s of CPU time on a loaded machine.
       A letter such as `é` can be one character, or a letter and a combining mark.
       Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
-      The reviewer of R25 reads such a text.
+      R49 leaves such a text to the reviewer of R25.
       An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
       A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
       So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
@@ -4727,7 +4727,7 @@ Each item below names a path with its method and identity, then its purpose.
       A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
       So write such a colour in words.
       A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
-      So it names nothing, and the reviewer of R25 reads such a text.
+      So it names nothing, and R49 leaves such a text to the reviewer of R25.
 
     - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
       Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).

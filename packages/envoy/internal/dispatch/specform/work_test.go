@@ -46,7 +46,15 @@ const (
 // row whose judgment finds no finding of its rule at either size reads nothing, so it fails; a row
 // of a rule "" is a shape that breaks no rule. A text of n units is 16 KB or more: Go's regexp
 // reads a shorter text by a faster way, and the port's work for each byte grew 1.3 times from a
-// text of 8 KB to one of 32 KB for that reason alone.
+// text of 8 KB to one of 32 KB for that reason alone. Each row's n is large enough that the walk
+// it is for, made a walk for each pair (ste-lint's count of a column from the start of the line,
+// a scan of the addresses, the texts of a node or the footnote definitions read so far), is most
+// of the work of the larger text, so the row fails it. A walk for each pair whose step is a
+// comparison of a few nanoseconds needs units that cost little else: so the footnotes of the rows
+// "many footnotes" and "one statement that refers to many footnotes", and the statements of the
+// first, hold a word or two each, and the row of purpose lines of one id times the reader alone
+// (read), since the walk that it is for is the reader's, and the judgment of each line costs
+// several times the reading of it.
 func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -68,6 +76,34 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 					t.Fatalf("read %d units: %v", n, err)
 				}
 				return Check(context, Input{Texts: read.Texts, Proposed: read.Terms})
+			}
+		}
+	}
+	// read reads the document that markdown writes for n units, and judges none of its texts: a row
+	// for a walk of the reader, which the judgment of each text, several times the work of its
+	// reading, would hide. It fails unless the reader keeps the n texts as n texts of kind under one
+	// node.
+	read := func(node string, kind Kind, markdown func(n int) string) judgment {
+		return func(t *testing.T, n int) func() []Finding {
+			document := markdown(n)
+			reading := func() Extracted {
+				kept, err := ExtractDocument("spec.md", 1, document)
+				if err != nil {
+					t.Fatalf("read %d units: %v", n, err)
+				}
+				return kept
+			}
+			kept, last, want := reading(), "", fmt.Sprintf("%s (%d)", node, n)
+			if len(kept.Texts) > 0 {
+				last = kept.Texts[len(kept.Texts)-1].Node
+			}
+			if kept.Counts[kind] != n || len(kept.Texts) != n || last != want {
+				t.Fatalf("the reader keeps %d texts of %d units, %d of kind %s, the last of node %q, want %d under one node, the last %q",
+					len(kept.Texts), n, kept.Counts[kind], kind, last, n, want)
+			}
+			return func() []Finding {
+				reading()
+				return nil
 			}
 		}
 	}
@@ -103,10 +139,10 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 		{"one long sentence", ruleSentenceWords, 4_000, checked(KindStatement, "Dispatch keeps ", "word ", "it.")},
 		{"many stops with no space after them", ruleStopNoSpace, 4_000, checked(KindClaim, "Dispatch reads ", "a.B ", "now.")},
 		{"one word of many stops", "", 16_000, checked(KindClaim, "Dispatch reads ", ".", "A now.")},
-		{"many semicolons", "ste100-semicolon", 1_000, checked(KindClaim, "Dispatch keeps it", ";", " and waits.")},
-		{"many phrasal verbs", "ste100-phrasal-verb", 500, checked(KindClaim, "Legion will ", "spin up ", "the job.")},
-		{"many marketing adjectives", "ste100-marketing-adjective", 500, checked(KindClaim, "Dispatch keeps a ", "seamless ", "log.")},
-		{"many nominalizations", "ste100-nominalization", 400, checked(KindClaim, "Dispatch ", "performs a validation ", "of each upload.")},
+		{"many semicolons", "ste100-semicolon", 4_000, checked(KindClaim, "Dispatch keeps it", ";", " and waits.")},
+		{"many phrasal verbs", "ste100-phrasal-verb", 3_000, checked(KindClaim, "Legion will ", "spin up ", "the job.")},
+		{"many marketing adjectives", "ste100-marketing-adjective", 3_000, checked(KindClaim, "Dispatch keeps a ", "seamless ", "log.")},
+		{"many nominalizations", "ste100-nominalization", 2_400, checked(KindClaim, "Dispatch ", "performs a validation ", "of each upload.")},
 		{"many synonyms of one verb", "ste100-synonym-rotation", 400, checked(KindClaim, "", "Check the config file. Then verify the output. ", "")},
 		{"one list item that ends with and", "ste100-dangling-conjunction", 2_000, checked(KindClaim, "- Dispatch keeps ", "the record ", "and")},
 		{"many references", ruleDispatchLink, 4_000, checked(KindName, "", "dispatch://ACME-1 ", "")},
@@ -120,13 +156,13 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 		{"many email addresses", rulePerson, 4_000, checked(KindName, "", "ada@example.com ", "")},
 		{"many handles", rulePerson, 8_000, checked(KindName, "", "@ada ", "")},
 		{"many names of a person", rulePerson, 4_000, checked(KindName, "", "Ada Lovelace ", "")},
-		{"many links", ruleDispatchLink, 2_000, extracted(units(requirement, " [it](dispatch://ACME-%d)", end))},
-		{"many titles", ruleDispatchLink, 2_000, extracted(units(requirement, ` [it](https://example.com "ACME-%d")`, end))},
-		{"many images", ruleDispatchLink, 2_000, extracted(units(requirement, " ![it](dispatch://ACME-%d)", end))},
+		{"many links", ruleDispatchLink, 4_000, extracted(units(requirement, " [it](dispatch://ACME-%d)", end))},
+		{"many titles", ruleDispatchLink, 4_000, extracted(units(requirement, ` [it](https://example.com "ACME-%d")`, end))},
+		{"many images", ruleDispatchLink, 4_000, extracted(units(requirement, " ![it](dispatch://ACME-%d)", end))},
 		{"many terms", "ste100-semicolon", 500, extracted(units("# Terms\n\n", "- **term %d**: Dispatch keeps it; it waits.\n", ""))},
 		{"many statements", "ste100-semicolon", 500, extracted(units("", ":::requirement{#s-%d}\nDispatch keeps it; it waits.\n:::\n\n", ""))},
-		{"many purpose lines of one id", "ste100-semicolon", 2_000, extracted(units("", "Purpose of x: Dispatch keeps record %d; it waits.\n\n", ""))},
-		{"many footnotes", "ste100-semicolon", 500, extracted(units("", "[^%[1]d]: Dispatch keeps it; it waits.\n\n:::requirement{#s-%[1]d}\nDispatch keeps it[^%[1]d].\n:::\n\n", ""))},
+		{"many purpose lines of one id", "", 2_000, read("x", KindPurpose, units("", "Purpose of x: Dispatch keeps record %d; it waits.\n\n", ""))},
+		{"many footnotes", "ste100-semicolon", 2_000, extracted(units("", "[^%[1]d]: It; it.\n\n:::requirement{#s-%[1]d}\nIt[^%[1]d].\n:::\n\n", ""))},
 		{"many statements that refer to one long footnote", "ste100-semicolon", 500,
 			extracted(shared("Dispatch keeps record %d; it waits. ", "", statementUnit))},
 		{"many term lines that refer to one long footnote", "", 500,
@@ -148,7 +184,7 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			})},
 		{"one statement that refers to many footnotes", ruleSentences, 1_000,
 			extracted(func(n int) string {
-				return units(":::requirement{#s}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: Dispatch keeps record %[1]d.\n\n", "")(n)
+				return units(":::requirement{#s}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: It.\n\n", "")(n)
 			})},
 	} {
 		t.Run(row.name, func(t *testing.T) {

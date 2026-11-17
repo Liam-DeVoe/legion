@@ -472,8 +472,8 @@ func TestASectionBelongsToItsContainer(t *testing.T) {
 
 // The texts of The Spec are a statement, the claim and the procedure of a check, the name and the
 // purpose of a component and the term and the definition of a term, where plan decision 3 places
-// each. Other prose of a document is no text of The Spec, and the form does not judge it: the
-// reviewer of R25 reads the page. Three of the red team's inputs pin that, beside a statement
+// each. Other prose of a document is no text of The Spec, and the form does not judge it: R49
+// leaves it to the reviewer of R25. Three of the red team's inputs pin that, beside a statement
 // that the form reads, and the control: the same link in a requirement is refused.
 func TestOtherProseOfADocumentIsNoTextOfTheSpec(t *testing.T) {
 	const control = ":::requirement{#control}\nDispatch stores each comment.\n:::\n\n"

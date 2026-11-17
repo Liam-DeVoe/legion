@@ -53,8 +53,9 @@ func OfCall(call func()) time.Duration {
 // and the answer holds the least of each window. The growth is scale times the work of the large
 // window over the work of the small one: about scale for work in proportion to the input, and
 // about scale times scale for work for each pair of units. It counts the thread of the caller
-// alone, as OfCall does: the work of a database server that the call waits for is not in it, so a
-// test that judges work through one also counts what the call sends to the server.
+// alone, as OfCall does, so the work of a database server that the call waits for is not in it: a
+// test of such a call bounds that work in another way, such as by the count of the statements that
+// the call sends to the server.
 func Growth(samples, scale int, small, large func()) (growth float64, smallWindow, largeWindow time.Duration) {
 	windows := []func(){func() {
 		for range scale {

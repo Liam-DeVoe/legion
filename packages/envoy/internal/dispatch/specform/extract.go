@@ -475,9 +475,9 @@ func (e *extraction) read(nodes []*pmdoc.Node) reading {
 // without its address, an image's alternative text, a hard break as a space (a soft one is a
 // space in the tree), and code in code font, as ste-lint reads code. Its shown words are the same
 // with code as its characters alone, as the page shows them. A footnote reference is no word: the
-// footnote is part of the text (Text.Notes). It holds the address and the title of each link and image
-// (linkHeld). These are the three readings of a text that the reference rules judge (breaks):
-// the shown words, each title as words, and each address as an address.
+// footnote is part of the text (Text.Notes). It holds the address and the title of each link and
+// image (linkHeld). These are the three readings of a text that the reference rules judge
+// (breaks): the shown words, each title as words, and each address as an address.
 func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 	var out reading
 	var words, shown strings.Builder

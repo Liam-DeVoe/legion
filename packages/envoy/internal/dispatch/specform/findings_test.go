@@ -144,8 +144,8 @@ func TestOnlyAnApprovedNameIsANounOfTheSystem(t *testing.T) {
 	}
 }
 
-// The stated limits of the form, each pinned: the README says each, with its way out, and the
-// reviewer of R25 reads for what a program cannot refuse.
+// The stated limits of the form, each pinned: the README says each, with its way out, and R49
+// leaves what a program cannot refuse to the reviewer of R25.
 func TestTheStatedLimitsOfTheForm(t *testing.T) {
 	for _, test := range []struct {
 		name, body string
