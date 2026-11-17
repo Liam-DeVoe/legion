@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -1151,20 +1151,10 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
   }
 });
 
-// Two things the editor does to the caret Enter put in a node before the reader has done
-// anything. It changes its plugins after it has drawn the document's text - Dispatch's block
-// views as it binds, its collaborators' cursors once the room has synced - and ProseMirror then
-// makes Milkdown's view again, which takes the editable out of the box it wraps it in and wraps
-// it in a new one: the focus falls to the page's body as the editable leaves the page (measured
-// in Chromium, 45 ms after Enter had put the caret in a statement). And it writes its own
-// selection back over a caret it has not read yet: measured in Chromium, the caret was in the
-// spec's summary 60 ms after it was put in a statement, and the words typed went there. Until
-// the reader acts the row puts the caret back in the node's block; from their first act the
-// focus and the caret are where the editor left them. happy-dom drops the focus of an element
-// taken out of the page, as Chromium does.
-test("a caret the editor drops or moves goes back to the node's block until the reader acts", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
+/** A comment and then a statement of the spec, with Enter pressed on the statement's row, once
+ *  the row's editor has drawn the words above the statement (`r0`) and the statement (`r1`), and
+ *  Enter's caret is at the start of the statement. Answers the editor's editable. */
+async function editStatement(user: UserEvent): Promise<HTMLElement> {
   const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
@@ -1201,20 +1191,53 @@ test("a caret the editor drops or moves goes back to the node's block until the 
       editable.append(block);
     }
   });
-  const caretInStatement = () =>
-    document.activeElement === editable &&
-    window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id") === "r1";
   await waitFor(() =>
-    expect(caretInStatement(), "Enter did not put the caret in the statement").toBe(true)
+    expect(
+      document.activeElement === editable && caretBlock() === "r1",
+      "Enter did not put the caret in the statement"
+    ).toBe(true)
   );
-  // Milkdown's view made again: its wrapper put back in the editable's place, and a new one
-  // around it.
-  const wrapAgain = () =>
-    act(async () => {
-      const wrapper = document.createElement("div");
-      editable.parentElement?.replaceChild(wrapper, editable);
-      wrapper.append(editable);
-    });
+  return editable;
+}
+
+/** The block of the editor the caret is in, by its `data-block-id`. */
+function caretBlock(): string | null | undefined {
+  return window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id");
+}
+
+/**
+ * Milkdown's view made again, as a change of the editor's plugins makes it: its wrapper put
+ * back in the editable's place, and a new one around it. Chromium sends the editable a focusout
+ * that names nothing as it leaves the page, drops the focus to the page's body, and moves the
+ * caret out to where the editable stood, as the DOM moves every range in a node taken out of
+ * it; happy-dom drops the focus alone, so the focusout and the caret's move are made here.
+ */
+function wrapAgain(editable: HTMLElement): Promise<void> {
+  return act(async () => {
+    const wrapper = document.createElement("div");
+    editable.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+    editable.parentElement?.replaceChild(wrapper, editable);
+    window.getSelection()?.collapse(wrapper, 0);
+    wrapper.append(editable);
+  });
+}
+
+// Two things the editor does to the caret Enter put in a node before the reader has done
+// anything. It changes its plugins after it has drawn the document's text - Dispatch's block
+// views as it binds, its collaborators' cursors once the room has synced - and ProseMirror then
+// makes Milkdown's view again, which takes the editable out of the box it wraps it in and wraps
+// it in a new one: the focus falls to the page's body as the editable leaves the page (measured
+// in Chromium, 45 ms after Enter had put the caret in a statement). And it writes its own
+// selection back over a caret it has not read yet: measured in Chromium, the caret was in the
+// spec's summary 60 ms after it was put in a statement, and the words typed went there. Until
+// the reader acts the row puts the caret back in the node's block; from their first act the
+// caret is where the editor left it, and a focus the editor drops comes back at that caret,
+// not at the node's block (the next row).
+test("a caret the editor drops or moves goes back to the node's block until the reader acts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user);
+  const caretInStatement = () => document.activeElement === editable && caretBlock() === "r1";
   // The editor's own selection, from before the caret went into the statement, written back,
   // and the browser reporting it.
   const selectAbove = () =>
@@ -1225,23 +1248,64 @@ test("a caret the editor drops or moves goes back to the node's block until the 
       document.dispatchEvent(new Event("selectionchange"));
     });
 
-  await wrapAgain();
+  await wrapAgain(editable);
   expect(caretInStatement(), "the caret the editor dropped was not put back").toBe(true);
   await selectAbove();
   expect(caretInStatement(), "the caret the editor moved was not put back").toBe(true);
 
-  // The reader presses a key: the focus and the caret are theirs from then on.
+  // The reader presses a key: the caret is where the editor leaves it from then on.
   await user.keyboard("{Shift}");
-  await wrapAgain();
-  expect(document.activeElement, "the caret was put back after the reader acted").toBe(
+  await selectAbove();
+  expect(caretBlock(), "the caret was moved back after the reader acted").toBe("r0");
+  await wrapAgain(editable);
+  await waitFor(() => expect(document.activeElement).toBe(editable));
+  expect(caretBlock(), "the caret was put back in the node's block after the reader acted").toBe(
+    "r0"
+  );
+});
+
+// The editor goes on changing its plugins after the reader's first act - its collaborators'
+// cursors go in once the room's mapping is ready, which it tries for up to 120 frames
+// (`@legion/proof-editor`'s `lib.ts`) - and each change makes Milkdown's view again, which drops
+// the focus to the page's body while the reader writes: the keys they press next went nowhere.
+// A focus the editable loses to nothing, with no press of the reader's under it, comes back on
+// the next frame at the caret it held. A press on blank space is the reader leaving the editor,
+// and the focus stays where that press left it.
+test("a focus the editor drops while the reader writes comes back at their caret, and a press elsewhere leaves it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user);
+  // Something outside the outline that takes no focus.
+  const outside = "Words outside the outline";
+  const plain = render(<p>{outside}</p>).getByText(outside);
+  const statement = editable.querySelector('[data-block-id="r1"]')?.firstChild;
+  if (statement === null || statement === undefined) throw new Error("the editor draws no r1");
+
+  // The reader presses a key and moves the caret five characters into the statement.
+  await user.keyboard("{Shift}");
+  await act(async () => {
+    window.getSelection()?.collapse(statement, 5);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await wrapAgain(editable);
+  await waitFor(() =>
+    expect(document.activeElement, "the focus the editor dropped did not come back").toBe(editable)
+  );
+  expect(window.getSelection()?.anchorNode, "the caret came back elsewhere").toBe(statement);
+  expect(window.getSelection()?.anchorOffset, "the caret came back elsewhere").toBe(5);
+
+  // A press on blank space takes the focus off the editable to nothing, and it stays there.
+  await user.pointer({ keys: "[MouseLeft>]", target: plain });
+  expect(document.activeElement, "the press did not take the focus off the editor").toBe(
     document.body
   );
-  editable.focus();
-  await selectAbove();
-  expect(
-    window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id"),
-    "the caret was moved back after the reader acted"
-  ).toBe("r0");
+  await user.pointer({ keys: "[/MouseLeft]" });
+  const frame = Promise.withResolvers<void>();
+  requestAnimationFrame(() => frame.resolve());
+  await act(async () => frame.promise);
+  expect(document.activeElement, "the focus a press took off the editor came back").toBe(
+    document.body
+  );
 });
 
 test("q reaches every open question while the tree is read one node at a time", async () => {
