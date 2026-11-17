@@ -26,6 +26,8 @@ import (
 // broker (packages/envoy-client/src/dispatch-cli.ts, `print`, which writes to standard output).
 // With CI_REPORT_STUB_MODE=landed it prints what the real command prints for a write that landed
 // with its answer lost, {"landed_without_answer":"KEY_COMMITTED"}, and exits 0; with
+// CI_REPORT_STUB_MODE=answer-lost it prints {"landed_without_answer":"ANSWER_LOST"}, what the real
+// command prints for a write's 2xx whose body it could not read, and exits 0; with
 // CI_REPORT_STUB_MODE=no-id it prints that JSON with no code, and exits 0. With
 // CI_REPORT_STUB_MODE=unknown it prints what the real command prints for a write that went out
 // and got no answer, {"write_outcome_unknown":"ECONNRESET"}, and exits 1; with unknown-exit-0 it
@@ -50,6 +52,10 @@ if [ "$CI_REPORT_STUB_MODE" = refuse ]; then
 fi
 if [ "$CI_REPORT_STUB_MODE" = landed ]; then
   echo '{"landed_without_answer":"` + contracts.IdempotencyKeyCommitted + `"}'
+  exit 0
+fi
+if [ "$CI_REPORT_STUB_MODE" = answer-lost ]; then
+  echo '{"landed_without_answer":"` + answerLost + `"}'
   exit 0
 fi
 if [ "$CI_REPORT_STUB_MODE" = no-id ]; then
@@ -87,6 +93,11 @@ EOF
 // brokerRefusal is what the stub prints in refuse mode: the broker's refusal of
 // an exchange for a ref that no result entry admits.
 const brokerRefusal = "BROKER_EXCHANGE_REFUSED: the broker refused the exchange of the job's token: invalid_request: no result entry admits ref refs/heads/a/b/c/d"
+
+// answerLost is the code that the dispatch command gives a write whose 2xx it got and whose body
+// it could not read: the client's own code, DISPATCH_ANSWER_LOST in
+// packages/envoy-client/src/dispatch-http.ts, and none of Dispatch's.
+const answerLost = "ANSWER_LOST"
 
 // recorderSession is the session of the run that recorded every row the stub prints: a part of
 // the row that is not its id.
@@ -376,27 +387,36 @@ Failing example: A read that waits for a lock that nobody holds.
 		}
 	})
 
-	t.Run("a write that landed with its answer lost is a result: its line says so, with no id, and it is no failure", func(t *testing.T) {
-		t.Parallel()
-		dir, commit := checkout(t, filepath.Join("testdata", "spec"))
-		stub := newStub(t)
-		got := runReporter(t, binary, dir, stub.env("landed"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
-		if got.code != 0 {
-			t.Errorf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
-		}
-		landed := "the result was stored, and its answer was lost on the way back (" + contracts.IdempotencyKeyCommitted + "), so its id is unknown"
-		exits, whys := map[string]*int{}, map[string]string{}
-		for _, check := range recordedChecks {
-			exits[check], whys[check] = new(0), landed
-		}
-		expectLines(t, got.stdout, lines(exits, nil, whys))
-		if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
-			t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
-		}
-		if want := "; 3 results written, 0 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
-			t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
-		}
-	})
+	// The command prints {"landed_without_answer":"<code>"} and exits 0 when the write landed and
+	// its answer is gone: Dispatch's KEY_COMMITTED for a repeat of a write that it stored, and the
+	// client's own ANSWER_LOST for a 2xx whose body it could not read. The reporter reads each code
+	// as a stored result, Dispatch's or not.
+	for _, landing := range []struct{ mode, code string }{
+		{"landed", contracts.IdempotencyKeyCommitted},
+		{"answer-lost", answerLost},
+	} {
+		t.Run("a write that landed with its answer lost is a result: its line says so, with no id, and it is no failure ("+landing.code+")", func(t *testing.T) {
+			t.Parallel()
+			dir, commit := checkout(t, filepath.Join("testdata", "spec"))
+			stub := newStub(t)
+			got := runReporter(t, binary, dir, stub.env(landing.mode), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+			if got.code != 0 {
+				t.Errorf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
+			}
+			landed := "the result was stored, and its answer was lost on the way back (" + landing.code + "), so its id is unknown"
+			exits, whys := map[string]*int{}, map[string]string{}
+			for _, check := range recordedChecks {
+				exits[check], whys[check] = new(0), landed
+			}
+			expectLines(t, got.stdout, lines(exits, nil, whys))
+			if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
+				t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
+			}
+			if want := "; 3 results written, 0 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
+				t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+			}
+		})
+	}
 
 	// The command prints {"write_outcome_unknown":"<code>"} and exits 1 when the write went out and
 	// no answer said whether it stored the result: a failure that names the code, and never a
