@@ -236,6 +236,9 @@ type Config struct {
 	// (runtime.tmux.pi_config_files, or runtime.kubernetes.pod.env's PI_CONFIG_FILES); a role it
 	// leaves out names those alone. Nil while the file names none.
 	RoleConfigFiles map[claim.Role][]string
+	// Models is `models`: the models a role an owner's plan defines may name, in the file's order.
+	// Nil while the file names none.
+	Models []string
 	// WorkerStallBackstops is `worker_stall_backstop_hours`: how long after a role's recorded
 	// last step the daemon ends the turn that step belongs to itself, by role, 0 being the
 	// backstop off for that role (INFRA-1274). A role the file leaves out is not here and runs
@@ -417,6 +420,7 @@ type fileConfig struct {
 	Counts                   map[string]int
 	WorkerBackends           map[claim.Role]runtime.Backend
 	RoleConfigFiles          map[claim.Role][]string
+	Models                   []string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
@@ -1071,7 +1075,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		cfg.Capabilities = *file.Capabilities
 	}
 	cfg.WorkerBackends = file.WorkerBackends
-	cfg.RoleConfigFiles = file.RoleConfigFiles
+	cfg.RoleConfigFiles, cfg.Models = file.RoleConfigFiles, file.Models
 	if err := checkRoleConfigFiles(cfg); err != nil {
 		return Config{}, err
 	}

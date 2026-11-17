@@ -94,6 +94,7 @@ var settingsEmitted = map[string]string{
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
+	"Config.Models":                                  "models",
 	"Config.WorkerStallBackstops":                    "worker_stall_backstop_hours",
 	"Config.RepositoryRenames":                       "repository_renames",
 	"Runtime.Name":                                   "runtime.name",
@@ -561,6 +562,25 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// The settings serve the models the file lists, in its order, under `models`, and a file that
+// lists none carries no such key.
+func TestSettingsOfServesTheListedModels(t *testing.T) {
+	encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, minimalSettingsFile+"models: [m-one]\n")))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(keysOf(t, encoded)["models"]); got != `["m-one"]` {
+		t.Errorf("models = %s, want [\"m-one\"]: %s", got, encoded)
+	}
+	none, err := json.Marshal(SettingsOf(minimalSettingsConfig(t)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if raw, present := keysOf(t, none)["models"]; present {
+		t.Errorf("models = %s for a file that lists none, want absent", raw)
 	}
 }
 

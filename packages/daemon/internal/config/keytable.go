@@ -292,6 +292,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
 		},
 		{
+			Name: "models", Default: "no model is listed", RequiredBy: "no",
+			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once.",
+			Read:        reads(readModels, func(f *fileConfig, v []string) { f.Models = v }),
+		},
+		{
 			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
 			Description: "The worker capabilities this deployment decides rather than closes: under `decided`, each capability the report would leave open mapped to the reason the boot, `legion state` and the controller's tick then show in the gap's place.",
 			Read:        reads(readCapabilities, func(f *fileConfig, v *Capabilities) { f.Capabilities = v }),

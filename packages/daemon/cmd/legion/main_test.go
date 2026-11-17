@@ -712,11 +712,14 @@ func deploysIgnoredLine(key string) string {
 // demoProjectLines are the two lines of the one DEMO project workflowConfig and
 // kubernetesCheckConfig declare, which names neither `production_check` nor `default_steps`
 // (TestStartCheckConfigPrintsEachProjectsProductionCheck,
-// TestStartCheckConfigPrintsEachProjectsDefaultSteps); demoCheckConfigOK is them after the OK
-// line, which is what every check here prints before its first capability line.
+// TestStartCheckConfigPrintsEachProjectsDefaultSteps); modelsNoneLine is the line that follows the
+// project lines of a file that lists no `models`; demoCheckConfigOK is them after the OK line,
+// which is what every check here prints before its first capability line.
 var demoProjectLines = projectLines("DEMO")
 
-var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines
+const modelsNoneLine = "models: none\n"
+
+var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines + modelsNoneLine
 
 // tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion start --check-config`
 // passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
@@ -813,7 +816,7 @@ func TestStartCheckConfigWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) 
 	code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
-		demoProjectLines + projectLines("OTHER") + tmuxCapabilityGaps
+		demoProjectLines + projectLines("OTHER") + modelsNoneLine + tmuxCapabilityGaps
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -853,7 +856,7 @@ func TestStartCheckConfigPrintsEachProjectsProductionCheck(t *testing.T) {
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines +
 		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" + defaultStepsTodayLine("OTHER") +
-		tmuxCapabilityGaps
+		modelsNoneLine + tmuxCapabilityGaps
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -873,7 +876,7 @@ func TestStartCheckConfigPrintsEachProjectsDefaultSteps(t *testing.T) {
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +
-		tmuxCapabilityGaps
+		modelsNoneLine + tmuxCapabilityGaps
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1021,7 +1024,7 @@ func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
 	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + modelsNoneLine + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1172,7 +1175,7 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 			want := demoCheckConfigOK
 			if tc.key == seedKey {
-				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProjectLines
+				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProjectLines + modelsNoneLine
 			}
 			want += tmuxCapabilityGaps
 			if tc.refusal == nil {
@@ -1233,7 +1236,7 @@ func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
 			}
 			if tc.refusal == nil {
-				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProjectLines + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProjectLines + modelsNoneLine + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
 			} else if want := "legion start: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {

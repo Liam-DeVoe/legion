@@ -294,8 +294,9 @@ func pluginsLine(cfg config.Config) string {
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
-// back the steps an issue runs when its owner gives no plan. After them, one line per configured
-// repository rename
+// back the steps an issue runs when its owner gives no plan. After them, one line naming the
+// models the file lists (modelsLine), so an operator reads back which models a role an owner's
+// plan defines may name. Then one line per configured repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -346,6 +347,7 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
 		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
 	}
+	fmt.Fprintln(stdout, modelsLine(cfg.Models))
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
 			rename.From, rename.To, rename.From)
@@ -394,6 +396,15 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// modelsLine is `--check-config`'s line for `models`: the models the file lists, in its order,
+// or `none` for a file that lists none.
+func modelsLine(models []string) string {
+	if len(models) == 0 {
+		return "models: none"
+	}
+	return "models: " + strings.Join(models, ", ")
 }
 
 // defaultStepsLine is `--check-config`'s line for one project's `default_steps`: the steps the

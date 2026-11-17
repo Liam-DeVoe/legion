@@ -46,6 +46,28 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 	}
 }
 
+// `legion start --check-config` reads back the models the file lists, in its order, on one line
+// right after the project lines, and says `none` for a file that lists none.
+func TestCheckConfigPrintsTheListedModels(t *testing.T) {
+	if !strings.Contains(shippedExampleCheckOK, defaultStepsTodayLine("WIDGETS")+modelsNoneLine) {
+		t.Fatalf("the shipped example's check prints %q, want the models line right after the project lines", shippedExampleCheckOK)
+	}
+	for _, tc := range []struct{ name, key, line string }{
+		{name: "two models", key: "models: [m-one, m-two]\n", line: "models: m-one, m-two\n"},
+		{name: "no key", line: modelsNoneLine},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := stageShippedExample(t, func(example string) string { return example + "\n" + tc.key })
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			want := strings.Replace(shippedExampleCheckOK, modelsNoneLine, tc.line, 1)
+			if code != 0 || out.String() != want {
+				t.Fatalf("legion start --check-config with %q = %d, stdout %q, stderr %q; want 0 and %q", tc.key, code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
 // The example's commented memory block, uncommented with the operator-memory volume and mount it
 // points to, passes the same check, and names the project's mode and overlay. The block's
 // `instructions` stays commented: boot reads that file from the daemon's own disk, and the example
@@ -401,7 +423,7 @@ current-context: legion-daemon
 // shippedExampleCheckOK is the whole stdout of `legion start --check-config` on the shipped
 // example, the same under either session store the example shows.
 var shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
-	productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") +
+	productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") + modelsNoneLine +
 	defaultCacheLine +
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 
