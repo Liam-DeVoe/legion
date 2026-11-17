@@ -213,7 +213,7 @@ func (s *server) tallyCollaboratorEvents(
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select coalesce(actor->>'kind', ''), coalesce(actor->>'id', ''), type, max(created_at)
 		from events
-		where issue_key = $1 and type = any($2) and `+issueClause("$1", "$3")+`
+		where issue_key = $1 and type = any($2) and `+access.IssueProjectClause("$1", "$3")+`
 		group by 1, 2, 3
 	`, key, collaboratorEventTypes, viewer)
 	if err != nil {

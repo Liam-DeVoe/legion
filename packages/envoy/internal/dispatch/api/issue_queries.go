@@ -1130,19 +1130,6 @@ func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.A
 	return nil
 }
 
-// issueClause is access.ProjectClause over the project of the issue keyExpr names, against the
-// viewer at viewerParam, for a statement keyed by an issue whose own row it does not read: the
-// statement holds no row of an issue of a project the viewer does not see, as it holds none of a
-// key no issue carries.
-func issueClause(keyExpr, viewerParam string) string {
-	return access.ProjectClause(`(select clause_issue.project_key from issues clause_issue where clause_issue.key = `+keyExpr+`)`, viewerParam)
-}
-
-// artifactClause is issueClause over the project of the artifact idExpr names.
-func artifactClause(idExpr, viewerParam string) string {
-	return access.ProjectClause(`(select clause_artifact.project_key from artifacts clause_artifact where clause_artifact.id = `+idExpr+`)`, viewerParam)
-}
-
 // issueRowStatement reads one issue with its progress, $1 its key and $2 the reader's viewer,
 // whose project clause leaves out an issue of a project the viewer does not see; scanIssueRow
 // decodes it. It is the issue read's first queued statement (getIssue), whose callback records a
@@ -1179,7 +1166,7 @@ var issueRowStatement = `
 // issueExternalLinksStatement reads an issue's external links, $1 its key and $2 the reader's
 // viewer, in the order the response lists them; scanExternalLinks decodes them.
 var issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 and ` +
-	issueClause("$1", "$2") + ` order by url`
+	access.IssueProjectClause("$1", "$2") + ` order by url`
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run
@@ -1334,7 +1321,7 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // out, as the rule of references leaves out every such reference (references_seen.go). A gate
 // naming an id no document holds is answered as stored.
 var issueDesignGatesStatement = `
-		select g.step, g.artifact_id from design_gates g where g.issue = $1 and ` + issueClause("$1", "$3") + `
+		select g.step, g.artifact_id from design_gates g where g.issue = $1 and ` + access.IssueProjectClause("$1", "$3") + `
 			and not exists (select 1 from artifacts gate_document where gate_document.id = ` + store.CastableUUID("g.artifact_id") + `
 				and not ` + documentClause("gate_document", "$3") + ` offset 0)
 		order by array_position($2::text[], g.step)
