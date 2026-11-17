@@ -58,6 +58,7 @@ func run(mode string, listenFD int, workDir, variant string) error {
 	if err != nil {
 		return fmt.Errorf("-listen-fd %d is not a listening socket: %w", listenFD, err)
 	}
+	defer listener.Close()
 
 	// The driver stops a service by killing its process group; a service that is
 	// asked to stop politely gets here and shuts its endpoint down.
@@ -73,12 +74,10 @@ func run(mode string, listenFD int, workDir, variant string) error {
 	case "exp12":
 		definition, err := exp12.Service(variant)
 		if err != nil {
-			listener.Close()
 			return err
 		}
 		definitions = []restate.ServiceDefinition{definition}
 	default:
-		listener.Close()
 		return fmt.Errorf("-mode must be exp10, exp11 or exp12, got %q", mode)
 	}
 

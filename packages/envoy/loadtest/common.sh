@@ -120,8 +120,10 @@ given_ports() {
   for key in "${PORT_KEYS[@]}"; do
     var=${PORT_VAR[$key]}
     value=${!var:-}
-    [ -n "$value" ] || [ -z "$base" ] || value=$((base + PORT_OFFSET[$key]))
-    [ -n "$value" ] || continue
+    if [ -z "$value" ]; then
+      [ -n "$base" ] || continue
+      value=$((base + PORT_OFFSET[$key]))
+    fi
     if [[ $value =~ ^[1-9][0-9]*$ ]] && ((value >= 1024 && value <= 65535)); then
       out+="$key $value"$'\n'
     else
@@ -129,7 +131,7 @@ given_ports() {
     fi
   done
   if ((${#bad[@]} > 0)); then
-    printf '%s: not a port: %s\n' "${0##*/}" "${bad[*]}" >&2
+    note "not a port: ${bad[*]}"
     return 1
   fi
   printf '%s' "$out"
@@ -145,8 +147,7 @@ stack_ports() {
     grep -q "^$key " <<<"$given" || missing+=("${PORT_VAR[$key]}")
   done
   if ((${#missing[@]} > 0)); then
-    printf '%s: the stack chooses no port of its own: set LOADTEST_PORT_BASE (nine ports from it, free on this machine), or %s\n' \
-      "${0##*/}" "${missing[*]}" >&2
+    note "the stack chooses no port of its own: set LOADTEST_PORT_BASE (nine ports from it, free on this machine), or ${missing[*]}"
     return 1
   fi
   printf '%s\n' "$given"

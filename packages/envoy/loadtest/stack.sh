@@ -214,17 +214,29 @@ stack_set() {
 
 set_pid() { stack_set '.pids[$n] = $p' --arg n "$1" --argjson p "$2"; }
 
+# setup_ports: the ports a setup records, "KEY PORT" a line: every key's (stack_ports) when there
+# is no stack.json, or one that holds ports an earlier stack.sh chose itself (a hash of
+# LOADTEST_ROOT, which another program could take; ports_given); else the ones this environment
+# gives (given_ports), which move their own ports alone. It fails as they do, naming what to set.
+setup_ports() {
+  if [ -f "$STACK" ] && ports_given; then given_ports; else stack_ports; fi
+}
+
+# ports_given: stack.json's ports are the operator's (write_stack_json), not ones an earlier
+# stack.sh chose.
+ports_given() { [ "$(jq -r '.ports_from // empty' "$STACK")" = operator ]; }
+
 # write_stack_json writes stack.json on the first setup, with the ports this environment gives
-# (stack_ports: LOADTEST_PORT_BASE and the LOADTEST_*_PORT variables; refused when a key has none),
+# (setup_ports: LOADTEST_PORT_BASE and the LOADTEST_*_PORT variables; refused when a key has none),
 # and marks them the operator's (ports_from). A later setup keeps the ports the file records and
 # moves only those this environment gives, so a rerun with no port variable set keeps the stack's
 # ports; it refuses to move a port while the stack runs. A stack.json an earlier stack.sh wrote holds
-# ports that stack.sh chose itself, from a hash of LOADTEST_ROOT; a setup takes it over only with
-# every port given, and start refuses it until then (check_port). The name, tokens and pids are kept.
+# ports that stack.sh chose itself; a setup takes it over only with every port given, and start
+# refuses it until then (check_port). The name, tokens and pids are kept.
 write_stack_json() {
   local ports given k p args=()
+  given=$(setup_ports) || exit 1
   if [ ! -f "$STACK" ]; then
-    given=$(stack_ports) || exit 1
     while read -r k p; do args+=(--argjson "$k" "$p"); done <<<"$given"
     ports=$(jq -n "${args[@]}" '$ARGS.named')
     (
@@ -238,10 +250,6 @@ write_stack_json() {
     note "wrote $STACK (stack $(stack_name), ports $(jq -c .ports "$STACK"))"
     return
   fi
-  if ! ports_given; then
-    given=$(stack_ports) || die "$STACK records ports an earlier stack.sh chose itself (a hash of LOADTEST_ROOT), which another program could take; give the stack every port and rerun stack.sh setup"
-  fi
-  given=$(given_ports) || exit 1
   local -A recorded=() set=()
   while read -r k p; do recorded[$k]=$p; done < <(jq -r '(.ports // {}) | to_entries[] | "\(.key) \(.value)"' "$STACK")
   while read -r k p; do [ -z "$k" ] || set[$k]=$p; done <<<"$given"
@@ -258,10 +266,6 @@ write_stack_json() {
   fi
   stack_set '.root = $root | .ports_from = "operator"' --arg root "$ROOT"
 }
-
-# ports_given: stack.json's ports are the operator's (write_stack_json), not ones an earlier
-# stack.sh chose.
-ports_given() { [ "$(jq -r '.ports_from // empty' "$STACK")" = operator ]; }
 
 # ---- processes ---------------------------------------------------------------------------------------
 
@@ -374,31 +378,42 @@ stop_one() {
   set_pid "$name" 0
 }
 
-# port_holder PORT: "pid N (command)" of each process of this PID namespace that holds a socket
-# listening on PORT, joined with ", ". It reads the listening sockets' inodes from /proc/net/tcp
-# and /proc/net/tcp6 and looks for them among the descriptors in /proc/<pid>/fd. A listener of
-# another PID namespace (another Legion role of this pod, which shares the network namespace) has
-# its socket in /proc/net/tcp and no process here, so the result is empty.
-port_holder() {
-  local hex want=" " file inode dir fd target cmd out=""
+# listening_inodes PORT: the inodes of the sockets listening on PORT, from the LISTEN rows (state
+# 0A) of /proc/net/tcp and /proc/net/tcp6, as " N N " (" " when none listens).
+listening_inodes() {
+  local hex file inodes=" "
   printf -v hex '%04X' "$1"
   for file in /proc/net/tcp /proc/net/tcp6; do
     [ -r "$file" ] || continue
-    while read -r _ local_address _ state _ _ _ _ _ inode _; do
-      [ "$state" = 0A ] && [ "${local_address##*:}" = "$hex" ] && want+="$inode "
-    done <"$file"
+    inodes+=$(awk -v hex="$hex" '$4 == "0A" { n = split($2, a, ":"); if (a[n] == hex) printf "%s ", $10 }' "$file")
   done
+  printf '%s\n' "$inodes"
+}
+
+# holds_socket PID INODES: PID has a descriptor on one of the sockets INODES (listening_inodes) names.
+holds_socket() {
+  local fd target
+  for fd in "/proc/$1/fd/"*; do
+    target=$(readlink -- "$fd" 2>/dev/null) || continue
+    [[ $target == socket:\[*\] ]] || continue
+    target=${target#socket:\[}
+    [[ $2 == *" ${target%\]} "* ]] && return 0
+  done
+  return 1
+}
+
+# port_holder PORT: "pid N (command)" of each process of this PID namespace that holds a socket
+# listening on PORT (listening_inodes, holds_socket), joined with ", ". A listener of another PID
+# namespace (another Legion role of this pod, which shares the network namespace) has its socket in
+# /proc/net/tcp and no process here, so the result is empty.
+port_holder() {
+  local want dir cmd out=""
+  want=$(listening_inodes "$1")
   [ "$want" = " " ] && return 0
   for dir in /proc/[0-9]*; do
-    for fd in "$dir"/fd/*; do
-      target=$(readlink -- "$fd" 2>/dev/null) || continue
-      [[ $target == socket:\[*\] ]] || continue
-      inode=${target#socket:\[}
-      [[ $want == *" ${inode%\]} "* ]] || continue
-      cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
-      out+="${out:+, }pid ${dir#/proc/} (${cmd% })"
-      break
-    done
+    holds_socket "${dir#/proc/}" "$want" || continue
+    cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
+    out+="${out:+, }pid ${dir#/proc/} (${cmd% })"
   done
   [ -z "$out" ] || printf '%s\n' "$out"
 }
@@ -422,22 +437,14 @@ check_port() {
   die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. Stop whatever holds it and rerun stack.sh start, or give the stack another port (${PORT_VAR[$key]}, or another LOADTEST_PORT_BASE) and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
 }
 
-# held_by NAME PORT: NAME's process (pid_of) holds the socket listening on PORT, read from the
-# kernel's socket tables and that process's descriptors. A program that took the port between
-# check_port and the bind answers port_open too; this answers only for the stack's own server, whose
-# failed bind then ends the wait (wait_for) with its log.
+# held_by NAME PORT: NAME's process (pid_of) holds a socket listening on PORT (listening_inodes,
+# holds_socket). A program that took the port between check_port and the bind answers port_open
+# too; this answers only for the stack's own server, whose failed bind then ends the wait (wait_for)
+# with its log.
 held_by() {
-  local pid hex inodes fd target
+  local pid
   pid=$(pid_of "$1") || return 1
-  printf -v hex '%04X' "$2"
-  inodes=" $(awk -v hex="$hex" '$4 == "0A" { n = split($2, a, ":"); if (a[n] == hex) printf "%s ", $10 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null)"
-  for fd in "/proc/$pid/fd/"*; do
-    target=$(readlink -- "$fd" 2>/dev/null) || continue
-    [[ $target == socket:\[*\] ]] || continue
-    target=${target#socket:\[}
-    [[ $inodes == *" ${target%\]} "* ]] && return 0
-  done
-  return 1
+  holds_socket "$pid" "$(listening_inodes "$2")"
 }
 
 ports_of() {
@@ -719,8 +726,7 @@ cmd_setup() {
   [ -d "$DISPATCH_SRC/packages/envoy/cmd/dispatch" ] || die "LOADTEST_DISPATCH_SRC=$DISPATCH_SRC holds no packages/envoy/cmd/dispatch"
   # The ports before any build: a setup that could not record the operator's ports refuses at
   # once (write_stack_json records them at the end).
-  if ! { [ -f "$STACK" ] && ports_given; }; then stack_ports >/dev/null || exit 1; fi
-  given_ports >/dev/null || exit 1
+  setup_ports >/dev/null || exit 1
   mkdir -p -- "$BIN" "$RUN" "$LOGS" "$PGDIR/log" "$STACK_HOME" "$ROOT/tmp" "$ROOT/runs"
 
   if [ -n "$commit" ]; then

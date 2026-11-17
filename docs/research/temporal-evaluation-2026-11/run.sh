@@ -154,8 +154,9 @@ say 'LEGION_TEST_PG_DSN is set'
 # The cleanup signals no process by its name or its command line, only the ones this
 # script started and recorded: the experiment running now, by the pid and the start time
 # (/proc/<pid>/stat field 22) it was started with, and the dev server's container, by the
-# id its own `docker run` printed. An experiment stops what it started itself on SIGTERM
-# (its deferred stops, which hold those processes' own pids), so SIGTERM comes first.
+# id its own `docker create` printed. An experiment stops what it started itself on
+# SIGTERM (its deferred stops, which hold those processes' own pids), so SIGTERM comes
+# first.
 container_id=''
 experiment_pid=''
 experiment_started=''
@@ -184,16 +185,22 @@ bounded() {
 	return "$status"
 }
 
+# experiment_running: the recorded experiment still runs, as the process it was started
+# as: its pid is live with the start time recorded for it, so a pid the kernel has reused
+# is never signalled.
+experiment_running() {
+	[[ -n "$experiment_started" && "$(start_time "$experiment_pid")" == "$experiment_started" ]]
+}
+
 stop_experiment() {
-	[[ -n "$experiment_pid" && -n "$experiment_started" ]] || return 0
+	experiment_running || return 0
 	local waited=0
-	[[ "$(start_time "$experiment_pid")" == "$experiment_started" ]] || return 0
 	kill -TERM -- "-$experiment_pid" 2>/dev/null || true
-	while [[ "$(start_time "$experiment_pid")" == "$experiment_started" ]] && ((waited < 100)); do
+	while experiment_running && ((waited < 100)); do
 		sleep 0.2
 		waited=$((waited + 1))
 	done
-	if [[ "$(start_time "$experiment_pid")" == "$experiment_started" ]]; then
+	if experiment_running; then
 		kill -KILL -- "-$experiment_pid" 2>/dev/null || true
 	fi
 	wait "$experiment_pid" 2>/dev/null || true
@@ -524,12 +531,10 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 		else
 			control_dir="$run_dir/work/e$n-control"
 			mkdir -p -- "$control_dir"
-			control_flags=("${flags[@]}")
-			control_label=$label
-			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$control_label"
+			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$label"
 			control_status=0
 			bounded "$bound" "$bin_dir/experiments" \
-				-experiment "$n" -work-dir "$control_dir" "${control_flags[@]}" -no-kill ||
+				-experiment "$n" -work-dir "$control_dir" "${flags[@]}" -no-kill ||
 				control_status=$?
 			if ((control_status == 0)); then
 				controls_that_passed+=("$n")
