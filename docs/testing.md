@@ -27,7 +27,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
-- Every go command a test or a test helper starts, in either Go module, goes through `packages/envoy/testgo`'s `Output`, so that what go writes on its standard error reaches the test's output as go writes it.
+- Every go command a test or a test helper starts, in any of the three Go modules, goes through `packages/envoy/testgo`'s `Output`, so that what go writes on its standard error reaches the test's output as go writes it.
   A go command whose output a test only buffers shows nothing until it returns, and a module download that stalls into the test's timeout never returns: the timeout's panic loses the buffer, and the log does not name the download.
   `Output` returns standard output and refuses a command whose `Stdout` is set; a `Stderr` already set gets the stream too.
   It is a public package, as `testnatsimages` is, so `packages/daemon` imports it through its `replace` of `../envoy`; Go's internal-package rule keeps that module from importing an internal package of this one.
