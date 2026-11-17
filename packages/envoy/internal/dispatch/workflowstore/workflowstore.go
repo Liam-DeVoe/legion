@@ -178,6 +178,10 @@ type StepRead struct {
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
+	// Needs are the tasks of the plan this task needs, each by its id, as the daemon resolved
+	// them when it took the plan; [] for a task that needs none, and nil where the write carried
+	// no needs (a daemon of the release before), which stores no member and reads as not recorded.
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 // Plan is the plan one run of an issue ran from, as its node holds it: its source, the owner's

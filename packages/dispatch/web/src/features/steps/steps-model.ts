@@ -41,11 +41,12 @@ export interface PlannedStep {
   result: string;
 }
 
-/** One task: the tasks of the plan it needs and the steps the plan gives it, both empty for a task
- *  the plan does not hold, and its runs in the order the server read them. */
+/** One task: the tasks of the plan it needs, null where its plan node recorded none or the plan
+ *  does not hold it, and [] where it needs none; the steps the plan gives it, empty for a task the
+ *  plan does not hold; and its runs in the order the server read them. */
 export interface StepTaskRows {
   task: string;
-  needs: string[];
+  needs: string[] | null;
   planned: PlannedStep[];
   rows: StepRow[];
 }
@@ -101,13 +102,13 @@ function plannedSteps(planned: readonly string[], rows: readonly StepRow[]): Pla
 /** The issue's tasks in the server's order - the tasks of its newest plan first, in the plan's
  *  order, then each other task with a run, by its first run - each with its needs, its planned
  *  steps and its runs in the order of the read: by generation, then start, a run with no start
- *  first. The generated shape lets either list be null, and a server older than the plan's tasks
- *  sends no `needs` or `planned`; each reads as empty. */
+ *  first. The generated shape lets either list be null, which reads as empty; a server older than
+ *  the plan's tasks sends no `needs` or `planned`, which read as needs not recorded and no step. */
 export function stepTasks(steps: IssueSteps): StepTaskRows[] {
   return (steps.tasks ?? []).map((task) => {
     const rows = (task.steps ?? []).map(stepRow);
     return {
-      needs: task.needs ?? [],
+      needs: task.needs ?? null,
       planned: plannedSteps(task.planned ?? [], rows),
       rows,
       task: task.task,

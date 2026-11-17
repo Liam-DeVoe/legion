@@ -71,10 +71,10 @@ func (d *recordDispatch) received() ([]planPut, []stepPut) {
 	return slices.Clone(d.plans), slices.Clone(d.steps)
 }
 
-// planRecordOf is the default plan of the run 2 of the issue.
+// planRecordOf is the default plan of the run 2 of the issue, whose one task needs none.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}
 }
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
@@ -118,18 +118,27 @@ func (r *recordRig) run() {
 }
 
 // A plan record is written once, under the row's issue and the plan's own id, with the run, the
-// source and every task with its steps in order, and the row is done.
+// source and every task with its steps in order and its needs, and the row is done. A row the
+// release before wrote carries no needs, and its write carries none either, which Dispatch reads
+// as needs not recorded.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
-	rig := newRecordRig(t, planRecordOf(), nil)
-	rig.run()
-	if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
-		t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
-	}
-	plans, steps := rig.client.received()
-	want := planPut{Issue: stepIssue, ID: planRecordID, Plan: dispatch.PlanWrite{Generation: 2, Source: "default",
-		Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}}
-	if len(plans) != 1 || len(steps) != 0 || !reflect.DeepEqual(plans[0], want) {
-		t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, steps, want)
+	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+	for name, needs := range map[string]*[]string{"needs none": {}, "a row of the release before": nil} {
+		t.Run(name, func(t *testing.T) {
+			payload := planRecordOf()
+			payload.Tasks[0].Needs = needs
+			rig := newRecordRig(t, payload, nil)
+			rig.run()
+			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+				t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
+			}
+			plans, stepWrites := rig.client.received()
+			want := planPut{Issue: stepIssue, ID: planRecordID, Plan: dispatch.PlanWrite{Generation: 2, Source: "default",
+				Tasks: []dispatch.PlanTask{{ID: "default", Steps: steps, Needs: needs}}}}
+			if len(plans) != 1 || len(stepWrites) != 0 || !reflect.DeepEqual(plans[0], want) {
+				t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, stepWrites, want)
+			}
+		})
 	}
 }
 

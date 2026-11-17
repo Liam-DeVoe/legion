@@ -3149,12 +3149,13 @@ type StepRecord struct {
 
 // StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
 // steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
-// in the order its block writes them, absent for a task that needs none. Planned are the steps
-// that plan gives the task, each a role or `role:key`, in order; a task the plan does not hold
-// has neither, and only its runs show it.
+// as the plan node records them, [] for a task that needs none; null where the node did not record
+// them (a daemon of the release before wrote it) and for a task the plan does not hold. Planned are
+// the steps that plan gives the task, each a role or `role:key`, in order, absent for a task the
+// plan does not hold, which only its runs show.
 type StepTask struct {
 	Task    string       `json:"task"`
-	Needs   []string     `json:"needs,omitempty"`
+	Needs   []string     `json:"needs"`
 	Planned []string     `json:"planned,omitempty"`
 	Steps   []StepRecord `json:"steps"`
 }
@@ -3169,10 +3170,13 @@ type IssueSteps struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan), its steps in order, each a role or `role:key`, and the tasks
+// of the plan it needs, each by its id, [] for a task that needs none and null where the write that
+// recorded the plan carried no needs.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
+	Needs []string `json:"needs"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that

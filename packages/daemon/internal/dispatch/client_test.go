@@ -451,9 +451,10 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 
 // The plan of one run of an issue is a PUT on the plan's own id under its issue, as the daemon's
 // session of the issue's project, the one session Dispatch's route takes a plan from. The body
-// names the run, the source and every task with its steps in order; a plan of the source default
-// names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out.
+// names the run, the source and every task with its steps in order and its needs, [] for a task
+// that needs none; a plan of the source default names no document and no version, which Dispatch
+// refuses on such a plan, so the body leaves both out. A task whose needs are nil, a row the
+// release before wrote, writes no needs member, which Dispatch reads as needs not recorded.
 func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 	var body map[string]json.RawMessage
@@ -462,19 +463,20 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/plans/%s", r.Method, r.URL.EscapedPath(), id)
 		}
 		assertBearer(t, r)
+		body = nil
 		decodeJSON(t, r, &body)
 		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
 	}))
 	defer server.Close()
 
-	plan := PlanWrite{Generation: 2, Source: "default",
-		Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+	plan := PlanWrite{Generation: 2, Source: "default", Tasks: []PlanTask{{ID: "default", Steps: steps, Needs: &[]string{}}}}
 	if err := New(server.URL, dispatchToken).PutPlan(context.Background(), "LEG-1", id, plan); err != nil {
 		t.Fatalf("write the plan: %v", err)
 	}
 	for name, want := range map[string]string{
 		"generation": "2", "source": `"default"`,
-		"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`,
+		"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"],"needs":[]}]`,
 		"actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
 	} {
 		if got := string(body[name]); got != want {
@@ -485,6 +487,14 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		if raw, ok := body[name]; ok {
 			t.Errorf("the body writes %s as %s, want it left out", name, raw)
 		}
+	}
+
+	unrecorded := PlanWrite{Generation: 2, Source: "default", Tasks: []PlanTask{{ID: "default", Steps: steps}}}
+	if err := New(server.URL, dispatchToken).PutPlan(context.Background(), "LEG-1", id, unrecorded); err != nil {
+		t.Fatalf("write the plan of a row with no needs: %v", err)
+	}
+	if got, want := string(body["tasks"]), `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`; got != want {
+		t.Errorf("a task with no needs recorded writes the tasks %s, want %s, with no needs member", got, want)
 	}
 }
 

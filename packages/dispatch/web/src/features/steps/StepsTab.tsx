@@ -170,15 +170,24 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
   }
 }
 
-/** One task: the tasks of the plan it needs, each step the plan gives it with where it stands,
- *  then its runs, one row each, in the order the server read them. A task none of whose steps has
- *  run says so in place of the table. */
+/** One task: the tasks of the plan it needs - nothing for a task that needs none or that the plan
+ *  does not hold, and `Needs not recorded` where its plan node recorded none - each step the plan
+ *  gives it with where it stands, then its runs, one row each, in the order the server read them.
+ *  A task none of whose steps has run says so in place of the table. */
 function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskRows }): ReactNode {
+  const needsLine =
+    needs === null
+      ? planned.length === 0
+        ? null
+        : "Needs not recorded"
+      : needs.length === 0
+        ? null
+        : `Needs ${needs.join(", ")}`;
   return (
     <section aria-label={`Task ${task}`} className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
-      {needs.length === 0 ? null : (
-        <p className={`text-xs ${textSecondaryOnCanvas}`}>{`Needs ${needs.join(", ")}`}</p>
+      {needsLine === null ? null : (
+        <p className={`text-xs ${textSecondaryOnCanvas}`}>{needsLine}</p>
       )}
       {planned.length === 0 ? null : (
         <ol aria-label={`Planned steps of task ${task}`} className="flex flex-wrap gap-2 text-xs">

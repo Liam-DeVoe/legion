@@ -75,14 +75,17 @@ func PlanID(issue string, generation uint64) string {
 // the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
 // owner, with the document and the version of it Legion took, or default, the project's default
 // steps, with neither. Its task is the run's one task, with its steps in order, each a role or
-// `role:key` (plan.Step.String). The node is written at the start of the work and again, whole, at
-// each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
-// above the one it holds. A run with no plan rows walks today's line, and its node is the default
-// steps of a project that names none (config.Project.RunsByDefault), as the release before wrote.
+// `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
+// (record.PlanTask.Needs), [] where it needs none: the one record of the needs that Dispatch
+// serves. The node is written at the start of the work and again, whole, at each later version
+// Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
+// holds. A run with no plan rows walks today's line, and its node is the default steps of a project
+// that names none (config.Project.RunsByDefault), as the release before wrote.
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
+	needs := append([]string{}, w.Needs...)
 	if !w.Stored {
-		node.Tasks = []record.PlanRecordTask{{ID: defaultTask, Steps: stepWords(config.Project{}.RunsByDefault())}}
+		node.Tasks = []record.PlanRecordTask{{ID: defaultTask, Steps: stepWords(config.Project{}.RunsByDefault()), Needs: &needs}}
 		return node
 	}
 	if w.Version.Source == record.PlanSourceOwner {
@@ -92,7 +95,7 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	for i, step := range w.Steps {
 		steps[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: stepWords(steps)}}
+	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: stepWords(steps), Needs: &needs}}
 	return node
 }
 

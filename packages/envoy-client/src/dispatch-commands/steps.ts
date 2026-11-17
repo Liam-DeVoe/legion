@@ -26,12 +26,13 @@ function stepLine(record: StepRecord): string {
   ].join(" ");
 }
 
-/** A task of the plan: the tasks it needs, then each step the plan gives it, with where its newest
- *  run stands - the last run of kind `step` at its place, `running` until it ends and then its
- *  result - or `not started` before any run of it. */
+/** A task of the plan: the tasks it needs - `nothing` for none, and `are not recorded` where its
+ *  plan node recorded none - then each step the plan gives it, with where its newest run stands -
+ *  the last run of kind `step` at its place, `running` until it ends and then its result - or
+ *  `not started` before any run of it. */
 function taskLine(
   task: string,
-  needs: readonly string[],
+  needs: readonly string[] | null,
   planned: readonly string[],
   steps: readonly StepRecord[]
 ): string {
@@ -43,7 +44,8 @@ function taskLine(
     if (run === undefined) return `${index + 1} ${name} not started`;
     return `${index + 1} ${name} ${run.ended_at === null ? "running" : orDash(run.result)}`;
   });
-  const needed = needs.length === 0 ? "nothing" : needs.join(", ");
+  const needed =
+    needs === null ? "are not recorded" : needs.length === 0 ? "nothing" : needs.join(", ");
   return `task ${task} needs ${needed}: ${states.join(", ")}`;
 }
 
@@ -54,14 +56,14 @@ export async function stepsCommand(context: CommandContext): Promise<DispatchToo
   const { client, issue } = context;
   const read = await client.listSteps(issue());
   // The generated shape lets either list be null; Dispatch writes `[]`, and null reads the same.
-  // A Dispatch older than the plan's tasks sends no `needs` or `planned`, which read as none.
+  // A Dispatch older than the plan's tasks sends no `needs` or `planned`: no task line prints.
   const tasks = (read.tasks ?? []).map((task) => ({ ...task, steps: task.steps ?? [] }));
   const records = tasks.flatMap((task) => task.steps);
   const lines = tasks.flatMap((task) => {
     const runs = task.steps.map(stepLine);
     const planned = task.planned ?? [];
     if (planned.length === 0) return runs;
-    return [taskLine(task.task, task.needs ?? [], planned, task.steps), ...runs];
+    return [taskLine(task.task, task.needs ?? null, planned, task.steps), ...runs];
   });
   return {
     text: [`${read.issue}: ${records.length} steps in ${tasks.length} tasks`, ...lines].join("\n"),

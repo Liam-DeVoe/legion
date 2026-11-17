@@ -30,6 +30,7 @@ const ratedOnce: FinishedIssue = {
     tasks: [
       {
         id: "default",
+        needs: null,
         steps: ["planner", "implementer", "tester", "reviewer", "acceptance:owner"],
       },
     ],
@@ -61,8 +62,8 @@ const unrated: FinishedIssue = {
     artifact_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
     version: 3,
     tasks: [
-      { id: "api", steps: ["implementer", "reviewer"] },
-      { id: "docs", steps: ["implementer:docs"] },
+      { id: "api", steps: ["implementer", "reviewer"], needs: [] },
+      { id: "docs", steps: ["implementer:docs"], needs: ["api"] },
     ],
   },
   ratings: [],

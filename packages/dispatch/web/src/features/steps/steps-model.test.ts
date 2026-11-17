@@ -35,6 +35,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     issue: "LEG-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ id: "implement-1" }),
           record({
@@ -72,7 +73,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
         ],
         task: "default",
       },
-      { steps: [record({ id: "other-task-1", task: "docs" })], task: "docs" },
+      { needs: null, steps: [record({ id: "other-task-1", task: "docs" })], task: "docs" },
     ],
   });
 
@@ -109,13 +110,18 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
   expect(first?.rows[4]).toMatchObject({ agent: "", model: "", started: null, type: "" });
 });
 
-// The generated shape lets both lists be null, and an issue Legion never ran has no task at all.
-test("stepTasks reads a null list as empty", () => {
+// The generated shape lets both lists be null, and an issue Legion never ran has no task at all. A
+// task whose needs are null - its plan node recorded none, or the plan does not hold it - keeps
+// them null, which is not [], a task that needs none.
+test("stepTasks reads a null list as empty, and null needs as not recorded", () => {
   expect(stepTasks({ issue: "LEG-1", tasks: null })).toEqual([]);
   expect(stepTasks({ issue: "LEG-1", tasks: [] })).toEqual([]);
-  expect(stepTasks({ issue: "LEG-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
-    { needs: [], planned: [], rows: [], task: "default" },
-  ]);
+  expect(
+    stepTasks({ issue: "LEG-1", tasks: [{ needs: null, steps: null, task: "default" }] })
+  ).toEqual([{ needs: null, planned: [], rows: [], task: "default" }]);
+  expect(
+    stepTasks({ issue: "LEG-1", tasks: [{ needs: [], steps: null, task: "default" }] })[0]?.needs
+  ).toEqual([]);
 });
 
 // The tasks of the plan come with what the plan says of them: the tasks each needs, and each step
@@ -128,6 +134,7 @@ test("stepTasks gives each step of the plan the state of its newest run", () => 
     issue: "LEG-1",
     tasks: [
       {
+        needs: [],
         planned: ["implementer", "reviewer"],
         steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
         task: "a",
@@ -157,6 +164,7 @@ test("stepTasks gives each step of the plan the state of its newest run", () => 
     issue: "LEG-1",
     tasks: [
       {
+        needs: null,
         planned: ["implementer", "acceptance:owner"],
         steps: [
           record({ id: "implement-1", result: "failed", returned_to: 1, step: 1 }),
@@ -178,6 +186,7 @@ test("stepTasks gives each step of the plan the state of its newest run", () => 
       issue: "LEG-1",
       tasks: [
         {
+          needs: null,
           planned: ["implementer"],
           steps: [
             record({ id: "implement-1", result: "failed", step: 1 }),
@@ -197,6 +206,7 @@ test("stepTasks keeps a run whose result or kind it does not know, in the server
     issue: "LEG-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ id: "skipped", result: "skipped" }),
           record({ id: "pause", kind: "pause" as StepRecord["kind"], step: 0 }),

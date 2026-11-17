@@ -1,18 +1,14 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -210,10 +206,11 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 }
 
 // listIssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan
-// (workflowstore.NewestPlan), in the plan's order, each with its needs (planNeeds), the steps the
-// plan gives it and every run of them; then every other task with a run, in the order of each
-// such task's first run. It reads as GET /api/v1/issues/{key}/handoffs does: a closed issue's
-// runs as an open one's, and a key no issue carries as an issue with none.
+// (workflowstore.NewestPlan), in the plan's order, each with the needs its node records (null
+// where the node recorded none), the steps the plan gives it and every run of them; then every
+// other task with a run, in the order of each such task's first run. It reads the plan node and
+// the runs alone, and no document. It reads as GET /api/v1/issues/{key}/handoffs does: a closed
+// issue's runs as an open one's, and a key no issue carries as an issue with none.
 func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -232,14 +229,13 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}
 	if plan != nil {
-		needs, err := s.planNeeds(r.Context(), *plan)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 		for _, task := range plan.Tasks {
 			tasks[task.ID] = len(read.Tasks)
-			read.Tasks = append(read.Tasks, model.StepTask{Task: task.ID, Needs: needs[task.ID], Planned: task.Steps})
+			planned := model.StepTask{Task: task.ID, Planned: task.Steps}
+			if task.Needs != nil {
+				planned.Needs = append([]string{}, (*task.Needs)...)
+			}
+			read.Tasks = append(read.Tasks, planned)
 		}
 	}
 	for _, step := range steps {
@@ -252,61 +248,6 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		read.Tasks[index].Steps = append(read.Tasks[index].Steps, stepRecord(step))
 	}
 	WriteJSON(w, http.StatusOK, read)
-}
-
-// planTaskBlock is the type of the block that holds one task of an owner's plan.
-const planTaskBlock = "plan_task"
-
-// planNeeds is the needs of each task of an owner's plan, by task id: the `needs` of each
-// `plan_task` block of the plan's document at the version Legion took (docs.VersionBlocks of that
-// version's stored text), each word read as the task it names (neededTask), in the block's order,
-// a task named twice once. A plan of the default steps has no document, and its one task needs
-// none.
-func (s *server) planNeeds(ctx context.Context, plan workflowstore.Plan) (map[string][]string, error) {
-	if plan.Source != workflowstore.PlanSourceOwner {
-		return nil, nil
-	}
-	var stored string
-	if _, err := s.loadVersion(ctx, s.deps.Store.Pool, plan.ArtifactID, plan.Version, &stored); err != nil {
-		return nil, fmt.Errorf("read version %d of %s, the plan of %s: %w", plan.Version, plan.ArtifactID, plan.Issue, err)
-	}
-	_, blocks, err := docs.VersionBlocks(stored)
-	if err != nil {
-		return nil, fmt.Errorf("read the blocks of version %d of %s, the plan of %s: %w", plan.Version, plan.ArtifactID, plan.Issue, err)
-	}
-	needs := map[string][]string{}
-	for _, block := range blocks {
-		if block.Type != planTaskBlock {
-			continue
-		}
-		for _, attribute := range block.Attributes {
-			if attribute.Name != "needs" {
-				continue
-			}
-			for _, word := range strings.Fields(attribute.Value) {
-				if task := neededTask(word); !slices.Contains(needs[block.ID], task) {
-					needs[block.ID] = append(needs[block.ID], task)
-				}
-			}
-		}
-	}
-	return needs, nil
-}
-
-// neededTask is the task a `needs` word names, as Legion reads it when it takes the plan (the
-// daemon's plan.ResolveNeeds): the block id after the word's last `#b-`, a pin after it left out
-// and its percent-encoding decoded, or the word itself where it holds no `#b-` or that id does not
-// decode. Legion takes no plan whose need names no task of it.
-func neededTask(word string) string {
-	at := strings.LastIndex(word, "#b-")
-	if at < 0 {
-		return word
-	}
-	encoded, _, _ := strings.Cut(word[at+len("#b-"):], "@")
-	if id, err := url.PathUnescape(encoded); err == nil && id != "" {
-		return id
-	}
-	return word
 }
 
 // stepRecord is a run as the routes answer it: a ReturnedTo of 0, an empty report and a Rating of

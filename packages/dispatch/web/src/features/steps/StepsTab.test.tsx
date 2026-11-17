@@ -68,6 +68,7 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ id: "implement-1" }),
           record({
@@ -146,6 +147,7 @@ test("the Steps tab keeps the step a run returned to whole, with its number", as
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [record({ id: "docs-1", result: "stopped", returned_to: 1, step: 1 })],
         task: "docs",
       },
@@ -168,6 +170,7 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({
             agent: "legion-core-core-2-implementer-with-a-long-name",
@@ -195,19 +198,22 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
 });
 
 // Each task of the plan shows the tasks it needs and each step the plan gives it, with where the
-// step stands, before its runs; a task none of whose steps ran yet says so in place of a table.
-// The fault is a task of the plan, or a step of one, that a person cannot see; the control is the
-// tab that draws the runs alone, under which task b has no section and step 2 of a no line.
+// step stands, before its runs; a task none of whose steps ran yet says so in place of a table. A
+// task that needs none shows no needs, and one whose plan node recorded no needs says so. The
+// fault is a task of the plan, or a step or the needs of one, that a person cannot see; the control
+// is the tab that draws the runs alone, under which task b has no section and step 2 of a no line.
 test("the Steps tab draws each step of the plan with its state, and each task's needs", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
     tasks: [
       {
+        needs: [],
         planned: ["implementer", "reviewer"],
         steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
         task: "a",
       },
       { needs: ["a"], planned: ["tester"], steps: null, task: "b" },
+      { needs: null, planned: ["tester"], steps: null, task: "c" },
     ],
   }));
   try {
@@ -231,6 +237,9 @@ test("the Steps tab draws each step of the plan with its state, and each task's 
     expect(within(b).queryByRole("table")).toBeNull();
     expect(within(b).getByText("No step of task b has run yet.")).toBeDefined();
     expect(within(screen.getByRole("region", { name: "Task a" })).queryByText(/^Needs/)).toBeNull();
+    expect(
+      within(screen.getByRole("region", { name: "Task c" })).getByText("Needs not recorded")
+    ).toBeDefined();
   } finally {
     tab.restore();
   }
@@ -263,7 +272,7 @@ test("the Steps tab says what failed when the read fails, and reads again on Ret
 
     answer = async () => ({
       issue: "CORE-1",
-      tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+      tasks: [{ needs: null, steps: [record({ id: "implement-1" })], task: "default" }],
     });
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await screen.findByRole("table", { name: "Steps of task default" });

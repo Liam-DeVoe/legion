@@ -142,7 +142,7 @@ describe("dispatch steps", () => {
     const requests: string[] = [];
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, tester] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, tester] }],
     };
 
     const result = await readSteps("LEG-1", answering(requests, answer));
@@ -161,7 +161,7 @@ describe("dispatch steps", () => {
   test("a field with no value prints -, the start of a run with none among them", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [implementer, mergedByGitHub] }],
+      tasks: [{ task: "default", needs: null, steps: [implementer, mergedByGitHub] }],
     };
 
     const result = await readSteps("LEG-1", answering([], answer));
@@ -175,8 +175,8 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "default", steps: [implementer, tester] },
-        { task: "docs", steps: [docsReview] },
+        { task: "default", needs: null, steps: [implementer, tester] },
+        { task: "docs", needs: null, steps: [docsReview] },
       ],
     };
 
@@ -201,7 +201,7 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "a", planned: ["implementer", "reviewer"], steps: [implementing] },
+        { task: "a", needs: [], planned: ["implementer", "reviewer"], steps: [implementing] },
         { task: "b", needs: ["a"], planned: ["tester"], steps: null },
       ],
     };
@@ -219,10 +219,25 @@ describe("dispatch steps", () => {
     expect(result.details).toEqual({
       issue: "LEG-1",
       tasks: [
-        { task: "a", planned: ["implementer", "reviewer"], steps: [implementing] },
+        { task: "a", needs: [], planned: ["implementer", "reviewer"], steps: [implementing] },
         { task: "b", needs: ["a"], planned: ["tester"], steps: [] },
       ],
     });
+  });
+
+  // A plan node that recorded no needs, a daemon's of the release before, answers them null: the
+  // line says they are not recorded, never that the task needs nothing.
+  test("a task whose needs are not recorded says so", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", needs: null, planned: ["implementer"], steps: [implementer] }],
+    };
+
+    const result = await readSteps("LEG-1", answering([], answer));
+
+    expect(result.text.split("\n")[1]).toBe(
+      "task default needs are not recorded: 1 implementer not started"
+    );
   });
 
   // A planned step stands where its newest run stands: a run that failed and then passed reads

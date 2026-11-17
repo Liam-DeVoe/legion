@@ -444,10 +444,10 @@ func assertPlanNodes(t *testing.T, pool *pgxpool.Pool, key, when string, want ..
 }
 
 // ownersNode is the plan node of LEGION-208's run 1 on version of the owner's plan whose one
-// task, a, runs the implementer and the reviewer.
+// task, a, runs the implementer and the reviewer and needs no task.
 func ownersNode(version int) record.PlanRecord {
 	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
-		Version: version, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
+		Version: version, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}, Needs: &[]string{}}}}
 }
 
 // The plan node of a run is the plan its walk holds (C9, B-7). An owner's plan given before the
@@ -456,7 +456,8 @@ func ownersNode(version int) record.PlanRecord {
 // start writes the version then in force. A version 2 taken while a runs writes the node again,
 // whole, at version 2, under the run's one id. A version that replaces the stopped task default
 // with a writes the node of a. An issue whose owner gave no plan writes the source default, with
-// no document and no version, and the project's default_steps as the task default.
+// no document and no version, and the project's default_steps as the task default. Each task's
+// needs are written, [] for a task that needs none, so Dispatch records them.
 func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T) {
 	t.Run("the owner's plan: version 1 at the start, and version 2 again when it is taken", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -479,7 +480,7 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		root := stepRoot(t, pool, phase.Admitted)
 		firstStep(t, pool, engine, root.Key)
 		defaults := record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
-			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}
 		assertPlanNodes(t, pool, root.Key, "at the start on the default steps", defaults)
 		if result := apply("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
@@ -495,7 +496,7 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		root := stepRoot(t, pool, phase.Admitted)
 		firstStep(t, pool, engine, root.Key)
 		assertPlanNodes(t, pool, root.Key, "at the start", record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
-			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"implementer", "reviewer"}}}})
+			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"implementer", "reviewer"}, Needs: &[]string{}}}})
 	})
 }
 

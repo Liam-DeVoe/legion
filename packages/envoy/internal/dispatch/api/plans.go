@@ -47,11 +47,13 @@ type planRecordInput struct {
 	Tasks      []planTaskInput `json:"tasks" required:"true"`
 }
 
-// planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`.
+// planTaskInput is one task of a written plan: its id, its steps in order, each a role or
+// `role:key`, and the tasks of the plan it needs, each by its id, [] for a task that needs none. A
+// write with no needs, a daemon's of the release before, records the task's needs as not recorded.
 type planTaskInput struct {
-	ID    string   `json:"id" required:"true"`
-	Steps []string `json:"steps" required:"true"`
+	ID    string    `json:"id" required:"true"`
+	Steps []string  `json:"steps" required:"true"`
+	Needs *[]string `json:"needs"`
 }
 
 // putIssuePlan writes the plan of one run of an issue and answers it as it stands after the
@@ -86,7 +88,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	if input.Tasks != nil {
 		tasks = make([]workflowstore.PlanTask, len(input.Tasks))
 		for index, task := range input.Tasks {
-			tasks[index] = workflowstore.PlanTask{ID: task.ID, Steps: task.Steps}
+			tasks[index] = workflowstore.PlanTask{ID: task.ID, Steps: task.Steps, Needs: task.Needs}
 		}
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
@@ -194,6 +196,9 @@ func planRecord(plan workflowstore.Plan) model.PlanRecord {
 	}
 	for index, task := range plan.Tasks {
 		record.Tasks[index] = model.PlanTask{ID: task.ID, Steps: task.Steps}
+		if task.Needs != nil {
+			record.Tasks[index].Needs = append([]string{}, (*task.Needs)...)
+		}
 	}
 	return record
 }
