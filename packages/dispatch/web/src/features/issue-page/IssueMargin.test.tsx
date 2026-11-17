@@ -1661,7 +1661,14 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await user.selectOptions(await within(form).findByRole("combobox"), "evals-now");
     await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-    await waitFor(() => expect(control).toBeDisabled());
+    // Refused while its write is out: `disabled`, or `aria-disabled` where the shared control
+    // stays focusable while it is busy. Add reads both (`usableControl`).
+    await waitFor(() =>
+      expect(
+        control.matches(':disabled, [aria-disabled="true"]'),
+        "the control still takes a press while its write is out"
+      ).toBe(true)
+    );
     expect(
       addMenuControl(),
       "Add lists Advances while its control is disabled, so a press on it opens nothing"
@@ -1670,7 +1677,12 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
       save.reject(new ApiError(409, { code: "REVISION_CONFLICT", error: "the revision moved" }))
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: addPriorityControlName("CORE-1") })).toBeEnabled()
+      expect(
+        screen
+          .getByRole("button", { name: addPriorityControlName("CORE-1") })
+          .matches(':disabled, [aria-disabled="true"]'),
+        "the control still takes no press"
+      ).toBe(false)
     );
     await waitFor(() =>
       expect(
