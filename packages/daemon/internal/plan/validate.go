@@ -129,8 +129,10 @@ func shortestPath(needs map[string][]string, from, to string) []string {
 	return nil
 }
 
-// Supported is what this release does not carry out yet (C6): more than one task, a role block,
-// and, for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
+// Supported is what this release does not carry out yet (C6): more than one task, more than one
+// task that no task needs (Sinks, so p is the plan ResolveNeeds answers), whose work would each
+// merge by itself where this release merges an issue's work as one change, a role block, and,
+// for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
 // acceptance, acceptance with no key, a role named at two steps, steps in another order than
 // today's, and no implementer. A task that names no steps runs the project's default steps,
 // which the configuration loader holds to these same checks, so none of its step causes apply.
@@ -143,6 +145,10 @@ func Supported(p Plan) []Refusal {
 		}
 		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 			"the plan has %d tasks (%s), and this release runs one task for each issue.", len(p.Tasks), strings.Join(ids, ", ")) + notYet})
+	}
+	if sinks := Sinks(p.Tasks); len(sinks) > 1 {
+		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+			"the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), strings.Join(sinks, ", ")) + notYet})
 	}
 	for _, role := range p.RoleBlocks {
 		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role + "." + notYet})

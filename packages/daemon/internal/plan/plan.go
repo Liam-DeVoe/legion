@@ -13,6 +13,7 @@ package plan
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -70,6 +71,25 @@ type Task struct {
 	// Text is the block's text, which says what each step must do (R2) and which a later version
 	// changes a task by (ChangedTasks).
 	Text string
+}
+
+// Sinks is the ids of the tasks of tasks that no task needs, in id order: the tasks whose work
+// ends the plan, where it merges. A need is read as a task id (ResolveNeeds).
+func Sinks(tasks []Task) []string {
+	needed := map[string]bool{}
+	for _, task := range tasks {
+		for _, id := range task.Needs {
+			needed[id] = true
+		}
+	}
+	var sinks []string
+	for _, task := range tasks {
+		if !needed[task.ID] {
+			sinks = append(sinks, task.ID)
+		}
+	}
+	slices.Sort(sinks)
+	return sinks
 }
 
 // RoleDef is a role a step can name: its name, its type, and the phase of today's line it runs as

@@ -88,7 +88,10 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	}{
 		{name: "more than one task", plan: Plan{Tasks: []Task{
 			{ID: "a", HasSteps: true, Steps: implementer}, {ID: "b", HasSteps: true, Steps: implementer}, {ID: "c"},
-		}}, want: []Refusal{{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet}}},
+		}}, want: []Refusal{
+			{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
+			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
+		}},
 		{name: "needs", plan: withTask(Task{ID: "a", Needs: []string{"b", "dispatch://ACME-2/artifact/plan-md#b-c"}, HasSteps: true, Steps: implementer}),
 			want: []Refusal{{Task: "a", Reason: "task a needs b, dispatch://ACME-2/artifact/plan-md#b-c." + yet}}},
 		{name: "steps in another order than today's", plan: oneTask("a", "reviewer implementer"),
@@ -133,12 +136,13 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		}
 	}
 
-	// Both checks run, so a plan with a cause of each gets two reasons, one from each.
+	// Both checks run, so a plan with causes of each kind gets the reasons of both.
 	twoTasks := oneTask("a", "implementer prober")
 	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", HasSteps: true, Steps: implementer})
 	got := append(Supported(twoTasks), Validate(twoTasks, Deployment{Roles: BuiltinRoles()})...)
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},
+		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
 		{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."},
 	}
 	if !reflect.DeepEqual(got, want) {
