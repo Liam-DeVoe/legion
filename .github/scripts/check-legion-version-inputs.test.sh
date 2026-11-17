@@ -54,18 +54,19 @@ elif kind == "outputs":
 elif kind == "readers":
     workflow, job = name.split(":")
     readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
-    placed = {r.position: r for r in readers if r.id is None and r.name is None}
-    named = [r for r in readers if r.id is not None or r.name is not None]
+    # In the module's order, which is the job's: a reader named by position waits behind fillers
+    # for its place, a reader named by id: or name: takes the next one. Position 0 is the job's
+    # own if:, which `step job-if` renders on the job.
     out, at = [], int(sys.argv[3]) + 1
-    while placed or named:
-        reader = placed.pop(at, None) or (named.pop(0) if named else None)
-        head = (f"- id: {reader.id}" if reader.id else f"- name: {json.dumps(reader.name)}" if reader.name else "- run: \"true\"") \
-            if reader else '- run: "true"'
-        out.append(f"      {head}")
-        if reader:
-            out.append(f"        if: {json.dumps(reader.if_)}")
-            if reader.id or reader.name:
-                out.append('        run: "true"')
+    for reader in (r for r in readers if r.position != 0):
+        if reader.id is None and reader.name is None:
+            while at < reader.position:
+                out.append('      - run: "true"')
+                at += 1
+            out += ['      - run: "true"', f"        if: {json.dumps(reader.if_)}"]
+        else:
+            head = f"- id: {reader.id}" if reader.id else f"- name: {json.dumps(reader.name)}"
+            out += [f"      {head}", f"        if: {json.dumps(reader.if_)}", '        run: "true"']
         at += 1
     print("\n".join(out))
     sys.exit(0)
@@ -228,6 +229,28 @@ replace() {
 }
 
 release() { cat "$1/.github/workflows/release.yaml"; }
+
+# swap_steps <file> <first> <second>: swaps two steps of a fixture's workflow, each named by the
+# first line it starts with (`      - id: legion_pair`), every line of both kept as it is; fails the
+# case loudly when either is not there exactly once.
+swap_steps() {
+  python3 - "$@" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path, first, second = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = path.read_text()
+blocks = re.split(r"(?m)^(?=      - )", text)
+heads = [i for i, b in enumerate(blocks) if b.startswith(first + "\n")], [i for i, b in enumerate(blocks) if b.startswith(second + "\n")]
+if any(len(h) != 1 for h in heads):
+    sys.exit(f"  FAIL: swap_steps found {len(heads[0])} and {len(heads[1])} of the two steps")
+i, j = heads[0][0], heads[1][0]
+tail = lambda b: b if b.endswith("\n") else b + "\n"  # noqa: E731
+blocks[i], blocks[j] = tail(blocks[j]), tail(blocks[i])
+path.write_text("".join(blocks))
+PY
+}
 
 echo "case: write fills the block, and the check passes it"
 root=$(fixture green)
@@ -598,6 +621,14 @@ replace "$root/.github/workflows/release.yaml" $'      - name: "Smoke test"\n   
 run_check "$root"
 check "exits 1 on a reader taken out" "$(is "$status" 1)"
 check "says it is not there" "$(contains "$out" "in .github/workflows/release.yaml's job legion_build, the step \`Smoke test\`, which $readers_rule with the if: .*, is not there")"
+
+echo "case: two listed readers swapped, every if: and id: as it was"
+root=$(written reader-order)
+swap_steps "$root/.github/workflows/release.yaml" "      - id: legion_pair" "      - id: legion_download"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the two steps and the module's order" \
+  "$(contains "$out" "in .github/workflows/release.yaml's job publish, the step with id legion_download is step 1, before the step with id legion_pair, step 2, where $plan_file's DECISION_READERS lists it after")"
 
 echo "case: a new step that reads release"
 root=$(written reader-new)

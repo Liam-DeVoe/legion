@@ -112,6 +112,7 @@ esac
 # go_offline.py and release_version_inputs.py sit beside this script in the repository it checks.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 - "${1:-check}" <<'PY'
+import itertools
 import json
 import posixpath
 import re
@@ -555,6 +556,7 @@ def decision_readers(path, doc):
     anywhere = [re.compile(rf"\bneeds\.{re.escape(s.job)}\.outputs\.(?:{'|'.join(map(re.escape, s.outputs))})\b")
                 for s in specs if s.outputs]
     held = {}   # (job, selector) -> the if: it holds, for the job itself and each of its steps
+    index = {}  # (job, selector) -> the step's 1-based place in its job, 0 for the job itself
     found = {}  # (job, selector) -> the if: of each reader the traversal finds
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
@@ -563,6 +565,7 @@ def decision_readers(path, doc):
         checked = {s.step_id for s in specs if s.job == job_name}
         cond = job.get("if")
         held[(job_name, ("job",))] = cond
+        index[(job_name, ("job",))] = 0
         if isinstance(cond, str) and any(r.search(cond) for r in anywhere):
             found[(job_name, ("job",))] = cond
         ids = set()
@@ -571,6 +574,7 @@ def decision_readers(path, doc):
                 continue
             cond = step.get("if")
             held[(job_name, step_selector(step, n))] = cond
+            index[(job_name, step_selector(step, n))] = n
             if step.get("id") in checked:
                 continue  # a checked version step's if: is version_step's to hold
             text = cond if isinstance(cond, str) else ""
@@ -598,6 +602,19 @@ def decision_readers(path, doc):
             problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
                     f"decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the "
                     f"decision is an entry there, so that no edit of its if: can throw the decision away unseen", path)
+    # The order the listed readers run in: each reads the outcome of one before it, so a reader moved
+    # above the step it reads finds no outcome and skips, and every reader after it with it.
+    for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
+        if workflow != path:
+            continue
+        placed = [(index[(job_name, reader_selector(r))], reader_selector(r)) for r in readers
+                  if r.position != 0 and (job_name, reader_selector(r)) in index]
+        for (before, first), (after, second) in itertools.pairwise(placed):
+            if after <= before:
+                problem(f"in {path}'s job {job_name}, {described(second)} is step {after}, before {described(first)}, "
+                        f"step {before}, where {PLAN}'s DECISION_READERS lists it after: a reader that runs before "
+                        f"the step whose outcome it reads finds none and skips, and the chain after it with it", path)
+                break
 
 
 def version_steps(path, doc):
