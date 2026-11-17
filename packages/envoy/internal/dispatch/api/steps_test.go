@@ -170,6 +170,38 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 	}
 }
 
+// A run's session, its report and its generation reach the store from the body and come back from
+// it as written: the write's answer and the read carry the session the first write named, the
+// report in its canonical spelling and generation 2, beside its attempt 1 and the place it
+// returned to.
+func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	id, report := uuid.NewString(), uuid.NewString()
+	identity := with(stepIdentity(daemonSession("LEG")), map[string]any{"generation": 2})
+	putStepOK(t, handler, issue, id, with(identity, map[string]any{
+		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart, "session": "ses_implementer_run",
+	}))
+	ended := putStepOK(t, handler, issue, id, with(identity, map[string]any{
+		"result": "failed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5",
+		"session": "ses_a_later_session", "report": strings.ToUpper(report), "returned_to": 1,
+	}))
+
+	returned := 1
+	want := model.StepRecord{
+		ID: id, Issue: issue, Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Session: "ses_implementer_run",
+		Model: "anthropic/claude-opus-5", Generation: 2, Attempt: 1, StartedAt: &stepStart,
+		EndedAt: &stepEnd, Result: "failed", ReturnedTo: &returned, Report: &report,
+	}
+	if got := stepJSON(t, ended); got != stepJSON(t, want) {
+		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, stepJSON(t, want))
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || stepJSON(t, steps[0]) != stepJSON(t, want) {
+		t.Fatalf("the read lists %+v, want the one record\n%s", steps, stepJSON(t, want))
+	}
+}
+
 // The read answers each task once, in the order of its first step, with its steps in the order
 // they ran.
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
