@@ -971,14 +971,17 @@ func (c *handoffClaimant) endTurn() {
 	}
 }
 
-// awaitPrompt waits for the next task the daemon prompts this claim with.
+// awaitPrompt waits for the next task the daemon prompts this claim with: two minutes, or what is
+// left of the test binary's deadline less a second when that is sooner (testwait.Bounded), and its
+// failure names the bound it waited.
 func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
 	c.r.t.Helper()
+	bound := testwait.Bounded(c.r.t, 2*time.Minute, time.Second)
 	select {
 	case prompt := <-c.prompts:
 		return prompt
-	case <-time.After(2 * time.Minute):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
+	case <-time.After(bound):
+		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, bound)
 		return shimwire.Prompt{}
 	}
 }

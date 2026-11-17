@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // lastReviewed is the part of a task that names the commit the reviewer's last deciding review read
@@ -244,10 +245,13 @@ func (r *reviewRangeLive) pass(issue *reviewRangeIssue, round int) handoffWritte
 
 // awaitTask waits for the prompt of c whose message holds each of want, which is the task of the
 // round a step reads, and returns it. A prompt before it that does not is noted and passed over,
-// so a check reads the task of its own round and no other message the daemon sent the claim.
+// so a check reads the task of its own round and no other message the daemon sent the claim. It
+// waits two minutes, or what is left of the test binary's deadline less a second when that is
+// sooner (testwait.Bounded), and its failure names the bound it waited.
 func (r *reviewRangeLive) awaitTask(c *handoffClaimant, want ...string) string {
 	r.t.Helper()
-	deadline := time.After(2 * time.Minute)
+	bound := testwait.Bounded(r.t, 2*time.Minute, time.Second)
+	deadline := time.After(bound)
 	for {
 		select {
 		case prompt := <-c.prompts:
@@ -256,7 +260,7 @@ func (r *reviewRangeLive) awaitTask(c *handoffClaimant, want ...string) string {
 			}
 			r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
 		case <-deadline:
-			r.t.Fatalf("%s was prompted with no task holding %q within 2m", c.token, want)
+			r.t.Fatalf("%s was prompted with no task holding %q within %s", c.token, want, bound)
 			return ""
 		}
 	}
