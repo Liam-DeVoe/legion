@@ -189,3 +189,42 @@ test("a comment anchored inside a statement hangs under it, by the blocks read's
       ?.children.map((child) => child.id)
   ).toEqual(["c2"]);
 });
+
+// The reviewer's finding 5942007779 and decision 152: only a `requirement` block of the spec is
+// a statement. The plan's own `requirement` block is a block and nothing more, which nothing is
+// placed under, so a comment anchored inside it stays under the issue, whether the server stored
+// the block's paragraph or the block itself; one anchored inside the spec's statement still hangs
+// under that statement.
+test("a comment anchored inside a requirement block of the plan stays under the issue", () => {
+  const spec = artifact("artifact-spec", SPEC, true);
+  const plan = artifact("artifact-plan", "plan-md");
+  const inPlan = (blockId: string) => ({ artifactId: plan.id, blockId });
+  const planned = blockNodeId(plan.slug, "r9");
+  const root = buildIssueTree({
+    comments: [
+      // The one paragraph of the plan's block.
+      comment("c1", "2026-11-04T10:00:00Z", inPlan("q1")),
+      // The plan's block itself.
+      comment("c2", "2026-11-04T11:00:00Z", inPlan("r9")),
+      comment("c3", "2026-11-04T12:00:00Z", { artifactId: spec.id, blockId: "p1" }),
+    ],
+    documents: [
+      {
+        artifactId: spec.id,
+        blocks: [block("r1", "requirement", 0, 40), block("p1", "paragraph", 1, 39)],
+      },
+      {
+        artifactId: plan.id,
+        blocks: [block("r9", "requirement", 0, 40), block("q1", "paragraph", 1, 39)],
+      },
+    ],
+    issue: { ...issueDetails([spec, plan]), plan_artifact_id: plan.id },
+  });
+
+  expect(parentsOf(root, "c1")).toEqual([KEY]);
+  expect(parentsOf(root, "c2")).toEqual([KEY]);
+  expect(parentsOf(root, "c3")).toEqual([blockNodeId(SPEC, "r1")]);
+  // The plan's block is a node of its own under the issue, and holds no comment.
+  expect(parentsOf(root, planned)).toEqual([KEY]);
+  expect(root.children.find((child) => child.id === planned)?.children).toEqual([]);
+});

@@ -1319,6 +1319,7 @@ test("Reply is drawn on each node that takes one, Answer on an open question, an
   const statement = node({
     id: "spec#b-r1",
     reference: "dispatch://CORE-1/spec#b-r1",
+    statement: true,
     type: "requirement",
   });
   expect(focusedActs(statement, true)).toEqual(["reply"]);

@@ -192,6 +192,7 @@ function statementNode(): TreeNode {
     id: "spec#b-r1",
     reference: `dispatch://${KEY}/spec#b-r1`,
     source: SPEC_SOURCE,
+    statement: true,
     text: STATEMENT_WORDS,
     tree,
     type: "requirement",
@@ -1158,6 +1159,7 @@ test("a statement's target line names the issue its words cite, never its addres
         id: "spec#b-r2",
         reference: `dispatch://${KEY}/spec#b-r2`,
         source: SPEC_SOURCE,
+        statement: true,
         // The coverage read's words, the address left out, as the page's row holds them.
         text: "A comment on this statement is drawn under it, as asks.",
         tree,

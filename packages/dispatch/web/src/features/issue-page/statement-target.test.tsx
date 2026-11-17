@@ -166,6 +166,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     id: "spec#b-r1",
     reference: `dispatch://${KEY}/spec#b-r1`,
     source: SPEC_SOURCE,
+    statement: true,
     text: STATEMENT_WORDS,
     tree,
     type: "requirement",
@@ -174,6 +175,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
   const unread = node({
     id: "spec#b-r2",
     reference: `dispatch://${KEY}/spec#b-r2`,
+    statement: true,
     text: "The box takes the focus.",
     type: "requirement",
   });
@@ -350,6 +352,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     id: "spec#b-r1",
     reference: `dispatch://${KEY}/spec#b-r1`,
     source: SPEC_SOURCE,
+    statement: true,
     text: STATEMENT_WORDS,
     tree,
     type: "requirement",
@@ -357,6 +360,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   const other = node({
     id: "spec#b-r2",
     reference: `dispatch://${KEY}/spec#b-r2`,
+    statement: true,
     text: "The box takes the focus.",
     type: "requirement",
   });
@@ -466,5 +470,39 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   } finally {
     cleanup();
     createComment.mockRestore();
+  }
+});
+
+// The reviewer's finding 5942007779 and decision 152: only a `requirement` block of the spec is
+// a statement. The plan's own `requirement` block is a block and nothing more, so its focused row
+// draws no Reply - Copy reference alone - and `r` on it leaves the writer aimed at nothing: no
+// comment is anchored to the plan from the box.
+test("a requirement block of the plan draws no Reply, and r on it aims the writer at nothing", async () => {
+  const user = userEvent.setup();
+  const planned = node({
+    id: "plan-md#b-r9",
+    reference: `dispatch://${KEY}/artifact/plan-md#b-r9`,
+    source: { id: "artifact-plan", issue: KEY, kind: "artifact" },
+    text: "The plan restates a requirement.",
+    type: "requirement",
+  });
+  const page = renderPage(node({ children: [planned], id: KEY, type: "issue" }), []);
+  try {
+    const row = page.view.container.querySelector<HTMLElement>(
+      `[data-node-row][data-node-id="${planned.id}"]`
+    );
+    if (row === null) throw new Error("the tree drew no row for the plan's block");
+    await act(async () => row.focus());
+    await waitFor(() => expect(row.querySelector("[data-row-copy]")).not.toBeNull());
+    const acts = [...row.querySelectorAll("[data-row-act]")].map((control) =>
+      control.getAttribute("data-row-act")
+    );
+    expect(acts).toEqual([]);
+    await user.keyboard("r");
+    expect(page.writer().statement).toBeUndefined();
+    expect(page.writer().reply).toBeNull();
+    expect(replyItemOf(planned)).toBeUndefined();
+  } finally {
+    page.view.unmount();
   }
 });

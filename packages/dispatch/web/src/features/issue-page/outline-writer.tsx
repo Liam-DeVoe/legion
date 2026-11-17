@@ -14,6 +14,7 @@ import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/ro
 import { wordsOf } from "../refs/tree-fragment";
 import { blockOfNodeId } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { isStatement } from "./issue-tree";
 
 /**
  * Where the reader writes on the issue page (dispatch://INFRA-1196 R16): the one line at the foot
@@ -491,10 +492,10 @@ export interface ReplyItem {
   readonly text: string;
 }
 
-/** A statement of the issue's own documents the line can comment on: a `requirement` row of the
- *  outline. It is no entry of the conversation, so what the line
- *  writes to it is a comment on the issue anchored to the statement, never a reply, and its row
- *  takes no thread read mark, since `conversationItem` answers none for it. */
+/** A statement of the issue's spec the line can comment on: a `requirement` block of the spec
+ *  (`isStatement`), and never one of another document. It is no entry of the conversation, so
+ *  what the line writes to it is a comment on the issue anchored to the statement, never a
+ *  reply, and its row takes no thread read mark, since `conversationItem` answers none for it. */
 export interface StatementItem extends Pick<TreeNode, "source" | "text" | "tree"> {
   /** The document the statement is a block of, by the slug its node id names it by, which the
    *  server's `AnchorInput.artifact` takes as it takes an artifact's id. */
@@ -534,11 +535,14 @@ export function replyItemOf(node: TreeNode): ReplyItem | StatementItem | undefin
     : { ...item, author: node.author, text: node.text };
 }
 
-/** The statement a row of the outline is: a `requirement` block of one of the issue's own
- *  documents, read from its node id `<slug>#b-<block id>` as `issue-artifacts.ts` reads a
- *  block's document (`blockOfNodeId`). Undefined for every other row. */
+/** The statement a row of the outline is: a `requirement` block of the issue's spec, which the
+ *  row carries as `TreeNode.statement` (`isStatement`), read from its node id
+ *  `<slug>#b-<block id>` as `issue-artifacts.ts` reads a block's document (`blockOfNodeId`). A
+ *  `requirement` block of the plan, the Verification or the decisions document is a block and
+ *  nothing more (`tree-drafts.ts`'s `addDocumentBlocks`): it takes no Reply, and no comment is
+ *  anchored to it from the line. Undefined for every other row. */
 function statementItemOf(node: TreeNode): StatementItem | undefined {
-  if (node.type !== "requirement") return undefined;
+  if (!isStatement(node)) return undefined;
   const block = blockOfNodeId(node.id);
   if (block === undefined) return undefined;
   return {
