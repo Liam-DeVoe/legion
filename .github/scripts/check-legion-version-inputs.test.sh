@@ -532,6 +532,58 @@ run_check "$root"
 check "exits 1 on a tags: filter added to release.yaml's push" "$(is "$status" 1)"
 check "names the keys" "$(contains "$out" "release.yaml's on.push sets \`\[\"branches\", \"paths\", \"tags\"\]\`, $trigger_rule PUSH_KEYS names")"
 
+# Each path a version step reads is covered whole by a push path - `**`, the file itself, or
+# `X/**` above it - with no later `!` pattern reaching in, but one inside an exclude of the
+# arguments (the round-9 review's P).
+paths_rule="runs the workflow for no change to"
+echo "case: a path the version step reads left out of on.push.paths (P1, P2, P4, P6)"
+root=$(written paths-release)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["packages/**", "go.work", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on release.yaml without its target list (P1)" "$(is "$status" 1)"
+check "names the path and what reads it" \
+  "$(contains "$out" "release.yaml's on.push.paths $paths_rule .github/go-release-targets.json, which its version step reads through LEGION_VERSION_ARGS and LEGION_GO_INPUTS")"
+root=$(written paths-listener-modules)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["packages/envoy/**", ".github/**"]\n'
+run_check "$root"
+check "exits 1 on the listener without the workspace's module files (P2)" "$(is "$status" 1)"
+for path in go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum; do
+  check "names $path" "$(contains "$out" "release-envoy-listener.yaml's on.push.paths $paths_rule $path, which its version step reads through LEGION_ENVOY_VERSION_ARGS")"
+done
+root=$(written paths-listener-sum)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["packages/**", ".github/**", "go.work"]\n'
+run_check "$root"
+check "exits 1 on the listener without go.work.sum alone (P4)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "$paths_rule go.work.sum, which")"
+check "and nothing else" "$(is "$(grep -c '::error' <<< "$out")" 1)"
+root=$(written paths-listener-targets)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["packages/**", "go.work", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on the listener without its target list (P6's form)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release-envoy-listener.yaml's on.push.paths $paths_rule .github/go-release-targets.json")"
+root=$(written paths-generated)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["packages/daemon/**", ".github/**", "go.work", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on a package of the generated block left out" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "$paths_rule packages/envoy/alpha/, which its version step reads through LEGION_VERSION_ARGS and LEGION_GO_INPUTS")"
+
+echo "case: a later ! pattern reaching into a path the version step reads"
+root=$(written paths-negated)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!packages/envoy/alpha/**"]\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the pattern and the path" \
+  "$(contains "$out" "release-envoy-listener.yaml's on.push.paths pattern \`!packages/envoy/alpha/\*\*\`, after \`\*\*\`, can leave out a change to packages/envoy/")"
+root=$(written paths-negated-excluded)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!packages/envoy/infra/**"]\n'
+run_check "$root"
+check "passes a ! pattern inside an exclude of the arguments" "$(is "$status" 0)"
+root=$(written paths-unread)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!go.work+"]\n'
+run_check "$root"
+check "exits 1 on a pattern GitHub reads another way" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release.yaml's on.push.paths pattern \`!go.work+\` uses")"
+
 # The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
 # false` there skips every reader of the job at once.
 echo "case: a decision job's own if: false"

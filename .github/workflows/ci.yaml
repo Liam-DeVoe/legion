@@ -1582,6 +1582,7 @@ jobs:
               - '.github/scripts/check-legion-version-inputs.sh'
               - '.github/scripts/go_offline.py'
               - '.github/scripts/release_version_inputs.py'
+              - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go-offline-test-lib.sh'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router

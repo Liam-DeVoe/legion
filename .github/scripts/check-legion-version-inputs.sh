@@ -73,10 +73,14 @@
 #      itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of those
 #      mappings is refused, since no one can read what it sets. Each workflow's on: holds the
 #      events TRIGGERS names, a push trigger of PUSH_KEYS' keys and the branches PUSH_BRANCHES
-#      names. Free are the if: of a job in neither chain, where it
-#      reads no decision; the values of concurrency:, cache-mode: and timeout-minutes:; the paths
-#      a push filters on; and the runner image behind the label; and so is the decision passed on
-#      through the env context or another step's output, env: or run:;
+#      names, and paths that cover whole each path its version step reads - the plain paths after
+#      `--`, and for legion LEGION_GO_INPUTS' - through `**`, the file itself or `X/**` above it,
+#      with no later `!` pattern that can drop a change to it but one inside an exclude of those
+#      paths; a push pattern GitHub reads another way than the check's glob (`?`, `+`, `\`, `{`,
+#      `}`) is refused. A commit that touches only an uncovered path runs no release. Free are the
+#      if: of a job in neither chain, where it reads no decision; the values of concurrency:,
+#      cache-mode: and timeout-minutes:; and the runner image behind the label; and so is the
+#      decision passed on through the env context or another step's output, env: or run:;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
@@ -140,6 +144,7 @@ import yaml
 import go_offline
 import release_version_inputs as plan
 from go_offline import decode_stream
+from workflow_paths import glob_regex, unread_patterns
 
 MODE = sys.argv[1]
 SELF = ".github/scripts/check-legion-version-inputs.sh"
@@ -751,6 +756,66 @@ def triggers(path, doc):
                 f"{rendered(list(plan.PUSH_BRANCHES))}: {why}", path)
 
 
+def whole_cover(pattern, path):
+    """Whether the push pattern `pattern`, not `!`-negated, covers every change to `path`, a file or
+    a directory written with its /: `**`, the file itself, or `X/**` with X the path or a directory
+    above it. Any other glob is not read as covering anything."""
+    if pattern == "**":
+        return True
+    if pattern.endswith("/**") and not WILDCARD.search(pattern[:-3]):
+        return covers(pattern[:-3], path)
+    return not path.endswith("/") and pattern == path
+
+
+def reaches(pattern, path):
+    """Whether the `!`-negated push pattern `pattern` (its `!` taken off) can drop a change to
+    `path`: for a file, the glob matches it; for a directory, the glob's literal part, up to its
+    first wildcard, lies inside the directory or above it, so it may match something there."""
+    if not path.endswith("/"):
+        return bool(glob_regex(pattern).fullmatch(path))
+    static = WILDCARD.split(pattern, maxsplit=1)[0]
+    return static.startswith(path) or path.startswith(static)
+
+
+def push_paths(path, doc, key, required, excludes):
+    """Rule 3's push paths for the workflow `path`: each path its version step reads, `required`,
+    is covered whole by a pattern of on.push.paths without `!`, and no `!` pattern after it can
+    drop a change to it, unless that pattern lies inside what an exclude of `key`'s paths drops
+    (`!packages/envoy/infra/**` beside `:(exclude)packages/envoy/infra`). A commit that touches
+    only a path no pattern covers runs no release workflow, so nothing releases until a later
+    commit does, and no release step changes."""
+    on = doc.get("on", doc.get(True)) if isinstance(doc, dict) else None
+    push = on.get("push") if isinstance(on, dict) else None
+    patterns = push.get("paths") if isinstance(push, dict) else None
+    if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+        problem(f"{path}'s on.push.paths is {rendered(patterns)}, not a list of patterns, so no one can say which "
+                f"commits run its release", path)
+        return
+    for pattern in unread_patterns(patterns):
+        problem(f"{path}'s on.push.paths pattern `{pattern}` uses `?`, `+`, `\\`, `{{` or `}}`, which GitHub reads "
+                f"another way than this check's glob does, so the check cannot say which changes it covers or drops; "
+                f"write it without them", path)
+    dropped = [exclude.rstrip("/") + "/" for _, exclude in excludes]
+    why = ("a commit that touches it alone runs no release workflow, so nothing releases until a later commit "
+           "does, and no release step changes")
+    for need in required:
+        last = max((i for i, p in enumerate(patterns) if not p.startswith("!") and whole_cover(p, need)), default=None)
+        if last is None:
+            problem(f"{path}'s on.push.paths runs the workflow for no change to {need}, which its version step "
+                    f"reads through {key}: {why}; add `{need.rstrip('/') + '/**' if need.endswith('/') else need}` "
+                    f"or a `X/**` above it", path)
+            continue
+        for pattern in patterns[last + 1:]:
+            if not pattern.startswith("!") or not reaches(pattern[1:], need):
+                continue
+            static = WILDCARD.split(pattern[1:], maxsplit=1)[0]
+            if any(static.startswith(d) or static.rstrip("/") + "/" == d for d in dropped):
+                continue
+            problem(f"{path}'s on.push.paths pattern `{pattern}`, after `{patterns[last]}`, can leave out a change to "
+                    f"{need}, which its version step reads through {key}: {why}", path)
+
+
+
 def job_outputs(path, doc):
     """Rule 3's outputs for the workflow `path`: each job of JOB_OUTPUTS has a literal outputs:
     mapping, and each output that carries a decision on holds the value the module names."""
@@ -846,6 +911,7 @@ def legion(go):
                     f"which legion_build's version step reads", RELEASE, line=begin + 1)
 
     version_steps(RELEASE, doc)
+    push_paths(RELEASE, doc, f"{HAND} and {BLOCK}", [*plain, *inputs], excludes)
     packages = sum(path.endswith("/") for path in inputs)
     return (f"{RELEASE}'s {BLOCK} is what go decides the legion binary from beyond {HAND}'s paths: "
             f"{packages} package directories and {len(inputs) - packages} module files, over "
@@ -857,6 +923,7 @@ def legion_envoy(go):
     doc = load(LISTENER, read(LISTENER))
     plain, excludes = pathspecs(LISTENER, doc, ENVOY_ARGS)
     version_steps(LISTENER, doc)
+    push_paths(LISTENER, doc, ENVOY_ARGS, plain, excludes)
     listings = plan.legion_envoy_listings(targets(TARGETS, "envoy", pairs=False),
                                           targets(CLIENT_TARGETS, "agent-secrets-client", pairs=True))
     found = named(go, listings)

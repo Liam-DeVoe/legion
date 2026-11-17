@@ -76,7 +76,8 @@ accounts for are one plan, kept here.
   TRIGGERS, PUSH_KEYS, PUSH_BRANCHES
                                each workflow's on: events, the keys of its push trigger and the
                                branches it runs on: a push to main is what releases, so another
-                               filter skips every release with a green run.
+                               filter skips every release with a green run. The check holds the
+                               push paths to cover each path a version step reads.
 
 Pure: each caller reads the target lists its own way and hands them in, and keeps its own
 annotations and its own handling of a failure.
@@ -105,7 +106,8 @@ WORKFLOW_ENV_KEYS = {
 # Each workflow's on: events, the keys of its push trigger, and the branches a push runs it on. A
 # push to main is what releases: another branch filter, a branch exclusion, or the push event taken
 # away releases nothing with a green run, and no release step changes. The paths a push filters on
-# are check-image-trigger-paths.sh's to hold.
+# are held by the check to cover whole each path a version step reads, which needs no table here:
+# the paths are the version arguments and the generated block.
 TRIGGERS = {
     RELEASE: ("push", "workflow_dispatch"),
     LISTENER: ("push", "workflow_dispatch"),
