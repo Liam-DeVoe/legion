@@ -51,6 +51,8 @@ import {
   PROGRESS_NOUNS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  ROW_MARK_WORDS,
+  SETTLE_ANSWERS,
   SPEC_WORDS,
   STATE_LINES,
   UNASKED_SOURCES,
@@ -120,9 +122,16 @@ const UNASKED: readonly unknown[] = [
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
+  ROW_MARK_WORDS,
 ];
 
-const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
+const ANSWERS: readonly unknown[] = [
+  ANSWER_LINES,
+  BLOCKED_BY_REFUSALS,
+  HELP_LINES,
+  KEY_REPORTS,
+  SETTLE_ANSWERS,
+];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
 
@@ -233,6 +242,8 @@ test("every glyph token has an accessible name", () => {
     GLYPH_TOKENS.no_check,
     // One shape per kind of author, so a person and an agent never share one (R9).
     ...Object.values(GLYPH_TOKENS.authors),
+    // One shape per mark a row carries, each named by its mark's word.
+    ...Object.values(GLYPH_TOKENS.marks),
   ];
   for (const token of tokens) {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);

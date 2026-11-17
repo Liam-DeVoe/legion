@@ -67,6 +67,11 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   "decision-kept": "M8 1 L15 5 v6 L8 15 L1 11 V5 Z M5 8 l2 2 l4 -4",
   "decision-replaced": "M2 11 h12 M4 4 l8 4 l-8 4 Z",
   "decision-waiting-review": "M1 8 a7 4 0 0 0 14 0 a7 4 0 0 0 -14 0 Z M8 6 v4",
+  /** A row's marks (`ROW_MARK_WORDS`), each beside its word: a proposal is a circle left open,
+   *  an overtaken row a line struck through, and a row only its author reads a closed lock. */
+  "mark-only-you": "M3 7 h10 v7 h-10 Z M5 7 v-2 a3 3 0 0 1 6 0 v2 M8 10 v1.5",
+  "mark-overtaken": "M2 8 h12 M5 13 l6 -10",
+  "mark-proposed": "M8 2 a6 6 0 1 0 6 6",
   /** How a statement stands at the commit the page names, in the Verification filter and at the
    *  right of its row in the Spec filter (R17): the statement's own pennant with the mark of how
    *  it stands inside it, so no two of the three share a shape and none is told apart by colour
