@@ -3474,6 +3474,419 @@ test("every table with no controls draws its rows in the shared markup and offer
   await readPlainTable("Per day (UTC), newest first");
 });
 
+/** R8's reading of one row or card: what it draws, in order, and its box. */
+interface DrawnItem {
+  /** One entry per part, in document order, joined by ` | `: a control as its role and its
+   *  words (`button "ID"`), a run of text outside any control as its words in quotes, and a
+   *  relative time as `time`, since its words move with the clock. Nothing the item hides is a
+   *  part. */
+  readonly parts: string;
+  /** The item's height and width, and the width of the list it is drawn in, in px. */
+  readonly box: readonly [height: number, width: number, list: number];
+}
+
+/** The four lists R8's row reads, each named as its failures name it. */
+type ItemList = "project Board" | "project List" | "Agents page" | "Delivery list";
+
+/** Reads every item `items` finds, each against the nearest ancestor `list` names. */
+async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
+  return items.evaluateAll((nodes, listSelector) => {
+    const controls =
+      'a[href], button, input, select, textarea, [role="button"], [role="checkbox"], [role="combobox"], [role="link"]';
+    const tagRoles: Record<string, string> = {
+      A: "link",
+      BUTTON: "button",
+      SELECT: "combobox",
+      TEXTAREA: "textbox",
+    };
+    const roleOf = (element: Element): string => {
+      const role = element.getAttribute("role");
+      if (role !== null) return role;
+      if (element instanceof HTMLInputElement) {
+        return element.type === "checkbox" ? "checkbox" : "textbox";
+      }
+      return tagRoles[element.tagName] ?? element.tagName.toLowerCase();
+    };
+    /** Whether an element is drawn: a `display: contents` wrapper draws no box of its own, so
+     *  `checkVisibility` calls it hidden, while what it holds is drawn. */
+    const shown = (element: Element): boolean =>
+      getComputedStyle(element).display === "contents" ||
+      element.checkVisibility({ visibilityProperty: true });
+    const textOf = (node: Node): string => (node.textContent ?? "").replace(/\s+/g, " ").trim();
+    /** The words under a control, each run of text once, a relative time as `time`. */
+    const wordsOf = (element: Element): string[] =>
+      [...element.childNodes].flatMap((child): string[] => {
+        if (child.nodeType === Node.TEXT_NODE) return textOf(child) === "" ? [] : [textOf(child)];
+        if (!(child instanceof Element) || !shown(child)) return [];
+        return child.tagName === "TIME" ? ["time"] : wordsOf(child);
+      });
+    const partsOf = (element: Element): string[] =>
+      [...element.childNodes].flatMap((child): string[] => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          return textOf(child) === "" ? [] : [`"${textOf(child)}"`];
+        }
+        if (!(child instanceof Element) || !shown(child)) return [];
+        if (child.tagName === "TIME") return ["time"];
+        if (!child.matches(controls)) return partsOf(child);
+        const name = child.getAttribute("aria-label") ?? wordsOf(child).join(" ");
+        return [`${roleOf(child)} "${name}"`];
+      });
+    const round = (value: number): number => Math.round(value * 100) / 100;
+    return nodes.map((node): DrawnItem => {
+      const box = node.getBoundingClientRect();
+      const list = node.closest(listSelector)?.getBoundingClientRect().width ?? Number.NaN;
+      return {
+        box: [round(box.height), round(box.width), round(list)],
+        parts: partsOf(node).join(" | "),
+      };
+    });
+  }, list);
+}
+
+/**
+ * What R8's four lists drew at the merge base, `fork_point(main@origin | @)`, commit
+ * dccaf8369449723ff2fe3e3e39faae8c737854ee, in each project the row runs in: `chromium` at
+ * 1440x900 and `iphone` at its own 390x664.
+ *
+ * Measured, not written from the code. That commit's `packages/dispatch/web` was exported with
+ * `git archive` into a scratch tree and built there by `vite build` with this workspace's
+ * `node_modules`; nothing outside `web/src` differs between that commit and this change, so the
+ * server, the contracts and the build are this change's own. The build was served to this row in
+ * place of `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own
+ * seed, and `drawnItems` read each list until five readings in a row, 500 ms apart, were the
+ * same; that reading was printed and copied here as it came. The Delivery list's rows are
+ * found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
+ * write `aria-rowindex` on each pull request's row in the list's body.
+ */
+const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnItem[]>>> = {
+  chromium: {
+    "project Board": [
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
+      },
+      {
+        box: [114, 288, 288],
+        parts:
+          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts:
+          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts:
+          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts:
+          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts:
+          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts:
+          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
+      },
+    ],
+    "project List": [
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-1" | "Priority" | combobox "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+      },
+      {
+        box: [49, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-2" | "Priority" | combobox "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-3" | "Priority" | combobox "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-4" | "Priority" | combobox "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-5" | "Priority" | combobox "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-6" | "Priority" | combobox "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-7" | "Priority" | combobox "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-8" | "Priority" | combobox "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+    ],
+    "Agents page": [
+      {
+        box: [46, 1072, 1072],
+        parts:
+          'checkbox "Select Planner for broadcast" | button "Planner" | link "Open live conversation with Planner" | button "Copy session ID 019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01" | button "Copy session title Planner" | link "box-1" | "· planner" | "planner" | time | link "Needs you 1" | button "Pin Planner"',
+      },
+      {
+        box: [46, 1072, 1072],
+        parts:
+          'checkbox "Select Reviewer for broadcast" | button "Reviewer" | link "Open live conversation with Reviewer" | button "Copy session ID 019a1c03-2f0d-7c4c-ab85-0c7d1e4f5a03" | button "Copy session title Reviewer" | link "box-1" | "· reviewer" | "reviewer" | time | button "Pin Reviewer"',
+      },
+    ],
+    "Delivery list": [
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 3:00 AM" | link "widgets#2" | "fix: a waiting widget" | "No issue" | "No session" | "octocat" | "+" | "4" | "-" | "1" | "waiting" | "rework"',
+      },
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 1:00 AM" | link "widgets#1" | "feat: a shipped widget" | "ACME-1 · P0" | "No session" | "octocat" | "+" | "12" | "-" | "3" | button "Open deploy run #500" | "Jun 1, 1:40 AM" | "40m"',
+      },
+    ],
+  },
+  iphone: {
+    "project Board": [
+      {
+        box: [129, 288, 288],
+        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
+      },
+      {
+        box: [129, 288, 288],
+        parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
+      },
+      {
+        box: [129, 288, 288],
+        parts:
+          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
+      },
+      {
+        box: [129, 288, 288],
+        parts:
+          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
+      },
+      {
+        box: [129, 288, 288],
+        parts:
+          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
+      },
+      {
+        box: [129, 288, 288],
+        parts:
+          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
+      },
+      {
+        box: [129, 288, 288],
+        parts:
+          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
+      },
+      {
+        box: [129, 288, 288],
+        parts:
+          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
+      },
+    ],
+    "project List": [
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Priority" | combobox "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+      },
+      {
+        box: [65, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Priority" | combobox "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Priority" | combobox "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Priority" | combobox "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Priority" | combobox "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Priority" | combobox "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Priority" | combobox "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+    ],
+    "Agents page": [
+      {
+        box: [126, 342, 342],
+        parts:
+          'checkbox "Select Planner for broadcast" | button "Planner" | link "Open live conversation with Planner" | button "Copy session ID 019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01" | button "Copy session title Planner" | link "box-1" | "· /srv/planner" | "planner" | time | link "Needs you 1" | button "Pin Planner"',
+      },
+      {
+        box: [126, 342, 342],
+        parts:
+          'checkbox "Select Reviewer for broadcast" | button "Reviewer" | link "Open live conversation with Reviewer" | button "Copy session ID 019a1c03-2f0d-7c4c-ab85-0c7d1e4f5a03" | button "Copy session title Reviewer" | link "box-1" | "· /srv/reviewer" | "reviewer" | time | button "Pin Reviewer"',
+      },
+    ],
+    "Delivery list": [
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 3:00 AM" | link "widgets#2" | "fix: a waiting widget" | "No issue" | "No session" | "octocat" | "+" | "4" | "-" | "1" | "waiting" | "rework"',
+      },
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 1:00 AM" | link "widgets#1" | "feat: a shipped widget" | "ACME-1 · P0" | "No session" | "octocat" | "+" | "12" | "-" | "3" | button "Open deploy run #500" | "Jun 1, 1:40 AM" | "40m"',
+      },
+    ],
+  },
+};
+
+// R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
+// rows and its reading pane are the stub row's (`table-controls.stub.e2e.ts`), and the tables
+// with no controls the row above; this one holds the Board's cards and the rows of the Agents
+// page, the project List and the Delivery list to what they drew at the base
+// (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
+// size. The Delivery list draws its clock times in the browser's own zone and words, so both are
+// pinned to the ones the base was read in.
+test.describe("R8's rows and cards", () => {
+  test.use({ locale: "en-US", timezoneId: "UTC" });
+
+  // SLOW(>=2s): four pages over two seeded fixtures, each list read until it is the base's.
+  test("the Board's cards and the rows of the Agents page, the project List and the Delivery list draw the parts and the size they had at the base @phone", async ({
+    page,
+  }, testInfo) => {
+    const atTheBase = ITEMS_AT_THE_BASE[testInfo.project.name];
+    if (atTheBase === undefined) {
+      throw new Error(`no reading at the base for the ${testInfo.project.name} project`);
+    }
+    await seedRealStackSurfaces();
+    await seedSurfaces();
+    if (!isPhoneProject(testInfo)) await page.setViewportSize({ height: 900, width: 1440 });
+    const main = page.getByTestId("main-content");
+    const lists: {
+      name: ItemList;
+      noun: string;
+      open: () => Promise<void>;
+      items: Locator;
+      list: string;
+    }[] = [
+      {
+        name: "project Board",
+        noun: "card",
+        open: () => openIssuesTab(page, "CORE", "Board"),
+        items: main.locator("[data-board-card]"),
+        list: "[data-board-column]",
+      },
+      {
+        name: "project List",
+        noun: "row",
+        open: () => openIssuesTab(page, "CORE", "List"),
+        items: main.locator("[data-issue-row]"),
+        list: "table",
+      },
+      {
+        name: "Agents page",
+        noun: "row",
+        open: async () => {
+          await page.goto("/agents");
+        },
+        items: main.locator("[data-agent-row]:not([hidden])"),
+        list: "[data-agents-list]",
+      },
+      {
+        name: "Delivery list",
+        noun: "row",
+        open: async () => {
+          await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+        },
+        items: main.locator("tbody tr[aria-rowindex]"),
+        list: "table",
+      },
+    ];
+    const changed: string[] = [];
+    for (const { items, list, name, noun, open } of lists) {
+      await open();
+      await expect(items.first(), `the ${name} draws no ${noun}`).toBeVisible();
+      const base = atTheBase[name];
+      // An item's parts arrive in turns - the read state, the asks, the live link - so the list
+      // is read again until it is what the base drew or the wait runs out, and what differs
+      // then is named below.
+      let drawn: DrawnItem[] = [];
+      await expect
+        .poll(
+          async () => {
+            drawn = await drawnItems(items, list);
+            return JSON.stringify(drawn);
+          },
+          { timeout: 5_000 }
+        )
+        .toBe(JSON.stringify(base))
+        .catch(() => undefined);
+      if (drawn.length !== base.length) {
+        changed.push(`the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`);
+      }
+      for (const [index, was] of base.entries()) {
+        const item = drawn[index];
+        if (item === undefined) continue;
+        const at = `the ${name}'s ${noun} ${index + 1}`;
+        if (item.parts !== was.parts) {
+          changed.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
+        }
+        // Within half a pixel, the rounding of a box's edge.
+        for (const [size, now, then] of [
+          ["height", item.box[0], was.box[0]],
+          ["width", item.box[1], was.box[1]],
+          ["list's width", item.box[2], was.box[2]],
+        ] as const) {
+          if (Math.abs(now - then) > 0.5) {
+            changed.push(`${at}'s ${size} is ${now}px, and ${then}px at the base`);
+          }
+        }
+      }
+    }
+    expect(
+      changed,
+      "a card or row draws other parts, or a box of another size, than it drew at the base"
+    ).toEqual([]);
+  });
+});
+
 // SLOW(>=2s): three pages at two widths, a press in each shared control that takes away, hides or
 // holds the control it was made on.
 test("no press in the shared controls drops the keyboard focus onto the page, at every width", async ({
