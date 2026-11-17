@@ -92,8 +92,11 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
 			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
 		}},
-		{name: "needs", plan: withTask(Task{ID: "a", Needs: []string{"b", "dispatch://ACME-2/artifact/plan-md#b-c"}, HasSteps: true, Steps: implementer}),
-			want: []Refusal{{Task: "a", Reason: "task a needs b, dispatch://ACME-2/artifact/plan-md#b-c." + yet}}},
+		{name: "needs", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-2/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c")),
+			want: []Refusal{
+				{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
+				{Task: "a", Reason: "task a needs b, c." + yet},
+			}},
 		{name: "steps in another order than today's", plan: oneTask("a", "reviewer implementer"),
 			want: []Refusal{{Task: "a", Reason: "task a names implementer at step 2 after reviewer at step 1, and this release runs the steps in the order planner, implementer, tester, reviewer, acceptance." + yet}}},
 		{name: "a later step out of order names the latest step before it", plan: oneTask("a", "implementer reviewer acceptance:owner tester"),
