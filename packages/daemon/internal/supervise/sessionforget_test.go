@@ -31,7 +31,8 @@ import (
 // The controls (the pull request records each run): mayForget admitting every clear, as today's
 // forget does, clears the session in every refused row; admitting a holder the listener reports
 // gone, as round 17 first did, clears it in the gone row; naming the holder of any refused name
-// names the file name's holder in the last refused row.
+// names the file name's holder in the last refused row; and forgetWait matching only one of its
+// two markers fails the other marker's check in every wait row.
 func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	const holder = claim.Token("legion-legion-LEGION-209-tester")
 	type answer struct {
@@ -81,16 +82,17 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			a         answer
 			refused   []string
 			unnamed   bool
+			wait      bool // a refused row is a wait: it matches ErrForgetWaitsForRole and wait.ErrWaiting
 		}{
-			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, theBound}, false},
-			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder}, false},
-			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false},
-			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false},
-			{"refused while the listener does not answer", every, answer{"", "", errors.New("the listener is unreachable")}, []string{"did not say which session holds its role"}, false},
-			{"refused while the listener refuses the lookup, a fault and not a wait", every, answer{"", "", fmt.Errorf("look up: %w", &notify.RoleLookupRefused{Status: 401, Reason: "unauthorized"})}, []string{"refuses the lookup", "until an operator fixes"}, false},
-			{"refused naming no claim when the refused name is a file name another claim holds", fileNameOnly, answer{session, "live", nil}, []string{"the process registered under it", theBound}, true},
-			{"admitted once no claim names the role", every, answer{}, nil, false},
-			{"admitted while another session holds the role", every, answer{"ses_another", "live", nil}, nil, false},
+			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, theBound}, false, true},
+			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder}, false, true},
+			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false, true},
+			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false, true},
+			{"refused while the listener does not answer", every, answer{"", "", errors.New("the listener is unreachable")}, []string{"did not say which session holds its role"}, false, true},
+			{"refused while the listener refuses the lookup, a fault", every, answer{"", "", fmt.Errorf("look up: %w", &notify.RoleLookupRefused{Status: 401, Reason: "unauthorized"})}, []string{"refuses the lookup", "until an operator fixes"}, false, false},
+			{"refused naming no claim when the refused name is a file name another claim holds", fileNameOnly, answer{session, "live", nil}, []string{"the process registered under it", theBound}, true, true},
+			{"admitted once no claim names the role", every, answer{}, nil, false, false},
+			{"admitted while another session holds the role", every, answer{"ses_another", "live", nil}, nil, false, false},
 		} {
 			t.Run(clear.name+": "+tc.name, func(t *testing.T) {
 				h, asked := processless(t, tc.elsewhere, tc.a)
@@ -111,9 +113,11 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 				if !errors.As(err, &refused) {
 					t.Fatalf("the clear = %v, want it refused", err)
 				}
-				fault := strings.Contains(tc.name, "a fault and not a wait")
-				if waits := errors.Is(err, ErrForgetWaitsForRole) && errors.Is(err, wait.ErrWaiting); waits == fault {
-					t.Errorf("the refusal = %v, a wait %t; want a wait %t (ErrForgetWaitsForRole and wait.ErrWaiting)", err, waits, !fault)
+				if got := errors.Is(err, ErrForgetWaitsForRole); got != tc.wait {
+					t.Errorf("the refusal = %v, ErrForgetWaitsForRole %t; want %t", err, got, tc.wait)
+				}
+				if got := errors.Is(err, wait.ErrWaiting); got != tc.wait {
+					t.Errorf("the refusal = %v, wait.ErrWaiting %t; want %t", err, got, tc.wait)
 				}
 				for _, want := range tc.refused {
 					if !strings.Contains(err.Error(), want) {

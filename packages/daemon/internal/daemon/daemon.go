@@ -1619,7 +1619,9 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 		NotRegisteredAfter: goneAt,
 	})
 	if err != nil {
-		s.log.Warn("the Envoy listener did not take the clean stop of a dead role's session", "session", session, "error", err)
+		// A refused delete and an unreachable listener did not stop the session, and an answer
+		// that could not be read to its end leaves whether it did unknown; the error says which.
+		s.log.Warn("the Envoy listener did not confirm the clean stop of a dead role's session", "session", session, "error", err)
 		return
 	}
 	if !stopped.Deleted {

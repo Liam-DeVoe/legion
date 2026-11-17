@@ -68,9 +68,9 @@ type controllerKeeper struct {
 	retryAt time.Time
 	backoff time.Duration
 	// heldLogged is the line keep last wrote for a retry the hold refused, and heldReason that
-	// refusal, since the claim was last running (keep, held): the line is written once per
-	// episode and cause, and the reason rides each later retry's Warn. Both are cleared where the
-	// backoff resets.
+	// refusal, for the episode the refused retry holds the claim in (keep, held): the line is
+	// written once per episode and cause, and the reason rides each later retry's Warn. Both are
+	// cleared at one point, leaveHeld, at each way out of the episode.
 	heldLogged, heldReason string
 }
 
@@ -114,7 +114,12 @@ func (k *controllerKeeper) keep() error {
 		m = created
 	}
 	var request supervise.Event
-	switch state := m.Claim().State; state {
+	state := m.Claim().State
+	if state != supervise.StateFailed && state != supervise.StateRetired {
+		// The claim left the state a refused retry holds it in, whatever it moved to.
+		k.leaveHeld()
+	}
+	switch state {
 	case supervise.StateQueued:
 		// No request of this keeper marks itself exempt from the wake pacing, this spawn
 		// included: the machine exempts the controller's claim by identity, which covers the
@@ -148,33 +153,34 @@ func (k *controllerKeeper) keep() error {
 		k.log.Warn("controller: retrying the daemon's controller", retrying...)
 		request = supervise.RequestRetry{Claim: token}
 	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
-		// The episode ends where the backoff resets: a later held retry is logged again.
-		k.retryAt, k.backoff, k.heldLogged, k.heldReason = time.Time{}, 0, "", ""
+		k.retryAt, k.backoff = time.Time{}, 0
 		return nil
 	default:
 		// Launching, connected, registered, or a launch the previous daemon left uncertain: the
 		// machine and boot's reconciliation own those.
 		return nil
 	}
-	if err := m.Handle(ctx, request); err != nil {
-		// A retry in a new session the hold refuses is no fault of the keeper's, and its own
-		// backoff asks again, so it returns nothing its loop logs at Error; the keeper says why
-		// once per episode, at the level the cause asks for. A role held under the recorded
-		// session by another claim's live process waits for an operator's suspend of that claim,
-		// which the reason names, with the bound: Warn (supervise.ErrForgetWaitsForRole). A lookup
-		// the listener refuses the same way every time is a fault no suspend fixes: Error, with
-		// the listener's status (notify.RoleLookupRefused). Each later retry's Warn carries the
-		// reason.
-		var refusedLookup *notify.RoleLookupRefused
-		switch {
-		case errors.Is(err, supervise.ErrForgetWaitsForRole):
-			k.held(slog.LevelWarn, "controller: the retry of the daemon's controller waits for the Envoy listener to free its role", token, err)
-			return nil
-		case errors.As(err, &refusedLookup):
-			k.held(slog.LevelError, "controller: the retry of the daemon's controller is refused: the Envoy listener refuses the lookup of its role's holder", token, err,
-				"status", refusedLookup.Status)
-			return nil
-		}
+	err := m.Handle(ctx, request)
+	// A retry in a new session the hold refuses is no fault of the keeper's, and its own backoff
+	// asks again, so it returns nothing its loop logs at Error; the keeper says why once per
+	// episode, at the level the cause asks for. A role held under the recorded session by another
+	// claim's live process waits for an operator's suspend of that claim, which the reason names,
+	// with the bound: Warn (supervise.ErrForgetWaitsForRole). A lookup the listener refuses the
+	// same way every time is a fault no suspend fixes: Error, with the listener's status
+	// (notify.RoleLookupRefused). Each later retry's Warn carries the reason. Any other answer, an
+	// admitted request among them, ends the episode.
+	var refusedLookup *notify.RoleLookupRefused
+	switch {
+	case err != nil && errors.Is(err, supervise.ErrForgetWaitsForRole):
+		k.held(slog.LevelWarn, "controller: the retry of the daemon's controller waits for the Envoy listener to free its role", token, err)
+		return nil
+	case err != nil && errors.As(err, &refusedLookup):
+		k.held(slog.LevelError, "controller: the retry of the daemon's controller is refused: the Envoy listener refuses the lookup of its role's holder", token, err,
+			"status", refusedLookup.Status)
+		return nil
+	}
+	k.leaveHeld()
+	if err != nil {
 		return fmt.Errorf("%T for the controller's claim: %w", request, err)
 	}
 	return nil
@@ -190,6 +196,12 @@ func (k *controllerKeeper) held(level slog.Level, msg string, token claim.Token,
 	k.heldLogged = msg
 	k.log.Log(k.ctx, level, msg, append([]any{"claim", token, "reason", err}, args...)...)
 }
+
+// leaveHeld ends a held episode (keep, held): the one reset of what a refused retry recorded,
+// called at each way out of it — a request admitted, a refusal of another cause, and the claim in
+// any state but failed or retired, running or not — so the next refused retry is written again,
+// and no later retry's Warn names a reason that is no longer the claim's.
+func (k *controllerKeeper) leaveHeld() { k.heldLogged, k.heldReason = "", "" }
 
 // ready hands the controller the start message once its agent says it is ready, at every launch, so
 // each one runs the skill's start procedure before any wake. A start message still pending from an

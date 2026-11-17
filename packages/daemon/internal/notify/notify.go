@@ -245,7 +245,12 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+		if readErr != nil {
+			// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
+			// is unknown, so it is the failure a request that never got its answer is.
+			return unreadAnswer("publish notice to "+topic, response.Status, readErr)
+		}
 		refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(body)))
 		var answer RoleRefusal
 		if json.Unmarshal(body, &answer) != nil {
@@ -376,10 +381,11 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // error body within refusalBodyLimit. Every other answer is an error, which the caller reads as
 // an answer it does not have: the daemon's forget of a session its claim does not hold refuses on
 // one, and on every holder it names that is that session (supervise.Deps.RoleHolder). An answer
-// the listener gives the same way however often it is asked — a body it cannot read, a 404 naming
-// no holder under any reason but unclaimed, and any status but 200, 404 and the transient ones —
-// is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot reach, and a 429, 502,
-// 503 or 504 (writeBusUnavailable's 503 among them), is a plain error that asking again can clear.
+// the listener gives the same way however often it is asked — a body read whole that does not
+// decode, a 404 naming no holder under any reason but unclaimed, and any status but 200, 404 and
+// the transient ones — is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot
+// reach, an answer whose body could not be read to its end (unreadAnswer), and a 429, 502, 503
+// or 504 (writeBusUnavailable's 503 among them) are plain errors that asking again can clear.
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -399,11 +405,14 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 	}
 	if response.StatusCode == http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
+		if readErr != nil {
+			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
+		}
 		var answer struct {
 			Holder      string `json:"holder"`
 			HolderState string `json:"holder_state"`
 		}
-		if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
+		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
 			return "", "", refused("the listener's answer names no holder: " + excerpt(body))
 		}
 		return answer.Holder, cmp.Or(answer.HolderState, "live"), nil
@@ -411,8 +420,11 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
 	switch response.StatusCode {
 	case http.StatusNotFound:
+		if readErr != nil {
+			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
+		}
 		var refusal RoleRefusal
-		if readErr != nil || json.Unmarshal(body, &refusal) != nil {
+		if json.Unmarshal(body, &refusal) != nil {
 			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body))
 		}
 		switch {
@@ -429,8 +441,8 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 }
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
-// asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body
-// this client cannot read, or a 404 naming no holder under a reason it does not know. Status is
+// asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body read
+// whole that does not decode, or a 404 naming no holder under a reason it does not know. Status is
 // the answer's HTTP status and Reason what was wrong with it. Asking again changes nothing until
 // an operator fixes the listener or the daemon's bearer, so a caller that retries on a backoff
 // logs it as the fault it is rather than as a wait.
@@ -446,6 +458,15 @@ func (e *RoleLookupRefused) Error() string {
 // excerpt is body as an error names it: trimmed, and no longer than refusalBodyLimit.
 func excerpt(body []byte) string {
 	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
+}
+
+// unreadAnswer is a listener answer of status whose body could not be read to its end (err), for
+// the call what names: a connection reset mid-body, or the caller's deadline between the headers
+// and the body. What the listener said is unknown, so it is a plain error that asking again can
+// clear, never a refusal or an outcome read from part of a body (RoleHolder, Publish,
+// DeleteSession).
+func unreadAnswer(what, status string, err error) error {
+	return fmt.Errorf("%s: the listener answered %s, and its answer could not be read to its end: %w", what, status, err)
 }
 
 // DeleteConditions is what one clean stop of a dead role's session holds under, and where this
@@ -518,8 +539,13 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	case http.StatusOK:
 		// Only an answer that says whether it deleted is read as one: a 200 with no body at
 		// all is the unconditional delete of a listener that judges no condition, which
-		// removed the registration, and so is any other body this route never writes.
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+		// removed the registration, and so is any other body this route never writes. A body
+		// that could not be read to its end is neither: it may have said the listener kept the
+		// registration, so what the stop did is unknown (unreadAnswer).
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+		if readErr != nil {
+			return SessionDeleted{}, unreadAnswer("delete session "+session, response.Status, readErr)
+		}
 		var kept struct {
 			Deleted *bool  `json:"deleted"`
 			Reason  string `json:"reason"`

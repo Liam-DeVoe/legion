@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -116,6 +118,69 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 		}
 		if held := lineOf(logs, "waits for the Envoy listener to free its role"); len(held) != 0 {
 			t.Fatalf("the refused lookup was logged as a wait: %q", held)
+		}
+	})
+
+	// The episode ends at its way out, not only once the claim is seen running (leaveHeld, review
+	// round 19 of #4220): the role is freed, the next retry is admitted, and the launch fails, so
+	// the claim fails again before the keeper ever sees it running. The retry after that is no
+	// longer held, and its Warn names no reason, so it sends the operator to suspend no claim.
+	// The control (the pull request records the run): the reason cleared only where the claim is
+	// seen running; the later retry's Warn still names the freed role's holder.
+	t.Run("the controller keeper, a retry admitted and then a launch that fails", func(t *testing.T) {
+		var mu sync.Mutex
+		freed := false
+		sup := shared(t, func(context.Context, string) (string, string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if freed {
+				return "", "", nil
+			}
+			return taken, "live", nil
+		})
+		runtime := sup.deps.Runtime.(*fake.Runtime)
+		sup.deps.Limits.LaunchFailures = 1
+		token := claim.ControllerToken("legion")
+		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Role: claim.RoleController,
+			Generation: 1, State: supervise.StateFailed, Session: taken, SessionFile: "/tmp/controller.jsonl", TurnOutcomes: refusedTwice}, ""); err != nil {
+			t.Fatalf("create the failed controller: %v", err)
+		}
+		var logs syncBuffer
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, slog.New(slog.NewJSONHandler(&logs, nil)))
+		clock := time.Now()
+		k.now = func() time.Time { return clock }
+		step := func() {
+			t.Helper()
+			if err := k.keep(); err != nil {
+				t.Fatalf("keep: %v", err)
+			}
+			clock = clock.Add(time.Hour)
+		}
+		step() // the failure is seen, and the first retry is due
+		step() // the retry is held: the listener names the session
+		if held := lineOf(logs.String(), "waits for the Envoy listener to free its role"); len(held) != 1 {
+			t.Fatalf("the held retry was logged %d times, want once:\n%s", len(held), logs.String())
+		}
+		mu.Lock()
+		freed = true
+		mu.Unlock()
+		runtime.ScriptSpawn(fake.SpawnResult{Err: errors.New("pull the controller's image: not found")})
+		// The admitted retry's failed launch is an error of the request, not a held retry.
+		if err := k.keep(); err == nil || errors.Is(err, supervise.ErrForgetWaitsForRole) {
+			t.Logf("the admitted retry answered %v", err)
+		}
+		clock = clock.Add(time.Hour)
+		m, _ := sup.Machine(token)
+		if state := m.Claim().State; state != supervise.StateFailed {
+			t.Fatalf("after the admitted retry's failed launch the controller is %s, want failed: the row needs the claim failed again", state)
+		}
+		step() // the next retry
+		retries := lineOf(logs.String(), "controller: retrying the daemon's controller")
+		if len(retries) != 3 {
+			t.Fatalf("the retries' Warn lines are %q, want three", retries)
+		}
+		if strings.Contains(retries[2], `"reason"`) {
+			t.Fatalf("the retry after an admitted one names a reason: %s; the held episode ended when the retry was admitted", retries[2])
 		}
 	})
 
