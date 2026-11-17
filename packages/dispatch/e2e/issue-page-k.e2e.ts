@@ -938,6 +938,81 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
         message: "Home on the focused first card leaves it off the screen at 390 px",
       })
       .toBe(true);
+    // The arrows at the ends of the chart are move keys too: the outline's down arrow on its last
+    // row and its up arrow on its first land on the row they are on and bring it back on screen.
+    // The chart's must do the same with a card the reader scrolled off the screen.
+    await page.evaluate(() =>
+      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    );
+    expect(await onScreen(first), `${T.third}'s card is on screen before ArrowUp`).toBe(false);
+    await reach("ArrowUp", step(T.third), "ArrowUp on the first card");
+    await expect
+      .poll(() => onScreen(first), {
+        message: "ArrowUp on the focused first card leaves it off the screen at 390 px",
+      })
+      .toBe(true);
+    await reach("End", step(T.loose), "End");
+    await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
+    expect(await onScreen(last), `${T.loose}'s card is on screen before ArrowDown`).toBe(false);
+    await reach("ArrowDown", step(T.loose), "ArrowDown on the last card");
+    await expect
+      .poll(() => onScreen(last), {
+        message: "ArrowDown on the focused last card leaves it off the screen at 390 px",
+      })
+      .toBe(true);
+    // A move key pressed from a link of the card works on the card: Home from the first card's
+    // statement link focuses that card and brings it back on screen, as it does under "Steps".
+    await reach("Home", step(T.third), "Home");
+    await page.keyboard.press("f");
+    await expect
+      .poll(
+        () =>
+          first.evaluate(
+            (card) =>
+              card.contains(document.activeElement) &&
+              document.activeElement !== card &&
+              document.activeElement?.tagName === "A"
+          ),
+        { message: `f does not reach a link of ${T.third}'s card` }
+      )
+      .toBe(true);
+    await page.evaluate(() =>
+      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    );
+    expect(await onScreen(first), `${T.third}'s card is on screen before Home from its link`).toBe(
+      false
+    );
+    await reach("Home", step(T.third), "Home from the link");
+    await expect(first, `Home from ${T.third}'s link does not focus its card`).toBeFocused();
+    await expect
+      .poll(() => onScreen(first), {
+        message: "Home from a link of the focused first card leaves it off the screen at 390 px",
+      })
+      .toBe(true);
+    // Escape from the link gives the card back, and the card it gives back stands on screen, as
+    // the outline's row does under "Steps".
+    await page.keyboard.press("f");
+    await expect
+      .poll(
+        () =>
+          first.evaluate(
+            (card) =>
+              card.contains(document.activeElement) && document.activeElement?.tagName === "A"
+          ),
+        { message: `f does not reach a link of ${T.third}'s card again` }
+      )
+      .toBe(true);
+    await page.evaluate(() =>
+      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    );
+    expect(await onScreen(first), `${T.third}'s card is on screen before Escape`).toBe(false);
+    await page.keyboard.press("Escape");
+    await expect(first, `Escape from ${T.third}'s link does not give its card back`).toBeFocused();
+    await expect
+      .poll(() => onScreen(first), {
+        message: "Escape from a link of the first card leaves the card off the screen at 390 px",
+      })
+      .toBe(true);
   });
 });
 
