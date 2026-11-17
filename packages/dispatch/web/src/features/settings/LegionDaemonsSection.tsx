@@ -19,6 +19,15 @@ import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import type { LegionSetting } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import {
   borderDefault,
@@ -27,20 +36,11 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
+import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
 import { ProjectSelect } from "./ProjectSelect";
 import { useLegionDaemons } from "./useLegionDaemons";
 
@@ -226,75 +226,52 @@ export function LegionDaemonsSection(): ReactNode {
       ) : null}
       {legion.daemons !== undefined && legion.projects !== undefined ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Project
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Daemon state URL
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Changed
-                  </th>
-                  {human ? (
-                    <th className="px-4 py-3" scope="col">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  ) : null}
-                </tr>
-              </thead>
-              <tbody>
-                {legion.daemons.length === 0 ? (
-                  <tr>
-                    <td
-                      className={`px-4 py-5 ${textMutedOnSurface}`}
-                      colSpan={human ? 4 : 3}
-                      data-legion-daemons-empty
-                    >
-                      No project names a Legion daemon yet.
-                    </td>
-                  </tr>
-                ) : (
-                  legion.daemons.map((setting) => (
-                    <tr
-                      className={settingsTableRow}
-                      data-legion-daemon={setting.project}
-                      key={setting.project}
-                    >
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {setting.project}
-                      </td>
-                      <td
-                        className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}
-                        data-legion-daemon-url
-                      >
-                        {setting.state_url}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                        <Timestamp at={setting.updated_at} className={textMutedOnSurface} />
-                      </td>
-                      {human ? (
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            aria-label={`Remove the Legion daemon of ${setting.project}`}
-                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                            disabled={writing}
-                            onClick={() => removeDaemon.mutate(setting.project)}
-                            type="button"
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      ) : null}
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-6" label="Legion daemons">
+            <TableHead>
+              <TableHeadCell>Project</TableHeadCell>
+              <TableHeadCell>Daemon state URL</TableHeadCell>
+              <TableHeadCell>Changed</TableHeadCell>
+              {human ? (
+                <TableHeadCell>
+                  <span className="sr-only">Actions</span>
+                </TableHeadCell>
+              ) : null}
+            </TableHead>
+            <TableBody>
+              {legion.daemons.length === 0 ? (
+                <TableEmpty colSpan={human ? 4 : 3}>
+                  <span data-legion-daemons-empty>No project names a Legion daemon yet.</span>
+                </TableEmpty>
+              ) : (
+                legion.daemons.map((setting) => (
+                  <TableRow data-legion-daemon={setting.project} key={setting.project}>
+                    <TableCell mono tone="primary">
+                      {setting.project}
+                    </TableCell>
+                    <TableCell data-legion-daemon-url mono tone="secondary">
+                      {setting.state_url}
+                    </TableCell>
+                    <TableCell tone="secondary">
+                      <Timestamp at={setting.updated_at} className={textMutedOnSurface} />
+                    </TableCell>
+                    {human ? (
+                      <TableCell align="right">
+                        <button
+                          aria-label={`Remove the Legion daemon of ${setting.project}`}
+                          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                          disabled={writing}
+                          onClick={() => removeDaemon.mutate(setting.project)}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </TableCell>
+                    ) : null}
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
 
           {human ? (
             <form
