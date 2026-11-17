@@ -15,10 +15,10 @@
  *  system picks (BROKER_*_LISTEN_ADDR of port 0)"); `python3 -m http.server 0` prints the port it
  *  serves.
  *
- *  The row reads every tracked file and fails on each line that prints the port of a socket it
- *  closes in the same probe. A read that sees nothing passes nothing: the row fails when none of
- *  the files it read that name `getsockname` is `held-port.py`, which does, and on any file it
- *  cannot read but a tracked link to a directory and a file this checkout has deleted. */
+ *  The row reads every tracked file that names `getsockname` (`git grep -l`) and fails on each
+ *  line that prints the port of a socket it closes in the same probe. A read that sees nothing
+ *  passes nothing: the row fails when `held-port.py`, which names `getsockname`, is not among the
+ *  files it read. */
 
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
@@ -36,30 +36,20 @@ const releasedProbe =
   /bind\(\(\s*["'][^"']*["']\s*,\s*0\s*\)\)[^\n]*getsockname\(\)\[1\][^\n]*\.close\(\)/;
 
 test("no tracked file hands a server a port from a probe socket it has already closed", () => {
-  const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
+  const probing = execFileSync("git", ["grep", "-lz", "getsockname"], {
+    cwd: root,
+    encoding: "utf8",
+  })
     .split("\0")
     .filter((file) => file !== "" && !file.endsWith("released-port-probe.test.ts"));
-  const hits: string[] = [];
-  const unreadable: string[] = [];
-  const probing: string[] = [];
-  for (const file of files) {
-    let text: string;
-    try {
-      text = readFileSync(join(root, file), "utf8");
-    } catch (error) {
-      // A tracked link to a directory (packages/claude-envoy/skills/*) holds no text to read, and a
-      // tracked file this checkout has deleted holds none either.
-      const code = error instanceof Error && "code" in error ? error.code : undefined;
-      if (code !== "EISDIR" && code !== "ENOENT") unreadable.push(`${file}: ${error}`);
-      continue;
-    }
-    if (!text.includes("getsockname")) continue;
-    probing.push(file);
-    text.split("\n").forEach((line, index) => {
-      if (releasedProbe.test(line)) hits.push(`${file}:${index + 1}`);
-    });
-  }
-  expect(unreadable).toEqual([]);
   expect(probing).toContain("scripts/e2e/lib/held-port.py");
+  const hits: string[] = [];
+  for (const file of probing) {
+    readFileSync(join(root, file), "utf8")
+      .split("\n")
+      .forEach((line, index) => {
+        if (releasedProbe.test(line)) hits.push(`${file}:${index + 1}`);
+      });
+  }
   expect(hits).toEqual([]);
 });

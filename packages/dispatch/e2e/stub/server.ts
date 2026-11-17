@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { listenerBootMs, type ReportingListener } from "../harness-listeners";
 import { startReporting } from "../harness-start";
 import { Supervisor } from "../local-instance-support";
-import { stubListening, stubOriginVariable } from "./origin";
+import { stubListeningLine, stubOriginVariable } from "./origin";
 import type { StubSelection } from "./selection";
 
 // No health path: `Bun.serve` returns once the server listens, and the server prints its line
@@ -27,7 +27,7 @@ const staticServer: ReportingListener = {
   bootMs: listenerBootMs,
   id: "stub-static-server",
   name: "the stubbed layer's static file server",
-  report: new RegExp(`^${stubListening} http://127\\.0\\.0\\.1:(\\d+)/ over `),
+  report: new RegExp(`^${stubListeningLine}`),
 };
 
 /** The server's supervisor while it runs. */

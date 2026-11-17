@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Server } from "bun";
 
-import { stubListening } from "../stub/origin";
+import { stubListeningLine } from "../stub/origin";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -44,7 +44,7 @@ writeFileSync(join(dist, "index.html"), "<!doctype html><title>stub-web-server.t
 afterAll(() => rmSync(dist, { force: true, recursive: true }));
 
 /** The line the static file server prints once it serves. */
-const listening = new RegExp(`${stubListening} http://127\\.0\\.0\\.1:(\\d+)/ over (.+)`, "g");
+const listening = new RegExp(stubListeningLine, "g");
 
 interface Run {
   readonly code: number;

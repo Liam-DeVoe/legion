@@ -18,9 +18,14 @@
 export const stubOriginVariable = "DISPATCH_E2E_STUB_ORIGIN";
 
 /** How the static file server's listening line begins: e2e/stub/static-server.ts prints it, then
- *  its URL and the directory it serves, and e2e/stub/server.ts reads the port out of that URL. It
- *  holds no character that a regular expression treats as special. */
+ *  its URL and the directory it serves. It holds no character that a regular expression treats
+ *  as special. */
 export const stubListening = "dispatch stub static server: listening";
+
+/** The whole listening line as a regular expression's source, which e2e/stub/server.ts and
+ *  e2e/__tests__/stub-web-server.test.ts read the line with: group 1 is the port, group 2 the
+ *  directory served. */
+export const stubListeningLine = `${stubListening} http://127\\.0\\.0\\.1:(\\d+)/ over (.+)`;
 
 /** The stubbed layer's origin. Before `globalSetup` has started the server - the config's first
  *  evaluation, in Playwright's runner, where no row runs - it answers port 0, as `e2e/api.ts`'s

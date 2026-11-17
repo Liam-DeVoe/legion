@@ -91,15 +91,7 @@ func TestAFrontRelaysToWhereverItsServerListensAndClosesWhileItListensNowhere(t 
 		address = to
 		mu.Unlock()
 	}
-	dial := func() net.Conn {
-		t.Helper()
-		conn, err := net.DialTimeout("tcp", front.Addr(), time.Second)
-		if err != nil {
-			t.Fatalf("dial the front at %s: %v", front.Addr(), err)
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		return conn
-	}
+	dial := func() net.Conn { return dialFront(t, front) }
 
 	readsEOF(t, dial(), "a connection while the front names no server")
 
@@ -124,6 +116,17 @@ func TestAFrontRelaysToWhereverItsServerListensAndClosesWhileItListensNowhere(t 
 	readsEOF(t, dial(), "a connection once the front names no server again")
 }
 
+// dialFront connects to the front's address within a second, for the test's life.
+func dialFront(t *testing.T, front *Front) net.Conn {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", front.Addr(), time.Second)
+	if err != nil {
+		t.Fatalf("dial the front at %s: %v", front.Addr(), err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
 // A connection whose target the front read just before its caller stopped the target and then the
 // server is relayed nowhere: another program that binds the port the server released in the
 // meantime gets no byte of the client's. The target below makes that whole stop, and the other
@@ -146,11 +149,7 @@ func TestAFrontRelaysNothingToThePortItsServerReleasedAfterItReadTheTarget(t *te
 		rival, rivalErr = net.Listen("tcp", released)
 		return released, nil
 	})
-	conn, err := net.DialTimeout("tcp", front.Addr(), time.Second)
-	if err != nil {
-		t.Fatalf("dial the front at %s: %v", front.Addr(), err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
+	conn := dialFront(t, front)
 	if _, err := conn.Write([]byte("for the server")); err != nil {
 		t.Fatalf("write to the front: %v", err)
 	}
