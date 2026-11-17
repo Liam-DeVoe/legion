@@ -764,7 +764,11 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		if err != nil {
 			return 0, err
 		}
-		if err := e.startStep(ctx, tx, issue, agent); err != nil {
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return 0, err
+		}
+		if err := e.startStep(ctx, tx, issue, w, agent); err != nil {
 			return 0, err
 		}
 	}

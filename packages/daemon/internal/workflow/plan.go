@@ -46,15 +46,16 @@ func stepWork(p phase.Phase) (role, typ string, ok bool) {
 // stepIn is the step phase p runs as a step of the task default whose steps are steps: the place
 // its count of starts is kept under, its place in the task (from 1 for a step, 0 for a retro or a
 // merge, which no plan names, so the kind tells those two apart), its role and its type ("" for a
-// retro or a merge). A working phase's step is the first step of steps whose role works it, at one
-// plus its index. A phase no step of steps works, and a phase that runs no step — admitted,
-// awaiting a person, held, done — answers ok false.
+// retro or a merge, whose role stepOfWalk names for every task). A working phase's step is the
+// first step of steps whose role works it, at one plus its index. A phase no step of steps works,
+// and a phase that runs no step — admitted, awaiting a person, held, done — answers ok false.
 func stepIn(steps []string, p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
 	switch p {
-	case phase.Retro:
-		return record.StepPlace{Task: defaultTask, Kind: "retro"}, 0, "implementer", "", true
-	case phase.Merging:
-		return record.StepPlace{Task: defaultTask, Kind: "merge"}, 0, "merger", "", true
+	case phase.Retro, phase.Merging:
+		act, _ := Walk{}.PlaceOf(p)
+		var kind string
+		step, kind, role, typ, ok = stepOfWalk(Walk{}, act)
+		return record.StepPlace{Task: defaultTask, Kind: kind}, step, role, typ, ok
 	}
 	role, typ, ok = stepWork(p)
 	if !ok {
@@ -201,16 +202,21 @@ func describeVersion(version record.PlanVersion) string {
 // rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in
 // the transaction of the completion that ended the retro: a step record row whose id is the id of
 // the retro's latest run (StepID, from the count of its starts, which the retro's end left as it
-// was), carrying every identity field the run's start and end carry, the agent its start named
-// among them, so the write makes the record where neither has landed yet, and the rating and its
-// reason. It carries no moment and no result, which are the end's. Dispatch sets each field once,
-// so the end and the rating merge in either order. A record key that is no issue key writes nothing
-// (recordsSteps).
+// was), at the retro's place of the run's walk (stepAt: its task's retro for a run with plan rows,
+// the task default's for one with none), carrying every identity field the run's start and end
+// carry, the agent its start named among them, so the write makes the record where neither has
+// landed yet, and the rating and its reason. It carries no moment and no result, which are the
+// end's. Dispatch sets each field once, so the end and the rating merge in either order. A record
+// key that is no issue key writes nothing (recordsSteps).
 func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating int, reason string) error {
-	place, step, role, typ, _ := stepOf(phase.Retro)
 	if !recordsSteps(issue) {
 		return nil
 	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	place, step, role, typ, _ := stepAt(w, phase.Retro)
 	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
 	if err != nil {
 		return err

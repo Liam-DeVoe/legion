@@ -1584,7 +1584,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if w.Stored && returnsWork(trigger) && target == "" {
 		to, found := w.returnTarget(issue.Phase)
 		if !found {
-			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(trigger, issue.Phase, "", handoff))
+			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue.Phase, "", handoff))
 		}
 		if row, ok = w.row(issue.Phase, trigger, to, snapshot); !ok {
 			return fmt.Errorf("return the work of %s from %s to %s: its line %v holds no such return", issue.Key, issue.Phase, to, w.Line)
@@ -1642,7 +1642,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
 	// and before the start below writes the step it moves into.
-	if err := e.endStep(ctx, tx, issue, endOfTransition(trigger, issue.Phase, row.To, handoff)); err != nil {
+	if err := e.endStep(ctx, tx, issue, endOfTransition(w, trigger, issue.Phase, row.To, handoff)); err != nil {
 		return err
 	}
 	from := issue.Phase
@@ -1722,7 +1722,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		// The retro starts when the last issue beneath leaves (startHeldRetro), and nothing here.
 	case mergedAlready:
 		// The merge's step starts all the same, run by nobody, and the close ends it.
-		if err := e.startStep(ctx, tx, issue, ""); err != nil {
+		if err := e.startStep(ctx, tx, issue, w, ""); err != nil {
 			return err
 		}
 	case row.To == phase.Accepting && recordsSteps(issue):
@@ -1732,7 +1732,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err != nil {
 			return err
 		}
-		if err := e.startStep(ctx, tx, issue, architect); err != nil {
+		if err := e.startStep(ctx, tx, issue, w, architect); err != nil {
 			return err
 		}
 	default:

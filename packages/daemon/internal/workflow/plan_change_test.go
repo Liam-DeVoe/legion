@@ -612,6 +612,22 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		if got := len(hookPrompts(t, pool)); got != prompts {
 			t.Fatalf("version 1 fired %d hook prompts, want none: no step failed", got-prompts)
 		}
+		// The start of a's step 1 is counted at a's own place and recorded as a's: one start of
+		// a/step/1, none of a/step/2, beside the planner's start of default/step/1 the gate's
+		// opening counted.
+		if got, want := stepStartCounts(t, pool, key), []string{"a/step/1=1", "default/step/1=1"}; !slices.Equal(got, want) {
+			t.Fatalf("the starts of %s after version 1 = %v, want %v", key, got, want)
+		}
+		var startsOfA []record.StepRecord
+		for _, write := range stepWrites(t, pool, key) {
+			if write.Task == "a" && isStart(write) {
+				startsOfA = append(startsOfA, write)
+			}
+		}
+		if len(startsOfA) != 1 || startsOfA[0].Kind != record.PlaceStep || startsOfA[0].Step != 1 || startsOfA[0].Role != "implementer" ||
+			startsOfA[0].Type != "implementation" || startsOfA[0].ID != StepID(key, gen, "a", record.PlaceStep, 1, 1) {
+			t.Fatalf("the start records of task a = %+v, want one, of step 1 (implementer, implementation) at attempt 1", startsOfA)
+		}
 	})
 
 	t.Run("the twin: an issue with no plan rows in planning takes no plan", func(t *testing.T) {
