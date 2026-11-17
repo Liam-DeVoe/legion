@@ -39,7 +39,7 @@ import {
   MARKER_MAX_AGE_MS,
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
-import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
+import { brokerTokenFor, forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
@@ -15323,6 +15323,73 @@ console.log(JSON.stringify(args));
         }
       }, 20_000);
 
+      // The window between the accept and the reply: the host leaves while the command runs, and
+      // the move's pass runs to its end before the command does. The session the message was
+      // addressed to is one this process has left by then, and the pass forgets the broker client
+      // of each such session once its role move has run (`leftSessions`); the reply, which signs
+      // as that session, must still go out on the token the accept traded for, rather than trade
+      // again under a session this process no longer runs.
+      test("trades once for the addressed session when the host leaves while its command runs", async () => {
+        const broker = stubBroker("shell-left-while-running");
+        const other = otherSessionDirectory();
+        const gate = mkdtempSync(join(tmpdir(), "envoy-shell-gate-"));
+        workDirectories.push(gate);
+        const started = join(gate, "started");
+        const go = join(gate, "go");
+        try {
+          const { agent, fixture, replied, replies } = await bootShellSession(
+            "shell-command-broker-left-while-running",
+            {
+              accept: () => ({
+                accepted: true,
+                body: `!touch '${started}'; while [ ! -e '${go}' ]; do sleep 0.02; done; printf hi`,
+              }),
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+            }
+          );
+          broker.watch();
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-broker-left-while-running"));
+          // The command is running: the host leaves, and the move's pass runs to its end, before
+          // the command is let go.
+          while (!existsSync(started)) await Bun.sleep(10);
+          await moveHost(fixture, other);
+          writeFileSync(go, "");
+          await replied(1);
+
+          // The reply names the session the person wrote to and is signed as it.
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(broker.presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
+            {
+              signedAs: "ses_delivery",
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          // And on the one token the accept traded for.
+          expect(broker.traded).toEqual(["ses_delivery"]);
+
+          // Held only while the delivery ran: once it has ended, a later pass forgets the
+          // session's client like any other session this process left, so a call for it trades
+          // afresh. The delivery ends a few turns after its reply lands (it records the message
+          // as taken first), so passes run until one forgets it, within a bound.
+          const deliveryTrades = () => broker.traded.filter((one) => one === "ses_delivery").length;
+          for (let pass = 0; pass < 100 && deliveryTrades() === 1; pass += 1) {
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              { ...sessionContext(`ses_later_${pass}`), cwd: other }
+            );
+            await brokerTokenFor(process.env, "ses_delivery")();
+            if (deliveryTrades() === 1) await Bun.sleep(50);
+          }
+          expect(deliveryTrades()).toBe(2);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
+
       // The same credential, on an accept Dispatch answers twice. The row above moves the host
       // after its one accept attempt has gone out, so that attempt traded before the move
       // whatever resolves its session; this one moves the host while Dispatch answers the first
@@ -19693,7 +19760,7 @@ console.log(JSON.stringify(args));
     };
     const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it.
     await Bun.sleep(5_000);
@@ -19742,7 +19809,7 @@ console.log(JSON.stringify(args));
     };
     const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const starting = fixture.handlers.get("session_start")?.({}, context);
     const named = () =>
       notifications.find(({ message }) => message.includes("the trade for the session's token"));

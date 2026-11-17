@@ -1258,13 +1258,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
   };
 
-  // The sessions a Dispatch call is under way for, each with how many: such a call resolves its
-  // session's broker client and then presents that client's token, so a pass that forgot the
-  // client in between (`leftSessions`) would make the call trade again under a session this
-  // process has left. While a call holds a session the pass leaves it in `leftSessions` for the
-  // next pass; and once the last call for a session the host is no longer on ends, the session
-  // goes back into `leftSessions`, so a client a later call made for it is forgotten too, rather
-  // than kept for the life of the process.
+  // The sessions a delivery is under way for, each with how many: a delivery's Dispatch calls -
+  // the read of its body whole, the accept, the picture reads, the reply - resolve its session's
+  // broker client and present that client's token, and the work between them (a person's
+  // `!command`, a side turn, the host's run of a typed input) can outlast a move away from the
+  // session. A pass that forgot the client meanwhile (`leftSessions`) would have the next call
+  // trade again under a session this process has left. So the session a delivery is addressed to
+  // is held from the delivery's start (`deliverRelayed`) until the last work it handed off ends
+  // (`offWorker`, the shell and typed-input runners), and the pass leaves a held session in
+  // `leftSessions` for a later pass, which forgets it once nothing holds it.
   const callsUnderWay = new Map<string, number>();
   const underWay = async <T>(session: string, call: () => Promise<T>): Promise<T> => {
     callsUnderWay.set(session, (callsUnderWay.get(session) ?? 0) + 1);
@@ -1273,10 +1275,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     } finally {
       const remaining = (callsUnderWay.get(session) ?? 1) - 1;
       if (remaining > 0) callsUnderWay.set(session, remaining);
-      else {
-        callsUnderWay.delete(session);
-        if (!sessionOpen(session)) leftSessions.add(session);
-      }
+      else callsUnderWay.delete(session);
     }
   };
 
@@ -1293,25 +1292,24 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
   // reply failure.
-  const postDispatchReply = (
+  const postDispatchReply = async (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
     replySessionID: string
-  ): Promise<void> =>
-    underWay(replySessionID, async () => {
-      if (!sessionOpen(replySessionID)) {
-        logger.warn(
-          "envoy: a reply is signed as the session its message reached, which is closed",
-          { addressed: replySessionID, open: sessionID }
-        );
-      }
-      await postDeliveryReply(
-        await dispatchConfigFor(replySessionID),
-        replySessionID,
-        delivery,
-        result
-      );
-    });
+  ): Promise<void> => {
+    if (!sessionOpen(replySessionID)) {
+      logger.warn("envoy: a reply is signed as the session its message reached, which is closed", {
+        addressed: replySessionID,
+        open: sessionID,
+      });
+    }
+    await postDeliveryReply(
+      await dispatchConfigFor(replySessionID),
+      replySessionID,
+      delivery,
+      result
+    );
+  };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
   // (`src/typed-pictures.ts`).
@@ -1689,7 +1687,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         await taken();
       }
     };
-    void answer().catch((error: unknown) => {
+    // Held for the addressed session until the reply is posted (`underWay`): the command can
+    // outlast a move away from it.
+    void underWay(session, answer).catch((error: unknown) => {
       logger.warn("envoy: a person's shell command from Dispatch was not recorded as taken", {
         attempt: delivery.attempt,
         error: messageFor(error),
@@ -1738,49 +1738,53 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
     noteTypedUserTurn(noted, turn.messageId);
     notedSessionIDs.add(noted);
-    void Promise.resolve()
-      .then(() =>
-        sendUserInput(turn.body, {
-          ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
-          tag: turn.messageId,
-        })
-      )
-      .then(
-        (result) => {
-          const submitted = result.handled === "prompt" || result.handled === "skill";
-          if (submitted) {
-            // Every input handler has run: pictures never handed over never will be.
-            typedPictures.inputPassed(turn.messageId);
-            // In the host's queue from now on, unless its message was written already.
-            unwritten.turnSubmitted(turn.messageId);
-          } else {
+    // Held for the addressed session until the reply is posted (`underWay`): the host's run of
+    // the input can outlast a move away from it.
+    void underWay(replySessionID, () =>
+      Promise.resolve()
+        .then(() =>
+          sendUserInput(turn.body, {
+            ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+            tag: turn.messageId,
+          })
+        )
+        .then(
+          (result) => {
+            const submitted = result.handled === "prompt" || result.handled === "skill";
+            if (submitted) {
+              // Every input handler has run: pictures never handed over never will be.
+              typedPictures.inputPassed(turn.messageId);
+              // In the host's queue from now on, unless its message was written already.
+              unwritten.turnSubmitted(turn.messageId);
+            } else {
+              dropInjectedUserTurn(noted, turn.messageId);
+              typedPictures.withdraw(turn.messageId);
+              void unwritten.turnHandled(turn.messageId);
+            }
+            return typedInputReply(turn.body, result);
+          },
+          (error: unknown) => {
             dropInjectedUserTurn(noted, turn.messageId);
             typedPictures.withdraw(turn.messageId);
             void unwritten.turnHandled(turn.messageId);
+            return typedInputReply(turn.body, { error: messageFor(error) });
           }
-          return typedInputReply(turn.body, result);
-        },
-        (error: unknown) => {
-          dropInjectedUserTurn(noted, turn.messageId);
-          typedPictures.withdraw(turn.messageId);
-          void unwritten.turnHandled(turn.messageId);
-          return typedInputReply(turn.body, { error: messageFor(error) });
-        }
-      )
-      .then(async (reply) => {
-        // A `/model` or `/effort` has run by now: the viewer's header shows its result before the
-        // reply that names it reaches the page.
-        refreshAgentStreamSettings(hostSessionID());
-        if (reply === undefined) return;
-        await postTypedInputReply(delivery, replySessionID, reply);
-      })
-      .catch((error: unknown) => {
-        logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
-          attempt: delivery.attempt,
-          error: messageFor(error),
-          messageID: delivery.id,
-        });
-      });
+        )
+        .then(async (reply) => {
+          // A `/model` or `/effort` has run by now: the viewer's header shows its result before
+          // the reply that names it reaches the page.
+          refreshAgentStreamSettings(hostSessionID());
+          if (reply === undefined) return;
+          await postTypedInputReply(delivery, replySessionID, reply);
+        })
+        .catch((error: unknown) => {
+          logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
+            attempt: delivery.attempt,
+            error: messageFor(error),
+            messageID: delivery.id,
+          });
+        })
+    );
   };
 
   // A Dispatch actor is a person only when it has no `act`: Dispatch marks a credential that
@@ -1815,53 +1819,51 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     rendered: RenderInboundResult,
     acceptedSessionID: string
   ): Promise<AcceptedUserTurnDelivery | undefined> =>
-    underWay(acceptedSessionID, () =>
-      acceptUserTurn({
-        actorId: acceptedSessionID,
-        // Asked as the session the accept names as its actor, never as the session open here: the
-        // two halves of one accept must not name two sessions.
-        dispatch: () => timedDispatchClient(USER_TURN_ACCEPT_TIMEOUT_MS, () => acceptedSessionID),
-        handle: (key, delivery) => {
-          handledDispatchAttempts.add(key);
-          pi.appendEntry(HANDLED_ATTEMPT_ENTRY, {
+    acceptUserTurn({
+      actorId: acceptedSessionID,
+      // Asked as the session the accept names as its actor, never as the session open here: the
+      // two halves of one accept must not name two sessions.
+      dispatch: () => timedDispatchClient(USER_TURN_ACCEPT_TIMEOUT_MS, () => acceptedSessionID),
+      handle: (key, delivery) => {
+        handledDispatchAttempts.add(key);
+        pi.appendEntry(HANDLED_ATTEMPT_ENTRY, {
+          attempt: delivery.attempt,
+          message_id: delivery.id,
+        });
+        const open = hostSessionID();
+        if (open !== acceptedSessionID) {
+          logger.warn("envoy: a handled attempt was written to another session's transcript", {
+            addressed: acceptedSessionID,
             attempt: delivery.attempt,
-            message_id: delivery.id,
+            messageID: delivery.id,
+            open,
           });
-          const open = hostSessionID();
-          if (open !== acceptedSessionID) {
-            logger.warn("envoy: a handled attempt was written to another session's transcript", {
-              addressed: acceptedSessionID,
-              attempt: delivery.attempt,
-              messageID: delivery.id,
-              open,
-            });
-          }
-        },
-        handled: (key) => handledDispatchAttempts.has(key),
-        rendered,
-        warn: (refusal) => {
-          const fields = { attempt: refusal.delivery.attempt, messageID: refusal.delivery.id };
-          if (refusal.reason === "handled") {
-            logger.warn(
-              "envoy: a frame names a Dispatch attempt this session already delivered; it arrives as a card",
-              fields
-            );
-            return;
-          }
-          if (refusal.reason === "no-body") {
-            logger.warn(
-              "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
-              fields
-            );
-            return;
-          }
+        }
+      },
+      handled: (key) => handledDispatchAttempts.has(key),
+      rendered,
+      warn: (refusal) => {
+        const fields = { attempt: refusal.delivery.attempt, messageID: refusal.delivery.id };
+        if (refusal.reason === "handled") {
           logger.warn(
-            "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
-            { ...fields, error: messageFor(refusal.error) }
+            "envoy: a frame names a Dispatch attempt this session already delivered; it arrives as a card",
+            fields
           );
-        },
-      })
-    );
+          return;
+        }
+        if (refusal.reason === "no-body") {
+          logger.warn(
+            "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
+            fields
+          );
+          return;
+        }
+        logger.warn(
+          "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
+          { ...fields, error: messageFor(refusal.error) }
+        );
+      },
+    });
 
   // `session` is the session the frame is addressed to, which every answer to it names and is
   // signed as: the relay reads it off its owner, before anything here awaits, since every frame
@@ -2010,12 +2012,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       relayed.done();
     };
     // Runs a side turn or a Dispatch reply off the caller (the relay's queue), so the next frame
-    // is handed without waiting on it. One that throws is handled as a delivery that throws: its
-    // claim is released and the relay frame is done (a BTW is in the ledger already, so its
-    // redelivery would be dropped).
+    // is handed without waiting on it, held for the addressed session until it ends
+    // (`underWay`). One that throws is handled as a delivery that throws: its claim is released
+    // and the relay frame is done (a BTW is in the ledger already, so its redelivery would be
+    // dropped).
     const offWorker = (work: () => Promise<void>): void => {
       relayed.release();
-      void work().catch((error: unknown) => {
+      void underWay(session, work).catch((error: unknown) => {
         held.release();
         scrubbedConsole.warn(
           `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
@@ -2520,8 +2523,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       return;
     }
     // The relay's own session, proven open on the line above: the frame is this session's and
-    // every answer to it names that session, whatever the host does while it is delivered.
-    await deliver(owner.sessionID, frame.subject, frame.data, frame);
+    // every answer to it names that session, whatever the host does while it is delivered. The
+    // session is held from here, in the same run as that check, until the delivery and the work
+    // it hands off end (`underWay`).
+    await underWay(owner.sessionID, () =>
+      deliver(owner.sessionID, frame.subject, frame.data, frame)
+    );
   };
   // The relay of session `id`, its snapshot restored from `entries` (before any `setFollowed`),
   // and every later change of it appended to the transcript of the session it is for
@@ -3689,13 +3696,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
 
   // The sessions this process has left and still holds a broker client for: a key pair and the
   // token last traded for it (`CLIENTS`, @legion/envoy-client/broker-credential). A session goes
-  // in when the host leaves it (`noteMove`, and the pass that closes its agent subject), and when
-  // the last Dispatch call for a session the host is no longer on ends (`underWay`); it goes out
+  // in when the host leaves it (`noteMove`, and the pass that closes its agent subject) and out
   // once a pass has run its role move (`settleRole`), whether or not that move decided anything,
-  // and no Dispatch call holds it — so a process that moves between sessions all day holds one
-  // client rather than one per session it ever bound. A pass fenced before that point, or a
-  // session a call still holds, leaves its entry here for the next; a call that starts for a
-  // session already forgotten trades again under that session's name.
+  // and no delivery holds it (`underWay`) — so a process that moves between sessions all day holds
+  // one client rather than one per session it ever bound. A pass fenced before that point, or a
+  // session a delivery still holds, leaves its entry here for the next pass; a call that starts
+  // for a session already forgotten trades again under that session's name.
   const leftSessions = new Set<string>();
 
   interface PassCause {
@@ -3829,10 +3835,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       )) ?? false;
     handle.check();
     // The role move above was the last call for every session this process has left, so each
-    // one's key pair and token go now (`leftSessions`), whether or not the move decided. The
-    // session running now is never one of them: a rollback to a session this pass left behind
-    // keeps trading under it.
-    // A session a Dispatch call still holds (`underWay`) stays for the next pass.
+    // one's key pair and token go now (`leftSessions`), whether or not the move decided, but for
+    // a session a delivery still holds (`underWay`), which stays for the next pass. The session
+    // running now is never one of them: a rollback to a session this pass left behind keeps
+    // trading under it.
     leftSessions.delete(host);
     for (const other of leftSessions) {
       if (callsUnderWay.has(other)) continue;
