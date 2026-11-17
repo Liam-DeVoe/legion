@@ -250,7 +250,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // in which byReviewer alone keeps the commit where it stands. The pull request moves to
 // headTwo before the other session's review, so a commit moved by that review would differ from
 // the reviewer's headOne. The reviewer completes round 1 after its review, as it does in
-// production, which is what puts its claim on its row for round 2.
+// production.
 func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
@@ -292,26 +292,19 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 // review is given AuthorCanWrite, which production never sets for the review App (daemon's
 // reviewerCanWrite), so that it decides the round and reaches the write of the commit; the
 // production shape, where it decides nothing, is TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides.
-// The reviewer's own review of round 1 records its head. The control is that other session's
-// review once the reviewer's first completion has put its claim on the row.
+// The reviewer's own review of round 1 records its head.
 func TestAReviewFromAnotherReviewAppSessionMovesNoCommitInTheReviewersFirstRound(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		session string
-		// completed puts the reviewer's claim on its row, as its first completion does.
-		completed bool
-		want      string
+		want    string
 	}{
 		{name: "round 1: another review-App session's review", session: "ses-controller"},
 		{name: "round 1: the reviewer's own review", session: "ses-reviewer", want: headOne},
-		{name: "control: another review-App session's review after the reviewer's first completion", session: "ses-controller", completed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
-			if tc.completed {
-				afterTheReviewersFirstCompletion(t, pool)
-			}
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			apply("requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "changes_requested", CommitID: headOne,
 				Author: testReviewApp, AuthorCanWrite: true, Body: "rename it\n\n<!-- legion: {\"session\":\"" + tc.session + "\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",

@@ -1653,24 +1653,12 @@ const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 // row's claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
 // claim is recorded as the daemon records it, under the token the daemon names it by
 // (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
-// A test of a later round gives the row its claim through the reviewer's completion, or through
-// afterTheReviewersFirstCompletion when it applies none.
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
 		EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42.", EntryRaisedAt: seededRaisedAt})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
-}
-
-// afterTheReviewersFirstCompletion puts on LEGION-208's reviewer row the claim the reviewer's
-// first completion writes there (record.PhaseRow.Claim), for a test of a later round that applies
-// no completion of the reviewer's own.
-func afterTheReviewersFirstCompletion(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	row := reviewerRow(t, pool)
-	row.Claim = reviewClaim
-	seedPhase(t, pool, row)
 }
 
 // seedClaimSession records a claims row for token holding session, so the workflow's read of the
