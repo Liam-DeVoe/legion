@@ -118,6 +118,32 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	lacks(t, "merger", merger, "reported:", "Task text:", "Step 1 of", "Step 2 of")
 }
 
+// A move into a phase that starts no worker composes no task, since no worker is told one: the
+// merge of an issue with plan rows closes it, as the merge of an issue with no plan rows does,
+// though done holds no place in its task's line, which a start's task must name (standingPart).
+func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	starts := len(superviseRowsOf(t, pool, root.Key, "start"))
+
+	if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
+		t.Fatalf("the merge was refused: %+v", result.Refusal)
+	}
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done {
+		t.Fatalf("%s stands in %s after its merge, want done", root.Key, issue.Phase)
+	}
+	for _, start := range superviseRowsOf(t, pool, root.Key, "start")[starts:] {
+		if start.CheckLook == 0 {
+			t.Fatalf("the merge wrote the start %+v, want only its production check's: done starts no phase worker", start)
+		}
+	}
+}
+
 // Each earlier step of a task has its report line when a later step starts, in the two shapes in
 // which the row that holds the report is written again: a return to the implementer, whose next
 // run's report the reviewer reads, and a return by returnTo to the planner, whose new plan the

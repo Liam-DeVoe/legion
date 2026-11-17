@@ -1370,11 +1370,9 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		reviewed = reviewedPart(claim.RoleReviewer, from, reviewer)
 	}
-	at, err := e.standingPart(ctx, tx, issue)
-	if err != nil {
-		return "", err
-	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, at, record.PhaseRow{}, pr, reviewed, reason), freshSession)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, pr, reviewed, reason)
+	}, freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1654,11 +1652,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err != nil {
 			return err
 		}
-		at, err := e.standingPart(ctx, tx, issue)
-		if err != nil {
-			return err
-		}
-		if err := e.start(ctx, tx, issue, starting, task(issue, at, handoff, pr, reviewed, reason), movedBack); err != nil {
+		if err := e.start(ctx, tx, issue, starting, func(at Standing) string {
+			return task(issue, at, handoff, pr, reviewed, reason)
+		}, movedBack); err != nil {
 			return err
 		}
 	}

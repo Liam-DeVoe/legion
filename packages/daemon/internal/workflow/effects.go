@@ -321,10 +321,19 @@ const ReviewedCommitLabel = "Last reviewed commit"
 // this function's: the issue record already names the phase it moved into by the time a start
 // is made. A phase with no worker, and accepting, whose architect admission started with the
 // tree, start nobody.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
+//
+// told composes the start's task from where the work stands (standingPart), which start reads only
+// for a worker it starts: a phase that starts nobody is told no task, and done, which holds no
+// place in the line of an issue's plan, has no standing to name.
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, movedBack bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
+	at, err := e.standingPart(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	task := told(at)
 	entry, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
 	if err != nil {
 		return err
@@ -349,16 +358,21 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // the work of the entry its row already names: a claim that confirmed that entry's last task and
 // whose turn then ended holds that entry as its given one and no pending delivery, so the entry
 // test alone would decline the retry's task and relaunch the worker with no prompt
-// (supervise.Machine.queue).
-func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
+// (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
+// a worker it starts.
+func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
+	}
+	at, err := e.standingPart(ctx, tx, issue)
+	if err != nil {
+		return err
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
