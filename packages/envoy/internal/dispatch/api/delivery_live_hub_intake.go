@@ -393,17 +393,13 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 }
 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
-// table). The view's window is the one its last answer resolved, a preset's end the present; a
-// change whose rows carry no time at all (a pull request never merged, a job of a run not stored)
-// is taken as touching timeline and measures views. Pipeline lead times read only merged pull
-// requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
+// table), by the change's kind: a write of the stored facts, of an eval's rows or of a filing is
+// answered by its own arm, and every other kind is a delivery row, which moves only a view that
+// reads the delivery rows (touchedByDeliveryRow, behind that test).
 //
-// The kinds of the first switch are rows no delivery view reads, but for one: the timeline, the
+// The rows the named kinds write are rows no delivery view reads, but for one: the timeline, the
 // measures and the Pipeline read the current versions of the evals that judge or rank their
-// figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them there. Each
-// answers there, above the test that refuses every view reading no delivery row (the views those
-// kinds mark are such views, those versions aside), so none reaches the second switch, whose
-// closing `return true` would mark every delivery view with it.
+// figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -450,13 +446,21 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// Legion board reads the stored facts (legionfacts.Read) and the daemon's state; and
 		// the delivery views read the delivery rows alone.
 		return false
+	default:
+		// A delivery row. A view that reads none moves by other things: a Legion board by a read
+		// of its daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked),
+		// and an evals view by the eval kinds above.
+		return view.spec.classes().reads == viewReadsDelivery && view.touchedByDeliveryRow(change, now)
 	}
-	if view.spec.classes().reads != viewReadsDelivery {
-		// The view reads no delivery row at all: what moves a Legion board is a read of the
-		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked), and
-		// what moves an evals view is the eval kinds above.
-		return false
-	}
+}
+
+// touchedByDeliveryRow is whether a change of a delivery row can move the answer of a view that
+// reads the delivery rows. The view's window is the one its last answer resolved, a preset's end
+// the present; a change whose rows carry no time at all (a pull request never merged, a job of a
+// run not stored) is taken as touching timeline and measures views. Pipeline lead times read only
+// merged pull requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a
+// Pipeline view. A kind no arm names is taken as touching every such view.
+func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.Time) bool {
 	var times []time.Time
 	for _, t := range []*time.Time{change.TOld, change.TNew} {
 		if t != nil {

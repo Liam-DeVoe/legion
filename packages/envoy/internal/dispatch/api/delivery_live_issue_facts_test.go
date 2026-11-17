@@ -3,10 +3,15 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"math"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -219,7 +224,9 @@ const batchRows = 210
 // writeFactsBatch writes count rows of the project in one write, as one whole read does, giving
 // every row the work hours named. It answers the keys WriteProject says it changed. The rows are
 // written by hand rather than computed, so the batch a measurement counts is the batch this
-// states.
+// states. No row carries an UpdatedAt, so the write stamps each with the moment it started, as
+// every pass of the consumer stamps the rows it writes: a rewritten row's updated_at moves, which
+// is what moves the board's revision of its entry (live_frames.go's legionBoardView).
 func writeFactsBatch(t *testing.T, database *store.Store, project string, count int, hours float64, at time.Time) []string {
 	t.Helper()
 	rows := make([]legionfacts.Row, 0, count)
@@ -227,7 +234,7 @@ func writeFactsBatch(t *testing.T, database *store.Store, project string, count 
 		first := at.Add(-time.Duration(number) * time.Minute)
 		last := first.Add(time.Duration(hours * float64(time.Hour)))
 		rows = append(rows, legionfacts.Row{
-			Project: project, Issue: fmt.Sprintf("%s-%d", project, number), UpdatedAt: at,
+			Project: project, Issue: fmt.Sprintf("%s-%d", project, number),
 			ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
 				OpenedAt: at.Add(-48 * time.Hour), PhaseHours: map[string]float64{"implementing": hours},
 				WorkHours: hours, Tree: project + "-1", WorkFirstAt: &first, WorkLastAt: &last,
@@ -306,4 +313,245 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 	}
 	t.Logf("one batch: %d rows rewritten in one Write, %d delivery changes logged, %d recompute(s) of the subscribed board and 1 frame to it, carrying %d issues entries; the recompute answered %s after the quiet passed",
 		len(changed), logged, recomputes, len(delta.Maps["issues"]), took.Round(time.Millisecond))
+}
+
+// storedPrecision is how close a value a page closes at its own clock comes to the value the GET
+// route answers at that clock: the computation rounds every hours value to four decimals
+// (metrics' round), and a page closes the value the read rounded, so the two differ by at most
+// one unit of the fourth decimal.
+const storedPrecision = 1e-4
+
+// writeGrowingLegionFacts writes three open rows of seedLegionBoard's project, each closed at a
+// moment before now with the growth the computation would store: INFRA-4, the child in a turn,
+// grows its work time, its slot hours, its implementing hours and the end of its open bar, and
+// facts the board does not carry (its parked hours, its implementer's bar, its reviewer's idle
+// hours); INFRA-8, the unstarted child, grows hours in the queue column it holds none in yet; and
+// INFRA-3, the design root, stands still.
+func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time) {
+	t.Helper()
+	childAsOf, queuedAsOf, rootAsOf := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-5*time.Hour)
+	childFirst, queuedFirst := now.Add(-6*time.Hour), now.Add(-4*time.Hour)
+	rows := []legionfacts.Row{{
+		Project: "INFRA", Issue: "INFRA-4", UpdatedAt: now.Add(-2 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt:   now.Add(-9 * time.Hour),
+				PhaseHours: map[string]float64{"implementing": 3.5, "reviewing": 1.25},
+				WorkHours:  4.75, ReviewRounds: 2, Tree: "INFRA-3", TreeDepth: 1, SlotHours: 4,
+				WorkFirstAt: &childFirst, WorkLastAt: &childAsOf,
+			},
+			AsOf: childAsOf,
+			Growth: metrics.Growth{
+				"work_hours": 1, "slot_hours": 1, "phase_hours.implementing": 1, "work_last_at": 1,
+				"parked_hours": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
+			},
+		},
+	}, {
+		Project: "INFRA", Issue: "INFRA-8", UpdatedAt: now.Add(-3 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: now.Add(-7 * time.Hour), PhaseHours: map[string]float64{}, Tree: "INFRA-3", TreeDepth: 1,
+				WorkFirstAt: &queuedFirst, WorkLastAt: &queuedAsOf,
+			},
+			AsOf:   queuedAsOf,
+			Growth: metrics.Growth{"phase_hours.queue": 1},
+		},
+	}, {
+		Project: "INFRA", Issue: "INFRA-3", WaitingReason: "waiting for a child", UpdatedAt: now.Add(-4 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: now.Add(-12 * time.Hour), PhaseHours: map[string]float64{"design": 2},
+				WorkHours: 2, Root: true, Tree: "INFRA-3", SlotHours: 6,
+			},
+			AsOf: rootAsOf,
+		},
+	}}
+	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+		legionfacts.ProjectWrite{Project: "INFRA", Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the growing stored facts of INFRA: %v", err)
+	}
+}
+
+// closeLegionEntry is entry given at the clock at, as a page that holds it gives it: each value
+// that grows plus its rate times the hours from the entry's as_of to at (legionBoardGrowth).
+func closeLegionEntry(entry legionBoardFacts, at time.Time) legionBoardFacts {
+	elapsed := at.Sub(entry.AsOf)
+	closed := entry
+	closed.HoursByPhase = maps.Clone(entry.HoursByPhase)
+	for column, rate := range entry.Growth.HoursByPhase {
+		closed.HoursByPhase[column] += rate * elapsed.Hours()
+	}
+	closed.WorkHours += entry.Growth.WorkHours * elapsed.Hours()
+	closed.SlotHours += entry.Growth.SlotHours * elapsed.Hours()
+	if entry.WorkLastAt != nil {
+		moved := entry.WorkLastAt.Add(time.Duration(entry.Growth.WorkLastAt * float64(elapsed)))
+		closed.WorkLastAt = &moved
+	}
+	return closed
+}
+
+// TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves: each read closes every open row at
+// its own clock, so an open issue's grown values differ on every recompute, and the board still
+// sends an issues entry only when the stored row behind it moved. An entry carries the moment its
+// values are of and how fast each grows after it, so a page closes it at its own clock by the
+// rule the read closes the row by (legionfacts.Row.At), and the entry's revision leaves out the
+// values that grow and that moment (live_frames.go's legionBoardView).
+//
+// The snapshot is the GET route's body at the snapshot's own moment, growth and moments
+// included (k25). A recompute a minute later that no stored row moved, the sampler's next read,
+// sends the header it moved and no issues entry. A write of one row sends that one entry, whole,
+// and none of the entries that only grew. The board a page then holds, each entry closed at the
+// moment of a GET an hour later, is that GET's body to the stored precision.
+//
+// The hub's clock runs an hour behind the wall clock, which the GET route reads, so the GET is
+// later than every answer the hub sent and every growing value has grown by an hour since.
+func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
+	clock := &fakeHubClock{offset: -time.Hour}
+	rig := newClockedHubRig(t, clock)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	seeded := clock.Now()
+	seedLegionBoard(t, rig.database, "INFRA", seeded)
+	writeGrowingLegionFacts(t, rig.database, seeded)
+
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
+	snapshot := conn.snapshot(t, 5*time.Second, "b")
+	var snapped legionBoardResponse
+	if err := json.Unmarshal(snapshot.Body, &snapped); err != nil {
+		t.Fatalf("read the snapshot's body: %v", err)
+	}
+	population, err := rig.hub.server.readLegionBoard(t.Context(), "INFRA", snapped.ComputedAt)
+	if err != nil {
+		t.Fatalf("read the board at the snapshot's moment: %v", err)
+	}
+	answered, err := json.Marshal(legionBoardCompute(population, snapped.ComputedAt))
+	if err != nil {
+		t.Fatalf("encode the board at the snapshot's moment: %v", err)
+	}
+	if string(answered) != string(snapshot.Body) {
+		t.Fatalf("the snapshot differs from the GET route's body at its moment, %s:\nsnapshot: %s\nGET:      %s",
+			snapped.ComputedAt, snapshot.Body, answered)
+	}
+	wantGrowth := legionBoardGrowth{HoursByPhase: map[string]float64{"implementing": 1}, WorkHours: 1, SlotHours: 1, WorkLastAt: 1}
+	if child := snapped.Issues["INFRA-4"]; !child.AsOf.Equal(snapped.ComputedAt) || !reflect.DeepEqual(child.Growth, wantGrowth) {
+		t.Fatalf("INFRA-4's entry is of %s with the growth %+v, want the snapshot's moment %s and the growth %+v: its stored rates of the facts the entry carries alone",
+			child.AsOf, child.Growth, snapped.ComputedAt, wantGrowth)
+	}
+	standing := legionBoardGrowth{HoursByPhase: map[string]float64{}}
+	if root := snapped.Issues["INFRA-3"]; root.AsOf.Sub(seeded.Add(-5*time.Hour)).Abs() > time.Microsecond || !reflect.DeepEqual(root.Growth, standing) {
+		t.Fatalf("INFRA-3's entry is of %s with the growth %+v, want the moment its row is closed at, %s, and the growth %+v",
+			root.AsOf, root.Growth, seeded.Add(-5*time.Hour), standing)
+	}
+	rig.settle(t)
+	held := snapshot.Body
+
+	// The sampler's next read, a minute on: the header carries the read, and no stored row moved.
+	clock.Advance(time.Minute)
+	seedLegionRead(t, rig.database, "INFRA", clock.Now(), "")
+	notifyChannel(t, rig.database, legion.StateChannel, "INFRA")
+	read := conn.delta(t, 5*time.Second, "b")
+	if entries := read.Maps["issues"]; len(entries) != 0 {
+		t.Fatalf("a recompute a minute later that moved no stored row sent the issues entries %v, want none: an open entry's grown values are no change of its row",
+			slices.Sorted(maps.Keys(entries)))
+	}
+	if _, set := read.Set["header"]; !set {
+		t.Fatalf("the sampler's read sent %+v, want the header it moved", read.Set)
+	}
+	held = applyLiveDelta(t, legionBoardView, held, read)
+
+	// The root's row moves: the consumer wrote why it waits now.
+	moved := clock.Now()
+	rootRow := legionfacts.Row{
+		Project: "INFRA", Issue: "INFRA-3", WaitingReason: "blocked", UpdatedAt: moved,
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: moved.Add(-12 * time.Hour), PhaseHours: map[string]float64{"design": 2},
+				WorkHours: 2, Root: true, Tree: "INFRA-3", SlotHours: 6,
+			},
+			AsOf: moved.Add(-30 * time.Minute),
+		},
+	}
+	if _, err := legionfacts.WriteProject(t.Context(), rig.database.Pool,
+		legionfacts.ProjectWrite{Project: "INFRA", Rows: []legionfacts.Row{rootRow}, Stated: []string{"INFRA-3"}}); err != nil {
+		t.Fatalf("write INFRA-3's moved row: %v", err)
+	}
+	rig.hub.catchUpNow()
+	write := conn.delta(t, 5*time.Second, "b")
+	if sent := slices.Sorted(maps.Keys(write.Maps["issues"])); !slices.Equal(sent, []string{"INFRA-3"}) {
+		t.Fatalf("the write of INFRA-3's row sent the issues entries %v, want INFRA-3's alone", sent)
+	}
+	var whole map[string]json.RawMessage
+	if err := json.Unmarshal(write.Maps["issues"]["INFRA-3"], &whole); err != nil {
+		t.Fatalf("read INFRA-3's sent entry: %v", err)
+	}
+	fields := []string{}
+	for _, field := range liveJSONFields(reflect.TypeFor[legionBoardFacts]()) {
+		fields = append(fields, field.name)
+	}
+	if got, want := slices.Sorted(maps.Keys(whole)), slices.Sorted(slices.Values(fields)); !slices.Equal(got, want) {
+		t.Fatalf("INFRA-3's sent entry holds %v, want the whole entry %v", got, want)
+	}
+	held = applyLiveDelta(t, legionBoardView, held, write)
+
+	// An hour on, by the wall clock: every entry the page holds, closed at the GET's moment,
+	// is the GET's.
+	var page legionBoardResponse
+	if err := json.Unmarshal(held, &page); err != nil {
+		t.Fatalf("read the board the page holds: %v", err)
+	}
+	got := legionBoardOf(t, rig.handler, "INFRA")
+	if keys, want := slices.Sorted(maps.Keys(page.Issues)), slices.Sorted(maps.Keys(got.Issues)); !slices.Equal(keys, want) {
+		t.Fatalf("the page holds the entries %v and the GET answers %v", keys, want)
+	}
+	near := func(a, b float64) bool { return math.Abs(a-b) <= storedPrecision+1e-9 }
+	grows := func(entry legionBoardFacts) bool {
+		rates := entry.Growth
+		return rates.WorkHours != 0 || rates.SlotHours != 0 || rates.WorkLastAt != 0 || len(rates.HoursByPhase) != 0
+	}
+	grown := 0
+	for _, key := range slices.Sorted(maps.Keys(got.Issues)) {
+		want, holding := got.Issues[key], page.Issues[key]
+		closed := closeLegionEntry(holding, got.ComputedAt)
+		if !want.OpenedAt.Equal(closed.OpenedAt) || !reflect.DeepEqual(want.ClosedAt, closed.ClosedAt) ||
+			want.ReviewRounds != closed.ReviewRounds || want.RootKey != closed.RootKey || want.TreeDepth != closed.TreeDepth ||
+			want.WaitingReason != closed.WaitingReason || !reflect.DeepEqual(want.WorkFirstAt, closed.WorkFirstAt) ||
+			!want.UpdatedAt.Equal(closed.UpdatedAt) || !reflect.DeepEqual(want.Growth, closed.Growth) {
+			t.Errorf("%s: the page holds %+v and the GET answers %+v", key, holding, want)
+			continue
+		}
+		if !near(want.WorkHours, closed.WorkHours) || !near(want.SlotHours, closed.SlotHours) {
+			t.Errorf("%s: closed at %s the page gives %g work and %g slot hours, the GET %g and %g",
+				key, got.ComputedAt, closed.WorkHours, closed.SlotHours, want.WorkHours, want.SlotHours)
+		}
+		if !slices.Equal(slices.Sorted(maps.Keys(want.HoursByPhase)), slices.Sorted(maps.Keys(closed.HoursByPhase))) {
+			t.Errorf("%s: closed at %s the page gives hours in %v, the GET in %v", key, got.ComputedAt, closed.HoursByPhase, want.HoursByPhase)
+		}
+		for column, hours := range want.HoursByPhase {
+			if !near(hours, closed.HoursByPhase[column]) {
+				t.Errorf("%s: closed at %s the page gives %g hours in %s, the GET %g", key, got.ComputedAt, closed.HoursByPhase[column], column, hours)
+			}
+		}
+		if (want.WorkLastAt == nil) != (closed.WorkLastAt == nil) ||
+			(want.WorkLastAt != nil && want.WorkLastAt.Sub(*closed.WorkLastAt).Abs() > time.Microsecond) {
+			t.Errorf("%s: closed at %s the page's work ends %v, the GET's %v", key, got.ComputedAt, closed.WorkLastAt, want.WorkLastAt)
+		}
+		// A growing entry's values are of the GET's moment, and a standing one's of its row's.
+		wantAsOf := holding.AsOf
+		if grows(holding) {
+			grown++
+			wantAsOf = got.ComputedAt
+			if want.WorkHours == holding.WorkHours && want.SlotHours == holding.SlotHours && maps.Equal(want.HoursByPhase, holding.HoursByPhase) {
+				t.Errorf("%s grows and the GET an hour later answers it as the page holds it, %+v, so closing it proved nothing", key, want)
+			}
+		}
+		if !want.AsOf.Equal(wantAsOf) {
+			t.Errorf("%s: the GET's values are of %s, want %s", key, want.AsOf, wantAsOf)
+		}
+	}
+	if grown != 2 {
+		t.Errorf("%d of the entries grow, want INFRA-4 and INFRA-8", grown)
+	}
+	t.Logf("a recompute a minute later sent %d issues entries; a write of one row sent %v; %d entries, %d of them growing, closed at the GET's moment %s land on its values to %g",
+		len(read.Maps["issues"]), slices.Sorted(maps.Keys(write.Maps["issues"])), len(got.Issues), grown, got.ComputedAt, storedPrecision)
 }

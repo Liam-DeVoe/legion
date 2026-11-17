@@ -24985,12 +24985,19 @@
       },
       "LegionBoardFacts": {
         "properties": {
+          "as_of": {
+            "format": "date-time",
+            "type": "string"
+          },
           "closed_at": {
             "format": "date-time",
             "type": [
               "null",
               "string"
             ]
+          },
+          "growth": {
+            "$ref": "#/components/schemas/LegionBoardGrowth"
           },
           "hours_by_phase": {
             "additionalProperties": {
@@ -25057,7 +25064,42 @@
           "waiting_reason",
           "work_first_at",
           "work_last_at",
-          "updated_at"
+          "updated_at",
+          "as_of",
+          "growth"
+        ],
+        "type": "object"
+      },
+      "LegionBoardGrowth": {
+        "properties": {
+          "hours_by_phase": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "slot_hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "work_hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "work_last_at": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "hours_by_phase",
+          "work_hours",
+          "slot_hours",
+          "work_last_at"
         ],
         "type": "object"
       },

@@ -5783,7 +5783,10 @@ export interface components {
     };
     LegionBoardFacts: {
       /** Format: date-time */
+      as_of: string;
+      /** Format: date-time */
       closed_at: null | string;
+      growth: components["schemas"]["LegionBoardGrowth"];
       hours_by_phase: {
         [key: string]: number;
       } | null;
@@ -5803,6 +5806,17 @@ export interface components {
       work_hours: number;
       /** Format: date-time */
       work_last_at: null | string;
+    };
+    LegionBoardGrowth: {
+      hours_by_phase: {
+        [key: string]: number;
+      } | null;
+      /** Format: double */
+      slot_hours: number;
+      /** Format: double */
+      work_hours: number;
+      /** Format: double */
+      work_last_at: number;
     };
     LegionBoardHeader: {
       facts_cursor_age_seconds: null | number;
@@ -15131,6 +15145,7 @@ export type LeadTime = components["schemas"]["LeadTime"];
 export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
 export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardFacts = components["schemas"]["LegionBoardFacts"];
+export type LegionBoardGrowth = components["schemas"]["LegionBoardGrowth"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];

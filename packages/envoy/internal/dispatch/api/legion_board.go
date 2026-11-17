@@ -43,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -118,6 +119,11 @@ type legionBoardResponse struct {
 //     until it has some; the last is the moment of the read while a bar of it is still open.
 //   - UpdatedAt is when its row was written, which the header's facts_updated_at is the oldest
 //     of.
+//   - AsOf is the moment the values are of: the moment of the read for a row that grows, which
+//     the read grew them to, and the moment the row is closed at for one that does not grow.
+//   - Growth is how fast each value that grows after AsOf grows (legionBoardGrowth), so a holder
+//     of the entry gives each at its own clock as the read does: the value plus its rate times the
+//     hours from AsOf to that clock (legionfacts.Row.At).
 type legionBoardFacts struct {
 	OpenedAt      time.Time          `json:"opened_at"`
 	ClosedAt      *time.Time         `json:"closed_at"`
@@ -131,6 +137,47 @@ type legionBoardFacts struct {
 	WorkFirstAt   *time.Time         `json:"work_first_at"`
 	WorkLastAt    *time.Time         `json:"work_last_at"`
 	UpdatedAt     time.Time          `json:"updated_at"`
+	AsOf          time.Time          `json:"as_of"`
+	Growth        legionBoardGrowth  `json:"growth"`
+}
+
+// legionBoardGrowth is how fast each value of an entry grows after its as_of, by the entry's own
+// field names: hours an hour for the work time, the slot hours and the hours of each column (a
+// column whose hours stand still left out), and for the last moment of measured work how fast it
+// moves with the clock, 1 while a bar is still open and 0 where it stands. Every rate is 0, and
+// HoursByPhase empty, for a row that does not grow: a closed issue's, but for a slot it never
+// gave up, and an open issue's whose every part stands still.
+type legionBoardGrowth struct {
+	HoursByPhase map[string]float64 `json:"hours_by_phase"`
+	WorkHours    float64            `json:"work_hours"`
+	SlotHours    float64            `json:"slot_hours"`
+	WorkLastAt   float64            `json:"work_last_at"`
+}
+
+// legionBoardGrowthOf is a stored row's growth in the entry's own names. metrics.Growth keys the
+// work time, the slot hours and the last moment of work by those same names and the hours of a
+// column by `phase_hours.` and the column id (legion/metrics/grow.go). Its other keys name facts
+// the entry does not carry - the bars, the idle hours by role, the parked, queued and slot-wait
+// hours, the hours after the first review - and are left out, as is work_first_at: past the
+// moment a row is closed at, the end of a bar still open is the one moment that moves
+// (legion/metrics/closed.go), so the computation gives the first moment of work no rate.
+func legionBoardGrowthOf(growth metrics.Growth) legionBoardGrowth {
+	rates := legionBoardGrowth{HoursByPhase: map[string]float64{}}
+	for name, rate := range growth {
+		switch name {
+		case "work_hours":
+			rates.WorkHours = rate
+		case "slot_hours":
+			rates.SlotHours = rate
+		case "work_last_at":
+			rates.WorkLastAt = rate
+		default:
+			if column, phase := strings.CutPrefix(name, "phase_hours."); phase {
+				rates.HoursByPhase[column] = rate
+			}
+		}
+	}
+	return rates
 }
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
@@ -805,7 +852,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 			WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds, RootKey: row.Tree,
 			TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
 			WorkFirstAt: legionFactTime(row.WorkFirstAt), WorkLastAt: legionFactTime(row.WorkLastAt),
-			UpdatedAt: row.UpdatedAt.UTC(),
+			UpdatedAt: row.UpdatedAt.UTC(), AsOf: row.AsOf.UTC(), Growth: legionBoardGrowthOf(row.Growth),
 		}
 		if header.FactsUpdatedAt == nil || row.UpdatedAt.Before(*header.FactsUpdatedAt) {
 			at := row.UpdatedAt.UTC()

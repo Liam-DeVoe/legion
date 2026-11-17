@@ -173,7 +173,10 @@ Dispatch answers a delivery view with:
   it `remove`s: the timeline's pull requests, runs and session groups, and an evals view's evals,
   by eval id), the map entries and counts that changed (`maps` and `counts`, a legion view's
   issues by key among the maps, null for a key that left), and the fields replaced whole (`set`,
-  which carries `window` whenever it moved, never alone);
+  which carries `window` whenever it moved, never alone). A legion view sends an issue's entry
+  only when its stored row moved, not each time an open issue's hours grow: the entry carries
+  `as_of` and `growth`, so a page gives each growing value at its own clock as value plus rate
+  times the hours since `as_of`, as the GET route does at its read;
 - `freshness`, the whole freshness verdict - the `freshness` object a timeline, measures or
   pipeline snapshot carries (the last event, the last reconcile, its error and how many pull
   requests cannot be fetched) and the
