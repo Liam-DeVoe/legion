@@ -341,9 +341,11 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
-	// role is every forward the role's holder received, in arrival order.
+	// role is every forward the role's holder received, in arrival order, and holder its
+	// subscription, which settle reads to its end (orderedSubscription.settle).
 	roleMu sync.Mutex
 	role   []int64
+	holder *orderedSubscription
 }
 
 // outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
@@ -444,17 +446,12 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
-	if _, err := reader.Subscribe(contracts.AgentSubject(throughputHolder), func(message *natsgo.Msg) {
+	rig.holder = subscribeInOrder(t, reader, client.Connection(), contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg, _ <-chan struct{}) {
 		id := envelopeEventID(t, message.Data)
 		rig.roleMu.Lock()
 		rig.role = append(rig.role, id)
 		rig.roleMu.Unlock()
-	}); err != nil {
-		t.Fatalf("subscribe the role's holder: %v", err)
-	}
-	if err := reader.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
+	})
 	registry, err := envoystore.Open(reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
@@ -625,6 +622,12 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					if ownerSubjects != issues {
 						t.Fatalf("the stream holds %d issue subjects, want %d", ownerSubjects, issues)
 					}
+					// Each event is marked published once the stream acknowledged its sends, and the
+					// holder is handed its forward on a connection of its own, which can take the
+					// last of them just after that acknowledgement on a busy machine: the holder is
+					// read once it has taken every forward the outbox sent it (orderedSubscription.settle).
+					rig.holder.settle(t)
+					routed := load.routed(count)
 					roles := rig.roleArrivals()
 					arrivals := map[string][]int64{}
 					for _, id := range roles {
@@ -636,11 +639,11 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 						}
 					}
 					logDestinations(t, name, seeded, all)
-					if want := load.stream(count) + load.routed(count); len(all) != want {
+					if want := load.stream(count) + routed; len(all) != want {
 						t.Fatalf("the stream holds %d messages, want %d", len(all), want)
 					}
-					if want := load.routed(count); len(roles) != want {
-						t.Fatalf("the role's holder received %d forwards, want one per routed event: %d", len(roles), want)
+					if len(roles) != routed {
+						t.Fatalf("the role's holder received %d forwards, want one per routed event: %d", len(roles), routed)
 					}
 				})
 			}

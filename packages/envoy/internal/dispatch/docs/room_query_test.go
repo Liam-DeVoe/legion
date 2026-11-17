@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -86,13 +87,12 @@ func awaitingOnly(t *testing.T, service *Service, want ...string) {
 	})
 }
 
-// captureWarnings sends every log line at WARN and above to the returned log until the test ends.
+// captureWarnings sends every log line at WARN and above to the returned log until the test ends,
+// and gives the log package its output back then (logtest.SetDefault).
 func captureWarnings(t *testing.T) *storetest.LockedLog {
 	t.Helper()
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	return logs
 }
 
@@ -315,6 +315,9 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // task A armed when it sent the query; then it returns task B's answer.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	pair, clock := newQueryProcesses(t)
+	// Production's wait, which this test holds: the pair's own is answerWaitPastEveryAnswer
+	// (newSeededProcessPair).
+	pair.taskA.roomQueries.wait = roomQueryWait
 	silent := uuid.NewString()
 	conn, err := pair.database.Pool.Dedicated(context.Background(), ListenerApplicationPrefix+silent)
 	if err != nil {

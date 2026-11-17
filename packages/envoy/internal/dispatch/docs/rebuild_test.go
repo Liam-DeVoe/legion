@@ -580,6 +580,10 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	// Task A's holds query waits for task B's answer for answerWaitPastEveryAnswer, not
+	// production's roomQueryWait, as the process pair's do (newSeededProcessPair): the refusal is
+	// what this test reads.
+	taskA.roomQueries.wait = answerWaitPastEveryAnswer
 	seedServiceText(t, taskA, artifactID, "before\n")
 	runRoomSync(t, newRoomSync(taskA))
 	runRoomSync(t, newRoomSync(taskB))

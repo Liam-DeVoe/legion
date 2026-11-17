@@ -100,12 +100,11 @@ func databaseAge(t *testing.T, ctx context.Context, pool *store.Pool, query stri
 // justNow reports whether age is a moment the database's clock reached within the last minute.
 func justNow(age *time.Duration) bool { return age != nil && *age >= 0 && *age < time.Minute }
 
-// listenConn opens a connection of its own, outside the pool, to the test's database
-// (deliveryTestPool), listening on channel.
-func listenConn(t *testing.T, ctx context.Context, channel string) *pgx.Conn {
+// listenConn opens a connection of its own to pool's database, outside the pool, listening on
+// channel.
+func listenConn(t *testing.T, ctx context.Context, pool *store.Pool, channel string) *pgx.Conn {
 	t.Helper()
-	pool, _ := deliveryTestPool(t)
-	conn, err := pgx.Connect(ctx, pool.Config().ConnString())
+	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
 	if err != nil {
 		t.Fatalf("connect a listener: %v", err)
 	}
@@ -276,7 +275,7 @@ type freshnessPayload struct {
 func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	conn := listenConn(t, ctx, "delivery_freshness")
+	conn := listenConn(t, ctx, pool, "delivery_freshness")
 	before := latestChange(t, ctx, pool)
 	reconciledAt := time.Date(2026, 9, 3, 12, 1, 0, 0, time.UTC)
 	// eventAt is the database's time RecordEventAt stamps, read from its notification.
@@ -390,7 +389,7 @@ func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
 func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	conn := listenConn(t, ctx, "delivery_freshness")
+	conn := listenConn(t, ctx, pool, "delivery_freshness")
 	for name, message := range map[string]string{
 		"control characters":   strings.Repeat("\x01", 5000),
 		"four-byte characters": strings.Repeat("\U0001F600", 5000),
@@ -409,7 +408,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 // commits, and not before.
 func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	conn := listenConn(t, ctx, "delivery_changes")
+	conn := listenConn(t, ctx, pool, "delivery_changes")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)

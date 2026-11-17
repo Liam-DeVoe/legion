@@ -130,7 +130,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 		t.Fatalf("the copy forwarded to the session whose own mention it repeats carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 			handed[0].key)
 	}
-	if want := bus.ForwardMsgID(secondKey, contracts.AgentSubject(second)); handed[0].msgID != want {
+	if want := bus.ForwardMsgID(secondKey, contracts.LegacyAgentSubject(second)); handed[0].msgID != want {
 		t.Fatalf("the forward was made under %q, want %q, so that the outbox's own handover of this copy and the drain's name one message",
 			handed[0].msgID, want)
 	}
@@ -138,8 +138,8 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	// under one key, so the comment is shown once. A marker of this test's own, published on
 	// that subject once the handover's forward has been, reaches the subscription behind every
 	// frame the handover published, so the keys before it are the whole of what the host saw.
-	marker := listenerTestEnvelope(contracts.AgentSubject(second), "second-mention-marker")
-	if err := harness.client.Conn.Publish(contracts.AgentSubject(second), marshalListenerEnvelope(t, marker)); err != nil {
+	marker := listenerTestEnvelope(contracts.LegacyAgentSubject(second), "second-mention-marker")
+	if err := harness.client.Conn.Publish(contracts.LegacyAgentSubject(second), marshalListenerEnvelope(t, marker)); err != nil {
 		t.Fatalf("publish the marker on %s's agent subject: %v", second, err)
 	}
 	if err := harness.client.Conn.Flush(); err != nil {

@@ -412,6 +412,10 @@ type server struct {
 	// (gateBoundPastEveryRead in newRegisteredTestServer), since production's 500 ms is a bound a
 	// loaded machine can miss.
 	duplicateBound time.Duration
+	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
+	// until the bound ends it, so the bound and nothing else decides that case.
+	beforeDuplicateRead func(ctx context.Context) error
 	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
 	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
 	// place under the id a create will write, as a refusal whose insert landed but whose answer the
@@ -611,11 +615,12 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, then for the hub's
-// goroutines, the relay's and the test hooks' listener. The detached work comes first because it
-// is the only work lifetime does not stop: a keyed handler is bounded by keyedHandlerLimit, a
-// delivery by the listener client's receipt timeout per recipient, and each reads and writes
-// through the database pool this wait is holding open for it.
+// its client, then for every live socket and the subscriptions it ran, serving none that opens from
+// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
+// listener. The detached work comes first because it is the only work lifetime does not stop: a
+// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
+// timeout per recipient, and each reads and writes through the database pool this wait is holding
+// open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()

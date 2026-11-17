@@ -45,6 +45,13 @@ var deliveryPools = struct {
 // with the test's context; a test that needs it skips (not fails) when DISPATCH_TEST_DATABASE_URL
 // is unset, matching every other Postgres-backed test in this module's convention. A second call
 // in one test returns the same database, and a subtest gets one of its own.
+//
+// The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
+// CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
+// database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
+// and on a shared machine that database is the server's postgres, where every other package's
+// harness creates and drops its databases, so another package's create database could hold the
+// build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	deliveryPools.Lock()

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1256,9 +1257,7 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 		deadLetter   = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
 	)
 	var logged lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -1348,9 +1347,7 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 		deadLetter   = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
 	)
 	var logged lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -1497,9 +1494,7 @@ func TestAFallbackPassThatIsStoppingClaimsNoRow(t *testing.T) {
 	}
 	published := len(publisher.all())
 	var logged lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	stopping, stop := context.WithCancel(ctx)
 	stop()

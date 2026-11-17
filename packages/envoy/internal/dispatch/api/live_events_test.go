@@ -15,6 +15,7 @@ import (
 	gws "github.com/gorilla/websocket"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -521,6 +522,13 @@ func (stream *gatedStream) next(t *testing.T, what string) any {
 	return testwait.Receive(t, what, stream.frames)
 }
 
+// feedNext is the next frame an events subscription on database's server sent: a frame of the
+// event feed, which stands behind that server's event horizon, so the wait is the horizon's.
+func (stream *gatedStream) feedNext(t *testing.T, database *store.Store, what string) any {
+	t.Helper()
+	return horizontest.WaitInProcess(t, what, stream.frames, database)
+}
+
 // A subscription the relay drops, because it fell more than the relay holds for one subscriber
 // behind, is caught up from the event log when what it missed is within the replay's bounds: it
 // sends what its channel still held and what it missed, each event once and in id order, and goes
@@ -551,11 +559,11 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 
 	// Once there is room again the subscription sends what it held and what it caught up on.
 	close(stream.gate)
-	if start, ok := stream.next(t, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
+	if start, ok := stream.feedNext(t, database, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
 		t.Fatalf("first frame = %+v, want feed's events_start from 0", start)
 	}
 	for last := int64(0); last < head; {
-		frame, ok := stream.next(t, "feed's events").(LiveEventFrame)
+		frame, ok := stream.feedNext(t, database, "feed's events").(LiveEventFrame)
 		if !ok {
 			t.Fatalf("frame = %+v, want feed's next event rather than its end: what it missed is within the replay's bounds", frame)
 		}
@@ -568,7 +576,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 
 	// And it goes on live on the subscription it made instead of the dropped one.
 	renameIssue(t, handler, issue, "Renamed after the drop")
-	frame, ok := stream.next(t, "the rename").(LiveEventFrame)
+	frame, ok := stream.feedNext(t, database, "the rename").(LiveEventFrame)
 	if !ok || !strings.Contains(string(frame.Event), "Renamed after the drop") {
 		t.Fatalf("the caught-up subscription was sent %+v, want the rename committed after the drop", frame)
 	}
@@ -599,12 +607,12 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	})
 
 	close(stream.gate)
-	if start, ok := stream.next(t, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
+	if start, ok := stream.feedNext(t, database, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
 		t.Fatalf("first frame = %+v, want feed's events_start from 0", start)
 	}
 	var last int64
 	for ended := false; !ended; {
-		switch frame := stream.next(t, "the end of feed").(type) {
+		switch frame := stream.feedNext(t, database, "the end of feed").(type) {
 		case LiveEventFrame:
 			id := mustEventFrameID(t, frame)
 			if frame.Sub != "feed" || frame.ID != strconv.FormatInt(id, 10) || id <= last {
@@ -632,12 +640,12 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	close(again.gate)
 	resubscribed := served.startEventsSubscription(ctx, again, "feed", new(last))
 	t.Cleanup(resubscribed.stop)
-	start, ok := again.next(t, "the resubscribe's events_start").(LiveEventsStart)
+	start, ok := again.feedNext(t, database, "the resubscribe's events_start").(LiveEventsStart)
 	if since, err := strconv.ParseInt(start.Since, 10, 64); !ok || err != nil || since < last || start.ReplayComplete {
 		t.Fatalf("the resubscribe's first frame = %+v, want its events_start at or above %d, not complete", start, last)
 	}
 	renameIssue(t, handler, issue, "Renamed after the drop")
-	frame, ok := again.next(t, "the rename").(LiveEventFrame)
+	frame, ok := again.feedNext(t, database, "the rename").(LiveEventFrame)
 	if !ok || !strings.Contains(string(frame.Event), "Renamed after the drop") {
 		t.Fatalf("the resubscribe was sent %+v, want the rename committed after the drop", frame)
 	}
@@ -694,12 +702,12 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	renameIssue(t, handler, issue, "Renamed during the catch-up")
 	head := eventHead(t, database)
 	close(stream.gate)
-	if start, ok := stream.next(t, "feed's events_start").(LiveEventsStart); !ok || start.Since != "0" {
+	if start, ok := stream.feedNext(t, database, "feed's events_start").(LiveEventsStart); !ok || start.Since != "0" {
 		t.Fatalf("first frame = %+v, want feed's events_start from 0", start)
 	}
 	seen := map[int64]bool{}
 	for last := int64(0); last < head; {
-		frame, ok := stream.next(t, "feed's events").(LiveEventFrame)
+		frame, ok := stream.feedNext(t, database, "feed's events").(LiveEventFrame)
 		if !ok {
 			t.Fatalf("frame = %+v, want feed's next event", frame)
 		}

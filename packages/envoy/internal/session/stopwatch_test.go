@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestStopWatchIsFinal(t *testing.T) {
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
 	registry.StopWatch()
-	if err := registry.Rewatch(conn); err != nil {
+	if err := registry.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch after StopWatch: %v", err)
 	}
 	if err := conn.Drain(); err != nil {

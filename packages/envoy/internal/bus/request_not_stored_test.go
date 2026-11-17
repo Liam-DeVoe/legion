@@ -93,7 +93,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		}
 	}
 
-	holder := contracts.AgentSubject("ses_forward_stored")
+	holder := contracts.LegacyAgentSubject("ses_forward_stored")
 	item := forward("stored")
 	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder)}
 	refused(1, holder, item, opts)
@@ -113,7 +113,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		t.Fatalf("the forward sent again left %d copies on %s, want 1", n, holder)
 	}
 
-	fencedHolder := contracts.AgentSubject("ses_forward_fenced")
+	fencedHolder := contracts.LegacyAgentSubject("ses_forward_fenced")
 	fenced := forward("fenced")
 	fencedOpts := RequestOptions{MsgID: ForwardMsgID(fenced.DedupeKey, fencedHolder)}
 	fencedWindow := client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })

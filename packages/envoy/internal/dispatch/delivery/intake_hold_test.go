@@ -788,7 +788,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	// holds registrations for (internal/bus/recovery.go), so this one says when the holder's
 	// client has sent its subscriptions again.
 	reconnected := make(chan struct{}, 8)
-	holder.client.AddReconnectHook(func(*natsgo.Conn) error {
+	holder.client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		reconnected <- struct{}{}
 		return nil
 	})

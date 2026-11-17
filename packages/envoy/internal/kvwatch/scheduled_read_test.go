@@ -222,7 +222,7 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 		w.Disconnected()
 		scheduledReadsAre(t, timers, 3, false, "after a disconnect")
 		ending, _ := bucket(t, uri)
-		if err := w.Rewatch(ending); err != nil {
+		if err := w.Rewatch(context.Background(), ending); err != nil {
 			t.Fatalf("the rewatch after the disconnect: %v", err)
 		}
 		testwait.Eventually(t, "the read after the disconnect to complete", w.Following)
@@ -232,7 +232,7 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 		ending.Close()
 		testwait.Eventually(t, "the watcher's own end", func() bool { return w.Err() != nil })
 		scheduledReadsAre(t, timers, 4, false, "after the watcher ended on its own")
-		if err := w.Rewatch(conn); err != nil {
+		if err := w.Rewatch(context.Background(), conn); err != nil {
 			t.Fatalf("the rewatch after the watcher's end: %v", err)
 		}
 		testwait.Eventually(t, "the read after the watcher's end to complete", w.Following)

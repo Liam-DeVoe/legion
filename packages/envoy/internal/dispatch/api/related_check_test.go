@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -165,6 +166,38 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	return handler, database, directServer(deps)
 }
 
+// answeredBeforeTheBinaryDeadline runs run on a goroutine of its own and answers what it answers,
+// through the shared wait: code that never ends what run waits on fails the case by name at the
+// test binary's deadline (testwait.Receive). run must not call t's FailNow family, which only the
+// case's own goroutine may.
+func answeredBeforeTheBinaryDeadline[T any](t *testing.T, what string, run func() T) T {
+	t.Helper()
+	answered := make(chan T, 1)
+	go func() { answered <- run() }()
+	return testwait.Receive(t, what+" to answer", answered)
+}
+
+// contextEmbedder is fakeEmbedder recording the context of each call: what bounds the check's
+// embedding, which is the meaning deadline (embedQuery's own bound is no earlier). On a fake clock
+// that context's Deadline is no witness - clocktest's deadline contexts report their parent's - so
+// a case reads whether it has ended on either side of the moment it moves the clock to.
+type contextEmbedder struct {
+	*fakeEmbedder
+	contexts chan context.Context
+}
+
+func newContextEmbedder(embedder *fakeEmbedder) *contextEmbedder {
+	return &contextEmbedder{fakeEmbedder: embedder, contexts: make(chan context.Context, 16)}
+}
+
+func (e *contextEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	select {
+	case e.contexts <- ctx:
+	default:
+	}
+	return e.fakeEmbedder.Embed(ctx, texts, inputType)
+}
+
 // An item whose meaning matches and which holds none of the text's words is found by the meaning
 // search, and the result says it searched by meaning and keywords.
 func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) {
@@ -303,12 +336,16 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 
 // An embedder slower than the meaning allowance costs the check three seconds, not five: it
 // answers its keyword search's result when its meaning deadline passes, saying meaning search did
-// not answer in time. The check runs on a clock the case moves to that deadline.
+// not answer in time. The check runs on a clock the case moves to that deadline, and the embedder
+// records the context it was called with, so that the meaning deadline is what ended the meaning
+// search is a state the case reads on either side of that move rather than a time it measures.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
 	embedder := &fakeEmbedder{delay: time.Hour}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
 	key := createSearchIssue(t, handler, "MSLOW", "Nightly backups overrun their window", "")
+	recorded := newContextEmbedder(embedder)
+	srv.deps.Embedder = recorded
 
 	clock := clocktest.New(checkStart)
 	srv.clock = clock
@@ -326,6 +363,11 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 		t.Fatalf("the check answered %+v before its meaning deadline, the embedder still held", early)
 	default:
 	}
+	// The stage's goroutine embeds; the check does not wait for that goroutine to have started.
+	embedding := testwait.Receive(t, "the check's meaning stage to call the embedder", recorded.contexts)
+	if err := embedding.Err(); err != nil {
+		t.Fatalf("the embedding's context ended (%v) before the clock reached the meaning deadline", err)
+	}
 	clock.Set(meaning)
 	suggestions := testwait.Receive(t, "the check's answer once its meaning deadline passed", answered)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
@@ -334,6 +376,13 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	}
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
+	}
+	// The embedding's context is a child of the meaning context, and the context package ends a
+	// child of a context it did not make from a goroutine of its own, so the case waits for it.
+	testwait.Receive(t, "the embedding's context to end once the clock reached the meaning deadline", embedding.Done())
+	if err := embedding.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the embedding's context read %v once the clock reached the meaning deadline, want %v: the meaning search is not bounded by the meaning allowance",
+			err, context.DeadlineExceeded)
 	}
 }
 
@@ -792,7 +841,9 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // The check is stopped by its own allowance, which the near-copy gate does not share: the gate
 // runs before the write under a bound of its own, the check after it. A lock would stop both,
 // since the gate prices the text's words through the check's own picker, and that case is the
-// third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList).
+// third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList). The gate's
+// bound here is every test server's (gateBoundPastEveryRead), so the title matches are the gate's
+// verdict and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "FORCE")

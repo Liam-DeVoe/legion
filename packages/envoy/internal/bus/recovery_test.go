@@ -301,7 +301,7 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 			defer client.Close()
 			waitOutHeldDurable(t, client, uri)
 			hooked := make(chan *natsgo.Conn, 8)
-			client.AddReconnectHook(func(conn *natsgo.Conn) error {
+			client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 				hooked <- conn
 				return nil
 			})
@@ -354,7 +354,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	begun := make(chan struct{}, 8)
 	proceed := make(chan struct{}, 8)
 	ended := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		runs.Add(1)
 		now := running.Add(1)
 		for most := mostAtOnce.Load(); now > most; most = mostAtOnce.Load() {
@@ -423,7 +423,7 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	}
 	ran := make(chan hookRun, 8)
 	var runs atomic.Int32
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 		ran <- hookRun{conn: conn, goroutine: goroutinetest.ID()}
 		if runs.Add(1) == 1 {
 			return errors.New("the first run fails")
@@ -473,7 +473,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	running := make(chan *natsgo.Conn, 1)
 	finish := make(chan struct{})
 	var runs atomic.Int32
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 		if runs.Add(1) == 1 {
 			running <- conn
 			<-finish
@@ -525,7 +525,7 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 	// numbers from as they happen.
 	var order atomic.Int64
 	hooked := make(chan int64, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- order.Add(1)
 		return nil
 	})
@@ -855,7 +855,7 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 	defer client.Close()
 
 	hookRan := make(chan *natsgo.Conn, 1)
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 		hookRan <- conn
 		return nil
 	})
@@ -880,7 +880,7 @@ func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
 
 	events := make(chan string, 4)
 	client.AddDisconnectHook(func() { events <- "disconnected" })
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		events <- "reconnected"
 		return nil
 	})

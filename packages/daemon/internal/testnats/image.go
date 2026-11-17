@@ -1,9 +1,11 @@
 // The container half of the rig. Every other helper of this package runs its server in the test
-// process; StartImage runs a published NATS image instead, for the one test whose subject is those
-// images themselves: internal/daemon's TestDaemonPermissionsOnRealServers, which runs the daemon's
-// grant on each image of testnatsimages.Images and reads the server's own log. Where no container
-// runtime answers, that test and the tests of this file's helpers skip, and fail on GitHub Actions,
-// whose test job has one (skipWithoutContainerRuntime).
+// process; StartImage and StartOpenImage run a published NATS image instead, for the tests whose
+// subject is those images themselves: internal/daemon's TestDaemonPermissionsOnRealServers, which
+// runs the daemon's grant on each image of testnatsimages.Images and reads the server's own log,
+// and internal/intake's TestOpenConsumersRefusesAServerThatSkipsAFilter, which runs SkippingImage,
+// a release no in-process server can be. Where no container runtime answers, those tests and the
+// tests of this file's helpers skip, and fail on GitHub Actions, whose test job has one
+// (skipWithoutContainerRuntime).
 
 package testnats
 
@@ -17,11 +19,19 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// SkippingImage is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml),
+// whose v2.10.29 can skip a message on a consumer filtering on a wildcard and a literal at the same
+// token. The daemon refuses such a server (envoy's natsversion.Refusal, intake.OpenConsumers), and
+// the one test that shows it refusing one starts this image (StartOpenImage).
+const SkippingImage = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
 
 // StartImage runs image as a NATS container with JetStream that admits users alone, each with its
 // permissions (the configuration StartNkeyAuthorizedUsers gives an in-process server), removed when
@@ -41,6 +51,37 @@ func StartImage(t testing.TB, image string, users ...NkeyUser) (*tcnats.NATSCont
 	}
 	answering(t, url)
 	return started, url
+}
+
+// StartOpenImage runs image as a NATS container with JetStream and no users (the NATS module's own
+// -js), so it admits any client, removed when t ends, and returns its client URL once its JetStream
+// API answers. It is for a test of the server itself, such as one the daemon refuses
+// (SkippingImage); every other test takes a server of its own in this process through URL.
+func StartOpenImage(t testing.TB, image string) string {
+	t.Helper()
+	skipWithoutContainerRuntime(t)
+	started, err := startContainer(testwait.Context(t), image)
+	if err != nil {
+		t.Fatalf("start NATS on %s: %v", image, err)
+	}
+	testcontainers.CleanupContainer(t, started)
+	url, err := started.ConnectionString(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("NATS connection string: %v", err)
+	}
+	testwait.Until(t, fmt.Sprintf("the JetStream API of the NATS server at %s to answer", url), func() (error, bool) {
+		conn, err := nats.Connect(url, nats.Name(t.Name()))
+		if err != nil {
+			return err, false
+		}
+		defer conn.Close()
+		js, err := jetstream.New(conn)
+		if err == nil {
+			_, err = js.AccountInfo(testwait.Context(t))
+		}
+		return err, err == nil
+	})
+	return url
 }
 
 // limits caps a NATS test container at one CPU and 512 MiB, as every container the repository's

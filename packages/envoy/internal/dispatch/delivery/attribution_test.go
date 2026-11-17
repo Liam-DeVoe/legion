@@ -16,8 +16,8 @@ import (
 
 // seedAttributionIssues writes one issue per key (ATTR-<n>) in the project that owns
 // acme/widgets (seedDeliveryProject), since an attribution holds an issue to the repository the
-// pull request is in, and each links[key] URL as that issue's external link. Idempotent, so
-// tests sharing the database can seed the same keys.
+// pull request is in, and each links[key] URL as that issue's external link. Idempotent, as
+// seedDeliveryProject is.
 func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, keys []string, links map[string][]string) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)

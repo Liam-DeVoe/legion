@@ -1,6 +1,7 @@
 package kvwatch_test
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -51,7 +52,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 		// bounds the legacy STREAM.INFO it makes too, which a loaded machine can miss: try again
 		// through the shared wait until it opens.
 		handle := testwait.Until(t, fmt.Sprintf("round %d: the test bucket's handle", round), func() (bus.KeyValue, bool) {
-			h, err := bus.OpenKeyValue(conn, js, testBucketName)
+			h, err := bus.OpenKeyValue(context.Background(), conn, js, testBucketName)
 			return h, err == nil
 		})
 		release := make(chan struct{})

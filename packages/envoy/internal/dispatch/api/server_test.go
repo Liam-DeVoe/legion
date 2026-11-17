@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -262,15 +263,21 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		StreamHeartbeat:        options.streamHeartbeat,
 		EnvoyURL:               options.envoyURL,
 		ListenerTakeoverWindow: takeoverWindow,
-		OIDC:                   options.oidc,
-		BrokerTokens:           brokerTokens,
-		AgentStream:            options.agentStream,
-		Embedder:               options.embedder,
-		Answerer:               options.answerer,
-		Files:                  options.files,
-		DashboardEntry:         options.dashboardEntry,
-		BuildCommit:            options.buildCommit,
-		Clock:                  options.clock,
+		// A wait on the event horizon (internal/dispatch/horizontest) reads its stall warnings for
+		// the own-hold rule and for the account a wait that gave up prints, so the horizon warns
+		// within a fraction of a second of a hold rather than at the production five and thirty
+		// seconds.
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
+		OIDC:              options.oidc,
+		BrokerTokens:      brokerTokens,
+		AgentStream:       options.agentStream,
+		Embedder:          options.embedder,
+		Answerer:          options.answerer,
+		Files:             options.files,
+		DashboardEntry:    options.dashboardEntry,
+		BuildCommit:       options.buildCommit,
+		Clock:             options.clock,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

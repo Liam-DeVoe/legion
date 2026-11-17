@@ -125,7 +125,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	// holder and it answers the forward with nothing. The forward's whole answer is the stream's
 	// acknowledgement of the copy stored on its agent subject, which is the copy this test counts.
 	entry := session.SessionEntry{MachineID: "test-machine", Port: 1}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 
 	ctx := testwait.Context(t)
 	claimRoleWith(t, harness, holder, role, entry)

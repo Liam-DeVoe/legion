@@ -191,7 +191,7 @@ func TestAHeartbeatNewerThanTheReadsValueWinsAndIsKept(t *testing.T) {
 
 	apply := held.holdApply(t, "ses_beat")
 	completion := held.holdCompletion(t, nil)
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, apply.reached, "the read to deliver ses_beat")
@@ -223,7 +223,7 @@ func TestASessionRegisteredDuringTheReadIsKeptThroughTheSweep(t *testing.T) {
 	}
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = sweptList(r) })
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
@@ -253,7 +253,7 @@ func TestASessionDeletedDuringTheReadStaysGone(t *testing.T) {
 	}
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = sweptList(r) })
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
@@ -376,7 +376,7 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 			recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: time.Minute})
 			putRaw(t, recreated, "ses_a", SessionEntry{Port: 1, MachineID: "m1", Title: "new", UpdatedAt: time.Now().UnixMilli()})
 			putRaw(t, recreated, "ses_b", SessionEntry{Port: 2, MachineID: "m1", UpdatedAt: time.Now().UnixMilli()})
-			if err := r.Rewatch(client.Conn); err != nil {
+			if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 				t.Fatalf("Rewatch: %v", err)
 			}
 			testwait.Eventually(t, "observable state", func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
@@ -449,7 +449,7 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 	}()
 	waitClosed(t, get.reached, "the bucket to answer the refresh's read")
 	apply := held.holdApply(t, "ses_a")
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, apply.reached, "the new bucket's read to deliver ses_a")
@@ -543,7 +543,7 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 	}
 
 	completion := held.holdCompletion(t, nil)
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
@@ -599,7 +599,7 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	}
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 3 * time.Minute})
 	putRaw(t, recreated, "ses_long", SessionEntry{Port: 1, MachineID: "m1", UpdatedAt: time.Now().UnixMilli()})
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	testwait.Eventually(t, "observable state", func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })

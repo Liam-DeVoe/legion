@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
@@ -162,12 +163,13 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // says why. Before this it would have read the server's own bound as "meaning search failed",
 // which is what it says when something broke.
 //
-// The check answers at once rather than at the end of its three-second meaning allowance, which
-// is what tells the two apart: the statement was ended, not waited out. The check runs on a clock
-// that never moves, so its meaning deadline cannot pass: a keywords-only answer can only be the
-// statement's end. The text shares one word with the issue and means the same thing, so the
-// keyword stage has the item to fall back on and the meaning stage has a reason to be running at
-// all.
+// The check answers when the statement is ended rather than at the end of its three-second
+// meaning allowance, which is what tells the two apart: the statement was ended, not waited out.
+// The check runs on a clock that never moves, so its meaning deadline cannot pass: a
+// keywords-only answer can only be the statement's end, and a check that waited for that
+// deadline fails by name at the test binary's deadline. The text shares one word with the issue
+// and means the same thing, so the keyword stage has the item to fall back on and the meaning
+// stage has a reason to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
@@ -188,7 +190,9 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 
 	endMeaningStatementsAt(t, "1ms")
 	srv.clock = clocktest.New(checkStart)
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
+		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	})
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the server having ended the meaning statement", suggestions)

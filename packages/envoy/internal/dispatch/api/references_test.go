@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -423,13 +425,43 @@ func awaitSinceRead(
 	return answer
 }
 
+// awaitHorizonRead reads again until holds accepts the answer, for a route on a server of the real
+// clock that answers only what stands at or below the event log's safe horizon (sinceHorizon): any
+// transaction holding a transaction id on the Postgres instance holds that horizon back - in this
+// package, storetest's own "create database … template …" and "drop database … with (force)"
+// transactions (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other
+// package's. Such a read waits out referencesSinceWait and then answers at the horizon it was left
+// with, which may be short of what committed before it, so it is read again through the horizon's
+// wait (horizontest.Watch), however long the horizon is held back: that wait fails at once on a
+// hold of the test's own database, and at the test binary's deadline names the horizon's account
+// of itself. database is the one the server reads; what names the read and show its last answer in
+// a failure.
+func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
+	t.Helper()
+	warnings, stop := horizontest.Listen(t)
+	defer stop()
+	var answer T
+	horizontest.NewWatch(warnings, database.Pool.Config().ConnConfig.Database).Poll(t, "the whole answer of "+what,
+		func() string { return "the last read answered " + show(answer) },
+		func() bool {
+			answer = read()
+			return holds(answer)
+		})
+	return answer
+}
+
+// showEdges is a references answer's edges as a failure prints them (awaitHorizonRead).
+func showEdges(read model.GraphReferences) string { return fmt.Sprintf("%#v", read.Edges) }
+
 // A since read answers every mention committed before it, also on a server where nothing else
 // observes the event log: no event stream has started the relay and no Delivery page the hub.
 // Each observation is proven safe only by a later one, so a read that stopped at the horizon
 // proven so far would answer nothing here, the first after boot, and each later read would stop
-// at the previous read's observation, however old. awaitSinceRead settles which answer is final.
+// at the previous read's observation, however old. The server runs on the real clock, so a read
+// held past referencesSinceWait by a transaction elsewhere answers short and is read again
+// (awaitHorizonRead).
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
 	citingResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": "Rotate the database credentials"}, "alice")
@@ -441,12 +473,12 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 	comment := createReferenceAPIComment(t, handler, citing.Key, "Blocked on "+targetRef)
 
 	query := url.Values{"to": {targetRef}, "since": {"0"}}
-	awaitSinceRead(t, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
+	awaitHorizonRead(t, database, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
 		func() model.GraphReferences { return graphEdges(t, handler, query) },
 		func(read model.GraphReferences) bool {
 			return len(read.Edges) == 1 && read.Edges[0].Kind == "mentions" &&
 				blockOf(read.Edges[0].Node, "comment", comment.ID)
-		})
+		}, showEdges)
 }
 
 // A poller reads ?since=<the highest source_seq it was shown>. Event ids are not commit order:
@@ -525,9 +557,11 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower event: %v", err)
 	}
-	read := awaitSinceRead(t, "since "+strconv.FormatInt(low-1, 10)+" ?to= "+targetRef+", wanting both mentions once the lower event has committed",
+	// The server runs on the real clock, which the reads above need, so a read held past
+	// referencesSinceWait by a transaction elsewhere answers short and is read again.
+	read := awaitHorizonRead(t, database, "since "+strconv.FormatInt(low-1, 10)+" ?to= "+targetRef+", wanting both mentions once the lower event has committed",
 		func() model.GraphReferences { return graphEdges(t, handler, query) },
-		func(read model.GraphReferences) bool { return len(read.Edges) == 2 })
+		func(read model.GraphReferences) bool { return len(read.Edges) == 2 }, showEdges)
 	var seqs []int64
 	for _, edge := range read.Edges {
 		if edge.Kind != "mentions" || edge.SourceSeq == nil {

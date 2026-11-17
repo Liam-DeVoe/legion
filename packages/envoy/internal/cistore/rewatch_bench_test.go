@@ -2,6 +2,7 @@ package cistore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"syscall"
@@ -185,7 +186,7 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 	var entries int64
 	cpuBefore := benchProcessCPU(b)
 	for b.Loop() {
-		if err := s.Rewatch(conn); err != nil {
+		if err := s.Rewatch(context.Background(), conn); err != nil {
 			b.Fatalf("Rewatch: %v", err)
 		}
 		// Readiness stays released after the first generation, so the new generation's own

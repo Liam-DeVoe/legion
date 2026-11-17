@@ -167,7 +167,7 @@ func TestNilKnownSessionsAnswersNothingAndPanicsNowhere(t *testing.T) {
 	if err := known.TouchWithin(context.Background(), "ses_any"); err != nil {
 		t.Errorf("TouchWithin on a nil store = %v, want nil", err)
 	}
-	if err := known.Rewatch(nil); err != nil {
+	if err := known.Rewatch(context.Background(), nil); err != nil {
 		t.Errorf("Rewatch on a nil store = %v, want nil", err)
 	}
 	if err := known.WaitForCacheReady(context.Background()); err != nil {
@@ -457,7 +457,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 		}
 	}
 	filling.StopWatch()
-	raw, err := bus.OpenKeyValue(client.Conn, client.JS(), bus.KnownSessionBucket)
+	raw, err := bus.OpenKeyValue(context.Background(), client.Conn, client.JS(), bus.KnownSessionBucket)
 	if err != nil {
 		t.Fatalf("open the known-session bucket: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if watchHandle(known) != before {
@@ -624,7 +624,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if !repairRunning(known) {
@@ -632,7 +632,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of the next connection event, once the cluster took this listener back: %v", err)
 	}
 	moved := watchHandle(known)
@@ -658,7 +658,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	known, conn, grant, logged, timers := knownOverGrant(t)
 
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of an ordinary connection event: %v", err)
 	}
 	if strings.Contains(logged(), knownBackLine) {
@@ -666,7 +666,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	}
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a repair")
 	}
 	if strings.Contains(logged(), knownBackLine) {
@@ -674,7 +674,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of the next connection event, once the cluster took this listener back: %v", err)
 	}
 	var back []string
@@ -719,7 +719,7 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	// bucket, and its stale episode begins at the disconnect.
 	grant.Grant(t, "nothing.this.store.uses")
 	known.Disconnected()
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a stale store")
 	}
 	if !known.Opened() {
@@ -763,7 +763,7 @@ func TestAStopEndsTheStoresRetry(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if watchHandle(known) != before {
@@ -888,7 +888,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The reconnect after the disconnect moves the watcher, and the move fails: the cluster
 	// refuses this listener again.
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 

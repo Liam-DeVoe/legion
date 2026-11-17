@@ -157,12 +157,16 @@ jobs:
 
       # The daemon's NATS tests run their servers in the test process. Its grant test,
       # TestDaemonPermissionsOnRealServers, runs Envoy's two published NATS images, Image and
-      # HubImage (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+      # HubImage (packages/envoy/testnatsimages), and the one test of its refusal of a server that
+      # can skip a message (intake's TestOpenConsumersRefusesAServerThatSkipsAFilter) runs
+      # SkippingImage (nats:2.10), since an in-process server cannot be that version; all three are
+      # pulled first for the reason the action gives.
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
+            packages/daemon/internal/testnats/image.go SkippingImage
             packages/envoy/internal/testnats/nats.go HubImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,

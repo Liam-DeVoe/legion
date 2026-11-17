@@ -840,7 +840,7 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 			}()
 			batch := newCalls(t, s, h.key(), n, checkCall(s, h, 900))
 			batch.behind(entered, n)
-			if err := s.Rewatch(conn); err != nil {
+			if err := s.Rewatch(context.Background(), conn); err != nil {
 				t.Fatalf("rewatch: %v", err)
 			}
 			// The in-flight call is given up on at the rewatch; the write then retries on the new

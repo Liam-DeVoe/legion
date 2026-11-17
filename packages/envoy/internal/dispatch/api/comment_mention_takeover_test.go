@@ -172,7 +172,7 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 	}
 	routeSends := 0
 	for _, topic := range deliveries[0].Destinations {
-		if topic == contracts.AgentSubject("s1") {
+		if topic == contracts.LegacyAgentSubject("s1") {
 			routeSends++
 		}
 	}
@@ -329,7 +329,7 @@ func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) 
 			t.Fatalf("comment.created events for %s = %#v, want one", comment.ID, deliveries)
 		}
 		for _, topic := range deliveries[0].Destinations {
-			if topic == contracts.AgentSubject("s1") {
+			if topic == contracts.LegacyAgentSubject("s1") {
 				routeSends++
 			}
 		}
@@ -420,7 +420,7 @@ func receivedDuringTakeOver(
 		t.Fatalf("comment.created events for %s = %#v, want one", created.ID, deliveries)
 	}
 	for _, topic := range deliveries[0].Destinations {
-		if topic == contracts.AgentSubject("s1") {
+		if topic == contracts.LegacyAgentSubject("s1") {
 			fanOuts++
 		}
 	}

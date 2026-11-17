@@ -16,6 +16,7 @@ import (
 // (source 3) credit it whatever case either side spells them in.
 func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
+	// URLs no other row of this test links: a link's URL is unique across every issue.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-201", "ATTR-202"}, map[string][]string{
 		"ATTR-201": {"https://github.com/acme/widgets/pull/201"},
 		"ATTR-202": {"https://github.com/acme/widgets/issues/277"},

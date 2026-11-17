@@ -48,8 +48,10 @@
 # shellcheck source-path=SCRIPTDIR source=rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# The nats-server the run installs when the caller names none: the version the daemon's own NATS
-# tests run in their test process (packages/daemon/go.mod) and the hub runs.
+# The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
+# packages/envoy/go.mod pins and the daemon's own NATS tests run in their test process
+# (packages/daemon/go.mod). The daemon refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0
+# (packages/envoy/natsversion).
 nats_version=v2.15.1
 
 # The run's state, global rather than live_daemon_proof's own because cleanup reads it from the

@@ -266,10 +266,16 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 }
 
 // A suggestion younger than settle is not judged, whatever older event a page carries: here
-// another person's message on the suggested issue, written before the suggestion, becomes settle
-// old while the suggestion is not. The agent comments on what it filed and, moments later, updates
-// the suggested issue; judged at the older event's turn, the comment alone would read as an
+// another person's message on the suggested issue, written before the suggestion, is settle old at
+// a pass while the suggestion is not. The agent comments on what it filed and, moments later,
+// updates the suggested issue; judged at the older event's turn, the comment alone would read as an
 // override. Judged once it is settle old, the rules see both writes, and it is acted_on.
+//
+// A pass reads every age against now(), its transaction's start. The young pass's transaction
+// starts once the other person's message is settle old and before the suggestion is recorded, so
+// that pass reads the message as settled and the suggestion and the comment after it as younger
+// than settle, however long the writes and the safe horizon between take. It takes no transaction
+// id until the pass locks the cursor, so it holds back neither those writes nor that horizon.
 func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 	const settle = 2 * time.Second
 	ctx := context.Background()
@@ -288,23 +294,29 @@ func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 
 	// Every age below is read on the database's clock, the one the sweep judges settle by.
 	postOutcomeMessage(t, handler, target, "bob", "A note of my own on the target.")
-	bobs := newestEventAt(t, database.Pool, target)
-	awaitDatabaseAge(t, database.Pool, "bob's message", bobs, settle/2)
-	seedWriteSuggestion(t, srv, "issue", source, "", "alice", "issue", target, target)
-	var recorded time.Time
-	if err := database.Pool.QueryRow(ctx, `select created_at from write_suggestions where source_issue_key = $1 and suggested_id = $2`,
-		source, target).Scan(&recorded); err != nil {
-		t.Fatalf("read the suggestion's created_at: %v", err)
+	older := lastEventID(t, database)
+	awaitDatabaseAge(t, database.Pool, "bob's message", newestEventAt(t, database.Pool, target), settle)
+	pass, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the young pass's transaction: %v", err)
 	}
+	defer func() { _ = pass.Rollback(context.Background()) }()
+	seedWriteSuggestion(t, srv, "issue", source, "", "alice", "issue", target, target)
+	awaitDatabaseClockPastSuggestions(t, database.Pool) // the events must postdate the suggestion row
 	postOutcomeMessage(t, handler, source, "alice", "Looking into this here first.")
 
-	// bob's message is settle old now; the suggestion is not.
-	awaitDatabaseAge(t, database.Pool, "bob's message", bobs, settle)
-	if age := databaseAge(t, database.Pool, recorded); age >= settle {
-		t.Fatalf("the suggestion is already %v old by the database's clock; the test needs it younger than %v here", age, settle)
+	safe := safeHorizon(t, srv)
+	if _, _, err := judgeSuggestionPage(ctx, pass, safe, suggestionOutcomePage, settle); err != nil {
+		t.Fatalf("judge a page while the suggestion is young: %v", err)
 	}
-	if _, err := sweepSuggestionOutcomePages(ctx, database.Pool, safeHorizon(t, srv), suggestionOutcomePage, settle); err != nil {
-		t.Fatalf("sweep while the suggestion is young: %v", err)
+	if err := pass.Commit(ctx); err != nil {
+		t.Fatalf("commit the young pass: %v", err)
+	}
+	switch cursor := outcomeCursor(t, database); {
+	case cursor == nil:
+		t.Fatalf("the cursor is unset after the young pass; want it at event %d, bob's message", older)
+	case *cursor != older:
+		t.Fatalf("cursor = %d after the young pass; want %d: the page carries bob's message, settle old, and stops at alice's younger comment", *cursor, older)
 	}
 	if row := readSuggestionOutcome(t, srv, source, target); row.Outcome != "ignored" {
 		t.Fatalf("outcome = %+v while the suggestion is younger than settle; want ignored until it is settle old", row)

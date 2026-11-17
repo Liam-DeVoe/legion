@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -115,8 +116,8 @@ func expectNoEventAbove(t *testing.T, client *socketClient, sub string, floor in
 // expectEventsInOrder reads sub's events until every id in want has arrived, in want's order, and
 // fails on an id at or below one already sent (a repeat, or ids out of order), on an id above the
 // next wanted one before it (the wanted one skipped), and on a subscription whose socket ends
-// first. Ids want does not name are let through: a document settling
-// beside the test's own writes appends events of its own.
+// first. Ids want does not name are let through: a document settling beside the test's own writes
+// appends events of its own.
 func expectEventsInOrder(t *testing.T, client *socketClient, sub string, want ...int64) {
 	t.Helper()
 	var last int64
@@ -617,20 +618,11 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	if _, err := database.Pool.Exec(t.Context(), `analyze events`); err != nil {
 		t.Fatalf("analyze events: %v", err)
 	}
-	// The process before proves and persists a horizon past the fill, as its relay or hub does.
+	// The process before proves and persists a horizon past the fill, as its relay or hub does. The
+	// proof is instance-wide, so the wait for it keys on the horizon's own account of itself.
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	newest := eventHead(t, database)
-	testwait.Eventually(t, fmt.Sprintf("the persisted horizon to reach %d", newest), func() bool {
-		if _, err := before.Safe(t.Context()); err != nil {
-			t.Fatalf("observe the horizon: %v", err)
-		}
-		persisted, err := before.Persisted(t.Context())
-		if err != nil {
-			t.Fatalf("read the persisted horizon: %v", err)
-		}
-		return persisted >= newest
-	})
+	horizontest.AwaitPersisted(t, before, eventHead(t, database), database)
 
 	// An event insert that opened before the next process boots, and outlives its first start.
 	open, release := holdEventInsert(t, database)

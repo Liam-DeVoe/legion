@@ -181,10 +181,52 @@ func feedsAtTheRelay() int {
 const relayGapRereadsWhy = "the relay's gap re-reads run on its own goroutine on a schedule of its own, and a " +
 	"re-read that took no shared connection leaves no state of this test to read and no later action to wait on"
 
-// relayListenBackend selects, in pg_stat_activity, the backends whose last statement is the
-// relay's LISTEN. The delivery hub listens on its two channels in one statement, so its backend
-// is not selected.
-const relayListenBackend = `datname = current_database() and query = 'listen ` + EventsChannel + `'`
+// recordRelayDials has relay dial its listener connections on deps' pool, as it does by default,
+// and records each one (listenerDials), so a test reads the relay's own connections and their
+// backends alone. A predicate on a backend's last statement, `listen events`, stops naming the
+// relay's connection once its listener has pinged it, one pglisten.DefaultListenIdle after its last
+// round trip, which a wait behind a held event horizon outlasts: a count that wants none then reads
+// none while the connection stands open, and one that wants it finds nothing to terminate.
+func recordRelayDials(relay *eventStreamRelay, deps Deps) *listenerDials {
+	dials := &listenerDials{}
+	relay.dial = dials.wrap(deps.Store.Pool.Listener)
+	return dials
+}
+
+// relayBackends is the pid of every backend still connected for a listener connection the relay
+// dialed (recordRelayDials), read from pg_stat_activity, so a test can read it while a listener of
+// the relay's may still be running: a connection's pid is fixed once its dial returns, where its
+// other state is the listener's own.
+func relayBackends(t *testing.T, database *store.Store, dials *listenerDials) []int32 {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `select pid from pg_stat_activity where pid = any($1) order by pid`, dials.pids())
+	if err != nil {
+		t.Fatalf("read the backends of the relay's listener connections: %v", err)
+	}
+	connected, err := pgx.CollectRows(rows, pgx.RowTo[int32])
+	if err != nil {
+		t.Fatalf("read the backends of the relay's listener connections: %v", err)
+	}
+	return connected
+}
+
+// waitRelayStopped waits for every goroutine of the relay's generations to return, and so for every
+// listener connection it dialed to close (a listener's Run returns only once it has closed its
+// connection), failing the test naming a connection still open, and then for each of those
+// connections' backends to exit.
+func waitRelayStopped(t *testing.T, database *store.Store, relay *eventStreamRelay, dials *listenerDials, when string) {
+	t.Helper()
+	waitReturned(t, "every goroutine of the relay to return "+when, &relay.running)
+	for _, conn := range dials.dialed() {
+		// Read after the wait above, which orders each listener's close before this read.
+		if !conn.IsClosed() {
+			t.Fatalf("the relay's listener connection to backend %d is still open %s", conn.PgConn().PID(), when)
+		}
+	}
+	testwait.Eventually(t, "every backend of the relay's listener connections to exit "+when, func() bool {
+		return len(relayBackends(t, database, dials)) == 0
+	})
+}
 
 // endRelayGeneration ends the relay's running generation, which closes every subscription it
 // holds, as a reset of the event log does (resetCursor).
@@ -215,6 +257,7 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, reads := newCountedRelay(t, deps)
+	dials := recordRelayDials(relay, deps)
 	commit := func() {
 		t.Helper()
 		for range 3 {
@@ -223,23 +266,30 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 	}
 	idle := func(when string) {
 		t.Helper()
+		dialed := len(dials.dialed())
 		commit()
 		if count := len(reads); count != 0 {
 			t.Fatalf("the relay read the event log %d times %s", count, when)
 		}
-		if count := countBackends(t, database, relayListenBackend); count != 0 {
-			t.Fatalf("%d relay LISTEN backends %s, want none", count, when)
+		if got := len(dials.dialed()); got != dialed {
+			t.Fatalf("the relay dialed %d listener connections %s, want none", got-dialed, when)
+		}
+		if backends := relayBackends(t, database, dials); len(backends) != 0 {
+			t.Fatalf("the relay's listener connections hold backends %v %s, want none", backends, when)
 		}
 	}
 
+	if dialed := len(dials.dialed()); dialed != 0 {
+		t.Fatalf("the relay dialed %d listener connections before anyone subscribed, want none", dialed)
+	}
 	idle("before anyone subscribed")
 
 	subscription, cancel, head := subscribeRelay(t, relay)
-	waitForBackends(t, database, 1, relayListenBackend)
+	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	last := seedEvents(t, database, issue, 1, 0)
 	receiveRelayedThrough(t, subscription, head, last)
 	cancel()
-	waitForBackends(t, database, 0, relayListenBackend)
+	waitRelayStopped(t, database, relay, dials, "after its last subscriber left")
 	for len(reads) > 0 {
 		<-reads
 	}
@@ -255,13 +305,14 @@ func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, reads := newCountedRelay(t, deps)
+	dials := recordRelayDials(relay, deps)
 	subscriptions := make([]<-chan relayedEvent, subscribers)
 	for index := range subscriptions {
 		subscriptions[index], _, _ = subscribeRelay(t, relay)
 	}
 	// The generation's start, its catch-up after its LISTEN and any re-read a gap above the
 	// horizon scheduled, none of which this commit paid for.
-	waitForBackends(t, database, 1, relayListenBackend)
+	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	quietRelayReads(t, relay, database, reads)
 
 	committed := seedEvents(t, database, issue, 1, 0)
@@ -343,8 +394,9 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
 	relay, reads := newCountedRelay(t, deps)
+	dials := recordRelayDials(relay, deps)
 	subscription, _, opened := subscribeRelay(t, relay)
-	waitForBackends(t, database, 1, relayListenBackend)
+	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	quietRelayReads(t, relay, database, reads)
 
 	low, high, commitLow := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
@@ -377,17 +429,15 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	relay, _ := newCountedRelay(t, deps)
 	var down atomic.Bool
 	down.Store(true)
-	var dials atomic.Int64
-	relay.dial = func(ctx context.Context) (*pgx.Conn, error) {
+	// The relay's own connections, so the test terminates the one it listens on by its backend's
+	// pid (recordRelayDials says why not by its last statement).
+	var dials listenerDials
+	relay.dial = dials.wrap(func(ctx context.Context) (*pgx.Conn, error) {
 		if down.Load() {
 			return nil, errors.New("the listener has no connection")
 		}
-		conn, err := database.Pool.Listener(ctx)
-		if err == nil {
-			dials.Add(1)
-		}
-		return conn, err
-	}
+		return database.Pool.Listener(ctx)
+	})
 	relay.backoff = func(int) time.Duration { return 5 * time.Millisecond }
 	subscription, _, opened := subscribeRelay(t, relay)
 
@@ -403,16 +453,17 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 
 	// Every later LISTEN catches up the same way, from the cursor as it stands: a redial that
 	// reset it would send every open page the whole log again.
-	var terminated int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from (
-			select pg_terminate_backend(pid) from pg_stat_activity where `+relayListenBackend+`
-		) as terminated
-	`).Scan(&terminated); err != nil || terminated != 1 {
-		t.Fatalf("terminate the relay's LISTEN backend: terminated %d (%v), want 1", terminated, err)
+	dialed := dials.dialed()
+	if len(dialed) == 0 {
+		t.Fatal("the relay published with no listener connection dialed")
+	}
+	listening := dialed[len(dialed)-1].PgConn().PID()
+	var terminated bool
+	if err := database.Pool.QueryRow(context.Background(), `select pg_terminate_backend($1)`, int32(listening)).Scan(&terminated); err != nil || !terminated {
+		t.Fatalf("terminate the relay's LISTEN backend, pid %d: terminated %t (%v), want true", listening, terminated, err)
 	}
 	testwait.Eventually(t, "the relay to redial after its connection was terminated", func() bool {
-		return dials.Load() >= 2
+		return len(dials.dialed()) > len(dialed)
 	})
 	next := seedEvents(t, database, issue, 1, 0)
 	receiveRelayedThrough(t, subscription, committed, next)
@@ -432,6 +483,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
+	dials := recordRelayDials(relay, deps)
 	subscription, _, opened := subscribeRelay(t, relay)
 
 	// A cursor well above the ids the reset log will hand out.
@@ -459,7 +511,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 	}
 	// The reset ended the generation: its LISTEN connection closes though its subscriber has not
 	// cancelled.
-	waitForBackends(t, database, 0, relayListenBackend)
+	waitRelayStopped(t, database, relay, dials, "after the reset ended its generation")
 
 	// And the next subscription starts on the new log.
 	reopened, _, head := subscribeRelay(t, relay)

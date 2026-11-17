@@ -28,12 +28,20 @@ import (
 // processes, and a test that held a different one would prove nothing.
 const webhookRedeliveryLease = "webhook-redelivery"
 
-// redeliverTestLeases opens the lease pool a running sweep takes webhook-redelivery on, from a
-// migrated database of the test's own (storetest.Open); a test that needs it skips (not fails)
-// when DISPATCH_TEST_DATABASE_URL is unset, matching every other Postgres-backed test in this
-// module. A lease is an advisory lock and reads no table, but the period a sweep is due by is a
-// row of duty_passes (duty.Exclusive, migration 0115), which a pass reads and writes under its
-// lease, so this pool's database carries the migrations.
+// redeliverTestLeases opens the lease pool a running sweep takes webhook-redelivery on, on a
+// database of the test's own: storetest.Open's clone of the template this test process migrated
+// once, which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A lease is
+// an advisory lock and reads no table, but the period a sweep is due by is a row of duty_passes
+// (duty.Exclusive, migration 0115), which a pass reads and writes under its lease, so this pool's
+// database carries the migrations; a clone carries no pass an earlier run recorded.
+//
+// The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
+// CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
+// database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
+// and on a shared machine that database is the server's postgres, where every other package's
+// harness creates and drops its databases, so another package's create database held the build
+// past its lock bound and failed this test (dispatch://INFRA-3904). No session outside this test
+// process connects to the template or to a clone.
 func redeliverTestLeases(t *testing.T) duty.Leases {
 	t.Helper()
 	return storetest.Leases(t, storetest.Open(t).Pool)

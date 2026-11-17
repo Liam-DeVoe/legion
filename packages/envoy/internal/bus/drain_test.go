@@ -151,7 +151,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 	_, uri := startNATS(t)
 	publisher := testnats.Connect(t, uri)
 	t.Cleanup(publisher.Close)
-	holderSubject := contracts.AgentSubject("drain-holder")
+	holderSubject := contracts.LegacyAgentSubject("drain-holder")
 
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithClock(clocktest.New(fakeStart)))
 	if err != nil {

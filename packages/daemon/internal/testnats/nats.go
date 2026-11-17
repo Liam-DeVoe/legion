@@ -14,8 +14,8 @@
 // server when the test ends fails that test, by name and CID.
 //
 // StartNkeyAuthorized and StartNkeyAuthorizedUsers start in-process servers of their own that admit
-// only nkey users. StartImage (image.go) is the one helper that runs a container, for the one test
-// whose subject is the published NATS images themselves.
+// only nkey users. StartImage and StartOpenImage (image.go) are the two helpers that run a
+// container, for the tests whose subject is a published NATS image itself.
 //
 // Envoy's tests have a rig of their own, packages/envoy/internal/testnats, which runs its servers
 // in the test process too (its start, launch and serverOptions are what start here follows). The

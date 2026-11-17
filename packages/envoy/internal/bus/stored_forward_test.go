@@ -37,7 +37,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 		TraceID:        "trace_stored_only",
 	}
 	const window = 2 * time.Second
-	subject := contracts.AgentSubject("ses_serving_port")
+	subject := contracts.LegacyAgentSubject("ses_serving_port")
 	for range 2 {
 		forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
 		if err != nil {
@@ -79,7 +79,7 @@ func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	subject := contracts.AgentSubject("ses_unnamed_forward")
+	subject := contracts.LegacyAgentSubject("ses_unnamed_forward")
 
 	forward, err := client.StartRequestStoredTo(subject, contracts.Envelope{
 		EventID:        "evt_unnamed",
@@ -115,7 +115,7 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	subject := contracts.AgentSubject("ses_unnamed_request")
+	subject := contracts.LegacyAgentSubject("ses_unnamed_request")
 
 	item := contracts.Envelope{
 		EventID:        "evt_unnamed_request",
@@ -156,7 +156,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	}
 	defer client.Close()
 
-	subject := contracts.AgentSubject("ses_stalled")
+	subject := contracts.LegacyAgentSubject("ses_stalled")
 	item := contracts.Envelope{
 		EventID:        "evt_stalled",
 		Source:         "agent",
@@ -187,7 +187,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	)
 	longer := make(chan error, 1)
 	go func() {
-		_, err := client.StartRequestStoredTo(contracts.AgentSubject("ses_stalled_long"), item, bus.ForwardMsgID(item.DedupeKey, "long"), longWindow)
+		_, err := client.StartRequestStoredTo(contracts.LegacyAgentSubject("ses_stalled_long"), item, bus.ForwardMsgID(item.DedupeKey, "long"), longWindow)
 		longer <- err
 	}()
 	_, err = client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), shortWindow)

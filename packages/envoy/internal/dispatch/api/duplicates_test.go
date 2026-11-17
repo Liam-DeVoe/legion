@@ -6,19 +6,29 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The near-copy gate's tests. Every fixture scores at an extreme - an exact copy of an open
 // issue's title and spec holds every picked term, a text sharing nothing holds none - so each
 // case holds for any pair of bars with 0 < duplicateNudgeScore < duplicateRefuseScore < 1, and
 // the replay that sets those two numbers cannot break them.
+//
+// A case reads the gate's verdict, so its server runs the gate under a bound past any read of a
+// test project (gateBoundPastEveryRead, which every test server takes), never production's
+// duplicateGateTimeout: a read that outruns that bound goes in unchecked, as it must in
+// production, and a case run under it would measure the machine.
+// TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound proves the bound itself.
 
 func createIssueRequest(t *testing.T, handler http.Handler, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -60,6 +70,36 @@ func requireDuplicateRefusal(t *testing.T, response *httptest.ResponseRecorder) 
 		t.Fatalf("refusal code = %q, want POSSIBLE_DUPLICATE", body.Code)
 	}
 	return body
+}
+
+// newDuplicateTestHandler is the server a near-copy case drives: its gate runs under
+// gateBoundPastEveryRead, as every test server's does (newRegisteredTestServer).
+func newDuplicateTestHandler(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	return handler, database
+}
+
+// requireAnsweredCreate is requireCreatedIssue for a create whose 201 is the gate's verdict: the
+// gate answered, and refused nothing. A create whose gate did not answer goes in all the same
+// and says so in near_copy_check, so a 201 alone would pass a case the gate never judged.
+func requireAnsweredCreate(t *testing.T, response *httptest.ResponseRecorder) model.Issue {
+	t.Helper()
+	issue := requireCreatedIssue(t, response)
+	if check := createdSuggestions(t, response).NearCopyCheck; check != "" {
+		t.Fatalf("create %s went in unchecked: near_copy_check=%q", issue.Key, check)
+	}
+	return issue
+}
+
+// createdSuggestions is a create's advice.suggestions, as a client reads them.
+func createdSuggestions(t *testing.T, response *httptest.ResponseRecorder) model.Suggestions {
+	t.Helper()
+	return decodeBody[struct {
+		Advice struct {
+			Suggestions model.Suggestions `json:"suggestions"`
+		} `json:"advice"`
+	}](t, response).Advice.Suggestions
 }
 
 // The texts below are built from words that appear in one fixture and not the other, so a pair
@@ -131,7 +171,7 @@ func TestASpentGateBoundEndsTheGatesContextBeforeItIsReturned(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -161,7 +201,7 @@ func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 	}
 
 	// Nothing was written, so the next create takes the next number.
-	next := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	next := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Orchard pickers cannot log a crate", "spec": duplicateSpecHarvest,
 	}))
 	if next.Key != "TEST-2" {
@@ -170,7 +210,7 @@ func TestCreateIssueDuplicateRefusesANearCopyOfAnOpenIssue(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -183,7 +223,7 @@ func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	second := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	second := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
@@ -193,7 +233,7 @@ func TestCreateIssueDuplicateCreatesACopyOfADoneIssue(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	// The grandparent is the only near copy in the project, so a gate that leaves out the parent
@@ -206,7 +246,7 @@ func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 		"project": "TEST", "parent": grandparent.Key,
 		"title": "Orchard pickers cannot log a crate", "spec": duplicateSpecHarvest,
 	}))
-	grandchild := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	grandchild := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "parent": parent.Key,
 		"title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
 	}))
@@ -215,7 +255,7 @@ func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 	}
 
 	// The parent itself is the other half of the clause.
-	child := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	child := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "parent": parent.Key,
 		"title": "Orchard pickers cannot log a crate", "spec": duplicateSpecHarvest,
 	}))
@@ -225,7 +265,7 @@ func TestCreateIssueDuplicateCreatesACopyOfAnAncestor(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -234,7 +274,7 @@ func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 	}))
 	// Every word these two texts share is an English stop word, which the tokenizer removes, so
 	// no term of the new text is one the open issue holds.
-	second := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	second := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Orchard pickers cannot log a crate after the dock is down",
 		"spec": duplicateSpecHarvest,
 	}))
@@ -244,14 +284,14 @@ func TestCreateIssueDuplicateCreatesATextSharingOnlyCommonWords(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
-	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	forced := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe, "force": true,
 	}))
@@ -261,7 +301,7 @@ func TestCreateIssueDuplicateForcePassesTheGate(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
 	cited := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -271,7 +311,7 @@ func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 	// The new text shares nothing with the cited issue but its key, which `skill://dispatch-first`
 	// tells a filer to write down. The key is the rarest lexeme in the project, so a gate that
 	// scored it would refuse this create.
-	second := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	second := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Orchard pickers cannot log a crate",
 		"spec": duplicateSpecHarvest + "\n\nNearest issue ruled out: dispatch://" + cited.Key + ".",
 	}))
@@ -387,7 +427,7 @@ func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testin
 }
 
 func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
 
@@ -395,7 +435,7 @@ func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testin
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
-	other := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	other := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "OTHER", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
@@ -418,7 +458,7 @@ func TestCreateIssueDuplicateScopesTheGateToTheProjectAndSkipsExternal(t *testin
 }
 
 func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "ORDER")
 
 	// Three open issues holding progressively more of the new text's words. Each is forced in,
@@ -472,7 +512,7 @@ func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
 // which is this case and that pair, and a title differing in one meaning word does not, which is
 // TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord.
 func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "COMMON")
 	// Twelve issues holding the three words of the title below, so each word's document
 	// frequency passes relatedCommonFloor and the picker drops it as a common word.
@@ -515,20 +555,16 @@ func TestCreateIssueDuplicateRefusesACopiedTitleWhoseWordsAreCommon(t *testing.T
 // These two titles are the seed of packages/dispatch/e2e/agent-name.e2e.ts, whose ten browser
 // tests fail at this head with `POST /api/v1/issues failed: 409` on the second create.
 func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "AGT")
 
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "AGT", "title": "Held by a running agent",
 		"spec": "The running agent comments here. The stopped agent comments there.",
 	}))
-	second := createIssueRequest(t, handler, map[string]any{
+	requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "AGT", "title": "Held by a stopped agent",
-	})
-
-	if second.Code != http.StatusCreated {
-		t.Fatalf("second create: status=%d body=%s", second.Code, second.Body.String())
-	}
+	}))
 }
 
 // A spec is stored as Dispatch renders it, not as the request wrote it: the seed parses the
@@ -539,7 +575,7 @@ func TestCreateIssueDuplicateCreatesTwoTitlesThatDifferInTheirOneMeaningWord(t *
 // `1.` `1.` holds no `2` where the row it copies holds one, and the exact copy R2 refuses was
 // created.
 func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "LIST")
 
 	first := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -559,5 +595,96 @@ func TestCreateIssueDuplicateRefusesACopiedSpecWhoseListIsRenumbered(t *testing.
 	}))
 	if len(renumbered.Candidates) != 1 || renumbered.Candidates[0].Key != first.Key {
 		t.Fatalf("candidates for the renumbered copy = %#v, want %q alone", renumbered.Candidates, first.Key)
+	}
+}
+
+// gateBoundStandIn is a near-copy read that never answers on its own (server.beforeDuplicateRead):
+// it says it has begun, blocks until the context the gate gives it ends, and records that
+// context's cause, so a case can tell what ended it.
+type gateBoundStandIn struct {
+	began chan struct{}
+
+	mu    sync.Mutex
+	ended error
+}
+
+func newGateBoundStandIn() *gateBoundStandIn {
+	return &gateBoundStandIn{began: make(chan struct{}, 1)}
+}
+
+func (s *gateBoundStandIn) read(ctx context.Context) error {
+	select {
+	case s.began <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ended = context.Cause(ctx)
+	return ctx.Err()
+}
+
+// The gate's bound, production's duplicateGateTimeout, is what ends a read that does not answer.
+// A read held until its context ends (gateBoundStandIn) is ended by that bound: the create of an
+// exact copy of an open issue goes in rather than being refused, is told that no near-copy check
+// was made in that time, and the server logs the bound it ran out of. This case runs under
+// production's bound, which every other test server replaces (gateBoundPastEveryRead), on a
+// clock the case moves: the gate arms its bound duplicateGateTimeout from the request on the
+// server's clock (gateBounds), the read never answers however fast the machine is, and the case
+// moves the clock to that deadline.
+func TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound(t *testing.T) {
+	fake := clocktest.New(checkStart)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
+	createDuplicateTestProject(t, handler, "BOUND")
+	const title = "Astrolabe calibration drifts after a reseat"
+	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "BOUND", "title": title, "spec": duplicateSpecAstrolabe,
+	}))
+	// Production's bound, which the rig replaced (newRegisteredTestServer).
+	served.duplicateBound = 0
+	standIn := newGateBoundStandIn()
+	served.beforeDuplicateRead = standIn.read
+	logs := captureLogs(t)
+
+	responded := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		responded <- createIssueRequest(t, handler, map[string]any{
+			"project": "BOUND", "title": title, "spec": duplicateSpecAstrolabe,
+		})
+	}()
+	testwait.Receive(t, "the gate's read to begin", standIn.began)
+	bound := checkStart.Add(duplicateGateTimeout)
+	testwait.Until(t, fmt.Sprintf("the gate's bound, armed for %v", bound), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, bound.Equal)
+	})
+	select {
+	case early := <-responded:
+		t.Fatalf("the create answered (status %d) before the clock reached the gate's bound, its read held", early.Code)
+	default:
+	}
+	fake.Set(bound)
+	response := testwait.Receive(t, "the create's answer once the gate's bound ran out", responded)
+	created := requireCreatedIssue(t, response)
+	standIn.mu.Lock()
+	ended := standIn.ended
+	standIn.mu.Unlock()
+	if !errors.Is(ended, errNearCopyGateBoundEnded) {
+		t.Fatalf("the gate's read ended with %v, want its bound's %v", ended, errNearCopyGateBoundEnded)
+	}
+	if check, want := createdSuggestions(t, response).NearCopyCheck, nearCopyCheckNotMade(duplicateGateTimeout); check != want {
+		t.Fatalf("near_copy_check = %q, want %q", check, want)
+	}
+	warned := false
+	for _, line := range strings.Split(logs.String(), "\n") {
+		warned = warned || strings.Contains(line, "level=WARN") &&
+			strings.Contains(line, `msg="dispatch: the near-copy check did not answer within its bound"`) &&
+			strings.Contains(line, "project=BOUND") && strings.Contains(line, "bound="+duplicateGateTimeout.String())
+	}
+	if !warned {
+		t.Fatalf("no WARN line names the near-copy check's bound %s:\n%s", duplicateGateTimeout, logs.String())
+	}
+	if _, ok := rawCreatedPayload(t, handler, created.Key)["forced"]; ok {
+		t.Fatalf("an unforced create the gate could not check carries a forced record")
 	}
 }

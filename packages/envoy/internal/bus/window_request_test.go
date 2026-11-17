@@ -83,7 +83,7 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	_, url, client := requestClient(t, bus.WithClock(clock))
 	window := client.WindowUntil(nil)
 
-	stored := contracts.AgentSubject("ses_request_stored")
+	stored := contracts.LegacyAgentSubject("ses_request_stored")
 	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored)})); err != nil {
 		t.Fatalf("a Request the stream acknowledged, with nobody subscribed to its subject, returned %v, want nil", err)
 	}
@@ -173,8 +173,8 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 	_, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 	item := forwardEnvelope("once")
-	holder := contracts.AgentSubject("ses_request_once")
-	other := contracts.AgentSubject("ses_request_other")
+	holder := contracts.LegacyAgentSubject("ses_request_once")
+	other := contracts.LegacyAgentSubject("ses_request_other")
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder)}
@@ -266,7 +266,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 	_, _, client := requestClient(t, bus.WithStreamMaxBytes(limit), bus.WithClock(clock))
 	bustest.FillStream(t, client, 1024)
 
-	holder := contracts.AgentSubject("ses_request_full")
+	holder := contracts.LegacyAgentSubject("ses_request_full")
 	item := forwardEnvelope("full")
 	err := answerOf(t, client.WindowUntil(nil).Request(holder, item,
 		bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder)}))
@@ -280,7 +280,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
 	const senders = 20
 	_, _, client := requestClient(t)
-	subject := contracts.AgentSubject("ses_request_many")
+	subject := contracts.LegacyAgentSubject("ses_request_many")
 	window := client.WindowUntil(nil)
 
 	var wg sync.WaitGroup
@@ -353,7 +353,7 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	clock := requestClock()
 	server, _, client := requestClient(t, bus.WithClock(clock))
-	subject := contracts.AgentSubject("ses_window_deadline")
+	subject := contracts.LegacyAgentSubject("ses_window_deadline")
 	server.Stop(t)
 	testwait.Eventually(t, "the client to see the stopped server's connection lost", func() bool {
 		return !client.Connected()
@@ -385,7 +385,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	pinned := clock.Now().Add(time.Hour)
 	live := client.WindowUntil(func() time.Time { return pinned })
 	marker := forwardEnvelope("deadline-marker")
-	marker.Topic = contracts.AgentSubject("ses_window_marker")
+	marker.Topic = contracts.LegacyAgentSubject("ses_window_marker")
 	if err := answerOf(t, live.PublishAsync(marker)); err != nil {
 		t.Fatalf("the marker after the reconnect answered %v, want nil", err)
 	}

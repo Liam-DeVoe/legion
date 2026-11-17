@@ -78,7 +78,7 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 
 	select {
 	case subject := <-forwards:
-		if want := contracts.AgentSubject(holder); subject != want {
+		if want := contracts.LegacyAgentSubject(holder); subject != want {
 			t.Fatalf("the role message was forwarded to %s, want %s", subject, want)
 		}
 	default:

@@ -80,7 +80,7 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 func captureAgentSubject(t *testing.T, client *bus.Client, holder string) chan *natsgo.Msg {
 	t.Helper()
 	forwards := make(chan *natsgo.Msg, 4)
-	received, err := client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
+	received, err := client.Conn.Subscribe(contracts.LegacyAgentSubject(holder), func(message *natsgo.Msg) {
 		select {
 		case forwards <- message:
 		default:
@@ -133,7 +133,7 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 	} else if !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("read the exception lane: %v", err)
 	}
-	if err := conn.Publish(contracts.AgentSubject(r.holder), staleHolderMarker); err != nil {
+	if err := conn.Publish(contracts.LegacyAgentSubject(r.holder), staleHolderMarker); err != nil {
 		t.Fatalf("publish the marker on the holder's subject: %v", err)
 	}
 	for {
@@ -170,7 +170,7 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 		holder = "ses_role_heartbeat"
 	)
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 	for _, tc := range []struct {
 		name          string
 		since         time.Duration

@@ -510,7 +510,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 			for registry.Load() == nil {
 				time.Sleep(time.Millisecond)
 			}
-			if err := registry.Load().reconnect(closed); err != nil {
+			if err := registry.Load().reconnect(context.Background(), closed); err != nil {
 				t.Errorf("the reconnect hook without a store = %v, want nil", err)
 			}
 		}
@@ -534,7 +534,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	}
 
 	// The healthy connection that replaces the gone one: the retry opens on it.
-	if err := started.reconnect(latest); err != nil {
+	if err := started.reconnect(context.Background(), latest); err != nil {
 		t.Fatalf("the reconnect hook without a store = %v, want nil", err)
 	}
 	testwait.Until(t, "the registry to serve once the latest connection came", func() (int, bool) {
