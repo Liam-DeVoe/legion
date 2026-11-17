@@ -159,17 +159,20 @@ func init() {
 		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
 		// The kinds of dispatch://INFRA-1950 the store holds alone, each registered in the commit
 		// that first writes a node of it (migration 20261116123354 writes the first two, the
-		// reasoning write of api the other three). A lens kind is a node of the catalogue, always
-		// project-visible, so its entry takes no node reserved for its author; a constraint, a
-		// lens, a finding of a lens and a risk may each be reserved for its author, and each one's
-		// predicate compares the person a credential proves. A finding is stored as a node of kind
-		// block at its own id, `lens/<uuid>#<block id>`, so its entry reads the store under that
-		// kind (storedAs).
-		graphstore.KindLensKind:   resolvedKind(loadLensKindNodes, nodeVisibility{}),
-		graphstore.KindConstraint: personAuthoredKind(loadConstraintNodes),
-		graphstore.KindLens:       personAuthoredKind(loadLensNodes),
-		graphstore.KindLensBlock:  personAuthoredKind(loadLensBlockNodes).storedAs(BlockNodeKind),
-		graphstore.KindRisk:       personAuthoredKind(loadRiskNodes),
+		// reasoning write of api the next three, and the going POST of api the last). A lens kind
+		// is a node of the catalogue, always project-visible, so its entry takes no node reserved
+		// for its author; a constraint, a lens, a finding of a lens and a risk may each be reserved
+		// for its author, and each one's predicate compares the person a credential proves. A
+		// finding is stored as a node of kind block at its own id, `lens/<uuid>#<block id>`, so its
+		// entry reads the store under that kind (storedAs). An interaction, one run of the command
+		// bar, is always reserved for its author, and its predicate compares the whole credential,
+		// as the going stream compares its reader with the run's author.
+		graphstore.KindLensKind:    resolvedKind(loadLensKindNodes, nodeVisibility{}),
+		graphstore.KindConstraint:  personAuthoredKind(loadConstraintNodes),
+		graphstore.KindLens:        personAuthoredKind(loadLensNodes),
+		graphstore.KindLensBlock:   personAuthoredKind(loadLensBlockNodes).storedAs(BlockNodeKind),
+		graphstore.KindRisk:        personAuthoredKind(loadRiskNodes),
+		graphstore.KindInteraction: credentialAuthoredKind(loadInteractionNodes),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, but they are nodes of the store like any other, so the

@@ -7,32 +7,37 @@ import { ContentsList } from "../IssueContents";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
-import { useReferenceNames } from "../one-line";
+import { useIssueNames } from "../one-line";
 import { useAskOutline, useFocusBranch } from "../outline-request";
 import { isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
-import { treeContext } from "../tree-drafts";
 import { useIssueTree } from "../useIssueTree";
 
 /**
- * Filled by INFRA-1196 part J, "The Spec view": what part D's Contents pane holds from 1024 px up,
- * and its Outline sheet below that (`contents-frame.tsx`), with no view on (R1, R2). From the top:
- * the issue's three sentences under "In short" (`IssueThreeThings`), then the Contents list of
- * each question and each thread the reader began (`ContentsList`). Under a view it draws nothing:
- * the Spec view draws the three sentences as its own first group, and no other view draws them.
+ * The contents slot, which the Spec view's work fills: what the page's Contents pane holds from
+ * 1024 px up, and its Outline sheet below that (`contents-frame.tsx`), with no view on (R1, R2).
+ * From the top: the issue's three sentences under "In short" (`IssueThreeThings`), then the
+ * Contents list of each question and each thread the reader began (`ContentsList`). Under a view
+ * it draws nothing: the Spec view draws the three sentences as its own first group, and no other
+ * view draws them.
  *
  * The list reads the tree the outline draws (`useIssueTree`), as the Conversation view leaves it
- * with the words filter's `?q=`. An entry chosen sends the outline to its node through part I's
- * `useAskOutline()`, then closes the Outline sheet the list is drawn in (`useContentsChosen`),
- * which does nothing in the pane. Focus branch is part I's `useFocusBranch()`, so the pane and the
- * sheet share it.
+ * with the words filter's `?q=`. An entry chosen sends the outline to its node through the
+ * outline's own request (`useAskOutline`), then closes the Outline sheet the list is drawn in
+ * (`useContentsChosen`), which does nothing in the pane. Focus branch is the outline's own
+ * (`useFocusBranch`), so the pane and the sheet share it.
  */
 export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
-  const specSlug = primarySpec(issue)?.slug ?? "";
+  const spec = primarySpec(issue);
+  const specSlug = spec?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksRead, root } = useIssueTree(issue);
+  const { blocksOf, root } = useIssueTree(issue);
+  // The sentences are the spec's summary, so they wait on the spec's blocks alone, which the
+  // head waits on before it says the spec holds no summary: the tree read's (`blocksOf`).
+  const specBlocks = blocksOf("spec");
+  const reading = spec !== undefined && specBlocks.data === undefined;
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
@@ -40,15 +45,20 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   );
   // How a reference the sentences and the entries cite is named, read once over the whole tree
   // (`referenceStandIns`).
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  const nameOf = useReferenceNames(root, nodeIdOf);
+  const { nameOf } = useIssueNames(issue, root);
   const ask = useAskOutline();
   const [focusBranch, setFocusBranch] = useFocusBranch();
   const chosen = useContentsChosen();
   if (isFilter(address.preset)) return null;
   return (
     <NoTooltips>
-      <IssueThreeThings look="contents" nameOf={nameOf} reading={!blocksRead} summary={memo} />
+      <IssueThreeThings
+        hasSpec={spec !== undefined}
+        look="contents"
+        nameOf={nameOf}
+        reading={reading}
+        summary={memo}
+      />
       <ContentsList
         focusBranch={focusBranch}
         nameOf={nameOf}

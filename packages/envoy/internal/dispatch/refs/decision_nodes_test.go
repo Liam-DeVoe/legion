@@ -196,11 +196,11 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	first := renderTypedVersion(t, ":::requirement{#r1}\nA requirement.\n:::\n\nSee dispatch://"+document.issue+".\n")
 	firstRecord := document.writeVersion(t, 1, first.markdown, alice)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := DecisionFacts(ctx, tx, document.artifact, 1, first.blocks, first.tree, first.pointers, writerSources(tx, document.artifact, alice))
+		facts, err := DecisionFacts(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.blocks, first.tree, first.pointers, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, _, write, err := IndexBlocks(ctx, tx, document.artifact, 1, firstRecord.at, first.markdown, first.blocks, first.located, first.pointers, facts)
+		_, _, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks, first.located, first.pointers, facts)
 		return write, err
 	}, firstRecord.event)
 	if got := mentionRows(t, database.Pool, document.artifact); got != 1 {
@@ -221,11 +221,11 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	// The typed pass alone, as a write above the deferral bound runs it.
 	before := document.highestTuple(t)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := DecisionFacts(ctx, tx, document.artifact, 2, second.blocks, second.tree, second.pointers, writerSources(tx, document.artifact, alice))
+		facts, err := DecisionFacts(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.blocks, second.tree, second.pointers, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, write, err := IndexDecisionNodes(ctx, tx, document.artifact, 2, secondRecord.at, facts, false)
+		_, write, err := IndexDecisionNodes(ctx, tx, document.artifact, facts, false)
 		return write, err
 	}, secondRecord.event)
 	typed := typedRows(t, database.Pool, document.artifact)
@@ -263,7 +263,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	// The reconciler over the same version, as the block-index tick runs it.
 	before = document.highestTuple(t)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := DecisionFacts(ctx, tx, document.artifact, 2, second.blocks, second.tree, second.pointers, writerSources(tx, document.artifact, alice))
+		facts, err := DecisionFacts(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.blocks, second.tree, second.pointers, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -280,14 +280,14 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 		if own, all := pairKeys(facts.typedPairs()), pairKeys(full); !reflect.DeepEqual(own, all) {
 			t.Fatalf("the typed pass's pairs\n\t%v\ndiffer from the reconciler's typed pairs\n\t%v", own, all)
 		}
-		_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 2, secondRecord.at, second.markdown, second.blocks, second.located, second.pointers, facts)
+		_, won, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.markdown, second.blocks, second.located, second.pointers, facts)
 		if err == nil && !won {
 			err = fmt.Errorf("the reconciler lost the revision fence over version 2")
 		}
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, typed, err := IndexDecisionNodes(ctx, tx, document.artifact, 2, secondRecord.at, facts, true)
+		_, typed, err := IndexDecisionNodes(ctx, tx, document.artifact, facts, true)
 		write.Nodes, write.Tuples = append(write.Nodes, typed.Nodes...), append(write.Tuples, typed.Tuples...)
 		return write, err
 	}, secondRecord.event)
@@ -324,18 +324,18 @@ func TestAOneWordEditWritesOnlyTheNodesOfTheBlocksItMoved(t *testing.T) {
 	firstRecord := document.writeVersion(t, 1, first.markdown, alice)
 	index := func(version typedVersion, number int, record versionRecord) (blocks, typed []string) {
 		commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-			facts, err := DecisionFacts(ctx, tx, document.artifact, number, version.blocks, version.tree, version.pointers, writerSources(tx, document.artifact, alice))
+			facts, err := DecisionFacts(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.blocks, version.tree, version.pointers, writerSources(tx, document.artifact, alice))
 			if err != nil {
 				return graphstore.Uncaused{}, err
 			}
-			_, won, write, err := IndexBlocks(ctx, tx, document.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, facts)
+			_, won, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, facts)
 			if err == nil && !won {
 				err = fmt.Errorf("version %d lost the revision fence", number)
 			}
 			if err != nil {
 				return graphstore.Uncaused{}, err
 			}
-			_, own, err := IndexDecisionNodes(ctx, tx, document.artifact, number, record.at, facts, true)
+			_, own, err := IndexDecisionNodes(ctx, tx, document.artifact, facts, true)
 			for _, node := range write.Nodes {
 				blocks = append(blocks, node.ID)
 			}

@@ -109,6 +109,34 @@ type Node struct {
 	// leaves it false. WriteArms reads none of it: its upsert moves nothing on a node already
 	// there.
 	Restates bool
+	// KeepsCause says the write keeps the cause the store holds of a node already there, its
+	// row's source_event, whatever else of the row it moves. It is for a write that moves only a
+	// base attribute of a node another write caused: a request's write of a node's state (api's
+	// writeNodeState), at NoEvent. That write is no cause of the node's other facts, and a row it
+	// put at the sentinel would take the event of the next write Caused moves onto it
+	// (causeNodes) - the next index pass of a block's document, for a version that changed nothing
+	// of the block. The base attributes it states still carry its own SourceEvent, so one at
+	// NoEvent states each at the sentinel, which no repeat key drops: proposed, live and proposed
+	// again are three tuples. A node the store does not hold is made at the write's own
+	// SourceEvent, since it has no cause to keep.
+	KeepsCause bool
+	// Changed marks a node this write created or changed, which a write made for a run names as
+	// changed by it (WithRun): Write and Caused, on a context holding a run, append one
+	// TupleChangedByRun from it to that run's interaction. Its writer sets it, because the store
+	// cannot infer it: a block's words are no column of its node, so an edit of them moves
+	// nothing a node write compares. A node a write only names - an author's person or session
+	// node, a block row a pass gives the node it lacked - is never marked. No read answers it.
+	Changed bool
+	// ChangedAt and ChangedBy date and sign the changed_by_run a node marked Changed owes, for a
+	// writer that changes a node it writes as another write made it: the issue PATCH (api's
+	// patchIssue) writes the issue's node as the create and the backfill write it, made at the
+	// issue's created_at by its creator, while its tuple says that the PATCH changed the issue,
+	// then and by its writer. A writer sets both or neither: the zero ChangedAt leaves the tuple
+	// dated and signed as the node is, MadeAt and MadeBy, which is every other writer, since the
+	// zero actor names a writer of its own (the deployment's shared token) and so cannot say that
+	// ChangedBy is unset. No column holds either, and no read answers them.
+	ChangedAt time.Time
+	ChangedBy model.Actor
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is
@@ -125,6 +153,10 @@ type Tuple struct {
 	SourceEvent      int64
 	LegacySourceSeq  *int64
 	Asserted         bool
+	// Changes marks a fact that changes the node it goes out of - a pointer a request appends,
+	// retracts or moves - so a write made for a run names that node as changed by it, as
+	// Node.Changed names a node the write itself writes. No read answers it.
+	Changes bool
 }
 
 // Queryer is the query surface shared by a pool and a transaction, as internal/dispatch/refs has

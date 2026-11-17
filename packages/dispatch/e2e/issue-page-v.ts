@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type Route } from "@playwright/test";
 
 import { CONTROL_LABELS, type StatementState } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
@@ -10,16 +10,17 @@ import {
   getIssueCoverage,
   recordCheckResult,
 } from "./api";
+import type { WholeIssueSeed } from "./issue-layout-seed";
 import { HEAD_SHA, PROJECT, pause, recorderActor } from "./issue-layout-seed-support";
-import { specBlockRef } from "./issue-layout-seed-text";
+import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
 import { longWords } from "./issue-page-g";
+import { openPreset } from "./issue-page-i";
 
 /**
- * How part V's rows read the Verification view of the new issue page (dispatch://INFRA-1196
- * part V, `e2e/issue-page-v.e2e.ts`): the readers that D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts` and I's `e2e/issue-page-i.ts` do not hold (decision 2 of the parts). No
- * later part changes this file.
+ * How the rows of `e2e/issue-page-v.e2e.ts` read the Verification view of the new issue page:
+ * the readers that `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts` do not
+ * hold. They are a file of their own, so the rows of the page's other views never change it.
  *
  * What the view draws (`verification-filter/VerificationFilterBody.tsx`), its body
  * `[data-verification-body]`:
@@ -38,9 +39,19 @@ import { longWords } from "./issue-page-g";
  *   then the table `[data-verification-table]` and its headings `[data-verification-head]`.
  * - **Under a statement's checks** the line `[data-verification-elsewhere]` that counts the
  *   checks of the issues under this one that serve it.
+ * - **Over the tree**, for each read that failed before it first answered, one line
+ *   `[data-verification-unreadable]` whose value names that read (`coverage`, `results` or
+ *   `blocks`): the page's words for it and a "Retry" button that asks that read alone again.
+ *
+ * Each row of the tree (`[data-node-row]`), the issue's row, each card, each check and each
+ * other row, carries its own id as `data-verification-row`; a check drawn under a statement
+ * carries the statement's id and its own, joined by a space.
  *
  * Each measure over the cards fails when the view draws none, so a view that draws nothing
- * never passes a reading of what it draws. Row 3's issue is `seedLinkedChecks`, at the end.
+ * never passes a reading of what it draws. `openSettledView` opens `seedWholeIssue`'s issue and
+ * reads its view once every read has answered, `refuseBlocksRead` refuses its Verification
+ * document's blocks read for the rows that read the view while that read fails, and row 3's
+ * issue is `seedLinkedChecks`, at the end.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -85,6 +96,19 @@ export function copyCommandControls(page: Page): Locator {
 /** The view's body, which holds its one tree. */
 export function verificationBody(page: Page): Locator {
   return issuePage(page).locator("[data-verification-body]");
+}
+
+/** Each line the view draws over its tree for a read that failed before it first answered,
+ *  whose `data-verification-unreadable` names that read; given `read`, that read's line alone. */
+export function verificationUnreadable(
+  page: Page,
+  read?: "blocks" | "coverage" | "results"
+): Locator {
+  return issuePage(page).locator(
+    read === undefined
+      ? "[data-verification-unreadable]"
+      : `[data-verification-unreadable="${read}"]`
+  );
 }
 
 /** The issue's own row, the first row of the view's tree, which holds the summary and the
@@ -282,7 +306,7 @@ export async function overlappingTexts(page: Page): Promise<Overlap[]> {
   return read.found;
 }
 
-/** How the view's body and its table stand at one width (part V's R6), in CSS pixels. */
+/** How the view's body and its table stand at one width, in CSS pixels. */
 export interface VerificationFrame {
   /** `[data-verification-body]`: its width, its computed top and bottom margins, and the width
    *  of the element around it, which is the stage's column. */
@@ -371,7 +395,7 @@ export async function checkLegendCounts(page: Page): Promise<Record<string, numb
 }
 
 /** How many shapes the view's body draws, and the token of each one it draws with no box,
- *  which no reader sees (R2: with forced colours each state keeps its shape). Fails where the
+ *  which no reader sees: with forced colours each state must keep its shape. Fails where the
  *  view draws no card. */
 export async function glyphsWithNoBox(
   page: Page
@@ -407,7 +431,7 @@ export interface MarkPaint {
 
 /**
  * Whether each word and shape that tells a state apart in the view's cards is painted where a
- * reader sees it (part V's R2: with forced colours each state keeps its word and its shape).
+ * reader sees it: with forced colours each state must keep its word and its shape.
  * What a mark says and which shape it is are the page's markup, which forced colours never
  * change, so this reads what is painted: the page renders the mark (`checkVisibility`, its
  * `visibility` and `opacity` read too), it has a box of some size, and its colour is not the
@@ -481,10 +505,10 @@ export function linkLook(link: Locator): Promise<LinkLook> {
 }
 
 /**
- * A walk by Tab alone (part V's R8): each call presses Tab until the control it names holds the
- * keyboard focus and answers how many presses that took, and the walk presses at most `presses`
- * times over all its calls. So a row names the controls in the order Tab must reach them, and
- * fails with the message of the first one Tab does not reach in what is left of the presses.
+ * A walk by Tab alone: each call presses Tab until the control it names holds the keyboard focus
+ * and answers how many presses that took, and the walk presses at most `presses` times over all
+ * its calls. So a row names the controls in the order Tab must reach them, and fails with the
+ * message of the first one Tab does not reach in what is left of the presses.
  */
 export function tabWalk(
   page: Page,
@@ -505,17 +529,172 @@ export function tabWalk(
 }
 
 // ---------------------------------------------------------------------------------------------
+// The whole issue's view once every read has answered, what the view draws of it before, and
+// its Verification document's blocks read refused.
+// ---------------------------------------------------------------------------------------------
+
+/** What the view draws of each statement `ids` names - the checks drawn under it, and how many
+ *  lines it draws that say no check serves it or that checks serve it elsewhere - or null where
+ *  it draws no card for it; and every check it draws as one that serves no statement. */
+export interface ServedReading {
+  readonly loose: readonly string[];
+  readonly statements: Readonly<
+    Record<string, { checks: string[]; elsewhere: number; gaps: number } | null>
+  >;
+}
+
+export function readServed(page: Page, ids: readonly string[]): Promise<ServedReading> {
+  return page.evaluate(
+    ({ selectors, statementIds }) => {
+      const issue = selectors.issuePage;
+      const statements: Record<
+        string,
+        { checks: string[]; elsewhere: number; gaps: number } | null
+      > = {};
+      for (const id of statementIds) {
+        const card = document.querySelector(`${issue} ${selectors.card}[data-node-id="${id}"]`);
+        statements[id] =
+          card === null
+            ? null
+            : {
+                checks: [...card.querySelectorAll("[data-verification-check]")].map(
+                  (check) => check.getAttribute("data-node-id") ?? ""
+                ),
+                elsewhere: card.querySelectorAll("[data-verification-elsewhere]").length,
+                gaps: card.querySelectorAll("[data-gap-kind]").length,
+              };
+      }
+      const loose = [
+        ...document.querySelectorAll(`${issue} [data-verification-check][data-verification-loose]`),
+      ].map((check) => check.getAttribute("data-node-id") ?? "");
+      return { loose, statements };
+    },
+    { selectors: SELECTORS, statementIds: ids }
+  );
+}
+
+/** Each thing `held` draws that `truth`, the view once every read has answered, does not: a
+ *  check drawn as one that serves no statement, and a statement drawn with other checks, or with
+ *  a line saying none serves it or that its checks stand elsewhere. A statement not drawn at all
+ *  says nothing, so it contradicts nothing. */
+export function contradictions(truth: ServedReading, held: ServedReading): string[] {
+  const found = held.loose
+    .filter((id) => !truth.loose.includes(id))
+    .map((id) => `${id} is drawn as a check that serves no statement`);
+  for (const [id, drawn] of Object.entries(held.statements)) {
+    if (drawn === null) continue;
+    const settled = truth.statements[id];
+    if (JSON.stringify(drawn) !== JSON.stringify(settled)) {
+      found.push(
+        `${id} draws ${JSON.stringify(drawn)} where it settles on ${JSON.stringify(settled)}`
+      );
+    }
+  }
+  return found;
+}
+
+/** What `openSettledView` read of `seedWholeIssue`'s issue. */
+export interface SettledView {
+  /** The node ids of statements 1 to 6, in document order. */
+  readonly ids: readonly string[];
+  /** Each of the issue's six checks by its node id, with the node id of the statement it
+   *  serves: check i serves statement i (`seedWholeIssue`). */
+  readonly served: readonly { readonly check: string; readonly statement: string }[];
+  /** The view once every read has answered, as `readServed` reads it. */
+  readonly truth: ServedReading;
+}
+
+/** Opens the Verification view on `seedWholeIssue`'s issue and waits until each of statements 1
+ *  to 6 draws the one check that serves it, which it does once every read has answered. */
+export async function openSettledView(page: Page, seeded: WholeIssueSeed): Promise<SettledView> {
+  const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
+    getArtifact(seeded.specArtifactId),
+    getArtifact(seeded.verificationArtifactId),
+  ]);
+  // Check i serves statement i, for 1 to 6 (`seedWholeIssue`).
+  const served = seeded.checks.all.map((check, at) => ({
+    check: blockNodeId(verificationSlug, check),
+    statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
+  }));
+  const ids = served.map((one) => one.statement);
+  await openPreset(page, seeded.key, "verification");
+  await expect
+    .poll(
+      async () => {
+        const now = await readServed(page, ids);
+        return served.every((one) => now.statements[one.statement]?.checks.join() === one.check);
+      },
+      { message: "the settled view draws a statement without the check that serves it" }
+    )
+    .toBe(true);
+  return { ids, served, truth: await readServed(page, ids) };
+}
+
+/** What `refuseBlocksRead` hands its row, to count its refusals and to end them. */
+export interface RefusedBlocksRead {
+  /** Takes the refusal off, so the blocks read reaches the server again. */
+  lift(): Promise<void>;
+  /** How many requests of the blocks read have been refused so far, the page's own retries
+   *  included. */
+  refusals(): number;
+  /** Settles once `count` requests of the blocks read have been refused in all, and not
+   *  before. */
+  refused(count: number): Promise<void>;
+}
+
+/** One wait `refused` hands a row: the promise it returns and the call that settles it. The
+ *  package compiles against ES2022, whose library names no type for what
+ *  `Promise.withResolvers` returns, so the two parts the helper uses are named here. */
+interface RefusalWait {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+}
+
+/**
+ * Refuses the blocks read of the document `artifactId` names, with a 500 in the server's error
+ * shape, from the next request the page sends until `lift`, as many times as the page asks it.
+ * A refusal is counted once its answer has been sent, so a row that waits on `refused(n)` reads
+ * a page that has had its nth refusal. The rows read this way how the view stands when its
+ * Verification document's blocks read fails, which no seed makes, and every row refuses it
+ * through this one route, so a change to how a refusal is answered reaches each of them.
+ */
+export async function refuseBlocksRead(page: Page, artifactId: string): Promise<RefusedBlocksRead> {
+  const blocksRoute = `**/api/v1/artifacts/${artifactId}/blocks`;
+  let refusals = 0;
+  // Each wait a row asked for, by the count it waits on: the count rises by one at each
+  // refusal, so the refusal that reaches a wait's count is the one that settles it.
+  const waiting = new Map<number, RefusalWait>();
+  const refuse = async (route: Route) => {
+    await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+    refusals += 1;
+    waiting.get(refusals)?.resolve();
+    waiting.delete(refusals);
+  };
+  await page.route(blocksRoute, refuse);
+  return {
+    lift: () => page.unroute(blocksRoute, refuse),
+    refusals: () => refusals,
+    refused: (count) => {
+      if (refusals >= count) return Promise.resolve();
+      const wait = waiting.get(count) ?? Promise.withResolvers<void>();
+      waiting.set(count, wait);
+      return wait.promise;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Row 3's issue: a check with links serving two statements, and a child's check serving a third.
 // ---------------------------------------------------------------------------------------------
 
 /** The block ids of statements A, B and C of row 3's spec, and of the issue's one check. */
 const LINKED_BLOCKS = { a: "r-a", b: "r-b", c: "r-c", check: "c-linked" } as const;
 
-/** Statement A: 200 words, which the view cuts at six lines (part V's R5). */
+/** Statement A: 200 words, which the view cuts at six lines. */
 const STATEMENT_A_WORDS = longWords("stated", 200);
 
 /** Statement B: more than 32 characters, so the line that names it by its first words cuts
- *  them at a word (part V's R7, G's `chipWords`). */
+ *  them at a word (`chipWords`). */
 export const STATEMENT_B_WORDS =
   "The check that serves the first statement serves this one as well.";
 
@@ -535,14 +714,14 @@ export interface LinkedChecksSeed {
     readonly c: string;
     readonly check: string;
   };
-  /** Statement B's `dispatch://` address, which the check's words cite. */
+  /** The `dispatch://` address of statement B, which the check's words cite. */
   readonly referenceToB: string;
 }
 
 /**
- * Row 3's issue (c-view of dispatch://INFRA-3936): a spec of statements A (200 words), B and C;
- * a Verification document with one check that serves A and B, whose words hold a markdown link
- * to the runbook and B's own `dispatch://` address, with one result an agent's session
+ * The issue row 3 of `e2e/issue-page-v.e2e.ts` reads: a spec of statements A (200 words), B and
+ * C; a Verification document with one check that serves A and B, whose words hold a markdown
+ * link to the runbook and the `dispatch://` address of B, with one result an agent's session
  * recorded; and a child whose Verification document holds one check that serves C. A `serves`
  * is written as `verificationDocument` writes one, `dispatch://<key>/spec#b-<id>`. The seed
  * waits until the coverage read counts one check for each statement, the child's included, so

@@ -237,28 +237,16 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			if ask.BlockID == nil {
 				return nil
 			}
-			blockArtifact, err := blockArtifactOf(ask)
-			if err != nil {
-				return err
-			}
 			// A copy of this ask on another document of its owner shows its state, so the
 			// answer settles each copy again; the copies' pending rows are taken before this
 			// document's (docs.SettleCopiesOf).
 			if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 				return err
 			}
-			var answerText any
-			if answer.Text != nil {
-				answerText = *answer.Text
-			}
-			attributes := map[string]any{
-				"state":       "answered",
-				"answered_by": answer.User,
-				"answered_at": timestampValue(answer.At),
-				"selected":    answer.Selected,
-				"answer":      answerText,
-			}
-			return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, attributes, actor)
+			// The answer is held on the ask's node alone. While a process of the release before
+			// serves, whose page reads it from the block, the block is kept in step with it.
+			ask.State, ask.Answer = asks.StateAnswered, &answer
+			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
 	})
 	// Answering an approval request approves its document, so it needs the approve scope beside
@@ -371,25 +359,20 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
-// writeClosedBlockState writes a closed block ask's state into its document, as the resolve and
-// the decline both must: a block ask's closed state belongs in its block too, written by
-// whoever closed it, since left to settlement the repair lands on whoever next touches the
-// document. A copy of the ask on another document of its owner shows its state as well, so each
-// copy is settled again (docs.SettleCopiesOf). An ask with no block writes nothing.
+// writeClosedBlockState settles again each copy of a closed block ask on another document of its
+// owner, which shows its state (docs.SettleCopiesOf), as the resolve and the decline both must,
+// and keeps the ask's own block in step with its resolution while a process of the release before
+// serves, whose page reads the state from the block (docs.KeepAskBlockInStep). An ask with no
+// block writes nothing.
 func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {
 		return nil
 	}
-	blockArtifact, err := blockArtifactOf(ask)
-	if err != nil {
-		return err
-	}
 	if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 		return err
 	}
-	return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, map[string]any{
-		"state": "resolved",
-	}, actor)
+	ask.State = asks.StateResolved
+	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }
 
 // declineAskInput is the body of POST /api/v1/asks/{id}/decline. Both fields are optional: a

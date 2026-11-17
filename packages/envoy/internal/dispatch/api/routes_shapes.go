@@ -761,9 +761,14 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
-	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	// The pre-mortem conversion of dispatch://INFRA-1950 (premortem_convert.go): the map from each
+	// risk to its checks, read entry by entry, and the report the command prints too.
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
+		Status: http.StatusOK, Response: PremortemReport{}, Request: premortemConvertInput{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -1074,6 +1079,7 @@ var routeShapes = map[string]routeShape{
 		OptionalRequest: true,
 	},
 	"GET /api/v1/artifacts/_test/rooms":                          {Status: http.StatusOK, Response: residentRooms{}},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Status: http.StatusOK, Response: liveAskAttributes{}},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Status: http.StatusOK, Response: docs.RoomCounters{}},
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":         {Status: http.StatusNoContent, Request: holdPersistenceInput{}},
 	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusNoContent},

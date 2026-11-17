@@ -17,6 +17,7 @@ import {
   LIVE_SOCKET_STUCK_MS,
   type LiveSocket,
   type LiveSocketState,
+  liveFeedUp,
   liveSocketFor,
   RECONNECT_SPREAD_MS,
   reconnectDelayMs,
@@ -944,6 +945,36 @@ test("a 4001 whose reopen fails reads reconnecting, shows the pill and reports a
     pill.unmount();
     stopFeed();
     shared.close();
+    client.clear();
+    random.mockRestore();
+  }
+});
+
+// What the issue page's tree read asks on a window focus: whether the live feed is up. Asking
+// opens no socket of its own, and only an open socket reads as up.
+test("the live feed reads up only while the client's socket is open, and asking opens no socket", () => {
+  jest.useFakeTimers();
+  const random = spyOn(Math, "random").mockReturnValue(0.5);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const before = sockets.sockets.length;
+  try {
+    expect(liveFeedUp(client), "a client with no socket reads its feed up").toBe(false);
+    expect(sockets.sockets, "asking how the feed stands opened a socket").toHaveLength(before);
+
+    const shared = liveSocketFor(client);
+    const stopFeed = shared.subscribeEvents(eventFeed().handlers);
+    try {
+      expect(liveFeedUp(client), "a socket still connecting reads up").toBe(false);
+      const socket = sockets.latest();
+      act(() => socket.open());
+      expect(liveFeedUp(client), "an open socket reads down").toBe(true);
+      act(() => socket.drop(1006));
+      expect(liveFeedUp(client), "a dropped socket reads up").toBe(false);
+    } finally {
+      stopFeed();
+      shared.close();
+    }
+  } finally {
     client.clear();
     random.mockRestore();
   }

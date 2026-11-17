@@ -64,14 +64,17 @@ func storeCensusOf(t *testing.T, databaseURL, when string) (int, string) {
 // the test's own, and every row is written through its API, as a deployment's are: a spec of three
 // requirements; an ask a person asks in a document of the issue, shaping the first requirement,
 // which another person answers and a session follows; a reading inside that answered ask; a copy
-// of that ask on another document; and an agent's decision shaping the first two requirements,
-// settling the ask (from_ask) and holding a reading of its own. The issue is routed to a role and
-// commented on, as dispatch://INFRA-1149's census run addresses one (addressTheRole), so every kind
-// of that child holds rows too and the census has no empty kind to refuse. `census --store` then
-// prints one line for each of the eight kinds, each with rows and nodes and no difference in
-// either direction, the store-only lines for copied_from and moved_to, and exits 0. One shaped
-// tuple of the decision is then moved by SQL to the third requirement, which no row of block_refs
-// names: the census reads that row and its node disagreeing under shaped and exits 1.
+// of that ask on another document; an agent's decision shaping the first two requirements,
+// settling the ask (from_ask) and holding a reading of its own; and a note citing the issue. The
+// issue is routed to a role and commented on, as dispatch://INFRA-1149's census run addresses one
+// (addressTheRole), so every kind of that child holds rows too - the note's mention the block_ref
+// kind's, which holds no decision's shaped - and the census has no empty kind to refuse. `census --store` then
+// prints one line for each of the eight kinds, each with rows and nodes or tuples and no difference
+// in either direction, the store-only lines for copied_from and moved_to, and exits 0. One shaped
+// tuple of the decision is then moved by SQL from the second requirement to the third, which no
+// row of block_refs names: with both sides still counting three, the census names the row of the
+// second that no tuple states and the tuple into the third that no row projects, and nothing of
+// the first, and exits 1.
 func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
@@ -121,6 +124,9 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	upload(agentBearer(), "choices.md", "::::decision{#d1 shaped=\""+pointer("r1")+" "+pointer("r2")+"\" from_ask=\"dispatch://"+issue+"/ask/"+askID+"\"}\n"+
 		"REST for every service this quarter.\n\n:::reading{#g3}\nThe agent reads it so.\n:::\n::::\n",
 		map[string]any{"kind": "session", "id": decisionCensusSession})
+	// A note citing the issue, so INFRA-1149's block_ref kind holds a block's mention: a decision's
+	// shaped is held by the shaped kind alone, and no other block of the fixture cites anything.
+	upload(asUser(dispatchTestLogin), "notes.md", "The notes cite dispatch://"+issue+".\n", nil)
 	process.call(t, http.MethodPatch, "/api/v1/issues/"+issue, `{"route":"role:`+decisionCensusRole+`"}`, http.StatusOK)
 	process.mention(t, issue, "A comment on the routed issue, so the role is a destination.")
 	awaitSettledCopy(t, database, askID)
@@ -130,20 +136,26 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	if code != 0 {
 		t.Fatalf("census --store over the seeded database exited %d, want 0", code)
 	}
+	requireCensusLine(t, printed, "block_ref", true)
 	for _, name := range decisionCensusKinds {
 		requireCensusLine(t, printed, name, true)
 	}
 	for _, line := range []string{
-		"census: store-only kind=copied_from tuples=1 unresolved=0\n",
-		"census: store-only kind=moved_to tuples=0 unresolved=0\n",
+		"census: store-only kind=copied_from tuples=1 unresolved=0 left_out=0\n",
+		"census: store-only kind=moved_to tuples=0 unresolved=0 left_out=0\n",
 		"census: store kind=ask_parent unmarked_rows=0 ",
 		"census: store kind=followed_by unmarked_rows=0 ",
+		"census: store kind=shaped tuples=3 rows=3 table=block_refs rows_without_a_tuple=0 tuples_without_a_row=0 ",
 	} {
 		if !strings.Contains(printed, line) {
 			t.Errorf("census --store over the seeded database printed no line %q", line)
 		}
 	}
 
+	// The decision's tuple into r2 moves to r3: the rows still name r1 and r2 and the store now
+	// states r1 and r3, so both sides count three, and the census names the row of r2 that no
+	// tuple states and the tuple into r3 that no row projects, and nothing of r1, whose row and
+	// tuple agree (dispatch://INFRA-1150 c-census: every reference, triple by triple).
 	decision := issue + "/choices-md#d1"
 	tag, err := database.Pool.Exec(ctx, `
 		update graph_tuples set to_id = $3
@@ -158,12 +170,17 @@ func TestTheStoreCensusHoldsThisChildsKindsToAServerSeededDatabase(t *testing.T)
 	}
 	requireCensusLine(t, printed, refs.TupleShaped, false)
 	for _, want := range []string{
-		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + issue + "/spec#r1: the row and its node disagree",
-		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + issue + "/spec#r2: the row and its node disagree",
+		"census: store kind=shaped tuples=3 rows=3 table=block_refs rows_without_a_tuple=1 tuples_without_a_row=1 ",
+		"census: store kind=shaped difference at block_ref " + decision + " shaped -> block " + issue + "/spec#r2: a row no tuple states\n",
+		"census: store kind=shaped difference at block:" + decision + " shaped -> block:" + issue + "/spec#r3: a tuple no row projects\n",
+		"census: store REFUSED (2 difference(s))\n",
 	} {
 		if !strings.Contains(printed, want) {
-			t.Errorf("census --store once a shaped tuple reaches the wrong node printed no line starting %q", want)
+			t.Errorf("census --store once a shaped tuple reaches the wrong node printed no line holding %q", want)
 		}
+	}
+	if unchanged := " difference at block_ref " + decision + " shaped -> block " + issue + "/spec#r1"; strings.Contains(printed, unchanged) {
+		t.Errorf("census --store once a shaped tuple reaches the wrong node printed a line holding %q, whose row and tuple agree", unchanged)
 	}
 }
 
@@ -188,12 +205,14 @@ func awaitRolePublished(t *testing.T, database *store.Store, role string) {
 	t.Fatalf("the publisher wrote no node and page of the role %s", role)
 }
 
-// requireCensusLine fails unless the census printed a kind line for name holding rows and nodes,
-// and, where agrees, no difference in either direction; where it does not, at least one.
+// requireCensusLine fails unless the census printed a kind line for name holding rows and nodes or
+// tuples, and, where agrees, no difference in either direction; where it does not, at least one.
+// A kind held triple by triple prints tuples= and its differences as rows without a tuple and
+// tuples without a row, and any other nodes= and rows without a node and nodes without a row.
 func requireCensusLine(t *testing.T, printed, name string, agrees bool) {
 	t.Helper()
 	for _, line := range strings.Split(printed, "\n") {
-		if !strings.HasPrefix(line, "census: store kind="+name+" nodes=") {
+		if !strings.HasPrefix(line, "census: store kind="+name+" nodes=") && !strings.HasPrefix(line, "census: store kind="+name+" tuples=") {
 			continue
 		}
 		fields := map[string]string{}
@@ -202,10 +221,14 @@ func requireCensusLine(t *testing.T, printed, name string, agrees bool) {
 				fields[key] = value
 			}
 		}
-		if fields["rows"] == "0" || fields["nodes"] == "0" {
+		side, rowsMissing, sideMissing := "nodes", "rows_without_a_node", "nodes_without_a_row"
+		if _, triples := fields["tuples"]; triples {
+			side, rowsMissing, sideMissing = "tuples", "rows_without_a_tuple", "tuples_without_a_row"
+		}
+		if fields["rows"] == "0" || fields[side] == "0" {
 			t.Errorf("the census line of %s reads %q, which compared nothing", name, line)
 		}
-		differs := fields["rows_without_a_node"] != "0" || fields["nodes_without_a_row"] != "0"
+		differs := fields[rowsMissing] != "0" || fields[sideMissing] != "0"
 		if differs == agrees {
 			t.Errorf("the census line of %s reads %q, want differences %t", name, line, !agrees)
 		}

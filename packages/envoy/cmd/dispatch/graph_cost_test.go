@@ -12,11 +12,12 @@ package main
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit this branch forked
-// from (`git merge-base origin/main HEAD`, baseBuild). Each serves a database of its own and
-// migrates it at boot, so each arm runs its own code over its own schema: the older build has
-// no graph_nodes and no graph_tuples, and this build's graph_edges reads the tuple arm over
-// them. One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the base commit (baseBuild): the
+// commit BASELINE_SHA names, or, where it is unset, the commit this branch forked from, `git
+// merge-base origin/main HEAD`. Each serves a database of its own and migrates it at boot, so
+// each arm runs its own code over its own schema: the older build lacks migrations this one
+// holds (the merge-base has no graph_nodes and no graph_tuples, over which this build's
+// graph_edges reads the tuple arm). One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -117,10 +118,11 @@ func (a *costArm) ready(t *testing.T) {
 	t.Helper()
 }
 
-// startCostArms starts both arms: this working copy's build and the build of the commit this
-// branch forked from, each on an empty database of its own which that build migrates at boot,
-// and both delivering to one stub Envoy listener, so a delivery costs the same transport on
-// either arm. It answers them in the order they are measured in, this child first.
+// startCostArms starts both arms: this working copy's build and the base commit's (baseBuild:
+// the commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD`), each
+// on an empty database of its own which that build migrates at boot, and both delivering to one
+// stub Envoy listener, so a delivery costs the same transport on either arm. It answers them in
+// the order they are measured in, this child first.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)
@@ -334,12 +336,18 @@ func costShapeName(shape string) string {
 
 // costBlockIndexDrained waits until the arm's block-index reconciliation has nothing owed, so
 // that no tick of its own runs inside a measured window. It is the same read
-// store_census_test.go's waitForTheBlockIndex takes, over the three queues a tick serves.
+// store_census_test.go's waitForTheBlockIndex takes: on this child's arm a document owed by a null
+// version or by this release's own mark, store_owed_at, which the backfill and its drain set, and
+// on the older build's arm, whose schema holds no such column, one owed by a null version.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
+	read := `select count(*) from document_block_versions where version is null`
+	if arm.head {
+		read += ` or store_owed_at is not null`
+	}
 	deadline := time.Now().Add(within)
 	for {
-		owed := arm.count(t, `select count(*) from document_block_versions where version is null`)
+		owed := arm.count(t, read)
 		if owed == 0 {
 			return
 		}

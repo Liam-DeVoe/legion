@@ -96,9 +96,9 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
- *  header that part P fills, which draws the key and the title, the view row that part D fills,
- *  the outline's one line for an issue that holds nothing, the Contents pane and the Spec view
- *  that part J fills, and nothing else. */
+ *  header, which draws the key and the title, the view row, the outline's one line for an issue
+ *  that holds nothing, the Contents pane and the Spec view that their own slots fill, and
+ *  nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -106,14 +106,13 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The parts that fill a slot change these readings: part P fills the header
-  // (`[data-issue-header]`), part D the view row (`[data-filter-row]`), part I's outline draws its
-  // one line for an issue that holds nothing at the issue's own address, part J the Contents pane
-  // and the Spec view, whose own rows read them, and each other slot drawn so far adds no text or
-  // control.
-  const header = newPage.locator("[data-issue-header]");
+  // The slots filled so far change these readings: the header (`[data-issue-header]`), the view
+  // row (`[data-filter-row]`), the outline's one line for an issue that holds nothing at the
+  // issue's own address, and the Contents pane and the Spec view, whose own rows read them; each
+  // other slot drawn so far adds no text or control.
   const filled =
     '[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-spec-body]';
+  const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);
   await expect(row).toHaveCount(1);
