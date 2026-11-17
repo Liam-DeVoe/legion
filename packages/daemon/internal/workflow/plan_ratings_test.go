@@ -169,12 +169,12 @@ func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
 // already working at the deploy finishes with no plan (its read shows the plan null).
 func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		rating int
-		reason string
+		name string
+		// rating is the completion's rating of the plan, nil for a retro that gives none.
+		rating *intake.PlanRating
 	}{
-		{name: "a retro that rates the plan", rating: 2, reason: "The plan put the tests after the review."},
-		{name: "a retro of a plugin before the rating", rating: 0, reason: ""},
+		{name: "a retro that rates the plan", rating: &intake.PlanRating{Score: 2, Reason: "The plan put the tests after the review."}},
+		{name: "a retro of a plugin before the rating"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -183,7 +183,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			engine := stepEngine(nil)
 			move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
 			applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
-				Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: tc.rating, PlanReason: tc.reason})
+				Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: tc.rating})
 			assertPhase(t, pool, phase.Merging)
 
 			var end *record.StepRecord
@@ -203,7 +203,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 				t.Fatalf("the retro of a run that started before this release wrote the plans %+v, want none: a plan is written at the start of a run's work alone",
 					plans)
 			}
-			if tc.rating == 0 {
+			if tc.rating == nil {
 				if len(rated) != 0 {
 					t.Fatalf("a retro with no rating wrote the ratings %+v, want none", rated)
 				}
@@ -214,7 +214,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			}
 			rating := rated[0]
 			want := record.StepRecord{ID: end.ID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: end.Agent, Generation: 1, Rating: new(tc.rating), RatingReason: new(tc.reason)}
+				Agent: end.Agent, Generation: 1, Rating: new(tc.rating.Score), RatingReason: new(tc.rating.Reason)}
 			if !reflect.DeepEqual(rating, want) {
 				t.Fatalf("the rating = %+v (rating %v, reason %v), want %+v on the retro's record %s", rating, deref(rating.Rating),
 					deref(rating.RatingReason), want, end.ID)
@@ -247,7 +247,7 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 		engine := stepEngine(nil)
 		move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 3, Issue: root.Key, Role: claim.RoleImplementer,
-			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: rating, PlanReason: reason})
+			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &intake.PlanRating{Score: rating, Reason: reason}})
 		assertPhase(t, pool, phase.Merging)
 	}
 	retro(2, "The plan put the tests after the review.")

@@ -905,10 +905,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// The completion that ends the retro carries the rating its agent gave the plan (the
 		// route took it on no other completion, api.PlanRatingContract), and a plugin before
 		// that contract sends none, so its retro writes no rating.
-		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == 0 {
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == nil {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.rateRetro(ctx, tx, *issue, fact.PlanRating, fact.PlanReason)
+		return intake.Result{}, e.rateRetro(ctx, tx, *issue, fact.PlanRating.Score, fact.PlanRating.Reason)
 	}
 	return intake.Result{}, nil
 }

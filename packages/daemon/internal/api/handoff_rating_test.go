@@ -26,6 +26,11 @@ func pluginContractOf(t *testing.T, h *harness, token claim.Token) int {
 	return machine.Claim().PluginContract
 }
 
+// ratedAs is whether fact carries the rating score with reason.
+func ratedAs(fact intake.HandoffComplete, score int, reason string) bool {
+	return fact.PlanRating != nil && *fact.PlanRating == (intake.PlanRating{Score: score, Reason: reason})
+}
+
 // The completion that ends the retro carries the rating of the plan: the agent that does the retro
 // gives it. The route reads which completion that is from phase.Of and never from the role: the
 // implementer's completion while the issue is in retro, and its late completion of retro once the
@@ -44,8 +49,8 @@ func TestTheRetrosAgentGivesTheRating(t *testing.T) {
 			completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
 				PlanRating: new(4), PlanReason: new("The tester found the bug.")}))
 			fact := lastCompletion(t, facts)
-			if fact.PlanRating != 4 || fact.PlanReason != "The tester found the bug." {
-				t.Fatalf("the retro's fact = %+v, want plan rating 4 with its reason", fact)
+			if !ratedAs(fact, 4, "The tester found the bug.") {
+				t.Fatalf("the retro's fact carries the rating %+v, want 4 with its reason", fact.PlanRating)
 			}
 		})
 	}
@@ -118,7 +123,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 			}
 			switch fact := got[len(got)-1].(type) {
 			case intake.HandoffComplete:
-				if fact.Claim != worker.token || fact.PlanRating != 0 || fact.PlanReason != "" {
+				if fact.Claim != worker.token || fact.PlanRating != nil {
 					t.Fatalf("the completion's fact = %+v, want %s's with no rating", fact, worker.token)
 				}
 			case intake.CheckReport:
@@ -205,9 +210,8 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 	} {
 		completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: taken.commit,
 			PlanRating: new(taken.rating), PlanReason: new(taken.reason)}))
-		if fact := lastCompletion(t, facts); fact.PlanRating != taken.rating || fact.PlanReason != taken.reason {
-			t.Fatalf("the retro's fact at %s = rating %d with a reason of %d bytes, want rating %d with its reason of %d bytes",
-				taken.commit, fact.PlanRating, len(fact.PlanReason), taken.rating, len(taken.reason))
+		if fact := lastCompletion(t, facts); !ratedAs(fact, taken.rating, taken.reason) {
+			t.Fatalf("the retro's fact at %s carries no rating %d with its reason of %d bytes", taken.commit, taken.rating, len(taken.reason))
 		}
 	}
 }
@@ -326,8 +330,8 @@ func TestANewPluginMustRate(t *testing.T) {
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
 		PlanRating: new(5), PlanReason: new("The plan fit the work.")}))
-	if fact := lastCompletion(t, facts); fact.PlanRating != 5 || fact.PlanReason != "The plan fit the work." {
-		t.Fatalf("the retro's fact = %+v, want plan rating 5 with its reason", fact)
+	if fact := lastCompletion(t, facts); !ratedAs(fact, 5, "The plan fit the work.") {
+		t.Fatalf("the retro's fact carries the rating %+v, want 5 with its reason", fact.PlanRating)
 	}
 }
 
@@ -357,8 +361,8 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: grants[1], Summary: "retro done", Commit: "c0ffee",
 		PlanRating: new(2), PlanReason: new("The plan left out a step the tester needed.")}))
-	if fact := lastCompletion(t, facts); fact.PlanRating != 2 || fact.PlanReason != "The plan left out a step the tester needed." {
-		t.Fatalf("the retro's fact = %+v, want plan rating 2 with its reason", fact)
+	if fact := lastCompletion(t, facts); !ratedAs(fact, 2, "The plan left out a step the tester needed.") {
+		t.Fatalf("the retro's fact carries the rating %+v, want 2 with its reason", fact.PlanRating)
 	}
 }
 
@@ -395,8 +399,8 @@ func TestARatedRetroSentAgainKeepsItsFirstRating(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("facts after the retries = %#v, want the first completion's alone", got)
 	}
-	if fact := lastCompletion(t, facts); fact.PlanRating != 2 || fact.PlanReason != reason {
-		t.Fatalf("the retro's fact = %+v, want the first rating, 2, with its reason", fact)
+	if fact := lastCompletion(t, facts); !ratedAs(fact, 2, reason) {
+		t.Fatalf("the retro's fact carries the rating %+v, want the first rating, 2, with its reason", fact.PlanRating)
 	}
 }
 
@@ -416,7 +420,7 @@ func TestAnOldPluginRetroStillCompletesWhereItIsServed(t *testing.T) {
 	}
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "retro done", Commit: "c0ffee"}))
-	if fact := lastCompletion(t, facts); fact.PlanRating != 0 || fact.PlanReason != "" || fact.Summary != "retro done" {
+	if fact := lastCompletion(t, facts); fact.PlanRating != nil || fact.Summary != "retro done" {
 		t.Fatalf("the old plugin's retro fact = %+v, want it with no rating", fact)
 	}
 }
@@ -540,7 +544,7 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 		switch recorder.Code {
 		case http.StatusOK:
 			fact := lastCompletion(t, facts)
-			if len(facts.recorded()) != before+1 || c.PlanRating == nil || c.PlanReason == nil || fact.PlanRating != *c.PlanRating || fact.PlanReason != *c.PlanReason {
+			if len(facts.recorded()) != before+1 || c.PlanRating == nil || c.PlanReason == nil || !ratedAs(fact, *c.PlanRating, *c.PlanReason) {
 				t.Fatalf("%s was taken with the fact %+v, want one new fact carrying the rating and the reason as sent", c.Name, fact)
 			}
 			c.Verdict = "accepted"

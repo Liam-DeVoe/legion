@@ -399,17 +399,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	// The rating rides only the completion that ends the retro (planRatingRefusal above), and it is
 	// left out of the key as the summary is: the first completion is what the workflow took, so a
-	// retry that rates again is answered already received and the first rating stands.
-	rating, reason := 0, ""
+	// retry that rates again is answered already received and the first rating stands. The refusal
+	// held the two together, so a named rating has its reason.
+	var rating *intake.PlanRating
 	if req.PlanRating != nil {
-		rating = *req.PlanRating
-	}
-	if req.PlanReason != nil {
-		reason = *req.PlanReason
+		rating = &intake.PlanRating{Score: *req.PlanRating, Reason: *req.PlanReason}
 	}
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, PlanReason: reason}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating}, s.handlers...)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return

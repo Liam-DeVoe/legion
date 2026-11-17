@@ -162,7 +162,7 @@ func TestACompletionHidesNoNulBehindARepeatedMember(t *testing.T) {
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee01",
 		PlanRating: new(4), PlanReason: new("fit")}))
-	if fact := lastCompletion(t, facts); fact.Summary != "retro done" || fact.PlanReason != "fit" {
+	if fact := lastCompletion(t, facts); fact.Summary != "retro done" || !ratedAs(fact, 4, "fit") {
 		t.Fatalf("the corrected completion's fact = %+v, want its summary and reason as sent", fact)
 	}
 }

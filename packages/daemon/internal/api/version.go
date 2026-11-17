@@ -2082,7 +2082,7 @@ package api
 // (`api.PlanRatingContract`).
 // Every refusal is a 400 written before the fact is applied, so nothing is recorded and the same
 // completion, corrected, is taken. The route hands the two to the workflow on the completion's
-// fact (`intake.HandoffComplete.PlanRating`, `PlanReason`). `readBody` refuses an unknown field, so
+// fact as one value (`intake.HandoffComplete.PlanRating`). `readBody` refuses an unknown field, so
 // a plugin sending them to a daemon below 155 would have every retro refused; the bump is why the
 // two never meet. No shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
 // The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
