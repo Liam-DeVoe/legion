@@ -205,11 +205,11 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
   `TestMain`.
 - A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test
-  that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`,
-  never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the process held when the
-  test ends, and Go refuses it in a parallel test or under a parallel parent, while a parallel
-  test runs only beside other parallel tests, so no test can read a value another test changed.
-  A bare call has neither fence.
+  that must unset one calls `packages/envoy/fixtureenv`'s `Unset`, in either Go module, which goes
+  through `t.Setenv`, never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the
+  process held when the test ends, and Go refuses it in a parallel test or under a parallel
+  parent, while a parallel test runs only beside other parallel tests, so no test can read a value
+  another test changed. A bare call has neither fence.
 - Before you call a test that binds a socket done, run it with a temporary directory of about 64
   bytes. A pass under `/tmp` does not show that the test works under a longer one. Set `GOTMPDIR`
   as well, since `t.TempDir()` reads it first:
