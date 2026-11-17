@@ -402,22 +402,11 @@ func TestPutStepWritesTheRecordUnderTheDaemonSession(t *testing.T) {
 // start and end have not landed yet, plus the rating and its reason.
 func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
-	var body map[string]json.RawMessage
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/steps/"+id+"/rating" {
-			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/steps/%s/rating", r.Method, r.URL.EscapedPath(), id)
-		}
-		assertBearer(t, r)
-		decodeJSON(t, r, &body)
-		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-	}))
-	defer server.Close()
-
 	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
 		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}
-	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
-		t.Fatalf("write the rating: %v", err)
-	}
+	body := putRecord(t, "/api/v1/issues/LEG-1/steps/"+id+"/rating", id, func(client *HTTPClient) error {
+		return client.PutStep(context.Background(), "LEG-1", id, write)
+	})
 	for name, want := range map[string]string{
 		"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`, "type": `""`,
 		"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "rating": "4",
@@ -465,20 +454,9 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var body map[string]json.RawMessage
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/plans/"+id {
-					t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/plans/%s", r.Method, r.URL.EscapedPath(), id)
-				}
-				assertBearer(t, r)
-				decodeJSON(t, r, &body)
-				writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
-			}))
-			defer server.Close()
-
-			if err := New(server.URL, dispatchToken).PutPlan(context.Background(), "LEG-1", id, tc.plan); err != nil {
-				t.Fatalf("write the plan: %v", err)
-			}
+			body := putRecord(t, "/api/v1/issues/LEG-1/plans/"+id, id, func(client *HTTPClient) error {
+				return client.PutPlan(context.Background(), "LEG-1", id, tc.plan)
+			})
 			tc.present["actor"] = `{"kind":"session","id":"legion-daemon:LEG"}`
 			for name, want := range tc.present {
 				if got := string(body[name]); got != want {
@@ -519,22 +497,34 @@ func TestPutStepWritesAnEndUnderTheNamesTheRouteReads(t *testing.T) {
 }
 
 // putStep writes the record id of LEG-1 through the client to Dispatch's step route as a test plays
-// it: a PUT on that record under the daemon's bearer, answered with the record. It returns the body
-// the route read, once the route has answered.
+// it. It returns the body that route read.
 func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessage {
+	t.Helper()
+	return putRecord(t, "/api/v1/issues/LEG-1/steps/"+id, id, func(client *HTTPClient) error {
+		return client.PutStep(context.Background(), "LEG-1", id, write)
+	})
+}
+
+// putRecord is Dispatch's stand-in for one write of a record of LEG-1: it takes the PUT call makes
+// on path under the daemon's bearer, answers it with the record id, and returns the body it read.
+// A call to any other route, or with any other method, stops the test, so a client that writes a
+// record to the wrong route fails by name rather than by the body it left behind.
+func putRecord(t *testing.T, path, id string, call func(client *HTTPClient) error) map[string]json.RawMessage {
 	t.Helper()
 	var body map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/steps/"+id {
-			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/steps/%s", r.Method, r.URL.EscapedPath(), id)
+		if r.Method != http.MethodPut || r.URL.EscapedPath() != path {
+			t.Errorf("request = %s %s, want PUT %s", r.Method, r.URL.EscapedPath(), path)
+			http.Error(w, "no route", http.StatusNotFound)
+			return
 		}
 		assertBearer(t, r)
 		decodeJSON(t, r, &body)
 		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
 	}))
 	defer server.Close()
-	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
-		t.Fatalf("write the step record: %v", err)
+	if err := call(New(server.URL, dispatchToken)); err != nil {
+		t.Fatalf("write the record of LEG-1 to %s: %v", path, err)
 	}
 	return body
 }
