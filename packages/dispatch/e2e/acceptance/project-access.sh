@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# c-private-unseen (dispatch://INFRA-3862, verification v17; plan task t-a-22): a private project
+# c-private-unseen (private projects, verification v17; plan task t-a-22): a private project
 # is unseen by every caller its access list does not let in, on every read path, and seen by
 # every caller it does.
 #

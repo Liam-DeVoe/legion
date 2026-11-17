@@ -1,8 +1,8 @@
 # shellcheck shell=bash
-# The seed of verification v16 (dispatch://INFRA-3862) and the vocabulary the two private-projects
-# drivers share: project-access.sh (c-private-unseen) and project-access-blob.sh
-# (c-blob-unchanged). Sourced, never run, after scripts/e2e/lib/two-builds.sh, whose servers,
-# identity and loopback guard it uses.
+# The seed of verification v16 and the vocabulary the two private-projects drivers share:
+# project-access.sh (c-private-unseen) and project-access-blob.sh (c-blob-unchanged). Sourced,
+# never run, after scripts/e2e/lib/two-builds.sh, whose servers, identity and loopback guard it
+# uses.
 #
 # A driver talks to Dispatch servers it started, each on a database of its own (own_database) and
 # under a name of its own (the blob driver's `base` and `head`, project-access.sh's `main` and

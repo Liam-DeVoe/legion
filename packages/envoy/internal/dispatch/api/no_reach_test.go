@@ -1027,12 +1027,12 @@ func olderBuildReadsTheGraph(t *testing.T) {
 // statement would move with it.
 //
 // The comment read also reads issues and artifacts: a comment holds no project of its own, so its
-// project clause reads its owner's (access.ItemOwnerClause, dispatch://INFRA-3862), one keyed probe
+// project clause reads its owner's (access.ItemOwnerClause, from private projects), one keyed probe
 // of the issue or document the comment hangs from. Nothing else the read touches changed.
 //
 // The block read also reads graph_nodes: where meaning search stands on each block is read only
 // while the reader may see the document (refs.BlockEmbeddingStates binds the registry's artifact
-// predicate, dispatch://INFRA-3862), one keyed probe of the document's node. Nothing else the read
+// predicate, from private projects), one keyed probe of the document's node. Nothing else the read
 // touches changed.
 var readRelations = map[string][]string{
 	"GET /api/v1/comments/{id}":         {"artifacts", "comment_deliveries", "comment_mentions", "comments", "doc_updates", "issues"},

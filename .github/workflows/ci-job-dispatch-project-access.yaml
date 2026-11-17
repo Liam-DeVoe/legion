@@ -7,7 +7,7 @@ name: CI job dispatch-project-access
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The private-projects acceptance drivers (dispatch://INFRA-3862, verification v17), from
+# The private-projects acceptance drivers (verification v17), from
 # packages/dispatch. project-access-blob.sh (c-blob-unchanged) builds the merge base beside this
 # tree through scripts/e2e/lib/two-builds.sh, seeds each alike on a database of its own with
 # every project public, and fails on any answer a caller reads differently at the two. The merge

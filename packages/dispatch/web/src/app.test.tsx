@@ -1139,7 +1139,7 @@ function renderShellAt(
   };
 }
 
-// A restricted member reads only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads),
+// A restricted member reads only the projects that name them (R4 of the private-projects spec),
 // so the views over every project are no page of theirs: an address of Priorities, of one
 // priority, of Delivery or of Pipeline answers Page not found, and nothing reads the priorities.
 // A full member's address opens the page, as it always did.

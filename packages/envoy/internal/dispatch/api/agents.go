@@ -172,7 +172,7 @@ func (s *server) agentLastActivity(ctx context.Context, viewer any, sessionIDs [
 // The copy carries the unresponsive sessions as well as the live ones, each row with its own
 // `state`, so the Agents page shows a session that missed its heartbeats as stalled rather than
 // dropping it: it is still working, still holds its claims, and is still a target a reader may
-// pick (dispatch://INFRA-392). A session's open asks are those of the projects the caller sees.
+// pick. A session's open asks are those of the projects the caller sees.
 func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	reader, ok := s.readerOf(w, r)
 	if !ok {

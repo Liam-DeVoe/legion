@@ -4,7 +4,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
-// Catalogue nodes (spec v34 of dispatch://INFRA-3862): a node the system seeds for every project
+// Catalogue nodes (the private-projects spec, v34): a node the system seeds for every project
 // to use, which holds no project's content, is visible to every viewer - a restricted member, a
 // credential that lists projects and the closed viewer included. The clause decides which nodes
 // those are by the closed list below and never by guessing from a missing project: a node of a
@@ -13,7 +13,8 @@ import (
 // Each entry compiles to one arm, ORed ahead of its kind's own project and party rule
 // (nodeVisibility.scope), and it replaces only that rule: the author rule every kind shares still
 // ANDs with it. The entries reach a read only once the registry holds their kind (nodeRegistry),
-// which INFRA-1950's T7 adds; until then a kind the registry does not hold answers no node at all.
+// which the node-types work's T7 adds; until then a kind the registry does not hold answers no
+// node at all.
 
 // catalogueEntry is one kind of catalogue node. Via is nil when every node of Kind with no project
 // and no parties is catalogue; otherwise only a node that is the far end of a current Via.Relation
@@ -29,16 +30,16 @@ type catalogueVia struct {
 	Relation, FromKind string
 }
 
-// catalogue is the closed list. INFRA-1950's R7: every lens_kind node is catalogue, and each one
-// carries a constrained_by tuple to the constraint node that holds its primary source. A
-// constraint is also project content - a requirement may point at a constraint it came from
-// (INFRA-1950's R9) - so a constraint is catalogue only through that tuple, never by its kind or
-// its address. The kind names are those of the root's closed supertag list
-// (cmd/dispatch/supertag_nodes_test.go:authorisedSupertags), until INFRA-1950 lands its graphstore
-// constants.
+// catalogue is the closed list. The node-types spec's R7: every lens_kind node is catalogue, and
+// each one carries a constrained_by tuple to the constraint node that holds its primary source. A
+// constraint is also project content - a requirement may point at a constraint it came from (the
+// node-types spec's R9) - so a constraint is catalogue only through that tuple, never by its kind
+// or its address. The kind names are those of the root's closed supertag list
+// (cmd/dispatch/supertag_nodes_test.go:authorisedSupertags), until the node-types work lands its
+// graphstore constants.
 var catalogue = []catalogueEntry{
-	{Kind: "lens_kind", Source: "dispatch://INFRA-1950/spec R7"},
-	{Kind: "constraint", Via: &catalogueVia{Relation: "constrained_by", FromKind: "lens_kind"}, Source: "dispatch://INFRA-1950/spec R7"},
+	{Kind: "lens_kind", Source: "the node-types spec's R7"},
+	{Kind: "constraint", Via: &catalogueVia{Relation: "constrained_by", FromKind: "lens_kind"}, Source: "the node-types spec's R7"},
 }
 
 // catalogueEntryOf is the catalogue entry of kind, if the list holds one.

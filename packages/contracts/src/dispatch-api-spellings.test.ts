@@ -150,9 +150,9 @@ const SCHEMA_ONLY_FIELDS: Record<string, readonly string[]> = { Actor: ["project
  * declares `issue`, `document` and `last_reply`, which the document carries on the inbox and
  * open-ask rows rather than on the ask row, and it leaves out `waiting_on_person`, which the
  * server resolves at read time and writes on no payload. The fifth is `Actor.project`: servers
- * before private projects (dispatch://INFRA-3862) wrote it on a named broker token's writes, the
- * server's Actor no longer has it, and `ActorSchema` keeps it optional so a reader takes an event
- * such a server stored while the two versions run side by side.
+ * before private projects wrote it on a named broker token's writes, the server's Actor no longer
+ * has it, and `ActorSchema` keeps it optional so a reader takes an event such a server stored
+ * while the two versions run side by side.
  *
  * It is a count rather than a list for the reason the counts below are, and it carries the same
  * edge: a number is blind to a swap, so one field excused here and another drifting in passes it,

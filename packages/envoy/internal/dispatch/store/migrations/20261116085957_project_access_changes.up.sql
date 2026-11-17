@@ -1,7 +1,7 @@
 -- 20261116085957_project_access_changes.up.sql — what a project.access_changed named, kept by the
 -- server, and the marker that every stored one carries no access list.
 --
--- INFRA-3862: project.access_changed's payload is the project and the change alone, because GET
+-- project.access_changed's payload is the project and the change alone, because GET
 -- /api/v1/events/log, the /ws/live events view and the bus serve a stored payload as it was
 -- stored, to readers without the person scope too. A live resume still has to tell whether a change
 -- in its gap moved what its caller sees (api: lostSightSQL, gainedSightSQL): whose person a list

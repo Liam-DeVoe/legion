@@ -5293,8 +5293,8 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
 
-  # The private-projects acceptance drivers (dispatch://INFRA-3862, verification v17): its steps
-  # and why they are what they are are in ci-job-dispatch-project-access.yaml.
+  # The private-projects acceptance drivers (verification v17): its steps and why they are what
+  # they are are in ci-job-dispatch-project-access.yaml.
   dispatch-project-access:
     needs: changes
     if: needs.changes.outputs.dispatch_project_access == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

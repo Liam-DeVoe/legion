@@ -311,7 +311,7 @@ test("a full member's rail keeps Priorities, Delivery, Pipeline and Peek", async
   expect(listPriorities).toHaveBeenCalled();
 });
 
-// A restricted member reads only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads).
+// A restricted member reads only the projects that name them (R4 of the private-projects spec).
 // Their rail is Inbox, Agents, those projects and Settings: it draws no Priorities, Delivery,
 // Pipeline or Peek, and never reads the priorities, whose summary counts every project's work.
 test("a restricted member's rail is Inbox, Agents, their projects and Settings", async () => {
