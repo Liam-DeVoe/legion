@@ -427,14 +427,17 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 // idleReleaseRows is the release as outbox rows, in the order the issue's lifecycle lane runs
 // them — three acts, each one row a reader can name:
 //
-//  1. the save (record.IssueBundle): the shim of the first live role is asked for the git bundle
+//  1. the save (record.IssueBundle): the shim of the first live claim is asked for the git bundle
 //     of the workspace's unpushed work, which is stored in the daemon's database. It runs first
-//     because only a shim can build it and a shim dies with its role's process, which act 2
+//     because only a shim can build it and a shim dies with its claim's process, which act 2
 //     stops. It stops nothing itself, so a release cancelled here costs only the save;
-//  2. the role stops: one `release` supervise row per live role, each stopping that role's
-//     process and keeping its session. The first of them is the release's boundary — the stop of
-//     the first role process of the pod — which is what R4's cancel is read against, so a
-//     delivery queued while the save ran is still below it and cancels the whole release;
+//  2. the claim stops: one `release` supervise row per live claim, each naming that claim
+//     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims
+//     can hold one role — a keyed agent on a step of another role, beside that role's own claim
+//     from an earlier version of the plan — so a stop names its claim rather than a role. The
+//     first of them is the release's boundary — the stop of the first role process of the pod —
+//     which is what R4's cancel is read against, so a delivery queued while the save ran is still
+//     below it and cancels the whole release;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release with the size the save stored.
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
@@ -449,11 +452,11 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 		return nil
 	}
 	if err := add(record.IssueBundle{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, Role: mark.Role}, false); err != nil {
+		TreeGeneration: view.Root.Generation, Role: mark.Role, Claim: decision.Claims[0]}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	for i, role := range decision.Roles {
-		if err := add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role,
+		if err := add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role, Claim: decision.Claims[i],
 			Generation: view.Generation, Reason: "the issue's pod has been idle for the release period"}, i == 0); err != nil {
 			return store.IdleReleaseMark{}, err
 		}

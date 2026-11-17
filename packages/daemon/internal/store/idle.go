@@ -122,7 +122,7 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 // table holds (claims.project, "legion"), which is what IdlePods and ReleaseIdleIssue read.
 // The caller has both already (daemon.releaseUnownedPods: w.dispatchProject and w.projectID).
 // The claims this read asks about are this project's, as they are in every other claim read of
-// this file (IdlePods, readIdleView, stillReleasedRoles), and the predicate costs nothing: the
+// this file (IdlePods, readIdleView, stillReleasedClaims), and the predicate costs nothing: the
 // subqueries scan the same rows either way.
 //
 // outOfWorkflow is the workflow's list of statuses that take an issue out of it
@@ -291,9 +291,10 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, issue string, row IdleRelea
 }
 
 // ReleaseResumeRow builds the outbox row that brings one claim a cancelled release suspended
-// back, at the generation the cancel read of the issue. It is the caller's because the payload
-// is record's to encode, as every row of a release is (IdleReleaseRow).
-type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, error)
+// back, by its token and with its stored role, at the generation the cancel read of the issue. It
+// is the caller's because the payload is record's to encode, as every row of a release is
+// (IdleReleaseRow).
+type ReleaseResumeRow func(token claim.Token, role claim.Role, generation uint64) (IdleReleaseRow, error)
 
 // CancelIssueRelease ends a release that did not finish, in one transaction: the bundle that
 // release saved is deleted, the resume of each claim this release suspended and still holds is
@@ -308,11 +309,12 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // durable: the row is the daemon's own record of what the pod is owed, and its lane retries it
 // until the role has it back.
 //
-// It answers the roles it queued a resume for: the claims this release suspended that are still
-// suspended as `released`. A claim another path took over — a close, a linger, an operator —
-// is left to that path, which is what the source on the suspension says; one an earlier release
-// left `released` is no business of this release, which is why the mark's own set is read and
-// never every released claim of the issue.
+// It queues one resume for each claim this release suspended that is still suspended as
+// `released`, naming the claim by its token, and answers the role of each, in token order. A claim
+// another path took over — a close, a linger, an operator — is left to that path, which is what
+// the source on the suspension says; one an earlier release left `released` is no business of
+// this release, which is why the mark's own set is read and never every released claim of the
+// issue.
 //
 // Beside them it answers whether the release it ended was one that suspends no role
 // (IdleReleaseMark.SuspendsNoRole, issue_releases.kind): the mark's kind, read in the same
@@ -376,30 +378,30 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
 			return err
 		}
-		roles, err := stillReleasedRoles(ctx, tx, project, issue, suspended)
+		released, err := stillReleasedClaims(ctx, tx, project, issue, suspended)
 		if err != nil {
 			return err
 		}
 		var generation uint64
-		if len(roles) > 0 {
+		if len(released) > 0 {
 			var live bool
 			generation, live, err = resumeStanding(ctx, tx, issue, outOfWorkflow)
 			if err != nil {
 				return err
 			}
 			if !live {
-				roles = nil
+				released = nil
 			}
 		}
-		for _, role := range roles {
-			row, err := resume(role, generation)
+		for _, c := range released {
+			row, err := resume(c.token, c.role, generation)
 			if err != nil {
 				return err
 			}
 			if _, err := insertOutboxRow(ctx, tx, issue, row); err != nil {
 				return err
 			}
-			resumed = append(resumed, role)
+			resumed = append(resumed, c.role)
 		}
 		return deleteIssueRelease(ctx, tx, project, issue)
 	})
@@ -433,28 +435,37 @@ func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow 
 	return uint64(generation), live, nil
 }
 
-// stillReleasedRoles are the roles among suspended whose claims are still suspended as
-// `released`, in role order.
-func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]claim.Role, error) {
+// stillReleased is one claim a cancel resumes: its token, which the resume names, and its stored
+// role.
+type stillReleased struct {
+	token claim.Token
+	role  claim.Role
+}
+
+// stillReleasedClaims are the claims of the roles in suspended that are still suspended as
+// `released`, each by its token, in token order. Two claims can hold one role — a keyed agent on a
+// step of another role, beside that role's own claim from an earlier version of the plan — and
+// each is a claim of its own to resume.
+func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]stillReleased, error) {
 	if len(suspended) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `select role from claims where project = $1 and issue = $2
-		and role = any($3) and state = 'suspended' and suspended_by = 'released' order by role`,
+	rows, err := tx.Query(ctx, `select token, role from claims where project = $1 and issue = $2
+		and role = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
 		project, issue, suspended)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var roles []claim.Role
+	var claims []stillReleased
 	for rows.Next() {
-		var role string
-		if err := rows.Scan(&role); err != nil {
+		var token, role string
+		if err := rows.Scan(&token, &role); err != nil {
 			return nil, err
 		}
-		roles = append(roles, claim.Role(role))
+		claims = append(claims, stillReleased{token: claim.Token(token), role: claim.Role(role)})
 	}
-	return roles, rows.Err()
+	return claims, rows.Err()
 }
 
 // ClearIssueRelease forgets the mark of issue's release once the release finished, on the pool:
@@ -497,7 +508,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
-	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
+	claims, err := tx.Query(ctx, `select c.token, c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at)
@@ -509,15 +520,15 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	defer claims.Close()
 	for claims.Next() {
 		var c pods.IdleClaim
-		var role, state, kinds, suspendedBy string
+		var token, role, state, kinds, suspendedBy string
 		var servingGeneration int64
 		var activityAt, reminder, lastTurn *time.Time
-		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
+		if err := claims.Scan(&token, &role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
 			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
 			&c.HasProcess, &suspendedBy, &lastTurn); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
-		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
+		c.Token, c.Role, c.State = claim.Token(token), claim.Role(role), supervise.ClaimState(state)
 		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
 		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)

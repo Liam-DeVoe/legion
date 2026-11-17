@@ -449,10 +449,10 @@ func releaseMarked(t *testing.T, st *Store) bool {
 }
 
 // resumeRow is the row a cancel queues to bring one claim back, as the daemon's own builder
-// writes it (outbox.releaseResume): the `start` of that role at the generation the cancel read.
-func resumeRow(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+// writes it (outbox.releaseResume): the `start` of that claim at the generation the cancel read.
+func resumeRow(token claim.Token, role claim.Role, generation uint64) (IdleReleaseRow, error) {
 	return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-		`{"op":"start","tree":%q,"role":%q,"generation":%d}`, rootIssue, role, generation))}, nil
+		`{"op":"start","tree":%q,"role":%q,"claim":%q,"generation":%d}`, rootIssue, role, token, generation))}, nil
 }
 
 // releasedClaim is one claim of the root issue the daemon's release left suspended as
@@ -525,7 +525,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Token, claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -580,7 +580,7 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Token, claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)

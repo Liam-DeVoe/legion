@@ -36,6 +36,10 @@ const (
 // activity route alone and are deliberately absent from the claim insert's conflict update, so a
 // machine's in-memory claim shows their zero values until the claim is read again.
 type IdleClaim struct {
+	// Token is the claim's token, which names its agent: a release suspends each live claim by
+	// it, since two claims of the pod can hold one role (a keyed agent on a step of another role,
+	// beside that role's own claim from an earlier version of the plan).
+	Token          claim.Token
 	Role           claim.Role
 	State          supervise.ClaimState
 	PluginContract int

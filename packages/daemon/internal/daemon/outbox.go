@@ -2650,16 +2650,18 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
-// `start` row a wake writes (workflow's wakeRow), at the generation the cancel read of the
-// issue, naming no phase and carrying no task. It carries no task because nothing happened to
-// the role: its process was stopped and is started again in the pod it was always in, where a
-// wake's task tells a role its pod went and came back.
+// `start` row a wake writes (workflow's wakeRow), naming the claim by its token, at the generation
+// the cancel read of the issue, naming no phase and carrying no task. It names the claim because
+// two claims can hold one role, and a resume that named the role alone would reach the claim of
+// the worker on that role's step twice and leave the other released. It carries no task because
+// nothing happened to the claim: its process was stopped and is started again in the pod it was
+// always in, where a wake's task tells a role its pod went and came back.
 func (r *outbox) releaseResume(issue, tree string) store.ReleaseResumeRow {
-	return func(role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+	return func(token claim.Token, role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
 		row, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "start", Tree: tree,
-			Role: role, Generation: generation}, r.now())
+			Role: role, Claim: token, Generation: generation}, r.now())
 		if err != nil {
-			return store.IdleReleaseRow{}, fmt.Errorf("encode the resume of %s's %s: %w", issue, role, err)
+			return store.IdleReleaseRow{}, fmt.Errorf("encode the resume of %s's claim %s: %w", issue, token, err)
 		}
 		return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 	}
