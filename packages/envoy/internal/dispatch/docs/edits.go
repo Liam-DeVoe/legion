@@ -359,6 +359,64 @@ func replaceFieldsRefusal(op model.EditOp) error {
 	return &ErrReplaceFields{Omitted: op.WithOmitted, Foreign: foreign}
 }
 
+// ErrInsertDoesNotFit names an insert whose markdown the typed block holding its anchor cannot
+// hold where the anchor puts it. An insert anchored on a block inside a typed block lands inside
+// that typed block, beside the block it names (pmdoc.ValidDocument.BlockBoundary), so the typed
+// block's content rule decides what it may write there: a requirement holds paragraphs alone, and
+// an ask no paragraph after its options. Such an insert was written after the typed block, at the
+// document's own level, and refused nothing, which left a requirement's words outside every
+// requirement, where no check's serves reached them (dispatch://INFRA-3142). The fix is to write
+// what the rule holds there, or to anchor the insert on the typed block itself, which writes the
+// markdown beside it.
+type ErrInsertDoesNotFit struct {
+	opIndex
+	// Field is the anchor's field, "after" or "before", and Anchor the anchor it names.
+	Field, Anchor string
+	// HolderType and HolderID are the typed block's type and id, Rule its content rule, and
+	// Broken what of the markdown breaks that rule there (pmdoc.TypedContentBreak).
+	HolderType, HolderID string
+	Rule                 pmdoc.BlockContentRule
+	Broken               string
+}
+
+func (e *ErrInsertDoesNotFit) Error() string {
+	holder := strings.ReplaceAll(e.HolderType, "_", " ")
+	beside := "anchor the insert on the " + holder + " block itself"
+	if e.HolderID != "" {
+		beside += fmt.Sprintf(" (%s: %q)", e.Field, "block:"+e.HolderID)
+	}
+	return fmt.Sprintf(
+		"%sinsert %s %q lands inside the %s block %q, whose content rule, %s, cannot hold %s there; write what that rule holds there, or %s to write the markdown beside it",
+		e.prefix(), e.Field, e.Anchor, holder, e.HolderID, e.Rule, e.Broken, beside,
+	)
+}
+
+// insertDoesNotFit is the refusal of an insert of fragment's blocks at boundary, among the
+// children of the typed block holding the insert's anchor, whose content rule cannot hold them
+// there, and nil where the rule holds them or the boundary is the document's. A typed block that
+// already breaks its rule, an ask a browser edit left so, is no reason to refuse this insert: the
+// batch's ask check weighs the ask it leaves (validateEditedAskBlocks).
+func insertDoesNotFit(boundary pmdoc.Boundary, fragment *pmdoc.Node, field, anchor string) error {
+	holder := boundary.Holder
+	if holder == nil {
+		return nil
+	}
+	if _, broken := pmdoc.TypedContentBreak(holder, holder.Children); broken != "" {
+		return nil
+	}
+	children := make([]*pmdoc.Node, 0, len(holder.Children)+len(fragment.Children))
+	children = append(children, holder.Children[:boundary.Index]...)
+	children = append(children, fragment.Children...)
+	children = append(children, holder.Children[boundary.Index:]...)
+	rule, broken := pmdoc.TypedContentBreak(holder, children)
+	if broken == "" {
+		return nil
+	}
+	return &ErrInsertDoesNotFit{
+		Field: field, Anchor: anchor, HolderType: holder.Type, HolderID: blockID(holder), Rule: rule, Broken: broken,
+	}
+}
+
 // stampOperation gives index to an error that renders its own operation, and falls back to
 // wrapping everything else with the same prefix.
 func stampOperation(index int, err error) error {
@@ -381,6 +439,7 @@ func isEditRefusal(err error) bool {
 	var ciCheck *ErrInvalidCICheck
 	var crossed *ErrFindCrossesSpan
 	var replaceFields *ErrReplaceFields
+	var doesNotFit *ErrInsertDoesNotFit
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
 		errors.Is(err, pmdoc.ErrTableWidth) ||
@@ -389,7 +448,8 @@ func isEditRefusal(err error) bool {
 		errors.As(err, &ambiguous) ||
 		errors.As(err, &ciCheck) ||
 		errors.As(err, &crossed) ||
-		errors.As(err, &replaceFields)
+		errors.As(err, &replaceFields) ||
+		errors.As(err, &doesNotFit)
 }
 
 // ErrInvalidPrecondition identifies a malformed optimistic-concurrency guard.
@@ -1619,11 +1679,16 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if after {
 			position = target.To
 		}
+		// An anchor on a block lands the insert beside that block among the children of the
+		// innermost typed block holding it, or of the document where none does
+		// (pmdoc.ValidDocument.BlockBoundary), so markdown anchored on a requirement's paragraph
+		// is that requirement's, where it was written after the requirement (dispatch://INFRA-3142).
+		var boundary pmdoc.Boundary
 		if anchor != "start" && anchor != "end" {
-			position, err = valid.BlockBoundary(target, after)
-			if err != nil {
+			if boundary, err = valid.BlockBoundary(target, after); err != nil {
 				return nil, err
 			}
+			position = boundary.Position
 		}
 		// A document with nothing in it holds one empty paragraph, which the insert takes the place
 		// of rather than leaving an empty line beside what it writes, so it lands at the start.
@@ -1637,18 +1702,25 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, invalidMarkdownOp("markdown", err)
 		}
 		// List content anchored inside a list joins that list: beside the item the anchor stands
-		// in, or as the last item of the list whose own block it is (pmdoc.ListBoundary). Every
-		// other content keeps the document-level boundary read above, so a paragraph anchored on a
-		// block of a list lands after the whole list, and one on a block of a decision beside the
-		// decision. A fragment that is list content holds no front matter, so the reading above is
-		// the same wherever it lands.
+		// in, or as the last item of the list whose own block it is (pmdoc.ListBoundary), where
+		// that list lies inside the typed block holding the anchor; a list holding that typed
+		// block is outside it. Every other content keeps the boundary read above, so a paragraph
+		// anchored on a block of a list lands after the whole list, and one on a block of a
+		// decision in the decision, beside that block. A fragment that is list content holds no
+		// front matter, so the reading above is the same wherever it lands.
+		inList := false
 		if anchor != "start" && anchor != "end" && pmdoc.ListContent(with) {
-			inside, inList, err := valid.ListBoundary(target, after)
+			inside, found, err := valid.ListBoundary(target, after)
 			if err != nil {
 				return nil, err
 			}
-			if inList {
-				at = pmdoc.Range{From: inside, To: inside}
+			if found && (boundary.Holder == nil || boundary.Content.From <= inside && inside <= boundary.Content.To) {
+				at, inList = pmdoc.Range{From: inside, To: inside}, true
+			}
+		}
+		if !inList {
+			if err := insertDoesNotFit(boundary, with, anchorField(after), anchor); err != nil {
+				return nil, err
 			}
 		}
 		out, err := valid.Splice(at, with)

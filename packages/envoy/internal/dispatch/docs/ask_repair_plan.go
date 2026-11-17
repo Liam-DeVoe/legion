@@ -135,8 +135,8 @@ func askRepairDrops(ask *pmdoc.Node) (drop []*pmdoc.Node, changed []string) {
 // room for would keep none of them: its own blocks break the rule and it holds no paragraph with
 // text, so the rule leaves room for nothing it holds. Such a decision is deleted whole by the one
 // edit that repairs the decision holding it, since the deletes alone would leave a block no parse
-// reads as a decision, and no document edit writes another person's decision the question it
-// would need.
+// reads as a decision, and the question it would need is another person's to write, not the
+// caller's.
 func askRepairKeepsNothingOfItsOwn(ask *pmdoc.Node) bool {
 	if !askBreaksItsOwnRule(ask) {
 		return false

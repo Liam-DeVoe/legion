@@ -4667,7 +4667,9 @@ Each item below names an operation and its required fields, then its behavior.
 
 - `insert` (`markdown`, exactly one of `after` or `before`)
 
-  Insert a sibling block before or after a quote or heading's enclosing document block.
+  Insert blocks before or after the block an anchor names - a quote's or a heading's block, or `block:<id>` - beside it among the children of the innermost typed block holding it (`requirement`, `check`, `plan_task`, `ask`, `callout`), or of the document where none does: markdown anchored on a paragraph of a requirement is that requirement's, and markdown anchored on a typed block's own block lands beside that block.
+  Inside the typed block or the document, the block is its child holding the anchor, so a paragraph anchored on an item of a list lands after the whole list, while list content anchored inside a list joins that list.
+  Markdown the typed block's content rule cannot hold there - a heading in a requirement, a paragraph after an ask's options - is `400 INSERT_DOES_NOT_FIT` with nothing written, where it was written after the typed block, at the document's level, and nothing said so.
   `"start"` and `"end"` select document edges.
   Pipe-table row fragments at a table-cell target are the exception: they extend that table before or after the containing row.
   Use `replace` for inline continuation.
@@ -4789,6 +4791,12 @@ Each item below names a status and code, then its meaning.
   A `replace` names no `with` (a JSON `null` is none), or carries a field `replace` does not take (`markdown`, `after`, `before`, `block`, `index`, `type`, `attributes`); nothing in the batch is written.
   Such a replace was read as an empty `with`, which deleted the text its `find` matched; `with: ""` still deletes it on purpose.
   The message names the operation and each such field: `operation 1: replace names no with, which would delete the text find matches, and carries markdown, which replace does not take; …`.
+
+- `400 INSERT_DOES_NOT_FIT`
+
+  An `insert` anchored inside a typed block writes markdown that block's content rule cannot hold where the anchor puts it: a `requirement`, a `check` or a `plan_task` holds paragraphs alone, and an `ask` the paragraphs of its question and then one bullet list of options; nothing in the batch is written.
+  Such an insert was written after the typed block, at the document's level, so a requirement's words stood outside every requirement and no check's `serves` reached them.
+  The message names the operation, the anchor, the typed block and its id, its rule and what breaks it, and the anchor on the typed block itself that writes the markdown beside it instead: `operation 0: insert after "block:<id>" lands inside the requirement block "r1", whose content rule, paragraph+, cannot hold a heading there; …`.
 
 - `400 TABLE_WIDTH`
 

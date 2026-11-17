@@ -2,6 +2,7 @@ package docs
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -14,9 +15,10 @@ const listAnchorFixture = "- a\n  - x\n  - y\n- b\n\n" + askFixture
 
 // List content an insert or a move anchors inside a list joins that list: beside the item the
 // anchor stands in, or as an item of the list whose own block the anchor is. Content that is no
-// list content keeps the document-level placement, after the block holding the anchor, so a
-// paragraph anchored on a nested item lands after the whole list and one anchored on a block of a
-// decision lands beside the decision rather than in it.
+// list content lands beside the block holding the anchor among the children of the innermost
+// typed block holding it, or of the document where none does, so a paragraph anchored on a nested
+// item lands after the whole list and one anchored on a block of a decision lands in the decision,
+// beside that block (dispatch://INFRA-3142).
 func TestApplyOperationListContentJoinsTheAnchorsList(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -72,7 +74,7 @@ func TestApplyOperationListContentJoinsTheAnchorsList(t *testing.T) {
 					After:    "block:" + blockIDOfText(t, tree, "Which transport?"),
 				}
 			},
-			want: "- a\n  - x\n  - y\n- b\n\n" + askFixture + "\nPlain.\n",
+			want: "- a\n  - x\n  - y\n- b\n\n" + strings.Replace(askFixture, "Which transport?\n", "Which transport?\n\nPlain.\n", 1),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
