@@ -1,8 +1,7 @@
 import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
-import { wordsOf } from "../../refs/tree-fragment";
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "../issue-tree";
 import { referenceStandIns } from "../one-line";
 import {
   isReader,
@@ -11,6 +10,7 @@ import {
   type NodeType,
   type StatementState,
 } from "../page-words";
+import { plainWordsRaw } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
 
@@ -38,7 +38,7 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    missing tie visible (R35).
  *
  * What a person's decision quotes is the person's own answer, never a restatement of it
- * (dispatch://INFRA-1150 R4): the first sentence of the answer's plain words (`plainWords`,
+ * (dispatch://INFRA-1150 R4): the first sentence of the answer's plain words (`plainWordsRaw`,
  * `firstSentenceOf`), with each reference in it named in plain words once the sentence is cut
  * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
  * carried beside it as stored, for the focus on the line to draw character for character (R5).
@@ -47,11 +47,16 @@ import { statementStandings } from "../verification-filter/statement-state";
  * never quoted as the person's (R9).
  *
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
- * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWords`,
+ * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWordsRaw`,
  * `firstLineOf`), with each reference named once the line is cut: the line under a statement
  * quotes it as one link, and a text drawn with its own links cannot stand inside one
  * (departure 2 of dispatch://INFRA-3939's plan). With it goes the one word the model holds for
  * how sure it was (`Decision.unsure`).
+ *
+ * Every line and quote here is read with each bare address as its author wrote it (F's
+ * `lineWordsRaw` and `plainWordsRaw`, not `lineWords` and `plainWords`, which write one as its
+ * short form), so that `referenceStandIns` names it by the page's name wherever the page knows
+ * one, and by its short form only where it does not (decision 140 of dispatch://INFRA-1196).
  *
  * Whether a statement's words changed after the decision beside it is the model's half, on
  * dispatch://INFRA-1150's branch: the view draws nothing of it.
@@ -138,8 +143,8 @@ export interface SpecParent {
   readonly at?: string;
   readonly by?: Actor;
   readonly id: string;
-  /** Its own words' first line, as R1 draws one (`lineWords`, `drawnLine`), with each reference
-   *  named after the cut; its kind's word where it has no words. */
+  /** Its own words' first line, as R1 draws one (`lineWordsRaw`, `drawnLine`), with each
+   *  reference named after the cut; its kind's word where it has no words. */
   readonly line: string;
   readonly type: NodeType;
 }
@@ -263,143 +268,6 @@ export function firstSentenceOf(text: string): string {
  *  ending in `.`, which part F's `firstLineOf` reads with the same pattern. */
 export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
-/** A blank line, which ends a paragraph: no mark and no code span reaches past one. */
-const BLANK_LINE = /\n\s*\n/u;
-
-/** One ASCII punctuation character: what a backslash escapes, and what a code span and an
- *  autolink hold that the marks below would otherwise read as marks. */
-const PUNCTUATION = /[!-/:-@[-`{-~]/gu;
-
-/**
- * What markdown reads literally, each where it starts, left to right: a backslash before an
- * ASCII punctuation character, which is that character; a code span, a run of backticks closed
- * by the next run of the same count, which is its content verbatim and inside which a backslash
- * escapes nothing; an autolink, `<https://…>`, which is its URL; and a run of backticks no run
- * of its count closes, which is that run as written. They are one pattern because each decides
- * the others: a backtick a backslash escapes opens no code span, and a backslash inside a code
- * span escapes nothing.
- */
-const LITERAL =
-  /\\([!-/:-@[-`{-~])|(`+)(?!`)([\s\S]*?[^`])\2(?!`)|<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)>|`+/gu;
-
-/** A heading marker at the start of a line, `#` to `######` and a space, which markdown allows
- *  up to three spaces of indent before. */
-const HEADING_MARKER = /^ {0,3}#{1,6}[ \t]+/gmu;
-
-/** An image, `![alt](src)`, whose words the server's reading of it holds none of. */
-const IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
-
-/** A stored block that holds no words once its images are left out: nothing but white space
- *  and the marks of a horizontal rule. `issue-tree.ts`'s `NO_WORDS`, which that module keeps to
- *  itself (`decisionLineWords`), and which goes with it once part F exports its reading. */
-const NO_WORDS = /^[\s*_-]*$/u;
-
-/** A link, `[words](target)`, which reads as its words; its target is no word of the text. */
-const LINK = /\[([^\]]*)\]\([^)]*\)/gu;
-
-/** `**strong**`, which stands wherever it is written. */
-const STAR_STRONG = /\*\*(?=\S)([\s\S]*?\S)\*\*/gu;
-
-/** `__strong__`, which markdown reads only where no letter or digit stands either side of it. */
-const UNDERSCORE_STRONG = /(?<![\p{L}\p{N}])__(?=\S)([\s\S]*?\S)__(?![\p{L}\p{N}])/gu;
-
-/** `~~struck~~`, which stands wherever it is written. */
-const STRUCK = /~~(?=\S)([\s\S]*?\S)~~/gu;
-
-/** `*emphasis*`, which stands wherever it is written. */
-const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
-
-/** `_emphasis_`, which markdown reads only between characters that are no letter or digit, so
- *  `snake_case_name` is one word. */
-const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
-
-/** A private-use code point: one of the Basic Multilingual Plane's, U+E000 to U+F8FF, or one of
- *  the supplementary planes 15 and 16, U+F0000 to U+10FFFF, which are private-use but for the
- *  two noncharacters each plane ends with. */
-const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{10ffff}]/gu;
-
-/** The private-use characters `plainWords` may hold its stand-ins in, as the first and the last
- *  code point of each run of them: 50 blocks of 128 in the Basic Multilingual Plane, then 1,024
- *  in the supplementary planes 15 and 16. */
-const STAND_IN_RANGES = [
-  [0xe000, 0xf8ff],
-  [0xf0000, 0x10ffff],
-] as const;
-
-/**
- * The first code point of the first block of 128 private-use characters that `paragraph` holds
- * none of, so a stand-in made in it, the block's first code point plus an ASCII character's
- * code, is never a character the author wrote. A block of the Basic Multilingual Plane is taken
- * first; only a paragraph holding a character in every one of its 50 blocks reaches the
- * supplementary planes. A paragraph holding a character in every one of the 1,074 blocks has
- * none to give: it holds no stand-ins, and a mark inside what markdown reads literally in it is
- * read as a mark.
- */
-function standInBlock(paragraph: string): number | undefined {
-  const held = new Set<number>();
-  for (const [character] of paragraph.matchAll(PRIVATE_USE)) {
-    held.add((character.codePointAt(0) ?? 0) & ~0x7f);
-  }
-  for (const [first, last] of STAND_IN_RANGES) {
-    for (let block = first; block < last; block += 0x80) {
-      if (!held.has(block)) return block;
-    }
-  }
-  return undefined;
-}
-
-/**
- * The words of a stored markdown text as a reader reads them, on one line. It is part F's
- * `plainWords` (`tree-drafts.ts`, decision 88 of dispatch://INFRA-1196), less F's last step,
- * which writes a bare `dispatch://` address as its short form: this view names each reference
- * in plain words instead (`referenceStandIns`). J imports F's and deletes this copy once
- * F's tip is under J's base (decision 94).
- *
- * A place that draws a stored text as plain words draws this, since its marks are markup and no
- * word of it (R21), and a mark after a sentence's end (`today.**`) would hide that end from
- * `firstSentenceOf`. Each paragraph is read on its own, since no mark pairs across a blank line.
- * What markdown reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`),
- * a code span's content, an autolink's URL - is read first, and each ASCII punctuation character
- * of it is held as a private-use stand-in while the marks are taken off, so no mark is read
- * inside it, and put back after. The stand-ins are made in a block of private-use characters
- * the paragraph holds none of (`standInBlock`), and only that block's characters are put back,
- * so a private-use character the author wrote of their own - an icon from an icon font or a
- * terminal - is kept as they wrote it. Then a heading marker at the start of any line goes, an
- * image goes whole, a link reads as its words, and strong, emphasis and struck marks go until
- * none is left, so nested marks (`***x***`) go too. White space collapses to single spaces.
- */
-function plainWords(markdown: string): string {
-  const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
-    const block = standInBlock(paragraph);
-    let words = paragraph
-      .replace(
-        LITERAL,
-        (written, escaped?: string, _run?: string, code?: string, url?: string) =>
-          (escaped ?? code ?? url)?.replace(PUNCTUATION, (character) =>
-            block === undefined ? character : String.fromCodePoint(block + character.charCodeAt(0))
-          ) ?? written
-      )
-      .replace(HEADING_MARKER, "")
-      .replace(IMAGE, "")
-      .replace(LINK, "$1");
-    for (let marked = ""; marked !== words; ) {
-      marked = words;
-      words = words
-        .replace(STAR_STRONG, "$1")
-        .replace(UNDERSCORE_STRONG, "$1")
-        .replace(STRUCK, "$1")
-        .replace(STAR_EMPHASIS, "$1")
-        .replace(UNDERSCORE_EMPHASIS, "$1");
-    }
-    if (block === undefined) return words;
-    return words.replace(PRIVATE_USE, (character) => {
-      const code = (character.codePointAt(0) ?? 0) - block;
-      return code >= 0 && code < 0x80 ? String.fromCharCode(code) : character;
-    });
-  });
-  return paragraphs.join(" ").replace(/\s+/gu, " ").trim();
-}
-
 /** Every node of the tree by its id, the first placement of a node drawn under more than one
  *  parent, which is where it is edited (`TreeNode.transcluded`). */
 function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
@@ -499,9 +367,10 @@ function decisionOf(
   const at = node?.at ?? decision.changed_at ?? undefined;
   const tree = decision.text_tree ?? node?.tree;
   // The one line is cut from the words of the first block that holds any, as every one-line
-  // place cuts a node's (`lineWords`), so the decision's own `##` heading never runs into the
-  // paragraph under it, and with none of the symbols the cell draws as formatting.
-  const words = node !== undefined ? lineWords(node) : decisionLineWords(decision);
+  // place cuts a node's, so the decision's own `##` heading never runs into the paragraph under
+  // it, and with none of the symbols the cell draws as formatting. A decision the tree holds no
+  // node for is read from its own text and its reading in the same way.
+  const words = lineWordsRaw(node ?? { text: decision.text, tree: decision.text_tree });
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
@@ -532,11 +401,11 @@ function answerDecision(
 ): SpecDecision {
   const answer = ask.answer;
   if (answer === undefined) throw new Error("an answered ask with no answer");
-  // A link the person wrote reads as its words and a mark as nothing (`plainWords`), so the
+  // A link the person wrote reads as its words and a mark as nothing (`plainWordsRaw`), so the
   // quote is their words and none of the markdown they were stored in. Each reference is named
   // after the sentence is cut, so a name that opens with a label ("R2.") ends none of it.
   const references = referenceStandIns(nameOf);
-  const written = firstSentenceOf(references.standIn(plainWords(answer.text)));
+  const written = firstSentenceOf(references.standIn(plainWordsRaw(answer.text)));
   const quote = written === "" ? answer.selected.join(", ") : references.named(written);
   const stored = answer.text.trim();
   return {
@@ -544,7 +413,7 @@ function answerDecision(
     by: answer.by,
     chose: answer.selected,
     id: ask.id,
-    question: namedFirstLine(lineWords(ask), nameOf),
+    question: namedFirstLine(lineWordsRaw(ask), nameOf),
     quote,
     ...(ask.reference === undefined ? {} : { reference: ask.reference }),
     said: isReader(answer.by, reader) ? "you" : "person",
@@ -581,9 +450,10 @@ function parentOf(
   if (line === undefined) return undefined;
   const parent = nodes.get(line.id);
   // Read from the node and not from `line.line`, which `presets.ts` cuts by the same rule
-  // (`parentLineOf`) with each reference in it still its address: the heading names each one in
-  // plain words, and counts it against the line's limit as the name it draws.
-  const words = parent === undefined ? "" : namedFirstLine(lineWords(parent), nameOf);
+  // (`parentLineOf`) from words that write each bare address as its short form (`lineWords`):
+  // the heading names each reference by the page's name wherever it knows one (decision 140),
+  // and counts it against the line's limit as the name it draws.
+  const words = parent === undefined ? "" : namedFirstLine(lineWordsRaw(parent), nameOf);
   return {
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
@@ -599,26 +469,4 @@ function parentOf(
 function namedFirstLine(words: string, nameOf: (reference: string) => string | undefined): string {
   const references = referenceStandIns(nameOf);
   return references.named(drawnLine(firstLineOf(references.standIn(words))));
-}
-
-/**
- * The words an agent's decision the tree holds no node for is quoted by, as `lineWords` reads a
- * node's: the first top-level block of its reading that holds any, else the first block of its
- * stored text that holds any, to its blank line, with a leading heading marker left out and a
- * heading ending at its own line. F's `lineWords` reads a node, and keeps its reading of a bare
- * reading (`firstBlockWords`) to itself, so this is the same reading of a decision's own two
- * fields: a copy, which this part deletes for F's export of that reading over a text and its
- * tree once F is under this part's base (decision 94), as it does its copy of `plainWords`.
- */
-function decisionLineWords({ text, text_tree }: Decision): string {
-  if (text_tree !== undefined) {
-    const blocks = Array.isArray(text_tree.content) ? (text_tree.content as DisplayTree[]) : [];
-    return blocks.map((block) => wordsOf(block)).find((words) => words.trim() !== "") ?? "";
-  }
-  for (const stored of text.split(BLANK_LINE)) {
-    const block = stored.trimStart();
-    const words = /^#{1,6} +(.*)/u.exec(block)?.[1] ?? block;
-    if (!NO_WORDS.test(words.replace(IMAGE, ""))) return words;
-  }
-  return "";
 }

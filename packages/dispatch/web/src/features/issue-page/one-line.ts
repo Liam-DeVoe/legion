@@ -1,9 +1,9 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
+import { shortForm } from "../refs/routes";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
 import { chipWords } from "./node-row-chip";
 import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
-import { documentWord } from "./RowText";
 import { rowReferences } from "./row-references";
 
 /**
@@ -109,6 +109,9 @@ export interface OneLineCut {
    *  where the line ends inside a sentence (`drawnLine`). */
   readonly cut: boolean;
   readonly line: string;
+  /** Whether `line` ends at its sentence's end (`firstLineOf`'s `sentence`), after which the
+   *  entry draws no ellipsis (`drawnLine`); a line cut at a word inside it ends at none. */
+  readonly sentence: boolean;
   /** Whether the line is drawn on a line of its own under the row's other words, because
    *  beside them it has less room than its first word takes. */
   readonly under: boolean;
@@ -157,9 +160,12 @@ export function oneLineCut({
   // The longest of the line's own words that fits `budget`. A run of more words is never
   // narrower than a run of fewer, so the runs are searched by halves; the whole line is read on
   // its own first, since it carries no ellipsis where the text ends with it or it is a whole
-  // sentence. A run cut at a word inside the line ends inside its sentence, so it always
-  // carries one.
-  const fitting = (budget: number): { cut: boolean; line: string } | undefined => {
+  // sentence. A run cut at a word inside the line ends inside its sentence (`sentence: false`),
+  // so it is measured as `drawnLine` draws such a line: with its ellipsis, unless the author's
+  // own ends it.
+  const fitting = (
+    budget: number
+  ): { cut: boolean; line: string; sentence: boolean } | undefined => {
     if (widthOf(drawnLine(first)) <= budget) return first;
     let found: number | undefined;
     let low = 0;
@@ -167,14 +173,18 @@ export function oneLineCut({
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
       const end = ends[middle] ?? 0;
-      if (widthOf(`${first.line.slice(0, end)}…`) <= budget) {
+      if (
+        widthOf(drawnLine({ cut: true, line: first.line.slice(0, end), sentence: false })) <= budget
+      ) {
         found = end;
         low = middle + 1;
       } else {
         high = middle - 1;
       }
     }
-    return found === undefined ? undefined : { cut: true, line: first.line.slice(0, found) };
+    return found === undefined
+      ? undefined
+      : { cut: true, line: first.line.slice(0, found), sentence: false };
   };
   const beside = fitting(room - before - after - ROUNDING);
   if (beside !== undefined) return { ...beside, under: false, wraps: false };
@@ -183,7 +193,7 @@ export function oneLineCut({
   const word = ends[0];
   return word === undefined
     ? { ...first, under: true, wraps: true }
-    : { cut: true, line: first.line.slice(0, word), under: true, wraps: true };
+    : { cut: true, line: first.line.slice(0, word), sentence: false, under: true, wraps: true };
 }
 
 /** A typed block's source line in a text: its opening `:::requirement{#r1}`, or its closing
@@ -219,9 +229,9 @@ const PRIVATE_USE = /[\ue000-\uf8ff]/gu;
  *  cut drew right after it where that ellipsis ends the line. */
 const TOKEN = /(([\ue000-\uf8ff])\2*)(…$)?/gu;
 
-/** How a name ends that a line draws no ellipsis after: with an ellipsis of its own, or with the
- *  mark of a sentence's end, after which `drawnLine` draws none. */
-const NAME_END = /[….!?]$/u;
+/** How a name ends that a line draws no ellipsis after: with an ellipsis of its own, after which
+ *  `drawnLine` draws none. */
+const NAME_END = /…$/u;
 
 /** What a private-use character the author wrote is drawn as where its holder has no token left
  *  for it: U+FFFD, the replacement character. */
@@ -234,10 +244,13 @@ const NO_TOKEN = "\ufffd";
  * a reader can neither follow nor read: a typed block's source lines are markup and no word of
  * the text, so they are left out, and each `dispatch://` reference the row's reader finds
  * (`rowReferences`) is named by the words for what it names - an issue's key; else the page's
- * name for it (`nameOf`, `useReferenceNames`); else, for a whole document, the page's word for
- * it (`documentWord`); else the word for a document. A statement's name on an INFRA spec opens
- * with its label ("R2. Every address…"), so a cut made after the naming ended its author's
- * sentence at that label, inside the name.
+ * name for it (`nameOf`, `useReferenceNames`); else its short form, as a link to it reads until
+ * its title resolves (`shortForm`). That is decision 140 of dispatch://INFRA-1196: a one-line
+ * place names a reference by the page's name wherever the page knows one, and by its short form
+ * only where it does not. So the words `standIn` is given hold each bare address as its author
+ * wrote it (`lineWordsRaw`, `plainWordsRaw`), since one already written short leaves it nothing
+ * to name. A statement's name on an INFRA spec opens with its label ("R2. Every address…"), so
+ * a cut made after the naming ended its author's sentence at that label, inside the name.
  *
  * `standIn` stands in for each reference by a token as long as its name: one private-use
  * character of its own, repeated, so a token holds no space, letter, digit or sentence mark.
@@ -261,9 +274,11 @@ const NO_TOKEN = "\ufffd";
  *
  * A cut's ellipsis is decided on the line before the names go in (`drawnLine`), and a line cut
  * right after a reference ends in its token, not in its name's own last character. So `named`
- * decides again on an ellipsis that ends the line right after a token: where the name ends with
- * an ellipsis of its own ("R2. Every address…", which `chipWords` cut) or with a sentence's
- * mark, the line draws no ellipsis after it. An ellipsis anywhere else stays as written.
+ * decides again, by `drawnLine`'s own rule, on an ellipsis that ends the line right after a
+ * token: where the name ends with an ellipsis of its own ("R2. Every address…", which
+ * `chipWords` cut), the line draws no second after it. A name that ends with a sentence's mark
+ * keeps the cut's ellipsis, since a line cut inside its sentence draws one whatever its last
+ * character. An ellipsis anywhere else stays as written.
  *
  * A line no cut is made in is `named(standIn(text))`.
  */
@@ -313,7 +328,7 @@ export function referenceStandIns(
         const name =
           one.route.kind === "issue"
             ? one.route.key
-            : (nameOf(one.reference) ?? documentWord(one.route) ?? NODE_TYPE_NAMES.document);
+            : (nameOf(one.reference) ?? shortForm(one.route));
         held += names.length < STAND_INS ? tokenOf(name).repeat(name.length) : ownStandIns(name);
         at = one.end;
       }
