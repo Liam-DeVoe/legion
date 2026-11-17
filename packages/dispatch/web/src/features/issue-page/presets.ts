@@ -154,7 +154,7 @@ export function presetView(
 ): PresetView {
   const wanted = query.trim().toLowerCase();
   if (!isFilter(preset)) return conversationView(root, wanted, named, memo);
-  // Decisions draws from the decisions read, as F does, until that read moves onto a view.
+  // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
   return held === undefined

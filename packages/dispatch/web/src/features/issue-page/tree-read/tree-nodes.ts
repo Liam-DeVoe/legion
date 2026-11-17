@@ -16,7 +16,15 @@ import {
 } from "../../refs/routes";
 import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
-import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
+import {
+  askIdOf,
+  askNodeId,
+  askOfNode,
+  type DecisionNode,
+  decisionNodes,
+  issueAsks,
+  nodeReference,
+} from "../decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import {
@@ -84,9 +92,6 @@ export interface TreeWords extends TreeContext {
  *  facts the answer does not hold, each row's `dispatch://` address read to a node id as F's
  *  builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one address. */
 export interface KeptReads {
-  /** Each ask of the issue read's open asks and of the asks read, the asks read's where both
-   *  hold it. */
-  readonly asks: ReadonlyMap<string, TreeAsk>;
   /** Each check of the results read, with the results recorded against it. */
   readonly checks: ReadonlyMap<string, CheckBlock>;
   /** Each child of the issue read, by its key. */
@@ -103,6 +108,9 @@ export interface KeptReads {
 /** What a step and a mark read: the words and the names `buildIssueTree` hands in, the page's
  *  other reads by node (`kept`), and the answer, looked up by the read's own ids. */
 export interface TreeDraftContext extends TreeWords {
+  /** The row of the issue's asks an ask node is, the issue read's open asks and the asks read
+   *  merged (`decision-nodes.ts`' `askOfNode`, the rule every reader of a decision reads too). */
+  readonly askOf: (node: TreeAnswerNode) => TreeAsk | undefined;
   /** The Change each decision node waits on (`decision-review.ts`' `decisionNodeChanges`), by
    *  the node's read id. */
   readonly changes: ReadonlyMap<string, TreeAnswerNode>;
@@ -196,6 +204,7 @@ export function treeDraftsFrom(
   let offered = false;
   const drafting: TreeDraftContext = {
     ...context,
+    askOf: askOfNode(reads),
     changes: decisionNodeChanges(answer),
     decisions: new Map(
       decisionNodes(answer, reads).map((decision) => [decision.node.id, decision])
@@ -271,7 +280,7 @@ export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: strin
     (reads.issue.artifacts ?? []).map((artifact) => [artifact.id, artifact.slug])
   );
   const asks = new Map(
-    [...asksOf(reads).values()].map((ask) => [
+    [...issueAsks(reads).values()].map((ask) => [
       ask.id,
       askNodeId(ask, (artifactId) => slugs.get(artifactId)),
     ])
@@ -482,11 +491,11 @@ function draftAsk(
 ): Draft | undefined {
   if (node.supertag !== "ask") return undefined;
   const draft = draftOf(node, "ask", context);
-  const ask = context.kept.asks.get(draft.id);
+  const ask = context.askOf(node);
   if (ask !== undefined && ask.kind !== "question") return undefined;
   madeBy(draft, node);
   draft.chips = tupleChips(node, "shaped", context);
-  const askId = askIdOf(node, context);
+  const askId = askIdOf(node, ask);
   if (askId !== undefined) draft.source = textSourceOf("ask", askId);
   if (ask === undefined) {
     draft.state = "open";
@@ -579,28 +588,11 @@ function madeBy(draft: Draft, node: TreeAnswerNode): void {
 /**
  * The node's own `dispatch://` address, which the kept reads are matched by and a chip naming it
  * links: the address the coverage or results read gives a requirement or a check where it holds
- * one, as F's draft carried it; an ask's, a comment's and a message's own; and a typed block's,
- * a decision's among them, in the document its `document` names (`decision-nodes.ts` makes a
- * decision's address by this rule too). A node of another issue is addressed in that issue.
- * Anything else has none.
+ * one, and otherwise the address the one rule every reader of a decision reads gives it
+ * (`decision-nodes.ts`' `nodeReference`), an ask's by its row of the issue's asks (`askOf`).
  */
 function referenceOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
-  const kept = keptReference(node, context);
-  if (kept !== undefined) return kept;
-  const key = node.issue ?? context.key;
-  if (node.supertag === "comment" || node.supertag === "message") {
-    return buildDispatchReference({ id: node.id, key, kind: node.supertag });
-  }
-  const ask = node.supertag === "ask" ? askIdOf(node, context) : undefined;
-  if (ask !== undefined) return buildDispatchReference({ id: ask, key, kind: "ask" });
-  return node.document === undefined
-    ? undefined
-    : buildDispatchReference({
-        block: { id: node.id },
-        key,
-        kind: "artifact",
-        slug: node.document.slug,
-      });
+  return keptReference(node, context) ?? nodeReference(node, context.key, context.askOf(node));
 }
 
 /** The address the read that tells about the node gives it, where that read holds a row for it:
@@ -615,13 +607,6 @@ function keptReference(node: TreeAnswerNode, context: TreeDraftContext): string 
     default:
       return undefined;
   }
-}
-
-/** The id of the ask an ask node is: the asks read's, matched by the node's tree id, else the
- *  node's own where it is no typed block, whose id would be the block's. */
-function askIdOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
-  const ask = context.kept.asks.get(context.treeIdOf(node.id));
-  return ask?.id ?? (node.document === undefined ? node.id : undefined);
 }
 
 /** The chips naming the nodes `node`'s tuples of `kind` point at, one for each node, in the
@@ -750,7 +735,6 @@ function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
 function keptReads(reads: IssueTreeReads, context: TreeContext): KeptReads {
   const checks = reads.results?.checks ?? [];
   return {
-    asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
     checks: indexBy(checks, (check) => {
       const slug = context.slugOf(check.artifact_id);
       return slug === undefined ? undefined : blockNodeId(slug, check.block_id);
@@ -779,25 +763,6 @@ function indexBy<Row>(
     if (id !== undefined) index.set(id, row);
   }
   return index;
-}
-
-/** The issue's asks by id: the issue read's open asks and the asks read, the asks read's where
- *  both hold one, since it is the newer read of the two (F's `addAsks`). */
-function asksOf(reads: TreeIdReads): Map<string, TreeAsk> {
-  const asks = new Map<string, TreeAsk>();
-  for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
-    asks.set(ask.id, ask);
-  }
-  return asks;
-}
-
-/** The node id F drew an ask by: the block it was indexed from, in the document that holds that
- *  block (`block_artifact`), else the document it is anchored in, where it names a block; its own
- *  id otherwise. */
-function askNodeId(ask: TreeAsk, slugOf: (artifactId: string) => string | undefined): string {
-  const slug = ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? "");
-  const block = ask.block_id ?? undefined;
-  return slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
 }
 
 /** A block as the blocks read answers one, with the words the tree read answers beside it, so a

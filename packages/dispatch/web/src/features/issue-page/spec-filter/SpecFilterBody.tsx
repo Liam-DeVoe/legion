@@ -176,10 +176,10 @@ export function SpecFilterBody({
   // asks read are watched by observers that are never enabled, under the keys the page reads
   // them by (`ViewReadProvider`, `useIssueTree.ts`). A view read again after a change of the
   // issue drops its answer before the next one lands (`subscribeTreeFreshness`), so the column
-  // draws the answer it last held until the next one lands, as the Decisions view does
-  // (`decisions-entries.ts`), and after a read again that fails, which leaves the body an answer
-  // to draw (decision 98). Until the view has answered the column says nothing of a statement no
-  // decision shaped, since it does not know yet.
+  // draws the answer it last held until the next one lands, and after a read again that fails,
+  // which leaves the body an answer to draw. Until the view and the asks read have both answered
+  // the column says nothing of a statement no decision shaped, since it does not know yet: a
+  // person's decision is a question they answered, which only the asks read says.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
   const asks = useQuery({
     enabled: false,
@@ -564,7 +564,7 @@ export function SpecFilterBody({
             focused={focused}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
-            known={held !== undefined}
+            known={held !== undefined && asks !== undefined}
             marked={marked}
             onCellFocus={focusCell}
             onFocus={focusStatement}
@@ -845,8 +845,8 @@ function Group({
   context: ReadonlySet<string>;
   focused: string | undefined;
   group: SpecGroup;
-  /** Whether the Spec view read the decisions come from has answered, which is when a run with
-   *  no decision can say that none shaped it. */
+  /** Whether the Spec view read the decisions come from and the asks read have both answered,
+   *  which is when a run with no decision can say that none shaped it. */
   known: boolean;
   /** Whether the reads a mark comes from hold an answer, which is when a statement can carry
    *  how it stands. */

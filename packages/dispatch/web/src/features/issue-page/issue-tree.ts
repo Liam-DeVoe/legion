@@ -1,10 +1,7 @@
 import type {
   Actor,
-  ArtifactBlock,
   Ask,
   AskWithTrees,
-  Comment,
-  CommentWithTrees,
   DisplayTree,
   IssueCheckResults,
   IssueChild,
@@ -252,12 +249,6 @@ export interface TreeViews {
   readonly verification?: TreeAnswer;
 }
 
-/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them. */
-export interface DocumentBlocks {
-  readonly artifactId: string;
-  readonly blocks: readonly ArtifactBlock[];
-}
-
 /** An ask as the tree reads it: the issue read's open asks and the asks read both send the
  *  server's reading of the question beside it, which `Ask` leaves out. */
 export type TreeAsk = Ask & Pick<AskWithTrees, "question_tree">;
@@ -268,8 +259,6 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  /** The issue's comments with each body's reading. The tree read answers each as a node. */
-  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   readonly issue: IssueDetails;
   /** The issue's messages with their replies. The tree read answers each as a node. */
   readonly messages?: readonly MessageRead[];

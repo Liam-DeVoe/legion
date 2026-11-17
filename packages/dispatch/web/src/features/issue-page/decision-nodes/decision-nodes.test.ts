@@ -293,8 +293,9 @@ test("its review state is the read's", () => {
 // `shaped` ties. It is a decision as today's decisions read answers a person's: of the kind
 // `person`, naming the ask it is, with its ties as links that are not stale, waiting for nobody's
 // review, never kept nor replaced, and made when it was answered. An ask block is that ask by the
-// block the asks read names; an ask of the conversation is its own. An open question with ties,
-// and an answered one with none, are no decision.
+// block the asks read names, in the document that holds it (`block_artifact`, by its slug); an ask
+// of the conversation is its own. An open question with ties, and an answered one with none, are
+// no decision.
 test("a person's decision is its answered ask", () => {
   const answered = { at: "2026-11-06T12:00:00Z", selected: ["REST"], text: null, user: "alice" };
   const q1 = block("q1", "ask", SPEC, 1, {
@@ -318,21 +319,16 @@ test("a person's decision is its answered ask", () => {
       tuple("shaped", "ask-4", "r1"),
     ]
   );
+  /** Where an ask block of the spec stands, as the asks read names it. */
+  const inSpec = {
+    artifact_id: SPEC.artifact_id,
+    block_artifact: { id: SPEC.artifact_id, primary: true, slug: SPEC.slug },
+  };
   const reads: DecisionReads = {
     asks: [
-      question("ask-1", {
-        answer: answered,
-        artifact_id: SPEC.artifact_id,
-        block_id: "q1",
-        state: "answered",
-      }),
-      question("ask-2", { artifact_id: SPEC.artifact_id, block_id: "q2" }),
-      question("ask-3", {
-        answer: answered,
-        artifact_id: SPEC.artifact_id,
-        block_id: "q3",
-        state: "answered",
-      }),
+      question("ask-1", { ...inSpec, answer: answered, block_id: "q1", state: "answered" }),
+      question("ask-2", { ...inSpec, block_id: "q2" }),
+      question("ask-3", { ...inSpec, answer: answered, block_id: "q3", state: "answered" }),
       question("ask-4", { answer: answered, state: "answered" }),
     ],
     issue: { key: KEY },

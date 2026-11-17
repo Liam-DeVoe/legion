@@ -11,6 +11,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
+import { buildDispatchReference } from "../../refs/routes";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { decisionNodeChanges } from "../decision-review";
 import {
@@ -662,13 +663,16 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   });
 });
 
-// The rule `decision-nodes.ts` copies from this module (its own `referenceOf`, since importing
-// this module would close an import cycle): a decision's address is the address the outline's
-// draft of the same node carries, so Keep and Change, the review list and the count find a
-// decision by the address its row was drawn with. A decision of the spec, one of the decisions
-// document and one of another issue, each addressed in its document; an ask block and an ask of
-// the conversation that the asks read says are answered and that carry a `shaped` tie, each
-// addressed as the ask it is.
+// One rule addresses a node for the outline and for every reader of a decision
+// (`decision-nodes.ts`' `nodeReference` and `askOfNode`): a decision's address is the address the
+// outline's draft of the same node carries, so Keep and Change, the review list and the count
+// find a decision by the address its row was drawn with, and each tie of a person's decision
+// names the node it reaches by the address that node's row carries. A decision of the spec, one
+// of the decisions document and one of another issue, each addressed in its document; an ask
+// block and an ask of the conversation that the asks read says are answered and that carry a
+// `shaped` tie, each addressed as the ask it is; an answered ask block whose asks-read row names
+// the block's document by its slug alone, its id there being none the answer carries; and an
+// open ask block that only the issue read's open asks hold, which a tie names as the ask it is.
 test("a decision node's address is the outline's", () => {
   const answered = {
     at: "2026-11-06T12:00:00Z",
@@ -689,8 +693,15 @@ test("a decision node's address is the outline's", () => {
       }),
       block("q1", "ask", KEY, SPEC, 2),
       node("ask-2", "ask", KEY),
+      block("q3", "ask", KEY, SPEC, 3),
+      block("q4", "ask", KEY, SPEC, 4),
     ],
-    [tuple("shaped", "q1", "r1"), tuple("shaped", "ask-2", "r1")]
+    [
+      tuple("shaped", "q1", "r1"),
+      tuple("shaped", "ask-2", "r1"),
+      tuple("shaped", "q3", "r1"),
+      tuple("shaped", "q3", "q4"),
+    ]
   );
   const reads: IssueTreeReads = {
     asks: [
@@ -701,8 +712,19 @@ test("a decision node's address is the outline's", () => {
         state: "answered",
       }),
       question("ask-2", { answer: answered, state: "answered" }),
+      question("ask-3", {
+        answer: answered,
+        block_artifact: { id: "artifact-spec-elsewhere", primary: true, slug: SPEC.slug },
+        block_id: "q3",
+        state: "answered",
+      }),
     ],
-    issue: issueDetails(),
+    issue: {
+      ...issueDetails(),
+      open_asks: [
+        { ...question("ask-4", { artifact_id: SPEC.id, block_id: "q4" }), last_reply: null },
+      ],
+    },
   };
   const decisions = decisionNodes(tree, reads);
   const idOf = treeIdOf(tree, reads);
@@ -714,9 +736,17 @@ test("a decision node's address is the outline's", () => {
     "dispatch://CORE-2/artifact/spec#b-d3",
     `dispatch://${KEY}/ask/ask-1`,
     `dispatch://${KEY}/ask/ask-2`,
+    buildDispatchReference({ id: "ask-3", key: KEY, kind: "ask" }),
   ]);
   expect(decisions.map((one) => drafts.get(idOf(one.node.id))?.reference)).toEqual(
     decisions.map((one) => one.ref)
+  );
+  const ties = decisions.flatMap((one) => one.links ?? []);
+  expect(ties.map((link) => link.to.ref)).toContain(
+    buildDispatchReference({ id: "ask-4", key: KEY, kind: "ask" })
+  );
+  expect(ties.map((link) => link.to.ref)).toEqual(
+    ties.map((link) => drafts.get(idOf(link.to.id))?.reference)
   );
 });
 

@@ -16,8 +16,8 @@ import {
   type DecisionNode,
   decisionDocument,
   decisionNodes,
+  decisionQuote,
 } from "./decision-nodes/decision-nodes";
-import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { issueTreeKey, issueTreeQuery, viewKey } from "./tree-read/tree-read";
@@ -93,7 +93,7 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * Both writes are the ones that tab made: Keep is `POST /artifacts/{id}/blocks/{block}/keep`
  * against the decision node's own document and block, carrying the sum of the text this node
  * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
- * comment anchored to the words of the decision's first block (`anchorQuote`). The decision is
+ * comment anchored to the words of the decision's first block (`decisionQuote`). The decision is
  * the node of the tree read the page already holds (`issueTreeKey`), found by its address among
  * that answer's decisions (`decisionNodes`), so the node makes no read of its own
  * (dispatch://INFRA-4097's plan, choice 7).
@@ -140,7 +140,6 @@ export function DecisionActions({
   return (
     <DecisionControls
       decision={decision}
-      decisions={decisions}
       documentId={documentId}
       issueKey={issueKey}
       tabStops={tabStops}
@@ -150,14 +149,11 @@ export function DecisionActions({
 
 function DecisionControls({
   decision,
-  decisions,
   documentId,
   issueKey,
   tabStops,
 }: {
   decision: DecisionNode;
-  /** Every decision of the answer `decision` was found in, which a Change counts among. */
-  decisions: readonly DecisionNode[];
   /** The document `decision` is a block of (`decisionDocument`), which both writes name. */
   documentId: string;
   issueKey: string;
@@ -177,7 +173,7 @@ function DecisionControls({
     else drafts?.delete(decision.ref);
   };
   // Read once per answer of the tree read, which is when the decision is a new object.
-  const quote = useMemo(() => anchorQuote(decision), [decision]);
+  const quote = useMemo(() => decisionQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
@@ -241,7 +237,6 @@ function DecisionControls({
       {changing && quote !== undefined ? (
         <ChangeComposer
           decision={decision}
-          decisions={decisions}
           documentId={documentId}
           issueKey={issueKey}
           focusField={!restored}
@@ -257,7 +252,6 @@ function DecisionControls({
  *  the write the Decisions tab made. */
 function ChangeComposer({
   decision,
-  decisions,
   documentId,
   focusField,
   issueKey,
@@ -265,7 +259,6 @@ function ChangeComposer({
   quote,
 }: {
   decision: DecisionNode;
-  decisions: readonly DecisionNode[];
   documentId: string;
   /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
    *  form, and not when the form comes back with its row's body. */
@@ -284,17 +277,11 @@ function ChangeComposer({
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
+    // The anchor names no block: the API's anchor input (`AnchorInput`) has no `block_id` yet.
+    write: (input: { body: string }, bounds) =>
       api.createComment(
         issueKey,
-        {
-          anchor: {
-            artifact: documentId,
-            occurrence: input.anchor.occurrence,
-            quote: input.anchor.quote,
-          },
-          body: input.body,
-        },
+        { anchor: { artifact: documentId, quote }, body: input.body },
         bounds
       ),
     // The change is a comment of the issue's, and the comments read is what tells the page a
@@ -315,9 +302,6 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
-  // Whether the send is reading the decision's document's text, which it does before the comment
-  // goes out: Send is off while it does, as it is while the comment is out.
-  const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
@@ -333,40 +317,14 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "" || reading) return;
+        if (body.trim() === "") return;
         // Send is disabled while the comment is out, and the form goes once it lands. The draft
         // goes while the send is out: a body that closes then comes back with Change closed, and
         // the shell's pending-writes indicator holds the send, so a second press cannot write the
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decision's document is this decision's own, counted
-        // here, at the send, among the decisions of that document and over the document's own
-        // reading, which the send reads once now: `changeAnchor` walks every decision above this
-        // one, which no render of a row pays for (decision 92). With no reading - the read
-        // failed - the anchor names no place: Dispatch takes it where the quote stands once, and
-        // refuses it where the quote stands more than once, which the form says in the page's
-        // words with the draft kept.
-        setReading(true);
-        void queryClient
-          .fetchQuery({
-            queryFn: () => api.getArtifactText(documentId),
-            queryKey: ["artifact", documentId, "text"],
-            staleTime: 0,
-          })
-          .then(
-            (text) => text.markdown_tree,
-            () => undefined
-          )
-          .then((tree) => {
-            setReading(false);
-            const anchor = changeAnchor(
-              decision,
-              decisions.filter((row) => decisionDocument(row) === documentId),
-              tree
-            );
-            send.mutate({ anchor: anchor ?? { quote }, body });
-          });
+        send.mutate({ body });
       }}
     >
       <blockquote
@@ -399,7 +357,7 @@ function ChangeComposer({
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         <button
           className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-          disabled={send.isPending || reading || body.trim() === ""}
+          disabled={send.isPending || body.trim() === ""}
           type="submit"
           {...pageChrome}
         >

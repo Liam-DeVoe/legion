@@ -30,7 +30,6 @@ import { agentsOnlyItem } from "./issue-address";
 import {
   ambiguousTargets,
   buildIssueTree,
-  type DocumentBlocks,
   drawnLine,
   FIRST_LINE_LIMIT,
   firstBlockWordsRaw,
@@ -445,8 +444,13 @@ function thread(id: string, createdAt: string): MessageRead {
 
 /** A case's issue as F's reads hold it, with what the tree read answers beside them. */
 interface Fixture extends IssueTreeReads {
+  /** The issue's comments, each of which the tree read answers as a node. */
+  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   /** The blocks of each document of the issue, whose typed blocks the tree read answers. */
-  readonly documents?: readonly DocumentBlocks[];
+  readonly documents?: readonly {
+    readonly artifactId: string;
+    readonly blocks: readonly ArtifactBlock[];
+  }[];
   /** Nodes the case adds to the answer as they stand, a decision node among them. */
   readonly nodes?: readonly TreeAnswerNode[];
   /** The parent the read answers for a typed block, by its id, where the case gives it one. */
@@ -503,7 +507,7 @@ interface Written {
  * them by time, then id, as the read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
-  const { documents, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
+  const { comments, documents, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
   const issue = reads.issue;
   const key = issue.key;
   const { nodeIdOf, slugOf, specSlug } = treeContext({ issue });
@@ -632,11 +636,11 @@ function answered(fixture: Fixture): IssueTreeReads {
     });
   }
   for (const node of added ?? []) written.push({ node });
-  const history = agentsOnlyIds(reads.comments, reads.messages, [...asks.values()]);
+  const history = agentsOnlyIds(comments, reads.messages, [...asks.values()]);
   const blocks = new Map(
     written.flatMap(({ node }) => (node.document === undefined ? [] : [[node.id, node]]))
   );
-  for (const comment of reads.comments ?? []) {
+  for (const comment of comments ?? []) {
     if (history.has(comment.id)) continue;
     const anchored = comment.anchor?.block_id ? blocks.get(comment.anchor.block_id) : undefined;
     const parent =
