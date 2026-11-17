@@ -41,7 +41,7 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		{"no boot token", func(s *SpawnSpec) { s.BootToken = "" }, "spawn legion-omp-legion-43-tester: no boot token"},
 		{"an issue that is a path", func(s *SpawnSpec) { s.Issue = "../../etc" }, `spawn legion-omp-legion-43-tester: issue "../../etc" is not an issue key`},
 		{"a tree that is not an issue key", func(s *SpawnSpec) { s.Tree = "legion-42" }, `spawn legion-omp-legion-43-tester: tree "legion-42" is not an issue key`},
-		{"a role no claim is on", func(s *SpawnSpec) { s.Role = "operator" }, `spawn legion-omp-legion-43-tester: "operator" is not a role`},
+		{"a role outside the role grammar", func(s *SpawnSpec) { s.Role = "Operator" }, `spawn legion-omp-legion-43-tester: "Operator" is not a role`},
 		{"the controller's role on an issue", func(s *SpawnSpec) { s.Role = claim.RoleController },
 			`spawn legion-omp-legion-43-tester: the controller's claim is on no issue and no tree (issue "LEGION-43", tree "LEGION-42")`},
 		// The token is derived from the project, issue and role, and every runtime names the
