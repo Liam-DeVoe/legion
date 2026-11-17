@@ -1150,3 +1150,63 @@ test("a write while the open view is being read cancels nothing and reads the vi
     client.clear();
   }
 });
+
+// Two replies sent close together while the live feed is down: the second reply's invalidation
+// of the comments lands while the comments read the first reply started is still out, so the
+// comments query is already marked invalid and the cache reports no new invalidation. The
+// comments are read once more for the second reply all the same, and the tree has to be too:
+// otherwise the outline stops at the tree read made for the first reply, and the second reply is
+// no row until some later write.
+test("a second write while the first write's comments read is out reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const second: Comment = { ...comment, created_at: "2026-11-05T02:00:00Z", id: "comment-2" };
+  let written: Comment[] = [];
+  let commentsOut: { readonly promise: Promise<void>; readonly resolve: () => void } | undefined;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer(written)
+  );
+  (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => {
+    await commentsOut?.promise;
+    return [...written];
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+
+    // The first reply: its comments read stays out, and the tree is read again for it.
+    commentsOut = Promise.withResolvers<void>();
+    written = [comment];
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await waitFor(
+      () =>
+        expect(nodesInOrder(view.result.current).some((node) => node.id === comment.id)).toBe(true),
+      { timeout: 3_000 }
+    );
+
+    // The second reply, while the first reply's comments read is still out.
+    written = [comment, second];
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await act(async () => {
+      commentsOut?.resolve();
+      await Bun.sleep(0);
+    });
+    await waitFor(
+      () =>
+        expect(
+          nodesInOrder(view.result.current).some((node) => node.id === second.id),
+          "the second reply is a row"
+        ).toBe(true),
+      { timeout: 3_000 }
+    );
+    view.unmount();
+  } finally {
+    commentsOut?.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
