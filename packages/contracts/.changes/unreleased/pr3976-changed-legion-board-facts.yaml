@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
   `LegionBoardResponse` gains `issues`, a map keyed by issue key of each issue's stored Legion
-  facts (`LegionBoardFacts`), and its header gains `legion_issues`, `facts_updated_at` and
+  facts (`LegionBoardFacts`), and its header gains `facts_updated_at` and
   `facts_cursor_age_seconds`. `LegionBoardCard` gains `slot_use`, `waiting`, `waiting_place`,
   `slot_since` and `tree_slot`.

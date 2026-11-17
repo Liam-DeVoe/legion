@@ -24,10 +24,8 @@ body: |-
   source and the body follows the open work and what the daemon runs rather than the project's
   history. The rows are read by key, by tree root and as the project's open rows, each through an
   index, and the read computes nothing but each open fact's growth to the moment of the read; the
-  live push carries the same map, entry by entry. Its header says how many issues of the project
-  carry Legion phase work, the oldest `updated_at` of the rows it served and the age of the
-  consumer's cursor, so a project with no Legion work (no Legion issues, no rows) reads
-  differently from one whose backfill has not run (Legion issues, no rows).
+  live push carries the same map, entry by entry. Its header says the oldest `updated_at` of the
+  rows it served and the age of the consumer's cursor.
   Each card now says what the slot it holds is used for (`working`, `between_turns`,
   `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
   `person`) with the time since and the issues a blocker link holds it on, its place in the

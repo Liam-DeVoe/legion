@@ -25,8 +25,9 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 	}{
 		{
 			// The sampler meets the issue after its first worker event: two hours of work time
-			// stand before the first observation, which is the spec's "Work hours before any
-			// phase mark".
+			// stand before the first observation, which the event log names (the spec's
+			// "Statuses before observations": an issue in flight takes its phases from
+			// observations only from its first observation on).
 			name: "the first observation follows the first worker event",
 			issue: newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(8)).
 				observeString(legion.FieldPhase, hour(2), "implementing").

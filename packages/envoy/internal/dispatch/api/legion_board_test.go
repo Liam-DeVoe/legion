@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,54 +248,6 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	}
 }
 
-// TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded: the daemon's state carries no
-// CI verdict since cybermonklabs/legion#2539, and the card has no field for one (spec version 38
-// of dispatch://INFRA-1077). A database a sampler wrote before then still holds verdict rows, as
-// the browser seed once wrote one, and the card of such an issue answers no verdict key at all.
-// The key is looked for in the answer's own JSON, not in the struct that decodes it, since a
-// struct drops a key it has no field for.
-func TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	seedLegionProjects(t, handler, "INFRA")
-	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
-	now := time.Now().UTC()
-	key := seedLegionIssue(t, database, "INFRA", 1, "An issue with a recorded verdict", "a", nil, "")
-	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
-	seedLegionObservation(t, database, "INFRA", key, "pull_request.checks_verdict", `"failing"`, now.Add(-time.Minute))
-	seedLegionRead(t, database, "INFRA", now, "")
-
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/INFRA/legion/board", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET the board of INFRA: status=%d body=%s", response.Code, response.Body.String())
-	}
-	var board struct {
-		Columns []struct {
-			ID    string                       `json:"id"`
-			Cards []map[string]json.RawMessage `json:"cards"`
-		} `json:"columns"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &board); err != nil {
-		t.Fatalf("decode the board: %v", err)
-	}
-	var card map[string]json.RawMessage
-	for _, column := range board.Columns {
-		for _, each := range column.Cards {
-			if legion.JSONString(each["key"]) == key {
-				if column.ID != legion.ColumnImplementing {
-					t.Errorf("%s is in the %q column, want %q", key, column.ID, legion.ColumnImplementing)
-				}
-				card = each
-			}
-		}
-	}
-	if card == nil {
-		t.Fatalf("the board holds no card for %s: %s", key, response.Body.String())
-	}
-	if verdict, present := card["checks_verdict"]; present {
-		t.Fatalf("%s's card carries a CI verdict, %s, want none: %s", key, verdict, response.Body.String())
-	}
-}
-
 // TestTheMergingColumnHoldsEveryPhaseTheMergerWorks: the merger's phases are one declaration
 // (legion.MergerPhases), which the board's column map reads rather than spelling them again, so
 // an issue in any of the three is on the Merging column's cards and on no other.
@@ -394,10 +349,10 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(newAdmissionShapeState), &state); err != nil {
 		t.Fatalf("decode the new state shape: %v", err)
 	}
-	if _, err := legion.RecordObservations(t.Context(), database.Pool, "INFRA", now.Add(-time.Hour), state.Observations()); err != nil {
+	if _, err := legion.RecordRead(t.Context(), database.Pool, "INFRA", now.Add(-time.Hour),
+		len(newAdmissionShapeState), state.Observations()); err != nil {
 		t.Fatalf("record the new state shape: %v", err)
 	}
-	seedLegionRead(t, database, "INFRA", now, "")
 
 	board := legionBoardOf(t, handler, "INFRA")
 	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
@@ -460,6 +415,173 @@ func TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure(t *testin
 	}
 }
 
+// fakeLegionDaemon is a Legion daemon stand-in serving the state document the test last handed it,
+// so a test drives the sampler's own passes (legion.Sampler) and reads the board they leave.
+type fakeLegionDaemon struct {
+	*httptest.Server
+	mu   sync.Mutex
+	body string
+}
+
+// newFakeLegionDaemon starts a daemon stand-in and names it project's daemon.
+func newFakeLegionDaemon(t *testing.T, handler http.Handler, project string) *fakeLegionDaemon {
+	t.Helper()
+	daemon := &fakeLegionDaemon{}
+	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != legion.StatePath {
+			http.NotFound(w, r)
+			return
+		}
+		daemon.mu.Lock()
+		body := daemon.body
+		daemon.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(daemon.Close)
+	nameLegionDaemon(t, handler, project, daemon.URL)
+	return daemon
+}
+
+// serves sets the state document the daemon answers from its next read on.
+func (d *fakeLegionDaemon) serves(body string) {
+	d.mu.Lock()
+	d.body = body
+	d.mu.Unlock()
+}
+
+// pass serves body and runs one pass of the sampler over it.
+func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string) {
+	t.Helper()
+	d.serves(body)
+	legion.NewSampler(database.Pool).Pass(t.Context())
+}
+
+// TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries: the board answers the newest good
+// read, and the metrics' reported set is the board's. The first read carries three issues of one
+// chain, with the root's architect and implementer in a turn; the second no longer carries the
+// middle issue or the implementer's claim. The board then shows neither, and the middle issue is
+// out of both readers' reported set, which the bottom issue shows: its chain climbed through the
+// middle issue, and now that issue is neither reported nor carrying phase work, so the bottom issue
+// is a root of its own on the board and in the metrics.
+func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
+	seedLegionIssue(t, database, "INFRA", 1, "The root", "a", nil, "")
+	seedLegionIssue(t, database, "INFRA", 2, "The middle issue", "b", nil, "INFRA-1")
+	seedLegionIssue(t, database, "INFRA", 3, "The bottom issue", "c", nil, "INFRA-2")
+
+	daemon.pass(t, database, `{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","slot":{"index":0},"architect":{"state":"working"},
+			"workers":{"implementer":{"claim":{"state":"working"}}}},
+		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
+		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}}}`)
+	board := legionBoardOf(t, handler, "INFRA")
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+		t.Fatalf("after the first read the testing column holds %v, want INFRA-2", got)
+	}
+	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"architect", "implementer"}) {
+		t.Fatalf("after the first read INFRA-1's roles are %v, want the architect and the implementer", roles)
+	}
+	if tree := legionCard(t, board, "INFRA-3").Tree; tree != "INFRA-1" {
+		t.Fatalf("after the first read INFRA-3 is in tree %q, want INFRA-1, through the middle issue", tree)
+	}
+
+	daemon.pass(t, database, `{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","slot":{"index":0},"architect":{"state":"working"}},
+		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}}}`)
+	board = legionBoardOf(t, handler, "INFRA")
+	if !board.Header.ReadOK {
+		t.Fatalf("the header = %+v, want the second read recorded as a good read", board.Header)
+	}
+	for _, column := range board.Columns {
+		for _, card := range column.Cards {
+			if card.Key == "INFRA-2" {
+				t.Errorf("the board holds INFRA-2 in the %s column, want no card: the newest read does not carry it", column.ID)
+			}
+		}
+	}
+	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"architect"}) {
+		t.Errorf("INFRA-1's roles are %v, want the architect alone: the newest read carries no implementer's claim", roles)
+	}
+	if tree := legionCard(t, board, "INFRA-3").Tree; tree != "INFRA-3" {
+		t.Errorf("the board puts INFRA-3 in tree %q, want itself: the middle issue is no longer reported", tree)
+	}
+	now := time.Now().UTC()
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	if err != nil {
+		t.Fatalf("read the metrics population: %v", err)
+	}
+	if root := population.TreeRoot("INFRA-3"); root != "INFRA-3" {
+		t.Errorf("the metrics put INFRA-3 in tree %q, want itself: the middle issue is out of the reported set", root)
+	}
+}
+
+// TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead: a read the daemon
+// answered and Postgres refused to store — a wait whose text carries a lone surrogate escape, which
+// jsonb refuses as no JSON — is a failed read. The board's header names the refusal, its cards are
+// still the last good read's, and no row says the refused read succeeded: the read's row and its
+// observations are one transaction.
+func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
+	seedLegionIssue(t, database, "INFRA", 1, "The implementer's issue", "a", nil, "")
+	seedLegionIssue(t, database, "INFRA", 2, "The tester's issue", "b", nil, "")
+
+	daemon.pass(t, database, `{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","workers":{"implementer":{"claim":{"state":"working"}}}},
+		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}}}}`)
+	if header := legionBoardOf(t, handler, "INFRA").Header; !header.ReadOK {
+		t.Fatalf("after the first read the header = %+v, want a good read", header)
+	}
+	// The next read moves INFRA-1 on, and puts INFRA-2 in a wait Postgres refuses to store.
+	daemon.pass(t, database, `{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"reviewing","workers":{"reviewer":{"claim":{"state":"working"}}}},
+		"INFRA-2":{"key":"INFRA-2","phase":"awaiting_person","waitingOn":{"kind":"ask","detail":"\ud800"}}}}`)
+
+	board := legionBoardOf(t, handler, "INFRA")
+	header := board.Header
+	if header.ReadOK || header.ReadError == nil || !strings.HasPrefix(*header.ReadError, "record: ") ||
+		!strings.Contains(*header.ReadError, "SQLSTATE 22P02") {
+		t.Errorf("the header = %+v (read_error %v), want the read failed, its error the refusal of its record", header, deref(header.ReadError))
+	}
+	for column, want := range map[string][]string{
+		legion.ColumnImplementing: {"INFRA-1"},
+		legion.ColumnTesting:      {"INFRA-2"},
+		legion.ColumnReviewing:    {},
+		legion.ColumnAwaiting:     {},
+	} {
+		if got := legionColumnKeys(t, board, column); !slices.Equal(got, want) {
+			t.Errorf("the %s column holds %v, want %v: the last good read's cards", column, got, want)
+		}
+	}
+	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"implementer"}) {
+		t.Errorf("INFRA-1's roles are %v, want the last good read's implementer", roles)
+	}
+
+	rows, err := database.Pool.Query(t.Context(), `select ok, coalesce(error, '') from legion_reads where project = 'INFRA' order by id`)
+	if err != nil {
+		t.Fatalf("read the reads: %v", err)
+	}
+	var reads []string
+	for rows.Next() {
+		var ok bool
+		var failure string
+		if err := rows.Scan(&ok, &failure); err != nil {
+			t.Fatalf("scan a read: %v", err)
+		}
+		reads = append(reads, fmt.Sprintf("ok=%v %s", ok, failure))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the reads: %v", err)
+	}
+	if len(reads) != 2 || reads[0] != "ok=true " || !strings.HasPrefix(reads[1], "ok=false record: ") {
+		t.Errorf("legion_reads = %q, want the good read and then the refused one, and no row saying the refused read succeeded", reads)
+	}
+}
+
 // TestTheLegionBoardOfAProjectWithNoDaemonIsRefused: a project that names no daemon has no board,
 // which is what shows no view.
 func TestTheLegionBoardOfAProjectWithNoDaemonIsRefused(t *testing.T) {
@@ -504,6 +626,93 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 		}
 		if board.Header.QueueLength != 3 {
 			t.Errorf("%s's queue is %d long, want its own three", project, board.Header.QueueLength)
+		}
+	}
+}
+
+// TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics is the spec's A4, "A test with two
+// projects, each with a fake daemon, answers each project its own board and metrics", read
+// through one pass of the sampler over two daemons. Two facts here cross from LINUX to INFRA, and
+// neither is INFRA's: a LINUX worker files an issue into INFRA, which is a LINUX session's filing,
+// and the LINUX daemon's state names an INFRA issue in review, which is LINUX's record and nothing
+// INFRA's daemon reported. So each board shows its own daemon's read, and each project's metrics
+// count its own issue, its own sessions' filings and its own daemon's observations.
+func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA", "LINUX")
+	infra := newFakeLegionDaemon(t, handler, "INFRA")
+	linux := newFakeLegionDaemon(t, handler, "LINUX")
+	start := time.Now().UTC()
+	seedLegionIssue(t, database, "INFRA", 1, "INFRA's issue", "a", nil, "")
+	seedLegionIssue(t, database, "LINUX", 1, "LINUX's issue", "a", nil, "")
+	seedLegionRoleEvent(t, database, "INFRA-1", "s-infra-1", "implementer", "INFRA-1", start.Add(-2*time.Hour))
+	seedLegionRoleEvent(t, database, "LINUX-1", "s-linux-1", "implementer", "LINUX-1", start.Add(-2*time.Hour))
+	// The cross-project filing: LINUX-1's implementer creates INFRA-2.
+	seedLegionIssue(t, database, "INFRA", 2, "Filed by LINUX's implementer", "b", nil, "")
+	legionExec(t, database, `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('INFRA-2', 1, 'issue.created', $1::jsonb, '{"status":"triage"}', false, $2)`,
+		`{"kind":"session","id":"s-linux-1","origin":{"session_title":"Legion implementer · LINUX-1"}}`, start.Add(-time.Hour))
+
+	infra.serves(`{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","workers":{"implementer":{"claim":{"state":"working"}}}}}}`)
+	linux.serves(`{"issues":{
+		"LINUX-1":{"key":"LINUX-1","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
+		"INFRA-1":{"key":"INFRA-1","phase":"reviewing","workers":{"reviewer":{"claim":{"state":"working"}}}}}}`)
+	legion.NewSampler(database.Pool).Pass(t.Context())
+
+	infraBoard := legionBoardOf(t, handler, "INFRA")
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
+		t.Errorf("INFRA's implementing column holds %v, want INFRA-1 as INFRA's daemon reports it", got)
+	}
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnReviewing); len(got) != 0 {
+		t.Errorf("INFRA's reviewing column holds %v, want none: LINUX's daemon put INFRA-1 there, and it is no source of INFRA's board", got)
+	}
+	if roles := legionCard(t, infraBoard, "INFRA-1").Roles; !slices.Equal(roles, []string{"implementer"}) {
+		t.Errorf("INFRA-1's roles on INFRA's board are %v, want INFRA's implementer alone", roles)
+	}
+	linuxBoard := legionBoardOf(t, handler, "LINUX")
+	if got := legionColumnKeys(t, linuxBoard, legion.ColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
+		t.Errorf("LINUX's testing column holds %v, want LINUX-1 as LINUX's daemon reports it", got)
+	}
+	if roles := legionCard(t, linuxBoard, "LINUX-1").Roles; !slices.Equal(roles, []string{"tester"}) {
+		t.Errorf("LINUX-1's roles on LINUX's board are %v, want LINUX's tester alone", roles)
+	}
+
+	// Each project's issue closes after the reads, so the observations stand inside its life.
+	closeLegionIssue(t, database, "INFRA-1", time.Now().UTC())
+	closeLegionIssue(t, database, "LINUX-1", time.Now().UTC())
+	now := time.Now().UTC()
+	for _, one := range []struct {
+		project string
+		issue   string
+		filed   []string
+	}{
+		{"INFRA", "INFRA-1", nil},
+		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
+	} {
+		population, err := metrics.ReadProject(t.Context(), database.Pool, one.project, now)
+		if err != nil {
+			t.Fatalf("read %s's metrics population: %v", one.project, err)
+		}
+		facts := metrics.ProjectFacts(population, nil)
+		var finished []string
+		for _, key := range slices.Sorted(maps.Keys(facts)) {
+			if facts[key].ClosedAt != nil {
+				finished = append(finished, key)
+			}
+		}
+		if !slices.Equal(finished, []string{one.issue}) {
+			t.Fatalf("%s's facts finished %v, want its own %s alone", one.project, finished, one.issue)
+		}
+		if rounds := facts[one.issue].ReviewRounds; rounds != 0 {
+			t.Errorf("%s's %s has %d review rounds, want none: %s's daemon never reported it in review", one.project, one.issue, rounds, one.project)
+		}
+		var filed []string
+		for _, row := range metrics.ProjectFilings(population) {
+			filed = append(filed, fmt.Sprintf("%s by %s of %s, %s", row.Key, row.Filer, row.FilerIssue, row.Class))
+		}
+		if !slices.Equal(filed, one.filed) {
+			t.Errorf("%s's report holds the filings %v, want %v: a filing belongs to the project of the session that filed it", one.project, filed, one.filed)
 		}
 	}
 }
@@ -1012,4 +1221,137 @@ func TestALegionCardSaysWhyItWaits(t *testing.T) {
 		(card.Waiting.Since == nil || card.Waiting.Since.Sub(entered).Abs() > time.Second) {
 		t.Errorf("the ready issue's wait began at %v, want its phase entry %s", card.Waiting.Since, entered)
 	}
+}
+
+// TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename: the issues that carry Legion phase work
+// are one rule over one read of the same rows (legion.PhaseWorkKeys for the metrics,
+// legion.PhaseWorkOf for the board), which takes each session's newest title the one way Dispatch
+// resolves a title (delivery.ResolveSessionTitles). A session renamed after it wrote is where a
+// rule built from each event's own title answers differently: it kept the issue the session wrote
+// on under the title it wrote under, while the newest title no longer names it at all. The board
+// reads the phase work of that issue alone, and the rename is an event written on another issue,
+// so its read must still take the session's title from everything the session wrote, and put the
+// issue below in the same tree as the metrics do.
+func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	hourAgo := now.Add(-time.Hour)
+	for _, issue := range []struct {
+		number   int
+		title    string
+		rank     string
+		parent   string
+		reported bool
+	}{
+		{860, "The top, which the daemon reports", "a", "", true},
+		{861, "The tracking issue the renamed session wrote on", "b", "INFRA-860", false},
+		{862, "The bottom, which the daemon reports", "c", "INFRA-861", true},
+		{863, "Its closed child", "d", "INFRA-862", false},
+	} {
+		key := seedLegionIssue(t, database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
+		if issue.reported {
+			seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, hourAgo)
+		}
+	}
+	closeLegionIssue(t, database, "INFRA-863", hourAgo)
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+	// One session, two events: it wrote on the tracking issue under that issue's own title, and
+	// was renamed to the issue it went on to work. Its newest title is the only title Dispatch
+	// resolves, so no issue carries phase work by the first event any more.
+	seedLegionRoleEvent(t, database, "INFRA-861", "s-860", "implementer", "INFRA-861", hourAgo)
+	seedLegionRoleEvent(t, database, "INFRA-862", "s-860", "implementer", "INFRA-862", now.Add(-30*time.Minute))
+
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
+	if err != nil {
+		t.Fatalf("read the metrics population: %v", err)
+	}
+	if root := population.TreeRoot("INFRA-862"); root != "INFRA-862" {
+		t.Errorf("the metrics put INFRA-862 in tree %q, want INFRA-862: no session titled for INFRA-861 wrote on it", root)
+	}
+	if tree := legionCard(t, legionBoardOf(t, handler, "INFRA"), "INFRA-862").Tree; tree != "INFRA-862" {
+		t.Errorf("the board puts INFRA-862 in tree %q, want INFRA-862, as the metrics do", tree)
+	}
+}
+
+// TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork: the phase-work rule reads an event that
+// carried no title of its own under the session's newest title all the same (legion/phase_work.go),
+// so such an event can be the first that gives its issue phase work: a write with no title takes
+// no name away, and the Dispatch CLI sends one whenever the session's title is unset
+// (envoy-client's dispatch-cli.ts). The board reads the phase work of the issue the event is
+// written on alone, and the session's title is on an event of another issue, so its read must
+// take that title from everything the session wrote.
+func TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	top := seedLegionIssue(t, database, "INFRA", 990, "The top, which the daemon reports", "a", nil, "")
+	middle := seedLegionIssue(t, database, "INFRA", 991, "The tracking issue in neither half of the rule", "b", nil, top)
+	bottom := seedLegionIssue(t, database, "INFRA", 992, "The bottom, which the daemon reports", "c", nil, middle)
+	for _, key := range []string{top, bottom} {
+		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
+	}
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Hour), "")
+
+	// The session's title names the middle issue, on an event it wrote on the bottom one: the
+	// middle carries no phase work yet.
+	seedLegionRoleEvent(t, database, bottom, "s-990", "implementer", middle, now.Add(-45*time.Minute))
+	if tree := legionCard(t, legionBoardOf(t, handler, "INFRA"), bottom).Tree; tree != bottom {
+		t.Fatalf("the board puts %s in tree %q, want itself: the issue above it carries no phase work yet", bottom, tree)
+	}
+
+	// The same session writes on the middle issue carrying no title: the rule reads it under the
+	// session's newest title, so the middle carries phase work from here and the bottom's tree
+	// climbs past it.
+	seedSessionEvent(t, database, middle, "s-990", "", now.Add(-30*time.Minute))
+	if tree := legionCard(t, legionBoardOf(t, handler, "INFRA"), bottom).Tree; tree != top {
+		t.Errorf("after the title-less event the board puts %s in tree %q, want %s: the event gave %s phase work", bottom, tree, top, middle)
+	}
+}
+
+// TestAFailedLegionReadLeavesTheDeliveryFeedRunning: the board's reads, its phase-work read among
+// them (legionBoardPopulation.readPhaseWork), are the Legion view's own, and a read that fails is
+// that view's failure alone: the live hub retries the view (recompute), and the event feed every
+// Delivery view of the hub reads (seedEvents) never waits on a Legion read. Here the phase-work
+// read cannot succeed — the test's own database has its handoffs table renamed away — while a
+// Legion board and a timeline are open on one hub. The board's read fails, and the timeline's feed
+// must still carry every event the test writes.
+//
+// So the hub's generation makes no Legion read beside its feed's cursor: a read made there that
+// failed would cancel the feed and try again, and while it failed no Delivery view of any
+// deployment, with a Legion setting or without one, would hear an event.
+func TestAFailedLegionReadLeavesTheDeliveryFeedRunning(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	// A chain whose walk climbs onto an issue the daemon reports nothing of, so the board's read
+	// reads that issue's phase work.
+	top := seedLegionIssue(t, rig.database, "INFRA", 870, "The top, which the daemon reports", "a", nil, "")
+	middle := seedLegionIssue(t, rig.database, "INFRA", 871, "The tracking issue the daemon reports nothing of", "b", nil, top)
+	bottom := seedLegionIssue(t, rig.database, "INFRA", 872, "The bottom, which the daemon reports", "c", nil, middle)
+	for _, key := range []string{top, bottom} {
+		seedLegionObservation(t, rig.database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
+	}
+	seedLegionRead(t, rig.database, "INFRA", now.Add(-time.Minute), "")
+	legionExec(t, rig.database, `alter table handoffs rename to handoffs_unreadable`)
+	if _, err := rig.hub.server.readLegionBoard(t.Context(), "INFRA", now); err == nil {
+		t.Fatal("the board's read succeeded with no handoffs table, so nothing here fails a Legion read")
+	}
+
+	board, timeline := newFakeLiveConn(), newFakeLiveConn()
+	rig.hub.Subscribe(board, subscribeFrame("board", legionView("INFRA")))
+	rig.hub.Subscribe(timeline, subscribeFrame("timeline", presetView(deliveryLiveTimeline, 7, "")))
+	t.Cleanup(func() {
+		rig.hub.Close(board)
+		rig.hub.Close(timeline)
+	})
+
+	seedSessionEvent(t, rig.database, bottom, "s-870", "A person's own session", now)
+	head := eventHead(t, rig.database)
+	notifyChannel(t, rig.database, EventsChannel, "")
+	rig.waitForEventCursor(t, head, "an event written while every Legion read fails")
 }

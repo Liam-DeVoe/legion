@@ -89,12 +89,14 @@ type phaseSpan struct {
 	stretch span
 }
 
-// timeline is an issue's phases over its life, and whether the daemon's sampler drew it. Where
-// the sampler recorded no phase of the issue, the event log draws the timeline instead, and two
-// rules read which of the two they got: the review rounds and the queue.
+// timeline is an issue's phases over its life: the event log's up to the first phase the daemon's
+// sampler recorded, and the sampler's from there on (timelineOf). The review rounds read which
+// part each stretch is of.
 type timeline struct {
-	spans    []phaseSpan
-	observed bool
+	spans []phaseSpan
+	// firstObserved is the index of the first span the sampler recorded, and len(spans) for an
+	// issue the sampler never saw: the spans before it are the event log's.
+	firstObserved int
 }
 
 // reading is one run over one population: the trees it placed the issues in, and the timelines
@@ -215,16 +217,22 @@ func (r *reading) childrenStretches(key string) []span {
 }
 
 // reviewRounds is "entries into `reviewing`, or into status `needs_review` before observations":
-// how many times the issue entered the reviewing phase, read off the timeline the sampler drew,
-// and off the statuses its own events carried for an issue the sampler never saw.
+// the entries into `needs_review` of the statuses written before the sampler's part of the
+// timeline begins, and the entries into reviewing of that part, a reviewing stretch the sampler
+// first saw being no new entry where the event log's part ends in reviewing too (dispatch://
+// INFRA-1077's spec, "Statuses before observations", as the base settled it in 8beac41a07).
 func (r *reading) reviewRounds(key string) int {
 	drawn := r.timelineOf(key)
-	if !drawn.observed {
-		return statusEntries(r.population.issues[key].statusMarks, "needs_review")
+	statuses := r.population.issues[key].statusMarks
+	if drawn.firstObserved < len(drawn.spans) {
+		from := drawn.spans[drawn.firstObserved].stretch.from
+		if cut := slices.IndexFunc(statuses, func(recorded mark) bool { return !recorded.at.Before(from) }); cut >= 0 {
+			statuses = statuses[:cut]
+		}
 	}
-	rounds := 0
-	for index, stretch := range drawn.spans {
-		if stretch.phase == phaseReviewing && (index == 0 || drawn.spans[index-1].phase != phaseReviewing) {
+	rounds := statusEntries(statuses, "needs_review")
+	for index := drawn.firstObserved; index < len(drawn.spans); index++ {
+		if drawn.spans[index].phase == phaseReviewing && (index == 0 || drawn.spans[index-1].phase != phaseReviewing) {
 			rounds++
 		}
 	}
@@ -255,8 +263,10 @@ func (r *reading) workedOf(key string) []span {
 	return worked
 }
 
-// firstWork is where the issue's work time starts: the first event of any Legion role on it, and
-// its first handoff for an issue whose Legion work is a handoff alone.
+// firstWork is where the issue's work time starts: "the issue's first worker event", the first
+// event of any Legion role on it, and its first handoff only for an issue whose Legion work is
+// handoffs alone (the base's rule since 8beac41a07: a handoff a worker wrote is among that role's
+// events already).
 func (r *reading) firstWork(key string) (time.Time, bool) {
 	held := r.population.issues[key]
 	var first time.Time
@@ -264,6 +274,9 @@ func (r *reading) firstWork(key string) (time.Time, bool) {
 		if first.IsZero() || at.Before(first) {
 			first = at
 		}
+	}
+	if !first.IsZero() {
+		return first, true
 	}
 	for _, handed := range held.handoffs {
 		if first.IsZero() || handed.at.Before(first) {
@@ -273,16 +286,39 @@ func (r *reading) firstWork(key string) (time.Time, bool) {
 	return first, !first.IsZero()
 }
 
-// timelineOf is the issue's phases over its life: the daemon's own where the sampler recorded
-// any phase of it, and the event log's where it did not.
+// timelineOf is the issue's phases over its life: "An issue in flight when its first observation
+// is stored takes its phases from observations only from that observation on. Its hours before it
+// come from these status rules" (the spec's "Statuses before observations", which the base
+// follows since 8beac41a07). So the event log draws it up to the first phase the sampler
+// recorded, and the sampler's rows from there on; an issue the sampler never saw is the event
+// log's whole.
 func (r *reading) timelineOf(key string) timeline {
 	if held, drawn := r.timelines[key]; drawn {
 		return held
 	}
-	drawn := timeline{spans: r.observedPhases(key), observed: true}
-	if len(drawn.spans) == 0 {
-		drawn = timeline{spans: r.loggedPhases(key)}
+	end := r.population.issues[key].end(r.population.window)
+	observed := r.observedPhases(key)
+	steps := phaseSteps(r.logMarks(key))
+	until := end
+	if len(observed) > 0 {
+		until = observed[0].stretch.from
+		if cut := slices.IndexFunc(steps, func(step logMark) bool { return !step.at.Before(until) }); cut >= 0 {
+			steps = steps[:cut]
+		}
 	}
+	// "An hour of the work time before the first phase mark is on that phase's bar", so no hour
+	// of the work time is off every part: the first phase is the event log's first step where
+	// one falls before the first observation, and the first observed phase where none does.
+	if at, works := r.firstWork(key); works {
+		switch {
+		case len(steps) > 0 && at.Before(steps[0].at):
+			steps[0].at = at
+		case len(steps) == 0 && len(observed) > 0 && at.Before(observed[0].stretch.from):
+			observed[0].stretch.from = at
+		}
+	}
+	logged := loggedPhases(steps, until)
+	drawn := timeline{spans: append(logged, observed...), firstObserved: len(logged)}
 	r.timelines[key] = drawn
 	return drawn
 }
@@ -325,12 +361,6 @@ func (r *reading) observedPhases(key string) []phaseSpan {
 		}
 	}
 	slices.SortFunc(drawn, func(a, b phaseSpan) int { return a.stretch.from.Compare(b.stretch.from) })
-	// "An hour of the work time before the first phase mark is on that phase's bar", so no hour
-	// of the work time is off every part: a sampler that first saw the issue after its first
-	// worker event would otherwise leave those hours on none.
-	if at, works := r.firstWork(key); works && len(drawn) > 0 && at.Before(drawn[0].stretch.from) {
-		drawn[0].stretch.from = at
-	}
 	return drawn
 }
 
@@ -360,16 +390,17 @@ type logMark struct {
 	phase  string
 }
 
-// rolePhase is the phase each role works, which its first event on the issue starts. The
-// merger's three phases cannot be told apart in the event log, which carries one status for all
-// three, so its first event starts the first of them.
+// rolePhase is the phase each role's first event on the issue starts, until the issue is first
+// sent back (phaseSteps). The merger's first event starts merging: retro is the implementer's,
+// and the event log tells it from merging by the `retro` status the workflow writes as retro
+// starts (statusPhase; the base's rule since 8beac41a07).
 var rolePhase = map[string]string{
 	"architect":   phaseDesign,
 	"planner":     phasePlanning,
 	"implementer": phaseImplementing,
 	"tester":      phaseTesting,
 	"reviewer":    phaseReviewing,
-	"merger":      phaseRetro,
+	"merger":      phaseMerging,
 }
 
 // handoffStarts is the phase each handoff word starts: the planner's `plan` starts implementing,
@@ -388,31 +419,21 @@ var handoffStarts = map[string]string{
 // back to it.
 var phaseOrder = []string{
 	phaseDesign, phasePlanning, phaseImplementing, phaseTesting, phaseReviewing,
-	phaseAccepting, phaseRetro,
+	phaseAccepting, phaseRetro, phaseMerging,
 }
 
-// loggedPhases is the timeline the event log draws for an issue the sampler never saw: "Each
-// phase ends, and the next one starts, at the earlier of the phase's own handoff and the next
-// role's first event ... So a handoff starts the next phase, and no hour between phases is left
-// over ... After a send-back, the Dispatch status sets the phase."
-func (r *reading) loggedPhases(key string) []phaseSpan {
-	steps := phaseSteps(r.logMarks(key))
-	if len(steps) == 0 {
-		return nil
-	}
-	// As on the sampler's own timeline: an hour of the work time before the first mark is on
-	// the phase the issue is first seen in.
-	if at, works := r.firstWork(key); works && at.Before(steps[0].at) {
-		steps[0].at = at
-	}
-	end := r.population.issues[key].end(r.population.window)
+// loggedPhases is the timeline the event log's steps draw up to until: "Each phase ends, and the
+// next one starts, at the earlier of the phase's own handoff and the next role's first event ...
+// So a handoff starts the next phase, and no hour between phases is left over ... After a
+// send-back, the Dispatch status sets the phase."
+func loggedPhases(steps []logMark, until time.Time) []phaseSpan {
 	drawn := make([]phaseSpan, 0, len(steps))
 	for index, step := range steps {
-		stretch := span{from: step.at, to: end}
-		if index+1 < len(steps) {
+		stretch := span{from: step.at, to: until}
+		if index+1 < len(steps) && steps[index+1].at.Before(until) {
 			stretch.to = steps[index+1].at
 		}
-		if stretch.length() == 0 {
+		if stretch.length() <= 0 {
 			continue
 		}
 		drawn = append(drawn, phaseSpan{phase: step.phase, stretch: stretch})
@@ -472,13 +493,21 @@ func (r *reading) logMarks(key string) []logMark {
 func phaseSteps(marks []logMark) []logMark {
 	var steps []logMark
 	reached := -1
+	sentBack := false
 	for _, one := range marks {
 		rank := phaseRank(one.phase)
 		// A role's first event starts that role's phase only where the issue has not reached
 		// that phase already: a role that speaks again after its phase has passed does not send
-		// the issue back, while a handoff and a status do.
-		if one.source == fromRole && rank <= reached {
+		// the issue back, while a handoff and a status do. And once the issue has been sent
+		// back no role's first event starts a phase at all: "After a send-back, the next phases
+		// come from status writes and handoffs" (the base's rule since 687c7048d5).
+		if one.source == fromRole && (sentBack || rank <= reached) {
 			continue
+		}
+		// The send-back is the `in_progress` written over `testing`, `needs_review` or `retro`,
+		// the one status change statusPhase names implementing for.
+		if one.source == fromStatus && one.phase == phaseImplementing {
+			sentBack = true
 		}
 		reached = max(reached, rank)
 		last := len(steps) - 1

@@ -593,8 +593,9 @@ type goldenLegionWindow struct {
 	} `json:"reports"`
 }
 
-// readGoldenLegionWindows reads every golden file of legion/metrics (recorded at the base head
-// 02a7b3c6 over one legiontest history; legion_golden_test.go in internal/dispatch/evals says how).
+// readGoldenLegionWindows reads every golden file of legion/metrics (the base head 52bd50f0's
+// answers over one legiontest history; legion_golden_test.go in internal/dispatch/evals says how
+// they were recorded and why the oracle moved from 02a7b3c6).
 func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join("..", "legion", "metrics", "testdata", "golden_compute", "*.json"))

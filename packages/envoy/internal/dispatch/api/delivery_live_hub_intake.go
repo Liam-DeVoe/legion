@@ -69,12 +69,6 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 				// open P0 issues afresh and recompute every view, which reads what the missed
 				// events changed (applyFeed).
 				open = false
-				// No event marks the phase-work set stale while no feed is open, so it is
-				// answered by a read of its own until the subscription that replaces this one
-				// has seeded and watched it (legion_phase_work.go). The watch is dropped only
-				// while it is this generation's: a stopping generation reaching here after the
-				// next one has seeded would otherwise drop a watch that is not its own.
-				h.server.legionPhaseWork.unwatch(g.ctx.Done())
 				h.note(deliveryHubNote{what: "feed closed"})
 				h.seedEvents(g)
 				continue
@@ -98,12 +92,8 @@ type hubEventFeed struct {
 // The subscribe waits for the relay's first cursor when it starts a generation, which an open
 // write anywhere on the instance can hold back, which is why it does not run on the intake's
 // goroutine: the hub's ready, its delivery changes and its views' answers do not wait for the
-// event horizon. The open P0 issues and the issues that carry Legion phase work
-// (legion_phase_work.go) are read after the subscription stands, so they hold every event at or
-// below its head, none of which arrives on the feed; every event above it arrives there and is
-// read into both. The phase-work set takes g's own done channel as its watcher with that read,
-// so a board read answers from the set while this generation reads the feed, and makes the read
-// itself once the generation has stopped.
+// event horizon. The open P0 issues are read after the subscription stands, so they hold every
+// event at or below its head, none of which arrives on the feed.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
 // over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
@@ -117,11 +107,6 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 			var p0 map[string]struct{}
 			if err == nil {
 				if p0, err = delivery.OpenP0Keys(g.readContext(), h.server.deps.Store.Pool); err != nil {
-					feed.cancel()
-				}
-			}
-			if err == nil {
-				if err = h.server.legionPhaseWork.reseed(g.readContext(), h.server.deps.Store.Pool, g.ctx.Done()); err != nil {
 					feed.cancel()
 				}
 			}
@@ -279,14 +264,6 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 // position) names its own only once the read lands: an event about an issue or a session only
 // that read names marks nothing here. So an issue or session event also records on such a view
 // what it touched, for recompute to check against the answer its read gives (recheckHeardLocked).
-//
-// It also marks the set of issues that carry Legion phase work stale, which a Legion board's
-// tree walk reads (legion_phase_work.go): a handoff recorded, and the events of a session the
-// set says can move what its one read answers (its observe, which is where that rule lives).
-// The hub states no rule of its own here — a second reading of a title is how the board and the
-// metrics came to put one issue in two trees — and the next board read makes the read again.
-// The mark is taken under the set's own lock, taken here under the hub's, never the other way
-// round.
 func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now time.Time) {
 	var issueKey string
 	if event.IssueKey != nil {
@@ -319,33 +296,17 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		h.dirtyIssueLocked(g, issueKey, p0, now)
 	case "architecture.synced":
 		h.dirtyAllLocked(g, now)
-	case "handoff.recorded":
-		// A handoff is Legion phase work, which the board's tree walk reads
-		// (legion_phase_work.go). It moves no card of its own, so it marks no view.
-		h.server.legionPhaseWork.invalidate()
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
 		origin := event.Actor.Origin
-		title := ""
-		if origin != nil {
-			title = origin.SessionTitle
-		}
-		// An event of a session can move which issues the phase-work read answers: the rule
-		// reads the session's newest title against every issue the session has written on, so
-		// an event carrying no title of its own still places that session's work on this issue
-		// (legion_phase_work.go, legion/phase_work.go). An empty title is the set's own case —
-		// observe reads it as the session's known one — so this call stands above the return
-		// below rather than after it. Which events mark the set is the set's own business: the
-		// ordinary session writing here is most of this feed, and a read of every project's
-		// whole event log is what a mark costs.
-		h.server.legionPhaseWork.observe(event.Actor.ID, title, issueKey)
-		if title == "" {
+		if origin == nil || origin.SessionTitle == "" {
 			// The name delivery.ResolveSessionTitles reads is the newest title the session
 			// stamped, which a write carrying none does not take away. So such a write is no
 			// retitle: it marks no view, and nothing is recorded for the session, which
 			// recheckHeardLocked would replay as one.
 			return
 		}
+		title := origin.SessionTitle
 		for _, view := range g.views {
 			if view.showsSessionRetitled(event.Actor.ID, title) {
 				h.markDirtyLocked(g, view, now, deliveryCauseChange)
@@ -360,9 +321,6 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 	}
 }
 
-// dirtyIssueLocked marks every view one issue's write can move (showsIssue), and records the
-// write on every view whose read is under way, for recompute to check against the answer that
-// read gives (recheckHeardLocked).
 func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, now time.Time) {
 	for _, view := range g.views {
 		if view.showsIssue(key, p0) {
@@ -491,7 +449,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// the delivery views read the delivery rows alone.
 		return false
 	}
-	if !view.spec.classes().delivery {
+	if view.spec.classes().reads != viewReadsDelivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
 		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked), and
 		// what moves an evals view is the eval kinds above.

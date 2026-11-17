@@ -65,10 +65,12 @@ var bars = []struct {
 }{
 	{"architect", []string{phaseDesign, phaseAccepting}},
 	{"planner", []string{phasePlanning}},
-	{"implementer", []string{phaseImplementing}},
+	// "implementer (implementing and retro, because the daemon gives retro to the implementer)"
+	// and "merger (merging and awaiting merge)": the base's bars since 8beac41a07.
+	{"implementer", []string{phaseImplementing, phaseRetro}},
 	{"tester", []string{phaseTesting}},
 	{"reviewer", []string{phaseReviewing}},
-	{"merger", []string{phaseRetro, phaseMerging, phaseAwaitingMerge}},
+	{"merger", []string{phaseMerging, phaseAwaitingMerge}},
 	{noRole, []string{phaseAwaitingPerson, phaseHeld}},
 }
 
@@ -119,12 +121,14 @@ type phaseSpan struct {
 	stretch span
 }
 
-// timeline is an issue's phases over its life, and whether the daemon's sampler drew it. Where
-// the sampler recorded no phase of the issue, the event log draws the timeline instead, and the
-// review rounds, the send-back and the first review read which of the two they got.
+// timeline is an issue's phases over its life: the event log's up to the first phase the daemon's
+// sampler recorded, and the sampler's from there on (timelineOf). The review rounds, the send-back
+// and the first review read which part each stretch is of.
 type timeline struct {
-	spans    []phaseSpan
-	observed bool
+	spans []phaseSpan
+	// firstObserved is the index of the first span the sampler recorded, and len(spans) for an
+	// issue the sampler never saw: the spans before it are the event log's.
+	firstObserved int
 }
 
 // bar is one issue's part of one bar of phase time: its hours in each segment, and whether any
@@ -247,8 +251,8 @@ func (r *reading) parked(key string) []span {
 }
 
 // firstWork is the issue's first worker event: the first event of a session titled for the issue's
-// own key, and its first handoff where that comes first or the issue's Legion work is a handoff
-// alone.
+// own key, and its first handoff only where the issue's Legion work is handoffs alone: a handoff a
+// worker wrote is among that role's events already (the base's rule since 8beac41a07).
 func (r *reading) firstWork(key string) (time.Time, bool) {
 	held := r.population.issues[key]
 	var first time.Time
@@ -256,6 +260,9 @@ func (r *reading) firstWork(key string) (time.Time, bool) {
 		if first.IsZero() || at.Before(first) {
 			first = at
 		}
+	}
+	if !first.IsZero() {
+		return first, true
 	}
 	for _, handed := range held.handoffs {
 		if first.IsZero() || handed.at.Before(first) {
@@ -391,48 +398,60 @@ func (r *reading) slotWait(key string) float64 {
 //
 // "the median review rounds per issue (entries into `reviewing`, or into status `needs_review`
 // before observations) ... and the share of issues sent back at least once (a move from `testing`,
-// `reviewing`, `accepting` or the merger's phase to `implementing`)"; "An issue whose observations
-// are only its closing mark has no observed review round. For it, count review rounds and
-// send-backs from its Dispatch status history, by the fallback rule: entries into `needs_review`,
-// and moves from `testing`, `needs_review` or `retro` to `in_progress`."
+// `reviewing`, `accepting` or the merger's phase to `implementing`)". Before observations the
+// rounds and the send-backs are read off the Dispatch status history by the fallback rule:
+// "entries into `needs_review`, and moves from `testing`, `needs_review` or `retro` to
+// `in_progress`". The statuses read so are those written before the sampler's part of the
+// timeline begins, and the sampler's part is read for reviewing entries and moves to
+// implementing from there on, a reviewing stretch the sampler first saw being no new entry where
+// the event log's part ends in reviewing too: "An issue in flight when its first observation is
+// stored takes its phases from observations only from that observation on" (the base's rule
+// since 8beac41a07). An issue whose observations are only its closing mark has no sampler's part,
+// so all of it is read off its statuses.
 //
-// "The first review. Where an issue has no observed phase, the first review is its first entry into
-// status `needs_review`. Where it has one, the first review is the first `reviewing` stretch of the
-// observed timeline." The hours after it are the issue's work time from that moment on in
-// implementing and testing, "an issue that reached no review counts as zero hours".
+// "The first review": the first entry into status `needs_review` before the sampler's part
+// begins, and else the first `reviewing` stretch of that part. The hours after it are the
+// issue's work time from that moment on in implementing and testing, "an issue that reached no
+// review counts as zero hours".
 func (r *reading) rework(key string, worked []span) (int, bool, float64) {
 	drawn := r.timelineOf(key)
-	marks := r.population.issues[key].statusMarks
+	before := r.population.issues[key].statusMarks
+	if drawn.firstObserved < len(drawn.spans) {
+		from := drawn.spans[drawn.firstObserved].stretch.from
+		if cut := slices.IndexFunc(before, func(recorded mark) bool { return !recorded.at.Before(from) }); cut >= 0 {
+			before = before[:cut]
+		}
+	}
 	rounds, sentBack := 0, false
 	var firstReview *time.Time
-	if drawn.observed {
-		for index, one := range drawn.spans {
-			previous := ""
-			if index > 0 {
-				previous = drawn.spans[index-1].phase
-			}
-			if one.phase == phaseReviewing && previous != phaseReviewing {
-				rounds++
-				if firstReview == nil {
-					firstReview = &one.stretch.from
-				}
-			}
-			if one.phase == phaseImplementing && slices.Contains(sentBackFrom, previous) {
-				sentBack = true
+	statuses := changes(before)
+	for index, one := range statuses {
+		if one.value == "needs_review" {
+			rounds++
+			if firstReview == nil {
+				at := one.at
+				firstReview = &at
 			}
 		}
-	} else {
-		statuses := changes(marks)
-		for index, one := range statuses {
-			if one.value == "needs_review" {
-				rounds++
-				if firstReview == nil {
-					firstReview = &one.at
-				}
-			}
-			if index > 0 && one.value == "in_progress" && slices.Contains(sentBackStatuses, statuses[index-1].value) {
-				sentBack = true
-			}
+		if index > 0 && one.value == "in_progress" && slices.Contains(sentBackStatuses, statuses[index-1].value) {
+			sentBack = true
+		}
+	}
+	for index := drawn.firstObserved; index < len(drawn.spans); index++ {
+		one := drawn.spans[index]
+		previous := ""
+		if index > 0 {
+			previous = drawn.spans[index-1].phase
+		}
+		if one.phase == phaseReviewing && previous != phaseReviewing {
+			rounds++
+		}
+		if firstReview == nil && one.phase == phaseReviewing {
+			at := one.stretch.from
+			firstReview = &at
+		}
+		if one.phase == phaseImplementing && slices.Contains(sentBackFrom, previous) {
+			sentBack = true
 		}
 	}
 	after := 0.0
@@ -456,19 +475,37 @@ func changes(marks []mark) []mark {
 	return moved
 }
 
-// timelineOf is the issue's phases over its life: the sampler's own where it recorded any phase of
-// the issue, with "the work hours in between" a first worker event and the first phase mark put
-// "on the bar of that first phase", and the event log's where it recorded none.
+// timelineOf is the issue's phases over its life: "An issue in flight when its first observation
+// is stored takes its phases from observations only from that observation on. Its hours before it
+// come from these status rules" (the spec's "Statuses before observations", the base's rule since
+// 8beac41a07). So the event log draws it up to the first phase the sampler recorded, and the
+// sampler's marks from there on; an issue the sampler never saw is the event log's whole. "The
+// work hours in between" a first worker event and the first phase mark are put "on the bar of that
+// first phase": the event log's first step where one falls before the first observation, and the
+// first observed phase where none does.
 func (r *reading) timelineOf(key string) timeline {
 	if held, drawn := r.timelines[key]; drawn {
 		return held
 	}
-	drawn := timeline{spans: slices.Clone(r.sampledOf(key)), observed: true}
-	if len(drawn.spans) == 0 {
-		drawn = timeline{spans: r.loggedPhases(key)}
-	} else if at, works := r.firstWork(key); works && at.Before(drawn.spans[0].stretch.from) {
-		drawn.spans[0].stretch.from = at
+	observed := slices.Clone(r.sampledOf(key))
+	steps := phaseSteps(r.logMarks(key))
+	until := r.population.end(key)
+	if len(observed) > 0 {
+		until = observed[0].stretch.from
+		if cut := slices.IndexFunc(steps, func(step logMark) bool { return !step.at.Before(until) }); cut >= 0 {
+			steps = steps[:cut]
+		}
 	}
+	if at, works := r.firstWork(key); works {
+		switch {
+		case len(steps) > 0 && at.Before(steps[0].at):
+			steps[0].at = at
+		case len(steps) == 0 && len(observed) > 0 && at.Before(observed[0].stretch.from):
+			observed[0].stretch.from = at
+		}
+	}
+	logged := loggedPhases(steps, until)
+	drawn := timeline{spans: append(logged, observed...), firstObserved: len(logged)}
 	r.timelines[key] = drawn
 	return drawn
 }
@@ -538,15 +575,17 @@ type logMark struct {
 }
 
 // rolePhase is the phase each role's first event starts: "each role's phase starts at the first
-// event of a session titled `Legion <role> · <KEY>` for the issue". The merger's phases cannot be
-// told apart in the event log, so its first event starts the first of them.
+// event of a session titled `Legion <role> · <KEY>` for the issue", until the issue is first sent
+// back (phaseSteps). The merger's first event starts merging: retro is the implementer's, and the
+// `retro` status the workflow writes as retro starts marks it (statusPhase; the base's rule since
+// 8beac41a07).
 var rolePhase = map[string]string{
 	"architect":   phaseDesign,
 	"planner":     phasePlanning,
 	"implementer": phaseImplementing,
 	"tester":      phaseTesting,
 	"reviewer":    phaseReviewing,
-	"merger":      phaseRetro,
+	"merger":      phaseMerging,
 }
 
 // handoffStarts is the phase each handoff starts: "Each phase ends, and the next one starts, at the
@@ -564,27 +603,19 @@ var handoffStarts = map[string]string{
 // first event" reads.
 var phaseOrder = []string{
 	phaseDesign, phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseAccepting, phaseRetro,
+	phaseMerging,
 }
 
-// loggedPhases is the timeline the event log draws for an issue the sampler never saw. Each mark
-// holds until the next phase change and the last until the issue's end; an hour of the work time
-// before the first mark is on the phase the issue is first seen in.
-func (r *reading) loggedPhases(key string) []phaseSpan {
-	steps := phaseSteps(r.logMarks(key))
-	if len(steps) == 0 {
-		return nil
-	}
-	if at, works := r.firstWork(key); works && at.Before(steps[0].at) {
-		steps[0].at = at
-	}
-	end := r.population.end(key)
+// loggedPhases is the timeline the event log's steps draw up to until: each step holds until the
+// next phase change and the last until until.
+func loggedPhases(steps []logMark, until time.Time) []phaseSpan {
 	drawn := make([]phaseSpan, 0, len(steps))
 	for index, step := range steps {
-		stretch := span{from: step.at, to: end}
-		if index+1 < len(steps) {
+		stretch := span{from: step.at, to: until}
+		if index+1 < len(steps) && steps[index+1].at.Before(until) {
 			stretch.to = steps[index+1].at
 		}
-		if stretch.length() == 0 {
+		if stretch.length() <= 0 {
 			continue
 		}
 		drawn = append(drawn, phaseSpan{phase: step.phase, stretch: stretch})
@@ -645,10 +676,17 @@ func (r *reading) logMarks(key string) []logMark {
 func phaseSteps(marks []logMark) []logMark {
 	var steps []logMark
 	reached := -1
+	sentBack := false
 	for _, one := range marks {
 		rank := slices.Index(phaseOrder, one.phase)
-		if one.source == fromRole && rank <= reached {
+		// "After a send-back, the next phases come from status writes and handoffs": once the
+		// `in_progress` written over `testing`, `needs_review` or `retro` sent the issue back, no
+		// role's first event starts a phase (the base's rule since 687c7048d5).
+		if one.source == fromRole && (sentBack || rank <= reached) {
 			continue
+		}
+		if one.source == fromStatus && one.phase == phaseImplementing {
+			sentBack = true
 		}
 		reached = max(reached, rank)
 		last := len(steps) - 1

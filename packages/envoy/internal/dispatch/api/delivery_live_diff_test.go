@@ -135,8 +135,8 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 // TestEveryLiveKindDeclaresItsBehaviourOnItsEntry: the hub reads a view's kind in one place, its
 // entry in deliveryLiveKinds, so a kind added there is parsed, read and refused by its own entry
 // rather than by an `if` in each of the hub's files. A new kind with no parse or no read would
-// reach a nil call at the first subscription; a new kind with no refusal would tell a sub
-// nothing when its deployment is not configured.
+// reach a nil call at the first subscription; a new kind that names nothing it reads would tell a
+// sub nothing when its deployment is not configured (viewReads.refusal).
 func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	for _, kind := range slices.Sorted(maps.Keys(deliveryLiveKinds)) {
 		classes := deliveryLiveKinds[kind]
@@ -146,17 +146,11 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 		if classes.read == nil {
 			t.Errorf("%s: no read: a view of this kind answers nothing", kind)
 		}
-		switch {
-		case classes.unconfigured == nil:
-			t.Errorf("%s: no unconfigured error: a deployment that configured nothing is told nothing", kind)
-		case classes.unconfiguredCode == "" || classes.unconfiguredMessage == "":
-			t.Errorf("%s: its unconfigured refusal has no code or no message", kind)
-		}
-		// A view of the deployment's delivery rows names no project; every other view names the
-		// one project it shows.
-		if classes.project == classes.delivery {
-			t.Errorf("%s: project=%v and delivery=%v: a view reads one project's rows or the deployment's",
-				kind, classes.project, classes.delivery)
+		// A view reads the deployment's delivery rows, one project's daemon, or one project's
+		// eval registry; the first names no project, and every other view names the one project
+		// it shows (viewReads.namesProject).
+		if classes.reads != viewReadsDelivery && classes.reads != viewReadsLegion && classes.reads != viewReadsEvals {
+			t.Errorf("%s: reads = %d: a view reads the deployment's delivery rows, one project's daemon or one project's evals", kind, classes.reads)
 		}
 	}
 	if deliveryLiveKinds[legionBoardView].unownedP0 {
@@ -164,8 +158,8 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	}
 	// The Legion board is the one view that shows its daemon's state, which the sampler's read of
 	// that daemon marks by the board's project (dirtyLegionBoard), so the board names its project.
-	if !deliveryLiveKinds[legionBoardView].project {
-		t.Error("the Legion board names no project, so the sampler's read of its daemon marks no board")
+	if board := deliveryLiveKinds[legionBoardView].reads; board != viewReadsLegion || !board.namesProject() {
+		t.Error("the Legion board does not read its project's daemon, so the sampler's read of that daemon marks no board")
 	}
 }
 

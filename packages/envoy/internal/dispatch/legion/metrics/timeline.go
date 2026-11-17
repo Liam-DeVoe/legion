@@ -48,7 +48,8 @@ var parkedStatuses = []string{"backlog", "icebox"}
 
 // The statuses the workflow writes with the phases a fallback timeline reads: the implementer's
 // `in_progress`, the tester's `testing`, `needs_review` for both the reviewer's and the
-// architect's, and the merger's `retro` (daemon workflow/table.go and its statusForBackward).
+// architect's, and `retro`, which the workflow writes as the implementer's retro starts and keeps
+// through the merger's merging (daemon workflow/table.go's phaseStatus).
 const (
 	statusImplementing = "in_progress"
 	statusTesting      = "testing"
@@ -58,9 +59,10 @@ const (
 
 // sentBackStatuses are the statuses a send-back moves out of before observations exist:
 // `needs_review` is the status of both reviewing and accepting, `testing` is its own, and
-// `retro` is the merger's, which a red check sends back to implementing like any other
-// (workflow/table.go's TriggerChecksRed). Those are the words the spec's "an `in_progress`
-// after `testing`, `needs_review` or `retro` (a send-back) is implementing" is read by.
+// `retro` is the status of both retro and merging, out of which a head that starts conflicting
+// with its base sends the issue back to implementing like any other (the daemon workflow's
+// TriggerConflict). Those are the words the spec's "an `in_progress` after `testing`,
+// `needs_review` or `retro` (a send-back) is implementing" is read by.
 var sentBackStatuses = []string{statusTesting, statusNeedsReview, statusRetro}
 
 // phaseOrder is the workflow's order of the phases a fallback timeline names, the order the
@@ -68,28 +70,34 @@ var sentBackStatuses = []string{statusTesting, statusNeedsReview, statusRetro}
 // role's phase only where the issue has not reached that phase already (phaseSteps).
 var phaseOrder = []string{
 	phaseDesign, legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting,
-	legion.PhaseReviewing, legion.PhaseAccepting, legion.PhaseRetro,
+	legion.PhaseReviewing, legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging,
 }
 
-// rolePhase is the phase each role works, which its first event on the issue starts. The merger's
-// three phases cannot be told apart before observations exist — Dispatch's event log carries one
-// status, `retro`, for all three — so its first event starts the first of them and the merger's
-// bar holds all three.
+// rolePhase is the phase each role's first event on the issue starts, until the issue is first
+// sent back (phaseSteps). The implementer works two phases, implementing and retro, "because the
+// daemon gives retro to the implementer" (RoleFor in packages/daemon/internal/phase), and its
+// first event starts the first of them: retro starts at the `retro` status the workflow writes
+// for it (statusPhase). The merger's first event starts merging, which the event log tells from
+// retro by nothing else, since the workflow keeps the status `retro` through both: so before
+// observations an issue holds no merging after its first send-back, and a retro there runs on to
+// the next status or the close. No mark of the event log names awaiting merge.
 var rolePhase = map[string]string{
 	"architect":   phaseDesign,
 	"planner":     legion.PhasePlanning,
 	"implementer": legion.PhaseImplementing,
 	"tester":      legion.PhaseTesting,
 	"reviewer":    legion.PhaseReviewing,
-	"merger":      legion.PhaseRetro,
+	"merger":      legion.PhaseMerging,
 }
 
 // handoffStarts is the phase each handoff word starts, as the daemon's phase.Handoff pairs them:
 // the planner's `plan` starts implementing, the implementer's `implement` starts testing, the
 // tester's `test` starts reviewing and the reviewer's `review` starts accepting ("Accepting
 // starts at the `review` handoff"). The spec's "a handoff starts the next phase" is this map: a
-// handoff ends the phase it names and leaves no hour between the two. Retro, the merger's READY
-// and the architect's sign-off write none, and a word Legion never writes names no phase.
+// handoff ends the phase it names and leaves no hour between the two. Retro and merging write
+// none, since each reports the commit it stands on, and accepting ends at the architect's
+// sign-off, which is no handoff (the daemon's phase.Handoff); a word Legion never writes names no
+// phase.
 var handoffStarts = map[string]string{
 	"plan":      legion.PhaseImplementing,
 	"implement": legion.PhaseTesting,
@@ -103,36 +111,54 @@ type PhaseSpan struct {
 	Span  Span
 }
 
-// Phases is the issue's phase timeline and whether the sampler observed it: the daemon's own
-// where it did, and the event log's fallback where it did not (fallbackPhases, the spec's "Phase
-// boundaries before observations").
+// Phases is the issue's phase timeline and the index of the first of its spans the sampler
+// observed, which is the timeline's length for an issue the sampler never observed.
 //
-// Where the timeline came from is the answer's second half because an issue whose only
+// The event log draws the timeline up to the issue's first observed phase, and the daemon's own
+// observations draw it from there on: "An issue in flight when its first observation is stored
+// takes its phases from observations only from that observation on. Its hours before it come
+// from these status rules, so they keep the phases its events mark rather than all falling on
+// the first phase the sampler saw" (the spec's "Statuses before observations"). So an issue the
+// sampler met before any mark of the event log is its observations' whole, and one it never met
+// is the event log's whole (appendStepSpans, the spec's "Phase boundaries before observations").
+//
+// Where the observations take over is the answer's second half because the rules that read a
+// phase before observations — metric 3's review rounds, its send-backs and the first review its
+// hours are counted from — read the status history up to that moment. An issue whose only
 // observation is the mark the sampler left after it closed has no observed hour of its own life:
-// the stretch that mark opens has no duration, so observedPhases keeps nothing of it, and the
-// rules that read a phase before observations (metric 3's review rounds, its send-backs and the
-// first review its hours are counted from) must read the status history instead.
-func (p *Population) Phases(issue *Issue) ([]PhaseSpan, bool) {
-	if observed := p.observedPhases(issue); len(observed) > 0 {
-		return observed, true
+// the stretch that mark opens has no duration, so sampledPhases keeps nothing of it, and the
+// whole of its life is before observations.
+func (p *Population) Phases(issue *Issue) ([]PhaseSpan, int) {
+	until := p.issueEnd(issue)
+	steps := phaseSteps(p.fallbackMarks(issue))
+	observed := p.sampledPhases(issue)
+	if len(observed) > 0 {
+		until = observed[0].Span.From
+		if cut := slices.IndexFunc(steps, func(step phaseMark) bool { return !step.at.Before(until) }); cut >= 0 {
+			steps = steps[:cut]
+		}
 	}
-	return p.fallbackPhases(issue), false
-}
-
-// observedPhases is the timeline the sampler's `phase` observations draw (sampledPhases), with
-// the first stretch reaching back to the issue's first worker event where the sampler first saw
-// the issue after it.
-func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
-	timeline := p.sampledPhases(issue)
-	// The same rule the fallback keeps, for the same reason: an hour of the work time before the
-	// first phase starts is on that phase's bar (the spec's "Work hours before any phase mark"),
-	// so no work hour is off every bar. A sampler that first saw the issue after its first worker
-	// event would otherwise leave those hours on none. sampledPhases builds a new slice on every
-	// call, so moving its first span moves no other caller's.
-	if at, worked := firstWorkerEvent(issue); worked && len(timeline) > 0 && at.Before(timeline[0].Span.From) {
-		timeline[0].Span.From = at
+	// An hour of the work time before the first phase starts is on that phase's bar (the spec's
+	// "Work hours before any phase mark"), so no hour of the work time is off every bar. The
+	// first phase is the event log's first step where one falls before the first observation,
+	// and the first observed phase where none does. Every role's first event is a mark of its
+	// own, so this reaches back only on an issue no worker session wrote on, whose work time a
+	// handoff naming no phase opens (firstWorkerEvent).
+	if at, worked := firstWorkerEvent(issue); worked {
+		switch {
+		case len(steps) > 0:
+			if at.Before(steps[0].at) {
+				steps[0].at = at
+			}
+		case len(observed) > 0:
+			if at.Before(observed[0].Span.From) {
+				observed[0].Span.From = at
+			}
+		}
 	}
-	return timeline
+	timeline := appendStepSpans(make([]PhaseSpan, 0, len(steps)+len(observed)), steps, until)
+	firstObserved := len(timeline)
+	return append(timeline, observed...), firstObserved
 }
 
 // sampledPhases is the timeline the sampler's `phase` observations draw and nothing else: each
@@ -204,9 +230,9 @@ const (
 	sourceStatus
 )
 
-// fallbackPhases is the timeline the event log draws for an issue the sampler never observed:
-// the phase the issue is in, as its role events, its handoffs and its Dispatch statuses move it,
-// each phase running to the next one's start.
+// appendStepSpans appends the timeline the event log's steps draw up to until: the phase the
+// issue is in, as its role events, its handoffs and its Dispatch statuses move it, each phase
+// running to the next one's start and the last to until.
 //
 // The spec's "Phase boundaries before observations": "Each phase ends, and the next one starts,
 // at the earlier of the phase's own handoff and the next role's first event ... So a handoff
@@ -215,23 +241,10 @@ const (
 // timeline is the step function they draw, with no gap between one phase and the next — which is
 // what lets the seven bars of metric 2 add up to the work time while the no-role bar holds
 // `awaiting_person` and `held` alone.
-func (p *Population) fallbackPhases(issue *Issue) []PhaseSpan {
-	steps := phaseSteps(p.fallbackMarks(issue))
-	if len(steps) == 0 {
-		return nil
-	}
-	// An hour of the work time before the first mark is on the bar of the phase the issue is
-	// first seen in: no hour of the work time is off every bar (the spec's "Parked and pre-work
-	// hours in phase time"), and a handoff whose word names no phase can open the work time
-	// ahead of every mark.
-	if at, worked := firstWorkerEvent(issue); worked && at.Before(steps[0].at) {
-		steps[0].at = at
-	}
-	end := p.issueEnd(issue)
-	timeline := make([]PhaseSpan, 0, len(steps))
+func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) []PhaseSpan {
 	for index, step := range steps {
-		span := Span{From: step.at, To: end}
-		if index+1 < len(steps) {
+		span := Span{From: step.at, To: until}
+		if index+1 < len(steps) && steps[index+1].at.Before(until) {
 			span.To = steps[index+1].at
 		}
 		if span.Duration() == 0 {
@@ -298,15 +311,26 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 func phaseSteps(marks []phaseMark) []phaseMark {
 	var steps []phaseMark
 	reached := -1
+	sentBack := false
 	for _, mark := range marks {
 		rank := phaseRank(mark.phase)
 		// A role's first event starts that role's phase only where the issue has not reached
 		// that phase already: the boundary the spec draws is "the next role's first event", so a
 		// role that speaks again after its phase has passed — an implementer answering during
-		// retro — does not send the issue back. A handoff and a status do send it back, which is
-		// how a send-back reads before observations.
-		if mark.source == sourceRole && rank <= reached {
+		// retro — does not send the issue back. Nor does any role's first event start a phase
+		// once the issue has been sent back, however late that phase: "After a send-back, the
+		// next phases come from status writes and handoffs" (the spec's "No re-entry by a first
+		// event"). A handoff and a status move the phase either way, before a send-back and
+		// after it.
+		if mark.source == sourceRole && (sentBack || rank <= reached) {
 			continue
+		}
+		// The send-back is the one status change statusPhase names implementing for: the
+		// `in_progress` written over `testing`, `needs_review` or `retro` (sentBackStatuses),
+		// the same move metric 3 counts as a send-back before observations (sentBackOnce). A
+		// handoff that names an earlier phase moves the phase back, but it is no send-back.
+		if mark.source == sourceStatus && mark.phase == legion.PhaseImplementing {
+			sentBack = true
 		}
 		reached = max(reached, rank)
 		last := len(steps) - 1
@@ -332,10 +356,10 @@ func phaseRank(phase string) int {
 }
 
 // statusPhase is the phase a status change sets before observations exist: the spec's "After a
-// send-back, the Dispatch status sets the phase: `in_progress` after `testing` or `needs_review`
-// is implementing, `testing` is testing, and `needs_review` is reviewing until the `review`
-// handoff of that round, then accepting until the status changes" — the handoff mark is what
-// turns that last stretch into accepting.
+// send-back, the Dispatch status sets the phase: `in_progress` after `testing`, `needs_review` or
+// `retro` is implementing, `testing` is testing, and `needs_review` is reviewing until the
+// `review` handoff of that round, then accepting until the status changes" — the handoff mark is
+// what turns that last stretch into accepting.
 //
 // The statuses that name no phase of their own — `todo`, `triage`, `backlog`, `icebox` and
 // `done` — leave the phase as it was. The hours they stand for are the queue's and the parked
@@ -369,39 +393,38 @@ func statusPhase(previous, status string) (string, bool) {
 	return "", false
 }
 
-// enteredStatus is whether the mark at index is where the issue's status became status: the mark
-// holds it and the one before does not.
-func enteredStatus(issue *Issue, index int, status string) bool {
-	return issue.StatusMarks[index].Value == status &&
-		(index == 0 || issue.StatusMarks[index-1].Value != status)
+// enteredStatus is whether the mark at index of a status history is where the status became
+// status: the mark holds it and the one before does not.
+func enteredStatus(marks []Mark, index int, status string) bool {
+	return marks[index].Value == status && (index == 0 || marks[index-1].Value != status)
 }
 
-// firstStatusEntry is when the issue's status first became status.
-func firstStatusEntry(issue *Issue, status string) (time.Time, bool) {
-	for index, mark := range issue.StatusMarks {
-		if enteredStatus(issue, index, status) {
+// firstStatusEntry is when a status history first became status.
+func firstStatusEntry(marks []Mark, status string) (time.Time, bool) {
+	for index, mark := range marks {
+		if enteredStatus(marks, index, status) {
 			return mark.At, true
 		}
 	}
 	return time.Time{}, false
 }
 
-// statusEntries counts how many times the issue's status became status.
-func statusEntries(issue *Issue, status string) int {
+// statusEntries counts how many times a status history became status.
+func statusEntries(marks []Mark, status string) int {
 	entries := 0
-	for index := range issue.StatusMarks {
-		if enteredStatus(issue, index, status) {
+	for index := range marks {
+		if enteredStatus(marks, index, status) {
 			entries++
 		}
 	}
 	return entries
 }
 
-// statusMoved is whether the issue's status ever went straight from one of `from` to `to`, which
+// statusMoved is whether a status history ever went straight from one of `from` to `to`, which
 // is how a move between two phases reads before any observation of them exists.
-func statusMoved(issue *Issue, from []string, to string) bool {
-	for index := 1; index < len(issue.StatusMarks); index++ {
-		if issue.StatusMarks[index].Value == to && slices.Contains(from, issue.StatusMarks[index-1].Value) {
+func statusMoved(marks []Mark, from []string, to string) bool {
+	for index := 1; index < len(marks); index++ {
+		if marks[index].Value == to && slices.Contains(from, marks[index-1].Value) {
 			return true
 		}
 	}

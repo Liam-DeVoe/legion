@@ -2537,10 +2537,29 @@ func TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce(t *testing.T) {
 	conn.none(t, time.Second, "the refusal of a project with no daemon")
 }
 
+// TestALegionBoardOfAProjectThatDoesNotExistIsRefusedAsTheRouteRefusesIt: a view of a project
+// that does not exist is told what GET /api/v1/projects/{key}/legion/board answers it,
+// loadProject's PROJECT_NOT_FOUND with its words, once, rather than LEGION_NOT_CONFIGURED: what is
+// missing is the project, not its daemon.
+func TestALegionBoardOfAProjectThatDoesNotExistIsRefusedAsTheRouteRefusesIt(t *testing.T) {
+	rig := newHubRig(t, nil)
+	routed := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/NOPE/legion/board", nil, "alice")
+	answer := decodeBody[refusalAnswer](t, routed)
+	if routed.Code != http.StatusNotFound || answer.Code != "PROJECT_NOT_FOUND" {
+		t.Fatalf("GET the board of NOPE: status=%d body=%s, want 404 PROJECT_NOT_FOUND", routed.Code, routed.Body.String())
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("NOPE")))
+	if refusal := conn.refusal(t, 5*time.Second, "b", answer.Code); refusal.Message != answer.Error {
+		t.Errorf("the refusal's message = %q, want the board route's %q", refusal.Message, answer.Error)
+	}
+	conn.none(t, time.Second, "the refusal of a project that does not exist")
+}
+
 // TestALegionViewNamesItsProjectAndNothingElse: the kind's shape is held where every other kind's
 // is, so a frame of another kind's shape is refused before anything is subscribed. A badly spelled
-// project is refused as GET /api/v1/projects/{key}/legion/board refuses it, code and words alike,
-// so the two doors to one board name one refusal.
+// project is refused as GET /api/v1/projects/{key}/legion/board refuses it, INVALID_PROJECT and its
+// words alike, so the two doors to one board name one refusal.
 func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	window := DeliveryLiveWindow{Preset: new(7)}
 	project := "INFRA"
@@ -2559,8 +2578,8 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	notAKey := "infra"
 	routed := dispatchRequest(t, newTestHandler(t), http.MethodGet, "/api/v1/projects/"+notAKey+"/legion/board", nil, "alice")
 	answer := decodeBody[refusalAnswer](t, routed)
-	if routed.Code != http.StatusBadRequest || answer.Code != "LEGION_SETTING_INPUT" {
-		t.Fatalf("GET the board of %q: status=%d body=%s, want 400 LEGION_SETTING_INPUT", notAKey, routed.Code, routed.Body.String())
+	if routed.Code != http.StatusBadRequest || answer.Code != "INVALID_PROJECT" {
+		t.Fatalf("GET the board of %q: status=%d body=%s, want 400 INVALID_PROJECT", notAKey, routed.Code, routed.Body.String())
 	}
 	_, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: legionBoardView, Project: &notAKey})
 	if refusal == nil || refusal.Code != answer.Code || refusal.Message != answer.Error {

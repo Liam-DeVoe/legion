@@ -12,8 +12,9 @@
 // Two disciplines run through it:
 //
 //   - The daemon's state is read loosely. What Dispatch holds of it is legion_observations, whose
-//     fields are legion/state.go's; a field a daemon does not send is a field this package has no
-//     observation of, never an assumption. An issue's tree comes from the daemon's own `tree`
+//     fields are legion/state.go's; a field a daemon never sent is a field this package has no
+//     observation of, never an assumption, and one it stopped sending has a `null` observation
+//     from the read that no longer carried it. An issue's tree comes from the daemon's own `tree`
 //     where a read carried one (dispatch://INFRA-980 adds it) and from the parent chain
 //     otherwise, so nothing here takes a slot holder for a root.
 //   - The precedence of the phase-time segments lives in exactly one ordered list, segments.go's
@@ -131,9 +132,10 @@ type Population struct {
 	// reported is every issue of the project the daemon reports — the issues the sampler
 	// recorded any observation of — against the `tree` the daemon named for it, empty where it
 	// named none (readReported). phaseWork is every issue that carries Legion phase work, over
-	// the whole log (legion.PhaseWorkKeys). Both halves of the one rule that places an issue in
-	// a tree (legion.TreeNode) are read project-wide rather than for the window's keys: an
-	// issue's tree is a fact of the project, not of the window.
+	// the whole log of every project (legion.PhaseWorkKeys). Neither half of the one rule that
+	// places an issue in a tree (legion.TreeNode) is read for the window's keys: the first is the
+	// project's whole and the second every project's, since an issue's tree is a fact of the
+	// project, not of the window.
 	reported  map[string]string
 	phaseWork map[string]struct{}
 
@@ -716,10 +718,14 @@ func (p *Population) readReported(ctx context.Context, pool *store.Pool, project
 }
 
 // readReportedTrees is what the daemon reports of every issue of the project: one row per issue
-// the sampler has recorded any observation of — the set the Legion board's own population holds
-// (api/legion_board.go's readObservations) — against the newest `tree` it recorded for that
-// issue, which is the row the board takes too, and empty where it recorded none. It reads the
-// whole project and not a window's keys, because an issue's tree is a fact of the project.
+// with a field whose newest observation holds a value — the set the Legion board's own
+// population holds (api/legion_board.go's readObservations) — against the newest `tree` it
+// recorded for that issue, which is the row the board takes too, and empty where it recorded
+// none. A field whose newest row is `null` holds nothing as of the newest good read, and the
+// sampler writes that row for every field of an issue that leaves the daemon's state (legion's
+// recordObservations), so an issue the daemon no longer reports is out of the set, as it is off
+// the board. It reads the whole project and not a window's keys, because an issue's tree is a
+// fact of the project.
 //
 // The rows under legion.AdmissionKey belong to no issue — the admission block and the daemon's
 // settings — so they report nothing.
@@ -729,11 +735,14 @@ func (p *Population) readReported(ctx context.Context, pool *store.Pool, project
 // one change to what the daemon's report means lands in one place.
 func readReportedTrees(ctx context.Context, pool *store.Pool, project string) (map[string]string, error) {
 	rows, err := pool.Query(ctx, `
-		select issue_key,
-			coalesce((array_agg(value::text order by observed_at desc, id desc)
-				filter (where field = $3))[1], '')
-		from legion_observations
-		where project = $1 and issue_key <> $2
+		select issue_key, coalesce((array_agg(value::text) filter (where field = $3))[1], '')
+		from (
+			select distinct on (issue_key, field) issue_key, field, value
+			from legion_observations
+			where project = $1 and issue_key <> $2
+			order by issue_key, field, observed_at desc, id desc
+		) newest
+		where value <> 'null'::jsonb
 		group by issue_key
 	`, project, legion.AdmissionKey, legion.FieldTree)
 	if err != nil {
@@ -838,20 +847,22 @@ func (p *Population) TreeNode(key string) (legion.TreeNode, bool) {
 
 // isLegionIssue answers legion.TreeNode's Legion for this population, which states the rule: the
 // daemon reports the issue — it is in the project's reported set (readReported) — or it carries
-// Legion phase work (readPhaseWork). Both sets are read for the whole project, so the answer
-// does not move with the window being computed, which is what makes it the board's: the Legion
-// board reads the same two facts (api/legion_board.go's treeRoot). A fixture states the rule by
-// filling the two sets, as a read does.
+// Legion phase work (readPhaseWork). Neither set is read for the window, the first being the
+// project's whole and the second every project's, so the answer does not move with the window
+// being computed, which is what makes it the board's. The Legion board asks the same two facts
+// its own way (api/legion_board.go's treeNode), reading phase work only for the issues its walk
+// can climb onto (its readPhaseWork). A fixture states the rule by filling the two sets, as a
+// read does.
 func (p *Population) isLegionIssue(issue *Issue) bool {
 	_, reported := p.reported[issue.Key]
 	_, worked := p.phaseWork[issue.Key]
 	return reported || worked
 }
 
-// readPhaseWork reads the issues that carry Legion phase work, over the whole project
-// (legion.PhaseWorkKeys, whose Keys are the whole of what this needs). It places an issue in a
-// tree and nothing else: what a metric counts reads the window's own role events and handoffs
-// (hasPhaseWork).
+// readPhaseWork reads the issues that carry Legion phase work, over the whole log of every project
+// (legion.PhaseWorkKeys, whose Keys are the whole of what this needs); isLegionIssue looks up only
+// this project's issues in it. It places an issue in a tree and nothing else: what a metric counts
+// reads the window's own role events and handoffs (hasPhaseWork).
 func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error {
 	work, err := legion.PhaseWorkKeys(ctx, pool)
 	if err != nil {

@@ -32,17 +32,17 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	if RequestTimeout != 20*time.Second {
 		t.Fatalf("RequestTimeout = %s, want the 20s of the plan's D14", RequestTimeout)
 	}
+	if window := New("http://daemon.internal.example").http.Timeout; window != RequestTimeout {
+		t.Fatalf("New gives a client a %s window, want RequestTimeout (%s)", window, RequestTimeout)
+	}
 	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer silent.Close()
 
-	// New reads RequestTimeout as it builds, so shrinking it here proves the window the client
-	// takes is that one, without waiting the production twenty seconds out.
-	production := RequestTimeout
-	RequestTimeout = 150 * time.Millisecond
-	client := New(silent.URL)
-	RequestTimeout = production
+	// The client's window is what ends the read, shrunk here so the test does not wait the
+	// production twenty seconds out.
+	client := New(silent.URL, WithTimeout(150*time.Millisecond))
 
 	started := time.Now()
 	_, bytes, err := client.State(t.Context())

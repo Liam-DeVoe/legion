@@ -18,8 +18,7 @@ import (
 // the relay into a retry of one attempt a second that never advanced — 25 attempts in 25 s,
 // each `read ask parts: ERROR: invalid input syntax for type uuid: "ask-BOLTS-1" (SQLSTATE
 // 22P02)`. While it is stuck no event reaches the live hub, so every open page stops being
-// updated and the board's phase-work set is never marked stale, which made the header's
-// legion_issues read 0 for a project of 15 issues Legion had worked.
+// updated.
 //
 // The cast is made here rather than by a reader of this package, because the cast is the whole
 // of what a reader needs of these ids and the database is the one authority on the type.

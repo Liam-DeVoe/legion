@@ -10,16 +10,17 @@ import (
 // row then means 'Legion worked it'"), and R1 covers every issue the project has Legion phase
 // work for. Phase work is not only gained: a session's newest title decides which issue its
 // events work, so a role session that writes next on another issue under that issue's title
-// takes the work with it (legion.PhaseWork, and api/legion_phase_work.go, which states the same
-// rule for the board). The issue it left then carries no phase work, and its row must go.
+// takes the work with it (legion.PhaseWork, which the board reads through legion.PhaseWorkOf for
+// the issues its tree walk climbs onto). The issue it left then carries no phase work, and its
+// row must go.
 //
 // It did not. The write only upserted and no pass deleted, so the row stood for ever and the
 // board served it. Measured against a real Dispatch server of this head on 2026-11-11: one
-// session wrote a comment on WIDGETS-1 titled for that issue, and the board answered one entry
-// with legion_issues 1; the same session then wrote on WIDGETS-2 titled for WIDGETS-2, and the
-// board answered two entries with legion_issues 1 — its own header counting one issue of Legion
-// work while its body carried two — and over four passes of the loop the stale row did not go. The
-// independent reading of R1 answered one issue against the two stored rows.
+// session wrote a comment on WIDGETS-1 titled for that issue, and the board answered one entry;
+// the same session then wrote on WIDGETS-2 titled for WIDGETS-2, and the board answered two
+// entries, one of them for the issue the session's work had left, and over four passes of the
+// loop the stale row did not go. The independent reading of R1 answered one issue against the
+// two stored rows.
 //
 // The issue here is one the rig says no Legion role worked, given its work by one session of
 // this test, so the session is the whole of its phase work and moving that session takes all of

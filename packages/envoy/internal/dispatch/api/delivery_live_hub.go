@@ -145,9 +145,6 @@ func (h *deliveryHub) Close(conn deliveryLiveConn) {
 // dropLocked drops conn's sub id, the view it leaves without a sub, and conn once it holds none. The
 // drop that leaves the hub no conn stops its generation: its listener closes its connection, its
 // intake cancels its relay subscription, and nothing reads either log until the next Subscribe.
-// Stopping it ends its context, which is the watch the issues that carry Legion phase work are
-// held by, so from here a board read makes that read itself rather than answering from a set no
-// feed can mark stale (legion_phase_work.go).
 func (h *deliveryHub) dropLocked(conn deliveryLiveConn, id string) {
 	g := h.generation
 	if g == nil {
@@ -518,7 +515,7 @@ func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {
-		if view.spec.kind == legionBoardView && view.spec.project == project {
+		if view.spec.classes().reads == viewReadsLegion && view.spec.project == project {
 			h.markDirtyLocked(g, view, now, deliveryCauseChange)
 		}
 	}

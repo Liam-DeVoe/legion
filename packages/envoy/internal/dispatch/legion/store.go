@@ -121,22 +121,48 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 	return tag.RowsAffected() > 0, nil
 }
 
-// RecordRead appends one legion_reads row for a read of project's daemon: how many bytes it sent,
-// and why it failed when it did. readErr nil is a read that succeeded.
-func RecordRead(ctx context.Context, pool *store.Pool, project string, at time.Time, bytes int, readErr error) error {
-	var failure *string
-	if readErr != nil {
-		message := readErr.Error()
-		failure = &message
+// RecordRead records a read of project's daemon that answered its state, in one transaction: every
+// observation that moved (recordObservations), then the legion_reads row that says the read
+// succeeded and how many bytes it sent. It answers how many observations it wrote.
+//
+// The board's header reads the newest legion_reads row as the last good read, and its columns
+// read the newest observations, so the two commit together or not at all: a read whose
+// observations Postgres refuses leaves no row saying it succeeded over data it did not store. The
+// caller records such a read as failed (RecordFailedRead), and the last good read stands.
+func RecordRead(ctx context.Context, pool *store.Pool, project string, at time.Time, bytes int, observations []Observation) (int64, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("open the transaction of the Legion state read of %s: %w", project, err)
 	}
-	if _, err := pool.Exec(ctx, `
-		insert into legion_reads (project, read_at, ok, error, bytes)
-		values ($1, $2, $3, $4, $5)
-	`, project, at, readErr == nil, failure, bytes); err != nil {
-		return fmt.Errorf("record the Legion state read of %s: %w", project, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	written, err := recordObservations(ctx, tx, project, at, observations)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, insertRead, project, at, true, nil, bytes); err != nil {
+		return 0, fmt.Errorf("store the Legion state read of %s: %w", project, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit the Legion state read of %s: %w", project, err)
+	}
+	return written, nil
+}
+
+// RecordFailedRead appends the legion_reads row of a read of project's daemon that failed: how
+// many bytes the daemon sent, and why the read failed, which the board's header names. It writes
+// no observation, so the last good read's observations stand.
+func RecordFailedRead(ctx context.Context, pool *store.Pool, project string, at time.Time, bytes int, failure error) error {
+	if _, err := pool.Exec(ctx, insertRead, project, at, false, failure.Error(), bytes); err != nil {
+		return fmt.Errorf("record the failed Legion state read of %s: %w", project, err)
 	}
 	return nil
 }
+
+// insertRead appends one legion_reads row: project, read_at, ok, error, bytes.
+const insertRead = `
+	insert into legion_reads (project, read_at, ok, error, bytes)
+	values ($1, $2, $3, $4, $5)
+`
 
 // ReadRetention is how long legion_reads keeps a read of a daemon. The Legion board reads the
 // newest row of a project and nothing reads an older one, so the rest are a week of history for
@@ -168,39 +194,48 @@ func PruneReads(ctx context.Context, pool *store.Pool) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// RecordObservations appends a row for each observation whose value differs from the newest row
-// that project, issue and field already hold, and answers how many it wrote. An unchanged value
-// writes nothing, and a first observation whose value is null writes nothing either: nothing moved
-// from nothing.
+// recordObservations appends, inside the transaction of the read that found them, a row for each
+// observation whose value differs from the newest row that project, issue and field already hold,
+// and a `null` row for each issue and field whose newest row holds a value and that the read does
+// not carry: an issue gone from the daemon's state, a role's claim gone from an issue, a tree the
+// daemon stopped naming. It answers how many rows it wrote. An unchanged value writes nothing, and
+// a first observation whose value is null writes nothing either: nothing moved from nothing.
+//
+// The `null` row is what makes the newest row of every field the newest good read's own: every
+// reader that takes a field's newest row — the board's cards, the metrics' reported set — reads a
+// field the read no longer carries as absent, and the record keeps when it left, which is where
+// the metrics' observed timeline ends the issue's phase.
 //
 // One statement, so a pass of some hundreds of fields is one round trip, and Postgres's own jsonb
 // comparison decides what changed: a Go encoding that ordered an object's keys differently from
 // jsonb would otherwise write a row every minute for a value that never moved. A row the lease
 // already let another replica write is therefore not written twice even if the leases overlapped.
-func RecordObservations(ctx context.Context, pool *store.Pool, project string, at time.Time, observations []Observation) (int64, error) {
-	if len(observations) == 0 {
-		return 0, nil
-	}
+func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.Time, observations []Observation) (int64, error) {
 	issueKeys := make([]string, len(observations))
 	fields := make([]string, len(observations))
 	values := make([]string, len(observations))
 	for index, observation := range observations {
 		issueKeys[index], fields[index], values[index] = observation.IssueKey, observation.Field, string(observation.Value)
 	}
-	tag, err := pool.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
+		with found as (
+			select observed.issue_key, observed.field, observed.value::jsonb as value
+			from unnest($2::text[], $3::text[], $4::text[]) as observed(issue_key, field, value)
+		), newest as (
+			select distinct on (issue_key, field) issue_key, field, value
+			from legion_observations
+			where project = $1
+			order by issue_key, field, observed_at desc
+		)
 		insert into legion_observations (project, issue_key, field, value, observed_at)
-		select $1, found.issue_key, found.field, found.value::jsonb, $5::timestamptz
-		from unnest($2::text[], $3::text[], $4::text[]) as found(issue_key, field, value)
-		where coalesce((
-			select newest.value
-			from legion_observations newest
-			where newest.project = $1 and newest.issue_key = found.issue_key and newest.field = found.field
-			order by newest.observed_at desc
-			limit 1
-		), 'null'::jsonb) is distinct from found.value::jsonb
+		select $1, coalesce(found.issue_key, newest.issue_key), coalesce(found.field, newest.field),
+			coalesce(found.value, 'null'::jsonb), $5::timestamptz
+		from found
+		full join newest on newest.issue_key = found.issue_key and newest.field = found.field
+		where coalesce(newest.value, 'null'::jsonb) is distinct from coalesce(found.value, 'null'::jsonb)
 	`, project, issueKeys, fields, values, at)
 	if err != nil {
-		return 0, fmt.Errorf("record the Legion observations of %s: %w", project, err)
+		return 0, fmt.Errorf("store the Legion observations of %s: %w", project, err)
 	}
 	return tag.RowsAffected(), nil
 }
