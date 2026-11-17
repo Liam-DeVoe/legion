@@ -378,6 +378,11 @@ func TestARolesEnvironmentLoadsAConfigurationWithNoLeakCheckRefusal(t *testing.T
 	if env[leakguard.CheckerVar] != testLeakCheck.CheckerSHA256 {
 		t.Fatalf("the role is told %s=%q, want the deployment's checker %q", leakguard.CheckerVar, env[leakguard.CheckerVar], testLeakCheck.CheckerSHA256)
 	}
+	for _, name := range []string{leakguard.RepositoryVar, leakguard.SHA256Var} {
+		if value, told := env[name]; told {
+			t.Errorf("the role is told the daemon's own %s=%q, which a configuration it loads would read", name, value)
+		}
+	}
 	file := filepath.Join(t.TempDir(), "legion.yaml")
 	if err := os.WriteFile(file, []byte("project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), 0o600); err != nil {
 		t.Fatal(err)
