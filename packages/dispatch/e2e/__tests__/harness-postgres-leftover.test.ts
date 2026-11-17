@@ -40,10 +40,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
@@ -56,10 +57,12 @@ import {
   stackPostgres,
 } from "../harness-postgres";
 import {
+  identityOf,
   markLabel,
   marksDirectory,
   type Owner,
   runDirectoryPrefix,
+  shortTemporaryDirectory as shortBase,
   stackOwner,
   startOf,
 } from "../harness-postgres-marks";
@@ -250,6 +253,20 @@ function containerExists(name: string): boolean {
   return spawnSync("docker", ["container", "inspect", name], { timeout: 120_000 }).status === 0;
 }
 
+/** The volumes of the container `name`: the image's data volume, which holds its stack's data. */
+function volumesOf(name: string): string[] {
+  const format = '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}';
+  return docker("container", "inspect", "--format", format, name)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** Whether a volume of this name exists. */
+function volumeExists(name: string): boolean {
+  return spawnSync("docker", ["volume", "inspect", name], { timeout: 120_000 }).status === 0;
+}
+
 /** Stops `stack` the way its own child does, by closing its stdin, and where that did not end it
  *  in time, kills it. */
 async function stopStack(stack: Stack | undefined): Promise<void> {
@@ -345,6 +362,11 @@ for (const provider of [
           startStack(env, runs.kept),
         ]);
         expect([answers(killed.url), answers(kept.url)]).toEqual([true, true]);
+        // The image's data volume, where the killed stack's data is; the binaries provider's is
+        // its data directory.
+        const killedVolumes =
+          provider.variable === pgImageVariable ? volumesOf(containers.killed) : [];
+        if (provider.variable === pgImageVariable) expect(killedVolumes.length).toBeGreaterThan(0);
 
         kill(killed.child);
         expect(await exited(killed.child, childMs, "the killed stack")).toBe(137);
@@ -358,7 +380,11 @@ for (const provider of [
         expect(answers(killed.url)).toBe(false);
         if (provider.variable === pgImageVariable) {
           expect(containerExists(containers.killed)).toBe(false);
+          expect(killedVolumes.filter(volumeExists)).toEqual([]);
           expect(existsSync(dirname(killed.address))).toBe(false);
+          // One line says so, the container sweep's: the run directory sweep removes the mark of
+          // a container that sweep removed and says nothing more of it.
+          expect(linesWith(third.stderr, containers.killed)).toHaveLength(1);
         } else {
           expect(existsSync(join(killed.dir, "worker-0", "pgdata"))).toBe(false);
           expect(existsSync(join(killed.dir, "template", "pgdata"))).toBe(false);
@@ -398,7 +424,8 @@ for (const provider of [
 
 /** The owners a row writes into marks, each built from this process: this process, which runs;
  *  its pid with another start, which is a process that took over the pid of a gone owner; another
- *  boot; another PID namespace; and none, which is a stack's where there is no /proc. */
+ *  boot; another PID namespace; another time namespace; and none, which is a stack's where there
+ *  is no /proc. */
 function owners() {
   const runs = stackOwner();
   if (runs === null) throw new Error("this machine has no /proc, so no start judges an owner");
@@ -407,6 +434,7 @@ function owners() {
     gone: { ...runs, start: "0" },
     otherBoot: { ...runs, boot: "00000000-0000-0000-0000-000000000000" },
     otherNamespace: { ...runs, pidNamespace: "pid:[1]" },
+    otherTime: { ...runs, timeNamespace: "time:[1]" },
     noProc: null,
   };
 }
@@ -431,7 +459,8 @@ function leaveCluster(
   const mark = join(run, marksDirectory, `worker-${index}.json`);
   writeFileSync(
     mark,
-    options.text ?? JSON.stringify({ owner, run, sockets, postmaster: { bin, data } })
+    options.text ??
+      JSON.stringify({ owner, run, identity: identityOf(run), sockets, postmaster: { bin, data } })
   );
   return { data, sockets, mark, left: () => [data, sockets, mark].map(existsSync) };
 }
@@ -449,10 +478,29 @@ function leaveContainer(
   label?: string
 ) {
   const name = `dispatch-e2e-pg-leftover-${process.pid}-${index}`;
-  const mark = label ?? JSON.stringify({ owner, run, sockets, container: name });
+  const mark =
+    label ?? JSON.stringify({ owner, run, identity: identityOf(run), sockets, container: name });
   const id = docker("create", "--name", name, "--label", `${markLabel}=${mark}`, image).trim();
   made.push(id);
   return { name, id: id.slice(0, 12), sockets };
+}
+
+/** The mark file in `run` of stack `index`'s container `container`, whose socket directory is
+ *  `sockets`, as the image provider writes it beside the container's label. Answers its path. */
+function leaveContainerMark(
+  run: string,
+  index: number,
+  owner: Owner | null,
+  sockets: string,
+  container: string
+): string {
+  mkdirSync(join(run, marksDirectory), { recursive: true });
+  const mark = join(run, marksDirectory, `worker-${index}.json`);
+  writeFileSync(
+    mark,
+    JSON.stringify({ owner, run, identity: identityOf(run), sockets, container })
+  );
+  return mark;
 }
 
 /** Removes every container a row made, by the ids Docker made them under. */
@@ -478,7 +526,7 @@ function linesWith(stderr: string, text: string): string[] {
 }
 
 test.skipIf(skipBinaries)(
-  "binaries provider: a start leaves the mark of a stack that runs, of another boot or PID namespace or of no /proc, and a mark it cannot read, and names each one it left",
+  "binaries provider: a start leaves the mark of a stack that runs, of another boot, PID namespace or time namespace or of no /proc, and a mark it cannot read, and names each one it left",
   async () => {
     const { value: bin } = requirePostgres([pgBinVariable]);
     const who = owners();
@@ -496,6 +544,7 @@ test.skipIf(skipBinaries)(
       const outside = leaveCluster(run, 6, bin, who.gone, {
         sockets: mkdtempSync(join(tmp, "pg-6-")),
       });
+      const otherTime = leaveCluster(run, 7, bin, who.otherTime);
       // Another user's run directory reads as this one does: its mode keeps this process out.
       mkdirSync(join(closed, marksDirectory));
       chmodSync(closed, 0o000);
@@ -506,7 +555,7 @@ test.skipIf(skipBinaries)(
       // The one mark whose stack is gone goes, with the directories it names.
       expect(gone.left()).toEqual([false, false, false]);
       // Every other one stays, with its directories.
-      for (const kept of [runs, otherBoot, otherNamespace, noProc, notAMark, outside]) {
+      for (const kept of [runs, otherBoot, otherNamespace, noProc, notAMark, outside, otherTime]) {
         expect({ mark: kept.mark, left: kept.left() }).toEqual({
           mark: kept.mark,
           left: [true, true, true],
@@ -522,7 +571,11 @@ test.skipIf(skipBinaries)(
       expect(unjudged[0]).toContain(`${otherBoot.mark} (boot ${who.otherBoot.boot})`);
       expect(unjudged[0]).toContain(`${otherNamespace.mark} (PID namespace pid:[1])`);
       expect(unjudged[0]).toContain(`${noProc.mark} (its stack ran where there is no /proc)`);
-      expect(linesWith(start.stderr, `removed the postmaster of ${gone.data}`)).toHaveLength(1);
+      expect(unjudged[0]).toContain(`${otherTime.mark} (time namespace time:[1])`);
+      // No postmaster serves the gone mark's data directory, and the line names only what went.
+      expect(
+        linesWith(start.stderr, `removed ${gone.data} and ${gone.sockets}, which`)
+      ).toHaveLength(1);
       expect([runs.data, runs.mark].filter((path) => start.stderr.includes(path))).toEqual([]);
     } finally {
       chmodSync(closed, 0o700);
@@ -581,7 +634,7 @@ test.skipIf(skipImage)(
 );
 
 test.skipIf(skipImage)(
-  "image provider: a start leaves the container of a stack that runs, of another boot or PID namespace or of no /proc, and one whose label it cannot read, and names each one it left",
+  "image provider: a start leaves the container of a stack that runs, of another boot, PID namespace or time namespace or of no /proc, and one whose label it cannot read, and names each one it left; the run directory sweep removes the socket directory of a container that is gone, and of no container Docker lists",
   async () => {
     const { value: image } = requirePostgres([pgImageVariable]);
     const who = owners();
@@ -608,6 +661,13 @@ test.skipIf(skipImage)(
       const gone = leaveContainer(image, made, run, 3, who.gone, goneSockets);
       const noProc = leave(4, who.noProc);
       const notAMark = leave(5, who.gone, "{");
+      const otherTime = leave(6, who.otherTime);
+      // The run directory's marks of two containers: the one whose label is no mark, which Docker
+      // still lists, and one Docker no longer lists, both of a gone stack.
+      const notAMarkFile = leaveContainerMark(run, 5, who.gone, notAMark.sockets, notAMark.name);
+      const goneEarlier = mkdtempSync(join(run, "pg-7-"));
+      const goneEarlierName = `dispatch-e2e-pg-leftover-${process.pid}-7`;
+      const goneEarlierFile = leaveContainerMark(run, 7, who.gone, goneEarlier, goneEarlierName);
 
       const start = await startPool(childEnv(tmp, { variable: pgImageVariable, value: image }));
       expect(start.stdout).toContain(refused);
@@ -615,12 +675,17 @@ test.skipIf(skipImage)(
       // The one container whose stack is gone goes, with its socket directory.
       expect([containerExists(gone.name), existsSync(gone.sockets)]).toEqual([false, false]);
       // Every other one stays, with its socket directory.
-      for (const kept of [runs, otherBoot, otherNamespace, noProc, notAMark]) {
+      for (const kept of [runs, otherBoot, otherNamespace, noProc, notAMark, otherTime]) {
         expect({
           name: kept.name,
           left: [containerExists(kept.name), existsSync(kept.sockets)],
         }).toEqual({ name: kept.name, left: [true, true] });
       }
+      expect(existsSync(notAMarkFile)).toBe(true);
+      expect([existsSync(goneEarlier), existsSync(goneEarlierFile)]).toEqual([false, false]);
+      const goneEarlierLines = linesWith(start.stderr, `removed ${goneEarlier}, which`);
+      expect(goneEarlierLines).toHaveLength(1);
+      expect(goneEarlierLines[0]).toContain(`its container ${goneEarlierName} is gone`);
       const unread = linesWith(start.stderr, "left what it cannot read:");
       expect(unread).toHaveLength(1);
       expect(unread[0]).toContain(`container ${notAMark.id} (its label is no mark)`);
@@ -631,6 +696,7 @@ test.skipIf(skipImage)(
       expect(unjudged[0]).toContain(
         `container ${noProc.id} (its stack ran where there is no /proc)`
       );
+      expect(unjudged[0]).toContain(`container ${otherTime.id} (time namespace time:[1])`);
       expect(linesWith(start.stderr, `removed container ${gone.id}`)).toHaveLength(1);
       expect(start.stderr).not.toContain(runs.id);
     } finally {
@@ -728,3 +794,135 @@ test.skipIf(skipImage)(
   // Docker daemon room.
   300_000
 );
+
+// A developer's TMPDIR may be spelt through a link of their own, as a scratch disk linked in. The
+// image provider's label then names a socket directory whose path holds that link, and both sweeps
+// must read it under the one spelling the mark holds (`identityOf`, `markedPaths` of
+// e2e/harness-postgres-marks.ts): the killed stack's container goes, and no line says it was left
+// for a link. The second row, with TMPDIR spelt plain, shows the row can pass. These rows are the
+// tester's as written, in a block of their own, which keeps their own `stackScript`, `startScript`
+// and `containersOf` apart from this file's; they read this file's `skipImage` and `startTimeOf`.
+{
+  /** One stack's Postgres, started as the pool starts each stack's; a SIGKILL stops nothing. */
+  const stackScript = `
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stackPostgres } from ${JSON.stringify(harnessPostgres)};
+const dir = mkdtempSync(join(tmpdir(), ${JSON.stringify(runDirectoryPrefix)}));
+const database = await stackPostgres({ dir, run: "link-" + process.pid }).start(0);
+console.log(JSON.stringify({ dir, url: database.url, address: database.address }));
+setInterval(() => {}, 1 << 30);
+`;
+
+  /** The pool's start, given no provider: its sweep, then its refusal of two stacks. */
+  const startScript = `
+import { startStacks } from ${JSON.stringify(harnessPool)};
+try { await startStacks(2, { env: {} }); } catch (error) { console.log("refused: " + error.message); }
+`;
+
+  /** The ids of the containers whose mark names `run`, as Docker lists them. */
+  function containersOf(run: string): string[] {
+    const listed = spawnSync(
+      "docker",
+      [
+        "ps",
+        "--all",
+        "--no-trunc",
+        "--filter",
+        `label=${markLabel}`,
+        "--format",
+        `{{.ID}} {{.Label "${markLabel}"}}`,
+      ],
+      { encoding: "utf8", timeout: 120_000 }
+    ).stdout;
+    return listed
+      .split("\n")
+      .filter((line) => {
+        const space = line.indexOf(" ");
+        if (space === -1) return false;
+        let mark: unknown;
+        try {
+          mark = JSON.parse(line.slice(space + 1));
+        } catch {
+          return false;
+        }
+        return typeof mark === "object" && mark !== null && "run" in mark && mark.run === run;
+      })
+      .map((line) => line.slice(0, line.indexOf(" ")));
+  }
+
+  for (const spelt of ["through a link", "plain"] as const) {
+    test.skipIf(skipImage)(
+      `image provider: the next start removes the container of a stack killed hard whose TMPDIR is spelt ${spelt}`,
+      async () => {
+        const { value: image } = requirePostgres([pgImageVariable]);
+        // A short base, as a developer's ~/tmp or CI's RUNNER_TEMP is, so the socket directory stays
+        // in the run directory (`socketDirectory` of e2e/harness-postgres.ts moves it to /tmp when the
+        // socket path would pass 107 bytes, and then no link is in the label's path).
+        const real = mkdtempSync(join(shortBase, "ll-"));
+        const tmp = spelt === "plain" ? real : join(dirname(real), `${basename(real)}-link`);
+        if (spelt !== "plain") symlinkSync(real, tmp);
+        const env: Record<string, string | undefined> = { ...process.env, TMPDIR: tmp };
+        delete env[pgBinVariable];
+        env[pgImageVariable] = image;
+        env[pgConnectionsVariable] = process.env[pgConnectionsVariable] ?? "100";
+        let dir = "";
+        const child = Bun.spawn(["bun", "--eval", stackScript], {
+          cwd: dispatchPackage,
+          env,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const start = startTimeOf(child.pid);
+        try {
+          const reader = child.stdout.getReader();
+          let printed = "";
+          while (!printed.includes("\n")) {
+            const { done, value } = await reader.read();
+            if (done)
+              throw new Error(
+                `the stack exited before it served: ${await new Response(child.stderr).text()}`
+              );
+            printed += new TextDecoder().decode(value);
+          }
+          const served = JSON.parse(printed.split("\n")[0] ?? "") as {
+            dir: string;
+            address: string;
+          };
+          dir = served.dir;
+          expect(containersOf(dir)).toHaveLength(1);
+          // The precondition of the row: the label's socket directory is in the run directory.
+          expect(dirname(dirname(served.address))).toBe(dir);
+
+          if (startTimeOf(child.pid) === start) child.kill("SIGKILL");
+          expect(await child.exited).toBe(137);
+
+          const third = spawnSync("bun", ["--eval", startScript], {
+            cwd: dispatchPackage,
+            env,
+            encoding: "utf8",
+            timeout: 180_000,
+          });
+          expect(third.stdout).toContain("refused: 2 Playwright workers");
+          // R3: the stack's owner is dead, and the kernel shows it so; its container must go, and no
+          // line of the start says it was left for a link.
+          expect({
+            containers: containersOf(dir),
+            linkLines: third.stderr
+              .split("\n")
+              .filter((line) => line.includes("is a symbolic link")),
+          }).toEqual({ containers: [], linkLines: [] });
+        } finally {
+          if (startTimeOf(child.pid) === start) child.kill("SIGKILL");
+          for (const id of dir === "" ? [] : containersOf(dir)) {
+            spawnSync("docker", ["rm", "--force", "--volumes", id], { timeout: 120_000 });
+          }
+          rmSync(real, { recursive: true, force: true });
+          if (tmp !== real) rmSync(tmp, { force: true });
+        }
+      },
+      600_000
+    );
+  }
+}

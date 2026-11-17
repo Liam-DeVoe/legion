@@ -29,6 +29,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   type Stats,
@@ -36,7 +37,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as marks from "../harness-postgres-marks";
@@ -53,8 +54,8 @@ const { marksDirectory, runDirectoryPrefix, stackOwner } = marks;
 const onLinux = process.platform === "linux";
 
 /** The owners a mark of a row carries, each built from this process: this process, which runs;
- *  its pid with another start, which is a gone stack; another boot; another PID namespace; and
- *  none, which is a stack's where there is no /proc. */
+ *  its pid with another start, which is a gone stack; another boot; another PID namespace;
+ *  another time namespace; and none, which is a stack's where there is no /proc. */
 function owners() {
   const runs = stackOwner();
   if (runs === null) throw new Error("this machine has no /proc, so no start judges an owner");
@@ -63,6 +64,7 @@ function owners() {
     gone: { ...runs, start: "0" },
     otherBoot: { ...runs, boot: "00000000-0000-0000-0000-000000000000" },
     otherNamespace: { ...runs, pidNamespace: "pid:[1]" },
+    otherTime: { ...runs, timeNamespace: "time:[1]" },
     noProc: null,
   };
 }
@@ -79,7 +81,16 @@ function writeMark(run: string, owner: unknown, data: string, bin: string, index
   const sockets = mkdtempSync(join(run, `pg-${index}-`));
   mkdirSync(join(run, marksDirectory), { recursive: true });
   const file = join(run, marksDirectory, `worker-${index}.json`);
-  writeFileSync(file, JSON.stringify({ owner, run, sockets, postmaster: { bin, data } }));
+  writeFileSync(
+    file,
+    JSON.stringify({
+      owner,
+      run,
+      identity: marks.identityOf(run),
+      sockets,
+      postmaster: { bin, data },
+    })
+  );
   return file;
 }
 
@@ -253,7 +264,7 @@ test.skipIf(!onLinux)(
 );
 
 test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a mark of another boot, of another PID namespace and of a stack where there is no /proc is each left with its directories, and each is named with its case on the one line of what the start cannot judge",
+  "v-no-leftover-postgres: a mark of another boot, of another PID namespace, of another time namespace and of a stack where there is no /proc is each left with its directories, and each is named with its case on the one line of what the start cannot judge",
   async () => {
     const who = owners();
     const { tmp, run } = scratch();
@@ -262,6 +273,7 @@ test.skipIf(!onLinux)(
       const cases = [
         { owner: who.otherBoot, why: `boot ${who.otherBoot.boot}` },
         { owner: who.otherNamespace, why: "PID namespace pid:[1]" },
+        { owner: who.otherTime, why: "time namespace time:[1]" },
         { owner: who.noProc, why: "its stack ran where there is no /proc" },
       ].map(({ owner, why }, index) => {
         const data = join(run, `worker-${index}`, "pgdata");
@@ -277,6 +289,58 @@ test.skipIf(!onLinux)(
         expect(unjudged[0]).toContain(`${file} (${why})`);
         expect([existsSync(join(data, "PG_VERSION")), existsSync(file)]).toEqual([true, true]);
       }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a TMPDIR spelt through a link of its user's is read under its one spelling: the gone stack's directories go, each named under that spelling, and no line says a link was refused",
+  async () => {
+    const { tmp } = scratch();
+    const link = `${tmp}-link`;
+    try {
+      symlinkSync(tmp, link);
+      // The run directory as a stack under that TMPDIR spells it, through the link.
+      const run = mkdtempSync(join(link, runDirectoryPrefix));
+      const data = join(run, "worker-0", "pgdata");
+      leaveData(data);
+      const file = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+      const real = marks.identityOf(run);
+      expect(real.startsWith(`${tmp}/`)).toBe(true);
+
+      const lines = await sweep(link);
+
+      expect([existsSync(data), existsSync(file)]).toEqual([false, false]);
+      expect(
+        holding(lines, `removed ${join(real, "worker-0", "pgdata")} and ${real}/pg-0-`)
+      ).toHaveLength(1);
+      expect(holding(lines, "is a symbolic link")).toEqual([]);
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a mark whose one spelling of its run directory is another directory's is no mark of the run directory it is in: it is left with what it names, and named",
+  async () => {
+    const { tmp, run } = scratch();
+    try {
+      const data = join(run, "worker-0", "pgdata");
+      leaveData(data);
+      const file = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+      // The mark of a run directory of the same name elsewhere, copied into this one.
+      const elsewhere = join(mkdtempSync(join(tmp, "elsewhere-")), basename(run));
+      const written = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      writeFileSync(file, JSON.stringify({ ...written, identity: elsewhere }));
+
+      const lines = await sweep(tmp);
+
+      expect([existsSync(join(data, "PG_VERSION")), existsSync(file)]).toEqual([true, true]);
+      expect(holding(lines, `${file} (no mark of this run directory)`)).toHaveLength(1);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

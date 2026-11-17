@@ -35,7 +35,9 @@ A new script's section, and its item in the index list below, go next to the scr
 
 Every `docker run` in these scripts sets a CPU and a memory limit inline, and its container is removed when the run ends (an `EXIT` trap's `docker rm -f -v`, or `--rm`):
 the proofs run on a shared devbox, where an unbounded container takes cores and memory from every other run there.
-A container is named for the pid of the driver that started it, and the kernel hands a pid out again, so Stage 4b's teardown removes by label rather than by name:
+Most drivers name a container for the pid of the driver that started it, and the kernel hands a pid out again.
+Stage 3, the controller-start and parked-decision proofs, and pi-legion's skill-scenario rig name theirs with random bytes and remove each by the id its `docker create` printed (`start_container`, [`lib/rig.sh`](#librigsh)).
+Stage 4b's teardown removes by label rather than by name:
 every container it starts carries that run's own id as the docker label `legion.dev/e2e-run`, and the teardown removes a name only while the container at it carries that id (`remove_run_container`, `lib/stage4b-run-containers.test.ts`).
 What an earlier run left stays for [`lib/leftovers.sh`](#libleftoverssh) to name to the operator.
 Every scratch Postgres keeps its data directory on `tmpfs`, so no run leaves a volume behind, and tmpfs is charged to the container's memory.
@@ -6018,10 +6020,10 @@ Sets `nats_image` to the NATS server image every live proof that starts its own 
 The listener and the Legion daemon refuse a nats-server below the floor `packages/envoy/natsversion` holds, every 2.10 among them, so a proof on any older image never brings its stack up; reading the Go tests' own constant keeps the two from drifting.
 Needs `$root`; ends the script when it cannot read the constant, and says so on stderr under `set -e` too.
 Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, parked-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
-`lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a `docker run` line that passes `-js` to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
+`lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a line that starts NATS, a `docker run` or a `start_container` of `lib/rig.sh` that passes `-js`, to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
 It also scans every tracked text file but dated plans and changelogs for the nats-server module's path followed by `@` and a version, in any command (`go install`, `go run`, `go get`), a literal version or `@$name` with a literal `name=<version>` in the same file, and fails on any version the floor refuses.
 It holds no copy of the floor: it builds `packages/envoy/natsversion/cmd/natsfloor` once and asks it, so the verdict is `natsversion.Refusal`'s, the rule the listener and the daemon refuse a server by, and so it needs `go` on `PATH`.
-It does not see a `docker run` continued over lines, `podman` or a launcher that is not a shell script, an `export name=` or `${name:-<version>}` assignment, or a version set in another file the script sources; none is used in the tree.
+It does not see a start continued over lines, a `docker create` and `docker start` of the script's own, `podman` or a launcher that is not a shell script, an `export name=` or `${name:-<version>}` assignment, or a version set in another file the script sources; none is used in the tree.
 
 ## lib/omp-home.sh
 

@@ -10,14 +10,24 @@
  *
  *  WHAT A MARK IS. One JSON record (`Mark`). Its owner is the process that started the Postgres:
  *  its pid, its start time (field 22 of `/proc/<pid>/stat`, in clock ticks since boot), the boot
- *  id (`/proc/sys/kernel/random/boot_id`), its PID namespace (the link `/proc/self/ns/pid`) and
- *  its user id. The rest names what the Postgres leaves: the run directory, the socket directory,
- *  and the postmaster's data directory and the directory of its binaries, or the container's
- *  name. Each Postgres has the record as a file in `postgres-marks/` of the run directory, written
- *  before its socket directory holds anything and before its data directory or its container
- *  exists, and written through a rename, so it is whole or absent. A container also carries the
- *  record as its label `markLabel`, which the `docker create` that makes it sets, so it is marked
- *  from the moment it exists, and a start finds it whatever directory its stack ran in.
+ *  id (`/proc/sys/kernel/random/boot_id`), its PID namespace (the link `/proc/self/ns/pid`), its
+ *  time namespace (the link `/proc/self/ns/time`) and its user id. The rest names what the
+ *  Postgres leaves: the run directory, as the stack spells it and as its one spelling
+ *  (`identityOf`), the socket directory, and the postmaster's data directory and the directory of
+ *  its binaries, or the container's name. Each Postgres has the record as a file in
+ *  `postgres-marks/` of the run directory, written before its socket directory holds anything
+ *  and before its data directory or its container exists, and written through a rename, so it is
+ *  whole or absent. A container also carries the record as its label `markLabel`, which the
+ *  `docker create` that makes it sets, so it is marked from the moment it exists, and a start
+ *  finds it whatever directory its stack ran in.
+ *
+ *  ONE SPELLING OF A RUN DIRECTORY. A stack may spell its run directory through a link, as a
+ *  `TMPDIR` of its user's that is a link to a scratch disk. The mark holds that directory with
+ *  every link in it resolved (`identityOf`), read once, where the mark is written; a start lists
+ *  the run directories of its own `TMPDIR` resolved the same way; and both sweeps act on what a
+ *  mark names under that one spelling (`markedPaths`), never on another. So the container sweep
+ *  and the run directory sweep read one stack's paths alike, and each check of `whyUntrusted`
+ *  reads the directories a removal acts on, with no link in them.
  *
  *  WHERE A START LOOKS. Three places: each run directory of its own `tmpdir()`; each container
  *  Docker lists with the label; and each run directory of another `TMPDIR` that the kernel shows a
@@ -25,15 +35,19 @@
  *  on a machine where each session has a `TMPDIR` of its own. A run directory of another
  *  `TMPDIR` whose postmaster has already ended holds no running server, and no start finds it.
  *
- *  WHEN AN OWNER IS GONE. Only for a mark of this process's own boot, PID namespace and user,
- *  which is where `/proc/<pid>` names the owner's process and where a process of the owner's
- *  user is never hidden from this one: no process has that pid, or the process that has it
- *  started at another time, or it is a zombie, which runs no more. A mark of another boot (another
- *  machine on a shared Docker daemon, or this one before it restarted), of another PID namespace
- *  (a container of its own) or of another user is left, since its owner cannot be seen from here.
- *  The boot id is what tells two machines apart: the first PID namespace has the same inode on
- *  every Linux host. A stack that runs where there is no `/proc` writes a mark with no owner,
- *  and no start judges it; a start where there is no `/proc` judges no mark. Both are left.
+ *  WHEN AN OWNER IS GONE. Only for a mark of this process's own boot, PID namespace, time
+ *  namespace and user, which is where `/proc/<pid>` names the owner's process, where its start
+ *  reads as the owner read it, and where a process of the owner's user is never hidden from this
+ *  one: no process has that pid, or the process that has it started at another time, or it is a
+ *  zombie, which runs no more. A mark of another boot (another machine on a shared Docker daemon,
+ *  or this one before it restarted), of another PID namespace (a container of its own), of
+ *  another time namespace or of another user is left, since its owner cannot be seen, or its
+ *  start read, from here: the kernel adds the reader's own boot-time offset to the start it shows
+ *  (`unshare --time`), so a reader in another time namespace reads another start for a process
+ *  that still runs. The boot id is what tells two machines apart: the first PID namespace has the
+ *  same inode on every Linux host. A stack that runs where there is no `/proc` writes a mark with
+ *  no owner, and no start judges it; a start where there is no `/proc` judges no mark. Both are
+ *  left.
  *
  *  WHO CAN HAVE WRITTEN A MARK. A start acts as the user who starts the stack, and the run
  *  directories it reads are in `TMPDIR`, which is `/tmp` by default, where every user may make an
@@ -65,17 +79,22 @@
  *  file names and another process now has, with another working directory, gets no signal, and
  *  only the directories go; one whose working directory is that data directory but which is not
  *  this user's or runs another program is left, since a directory is never removed under a
- *  process. A data directory goes only once its postmaster is gone. The rest of a dead run's
- *  directory, its logs, stays, as a run that keeps its logs leaves them (`e2e/harness-pool.ts`).
+ *  process. A data directory goes only once its postmaster is gone. A container's socket
+ *  directory and its mark file go only with the container or after it: the container sweep
+ *  removes a container and then its socket directory, and the run directory sweep removes them
+ *  for a container Docker no longer lists, never under one that it still lists. The rest of a
+ *  dead run's directory, its logs, stays, as a run that keeps its logs leaves them
+ *  (`e2e/harness-pool.ts`).
  *
  *  WHAT A START LEAVES, AND SAYS SO. A mark whose owner lives is left without a word. Every other
  *  mark it leaves is named on one line per kind: what it cannot read (another user's run
  *  directory of mode 0700, a file that is not a mark, a `docker ps` that failed), what it does
  *  not trust (a check of `whyUntrusted`, named), and what it cannot judge (another boot, PID
- *  namespace or user, or no `/proc`). A removal that fails, or a postmaster that fails a check, is
- *  one line, keeps its mark for the next start, and never fails the start: two starts that find
- *  one dead mark at once both try, and the second one's `docker rm` of a container already gone
- *  is that line.
+ *  namespace, time namespace or user, or no `/proc`). A line that says `removed` names only what
+ *  that start itself removed and is gone. A removal that fails, or a postmaster that fails a
+ *  check, is one line, keeps its mark for the next start, and never fails the start: two starts
+ *  that find one dead mark at once both try, and the one that finds it already gone says
+ *  nothing of it (`docker rm --force` of a container that is gone succeeds).
  *
  *  THE WINDOWS NO MARK COVERS. A stack killed between the `mkdtemp` of a socket directory and the
  *  rename of its mark, calls with no await between them, leaves that empty directory and at most
@@ -138,15 +157,20 @@ const postmasterKillMs = 10_000;
 /** How often a start reads `/proc` while it waits for a postmaster to end. */
 const postmasterPollMs = 50;
 
-/** The process that started a Postgres, as `/proc` names it in one boot and PID namespace. */
+/** The process that started a Postgres, as `/proc` names it in one boot, PID namespace and time
+ *  namespace. */
 export interface Owner {
   readonly pid: number;
-  /** Field 22 of `/proc/<pid>/stat`, the process's start in clock ticks since boot. */
+  /** Field 22 of `/proc/<pid>/stat`, the process's start in clock ticks since boot, as the
+   *  owner's own time namespace shifts it. */
   readonly start: string;
   /** `/proc/sys/kernel/random/boot_id`. */
   readonly boot: string;
   /** The target of `/proc/self/ns/pid`, such as `pid:[4026531836]`. */
   readonly pidNamespace: string;
+  /** The target of `/proc/self/ns/time`, such as `time:[4026531834]`, or "" on a kernel with no
+   *  time namespaces, where every process reads one clock. */
+  readonly timeNamespace: string;
   readonly uid: number;
 }
 
@@ -156,6 +180,9 @@ export interface Mark {
   readonly owner: Owner | null;
   /** The run's own temporary directory, the one the pool hands `stackPostgres`. */
   readonly run: string;
+  /** `run` as `identityOf` read it when the mark was written: the one spelling of the run
+   *  directory that every sweep acts on (`markedPaths`). */
+  readonly identity: string;
   /** The directory of its unix socket, in `run` or in `shortTemporaryDirectory`. */
   readonly sockets: string;
   /** The binaries provider's cluster: the data directory and the directory of the binaries that
@@ -212,11 +239,30 @@ function readOwner(): Owner | null {
       start: startOf(stat),
       boot: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
       pidNamespace: readlinkSync("/proc/self/ns/pid"),
+      timeNamespace: timeNamespaceOf(),
       uid,
     };
   } catch {
     return null;
   }
+}
+
+/** The target of `/proc/self/ns/time`, or "" where the kernel has no time namespaces (Linux
+ *  before 5.6), which no process then can be in. */
+function timeNamespaceOf(): string {
+  try {
+    return readlinkSync("/proc/self/ns/time");
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return "";
+    throw error;
+  }
+}
+
+/** The one spelling of the directory `path`, with every link in it resolved: the spelling a mark
+ *  holds its run directory by, read once where the mark is written (`markPostgres`), and the one
+ *  a start lists the run directories of its `TMPDIR` by. Throws where `path` cannot be resolved. */
+export function identityOf(path: string): string {
+  return realpathSync(path);
 }
 
 /** Writes the mark of one Postgres of the run in `run`, under `name`, and returns it. The caller
@@ -227,7 +273,7 @@ export function markPostgres(
   name: string,
   names: Pick<Mark, "sockets" | "postmaster" | "container">
 ): Mark {
-  const mark: Mark = { owner: stackOwner(), run, ...names };
+  const mark: Mark = { owner: stackOwner(), run, identity: identityOf(run), ...names };
   const directory = join(run, marksDirectory);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = join(directory, `${name}.json`);
@@ -318,7 +364,7 @@ function readUnlinked(path: string): string {
 function ownerOf(value: unknown): Owner | null | undefined {
   if (value === null) return null;
   if (typeof value !== "object" || value === undefined) return undefined;
-  const { pid, start, boot, pidNamespace, uid } = value as Record<string, unknown>;
+  const { pid, start, boot, pidNamespace, timeNamespace, uid } = value as Record<string, unknown>;
   if (
     typeof pid !== "number" ||
     !Number.isSafeInteger(pid) ||
@@ -329,20 +375,21 @@ function ownerOf(value: unknown): Owner | null | undefined {
     boot === "" ||
     typeof pidNamespace !== "string" ||
     pidNamespace === "" ||
+    typeof timeNamespace !== "string" ||
     typeof uid !== "number" ||
     !Number.isSafeInteger(uid) ||
     uid < 0
   ) {
     return undefined;
   }
-  return { pid, start, boot, pidNamespace, uid };
+  return { pid, start, boot, pidNamespace, timeNamespace, uid };
 }
 
 /** `text` as a mark, or undefined where it is not one the providers write: JSON with an owner or
- *  null, a run directory, a socket directory in that run directory or in /tmp under the name
- *  `socketDirectory` gives one, and exactly one of a postmaster whose data directory is a stack's
- *  or the template's in that run directory, and a container name. Every path is absolute and
- *  plain. */
+ *  null, a run directory and its one spelling, which share their last name, a socket directory in
+ *  that run directory or in /tmp under the name `socketDirectory` gives one, and exactly one of a
+ *  postmaster whose data directory is a stack's or the template's in that run directory, and a
+ *  container name. Every path is absolute and plain. */
 function markOf(text: string): Mark | undefined {
   let value: unknown;
   try {
@@ -351,9 +398,10 @@ function markOf(text: string): Mark | undefined {
     return undefined;
   }
   if (typeof value !== "object" || value === null) return undefined;
-  const { owner, run, sockets, postmaster, container } = value as Record<string, unknown>;
+  const { owner, run, identity, sockets, postmaster, container } = value as Record<string, unknown>;
   const judged = ownerOf(owner);
   if (judged === undefined || !plainPath(run) || !plainPath(sockets)) return undefined;
+  if (!plainPath(identity) || basename(identity) !== basename(run)) return undefined;
   if (dirname(sockets) !== run && dirname(sockets) !== shortTemporaryDirectory) return undefined;
   if (!socketDirectoryName.test(basename(sockets))) return undefined;
   if ((postmaster === undefined) === (container === undefined)) return undefined;
@@ -363,10 +411,19 @@ function markOf(text: string): Mark | undefined {
     if (!plainPath(bin) || !plainPath(data) || !dataDirectory.test(relative(run, data))) {
       return undefined;
     }
-    return { owner: judged, run, sockets, postmaster: { bin, data } };
+    return { owner: judged, run, identity, sockets, postmaster: { bin, data } };
   }
   if (typeof container !== "string" || !containerName.test(container)) return undefined;
-  return { owner: judged, run, sockets, container };
+  return { owner: judged, run, identity, sockets, container };
+}
+
+/** The directories `mark` names as both sweeps act on them: under its run directory's one
+ *  spelling (`identity`), and a socket directory in /tmp as the mark names it. */
+function markedPaths(mark: Mark): { readonly sockets: string; readonly data?: string } {
+  const sockets =
+    dirname(mark.sockets) === mark.run ? join(mark.identity, basename(mark.sockets)) : mark.sockets;
+  if (mark.postmaster === undefined) return { sockets };
+  return { sockets, data: join(mark.identity, relative(mark.run, mark.postmaster.data)) };
 }
 
 /** What this process can tell of the owner of a mark: that it lives; that it is gone, with its
@@ -383,6 +440,11 @@ function judge(owner: Owner | null, self: Owner | null): Verdict {
   if (owner.boot !== self.boot) return { kind: "unjudged", why: `boot ${owner.boot}` };
   if (owner.pidNamespace !== self.pidNamespace) {
     return { kind: "unjudged", why: `PID namespace ${owner.pidNamespace}` };
+  }
+  // The start the kernel shows is shifted by the reader's own time namespace, so the owner's
+  // reading of its start and this process's are of one clock only in one time namespace.
+  if (owner.timeNamespace !== self.timeNamespace) {
+    return { kind: "unjudged", why: `time namespace ${owner.timeNamespace || "(none)"}` };
   }
   if (owner.uid !== self.uid) return { kind: "unjudged", why: `user ${owner.uid}` };
   const gone: Verdict = { kind: "gone", pid: owner.pid, uid: owner.uid };
@@ -492,14 +554,15 @@ export function servingPostmasters(run: string): string[] {
 }
 
 /** Removes the directory `path` where it is a directory of the user `uid`, and nothing where it
- *  is gone. Throws, naming `path`, where it is anything else, since a file, a link or another
- *  user's directory is nothing a stack made, and where the removal fails. */
-function removeDirectory(path: string, uid: number): void {
+ *  is gone. Answers whether it removed one. Throws, naming `path`, where it is anything else,
+ *  since a file, a link or another user's directory is nothing a stack made, and where the
+ *  removal fails. */
+function removeDirectory(path: string, uid: number): boolean {
   let stat: Stats;
   try {
     stat = lstatSync(path);
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return;
+    if (codeOf(error) === "ENOENT") return false;
     throw error;
   }
   if (!stat.isDirectory() || stat.uid !== uid) {
@@ -510,6 +573,7 @@ function removeDirectory(path: string, uid: number): void {
   } catch (error) {
     throw new Error(`${path} could not be removed: ${firstLine(error)}`);
   }
+  return true;
 }
 
 /** Ends `postmaster`, the process `postmasterOf` verified, by its pid alone: SIGQUIT, and SIGKILL
@@ -534,14 +598,25 @@ async function stopPostmaster({ pid, start }: Postmaster, data: string): Promise
   }
 }
 
-/** Ends the postmaster of `data`, where one still serves it, and then removes `data`. Throws,
- *  leaving `data`, where the postmaster fails a check of `postmasterOf` or still runs after its
- *  stop. A postmaster that another start ended first is no failure: what counts is whether it is
- *  gone. */
-async function removePostmaster(bin: string, data: string, uid: number): Promise<void> {
+/** Ends the postmaster of `data`, where one still serves it, and then removes `data`. Answers
+ *  which of the two this call did itself. Throws, leaving `data`, where the postmaster fails a
+ *  check of `postmasterOf` or still runs after its stop. A postmaster that another start ended
+ *  first is no failure: what counts is whether it is gone. */
+async function removePostmaster(
+  bin: string,
+  data: string,
+  uid: number
+): Promise<{ readonly stopped: boolean; readonly removed: boolean }> {
   const postmaster = postmasterOf(data, bin, uid);
   if (postmaster !== undefined) await stopPostmaster(postmaster, data);
-  removeDirectory(data, uid);
+  return { stopped: postmaster !== undefined, removed: removeDirectory(data, uid) };
+}
+
+/** `phrases` as one list for a line: "a", "a and b", "a, b and c". */
+function listOf(phrases: readonly string[]): string {
+  return phrases.length < 2
+    ? (phrases[0] ?? "")
+    : `${phrases.slice(0, -1).join(", ")} and ${phrases.at(-1)}`;
 }
 
 /** What a sweep leaves and says so: one list per kind, each of which is one line at its end. */
@@ -551,12 +626,22 @@ interface Left {
   readonly unjudged: string[];
 }
 
+/** What the container sweep leaves the run directory sweep to read: the name of each container
+ *  Docker still lists with a mark label after the sweep, and of each one the sweep removed. */
+interface Containers {
+  readonly listed: ReadonlySet<string>;
+  readonly removed: ReadonlySet<string>;
+}
+
 /** Removes every container whose label marks a Postgres of a stack that is gone, with its socket
- *  directory. A machine with no `docker` has no container to look for. */
-async function removeContainers(self: Owner | null, left: Left): Promise<void> {
-  let listed: string;
+ *  directory, and answers what Docker lists then, or undefined where `docker ps` failed. A machine
+ *  with no `docker` has no container to look for, and lists none. */
+async function removeContainers(self: Owner | null, left: Left): Promise<Containers | undefined> {
+  const listed = new Set<string>();
+  const removed = new Set<string>();
+  let lines: string;
   try {
-    ({ stdout: listed } = await execFileAsync(
+    ({ stdout: lines } = await execFileAsync(
       "docker",
       [
         "ps",
@@ -565,21 +650,22 @@ async function removeContainers(self: Owner | null, left: Left): Promise<void> {
         "--filter",
         `label=${markLabel}`,
         "--format",
-        `{{.ID}} {{.Label "${markLabel}"}}`,
+        `{{.ID}} {{.Names}} {{.Label "${markLabel}"}}`,
       ],
       { timeout: dockerMs }
     ));
   } catch (error) {
-    if (codeOf(error) === "ENOENT") return;
+    if (codeOf(error) === "ENOENT") return { listed, removed };
     left.unread.push(`the containers, since docker ps failed: ${firstLine(error)}`);
-    return;
+    return undefined;
   }
-  for (const line of listed.split("\n")) {
+  for (const line of lines.split("\n")) {
     if (line.trim() === "") continue;
-    const space = line.indexOf(" ");
-    const id = space === -1 ? line : line.slice(0, space);
+    // An id and a name hold no space; the label, a path of a mark among it, may.
+    const [id = "", name = "", ...label] = line.split(" ");
+    listed.add(name);
     const what = `container ${id.slice(0, 12)}`;
-    const mark = space === -1 ? undefined : markOf(line.slice(space + 1));
+    const mark = markOf(label.join(" "));
     if (mark?.container === undefined) {
       left.unread.push(`${what} (its label is no mark)`);
       continue;
@@ -590,35 +676,55 @@ async function removeContainers(self: Owner | null, left: Left): Promise<void> {
       left.unjudged.push(`${what} (${verdict.why})`);
       continue;
     }
-    // The label is Docker's, but the socket directory it names is acted on as any path is.
-    const why = whyUntrusted(mark.sockets, verdict.uid, "directory");
+    // The label is Docker's, but the socket directory it names is acted on as any path is, under
+    // the one spelling the run directory sweep acts on too.
+    const { sockets } = markedPaths(mark);
+    const why = whyUntrusted(sockets, verdict.uid, "directory");
     if (why !== undefined) {
       left.untrusted.push(`${what} (${why})`);
       continue;
     }
     const by = `stack ${verdict.pid}`;
+    let printed: string;
     try {
-      await execFileAsync("docker", ["rm", "--force", "--volumes", id], { timeout: dockerMs });
-      removeDirectory(mark.sockets, verdict.uid);
-      console.error(
-        `${named}: removed ${what} (${mark.container}) and ${mark.sockets}, which ${by} left ` +
-          "when it ended without stopping them"
-      );
+      ({ stdout: printed } = await execFileAsync("docker", ["rm", "--force", "--volumes", id], {
+        timeout: dockerMs,
+      }));
     } catch (error) {
       console.error(
         `${named}: ${what} (${mark.container}), which ${by} left, is not removed: ${firstLine(error)}`
       );
+      continue;
+    }
+    listed.delete(name);
+    // `docker rm` prints each container it removed and nothing for one that is already gone,
+    // which `--force` takes as done: another start removed it first and says so.
+    if (printed.trim() === "") continue;
+    removed.add(name);
+    try {
+      const andSockets = removeDirectory(sockets, verdict.uid) ? ` and ${sockets}` : "";
+      console.error(
+        `${named}: removed ${what} (${mark.container})${andSockets}, which ${by} left when it ` +
+          "ended without stopping them"
+      );
+    } catch (error) {
+      console.error(
+        `${named}: removed ${what} (${mark.container}), which ${by} left when it ended without ` +
+          `stopping it; its socket directory is not removed: ${firstLine(error)}`
+      );
     }
   }
+  return { listed, removed };
 }
 
-/** Whether `first` and `second` name one directory, however each is spelt. */
-function sameDirectory(first: string, second: string): boolean {
-  if (first === second) return true;
+/** Whether nothing is at `path`, read with `lstat`. */
+function absent(path: string): boolean {
   try {
-    return realpathSync(first) === realpathSync(second);
-  } catch {
+    lstatSync(path);
     return false;
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return true;
+    throw error;
   }
 }
 
@@ -667,14 +773,18 @@ function servedElsewhere(real: string, uid: number): Served[] {
 
 /** Removes, for each mark in the run directory `run` whose stack is gone, what the mark names
  *  outside a container, and then the mark: the postmaster and its data directory, and the socket
- *  directory. It reads a run directory, a mark and a path a mark names only where `whyUntrusted`
- *  finds no other user could have put it there, and acts on the paths it reads under the run
- *  directory it checked, never on another spelling of them. Answers the data directory of each
- *  postmaster mark it read, or undefined where it named the run directory itself on a line. */
+ *  directory. A container's mark is read only once its container is gone (`containers`): the
+ *  container sweep judges, removes or names a container Docker lists, and its socket directory
+ *  goes with it. It reads a run directory, a mark and a path a mark names only where
+ *  `whyUntrusted` finds no other user could have put it there, and acts on the paths a mark names
+ *  only where the mark's one spelling of its run directory is the run directory it checked
+ *  (`markedPaths`). Answers the data directory of each postmaster mark it read, or undefined
+ *  where it named the run directory itself on a line. */
 async function sweepRun(
   run: string,
   uid: number,
   self: Owner | null,
+  containers: Containers | undefined,
   left: Left
 ): Promise<ReadonlySet<string> | undefined> {
   const untrusted = whyUntrusted(run, uid, "directory");
@@ -709,25 +819,35 @@ async function sweepRun(
       left.unread.push(`${file} (${codeOf(error) ?? firstLine(error)})`);
       continue;
     }
-    if (mark === undefined || !sameDirectory(mark.run, run)) {
+    if (mark === undefined || mark.identity !== run) {
       left.unread.push(`${file} (no mark of this run directory)`);
       continue;
     }
     // The paths the mark names, under the run directory checked above: markOf holds the data
     // directory to its stack's place in the run and the socket directory to the run or /tmp.
-    const data =
-      mark.postmaster === undefined
-        ? undefined
-        : join(run, relative(mark.run, mark.postmaster.data));
+    const { sockets, data } = markedPaths(mark);
     if (data !== undefined) read.add(data);
+    if (mark.container !== undefined) {
+      if (containers === undefined) {
+        left.unread.push(`${file} (its container ${mark.container}, since docker ps failed)`);
+        continue;
+      }
+      // A container Docker still lists is the container sweep's, which named it if it left it.
+      if (containers.listed.has(mark.container)) continue;
+      // One the container sweep removed went with its socket directory, which that sweep named
+      // where it could not remove it: the mark goes with the directory, or stays for the next
+      // start.
+      if (containers.removed.has(mark.container)) {
+        if (absent(sockets)) rmSync(file, { force: true });
+        continue;
+      }
+    }
     const verdict = judge(mark.owner, self);
     if (verdict.kind === "lives") continue;
     if (verdict.kind === "unjudged") {
       left.unjudged.push(`${file} (${verdict.why})`);
       continue;
     }
-    const sockets =
-      dirname(mark.sockets) === mark.run ? join(run, basename(mark.sockets)) : mark.sockets;
     const why = [data, sockets]
       .map((path) =>
         path === undefined ? undefined : whyUntrusted(path, verdict.uid, "directory")
@@ -742,17 +862,33 @@ async function sweepRun(
         ? `${sockets} of container ${mark.container}`
         : `the postmaster of ${data}, that directory and ${sockets}`;
     const by = `stack ${verdict.pid}`;
+    // Each part this start removed itself, which its line names: another start may have removed
+    // the rest first, and a line names nothing that start removed.
+    const done: string[] = [];
     try {
       if (mark.postmaster !== undefined && data !== undefined) {
-        await removePostmaster(mark.postmaster.bin, data, verdict.uid);
+        const { stopped, removed } = await removePostmaster(mark.postmaster.bin, data, verdict.uid);
+        if (stopped) done.push(`the postmaster of ${data}`);
+        if (removed) done.push(stopped ? "that directory" : data);
       }
-      removeDirectory(sockets, verdict.uid);
+      if (removeDirectory(sockets, verdict.uid)) done.push(sockets);
       rmSync(file, { force: true });
-      console.error(
-        `${named}: removed ${what}, which ${by} left when it ended without stopping them`
-      );
     } catch (error) {
-      console.error(`${named}: ${what}, which ${by} left, is not removed: ${firstLine(error)}`);
+      console.error(
+        done.length === 0
+          ? `${named}: ${what}, which ${by} left, is not removed: ${firstLine(error)}`
+          : `${named}: removed ${listOf(done)}, which ${by} left, and the rest is not removed: ${firstLine(error)}`
+      );
+      continue;
+    }
+    if (done.length > 0) {
+      const container =
+        mark.container === undefined
+          ? ""
+          : `; its container ${mark.container} is gone, as Docker lists no such container`;
+      console.error(
+        `${named}: removed ${listOf(done)}, which ${by} left when it ended without stopping them${container}`
+      );
     }
   }
   return read;
@@ -761,25 +897,32 @@ async function sweepRun(
 /** Sweeps each run directory of `parent`, this start's TMPDIR, and each run directory elsewhere
  *  that a postmaster of this user serves from (`servedElsewhere`), by the same steps
  *  (`sweepRun`), and names each such postmaster that no mark of its run directory names. */
-async function removeRunDirectories(parent: string, self: Owner | null, left: Left): Promise<void> {
+async function removeRunDirectories(
+  parent: string,
+  self: Owner | null,
+  containers: Containers | undefined,
+  left: Left
+): Promise<void> {
   const uid = process.getuid?.() ?? -1;
   let real: string;
   let entries: string[];
   try {
-    // TMPDIR may be spelt through a link of its user's; the run directories are read under the
-    // directory it names, each component of which `whyUntrusted` then reads.
-    real = realpathSync(parent);
+    // TMPDIR may be spelt through a link of its user's: the run directories are listed under its
+    // one spelling, which a mark holds its own run directory by, and `whyUntrusted` then reads
+    // each component of it.
+    real = identityOf(parent);
     entries = readdirSync(real);
   } catch (error) {
     left.unread.push(`${parent} (${firstLine(error)})`);
     return;
   }
   for (const entry of entries.filter((name) => name.startsWith(runDirectoryPrefix)).sort()) {
-    await sweepRun(join(real, entry), uid, self, left);
+    await sweepRun(join(real, entry), uid, self, containers, left);
   }
+  // The kernel shows a working directory with no link in it, the one spelling marks hold.
   const served = servedElsewhere(real, uid);
   for (const run of new Set(served.map((postmaster) => postmaster.run))) {
-    const read = await sweepRun(run, uid, self, left);
+    const read = await sweepRun(run, uid, self, containers, left);
     if (read === undefined) continue;
     for (const postmaster of served.filter((each) => each.run === run && !read.has(each.data))) {
       left.unjudged.push(
@@ -799,8 +942,8 @@ export async function removeLeftoverPostgres(): Promise<void> {
   const left: Left = { unread: [], untrusted: [], unjudged: [] };
   try {
     // The containers first, so a container goes before the socket directory it serves in.
-    await removeContainers(self, left);
-    await removeRunDirectories(tmpdir(), self, left);
+    const containers = await removeContainers(self, left);
+    await removeRunDirectories(tmpdir(), self, containers, left);
   } catch (error) {
     console.error(
       `${named}: the Postgres of stacks that are gone is not looked for: ${firstLine(error)}`

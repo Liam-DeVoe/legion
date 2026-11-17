@@ -13,7 +13,7 @@ import {
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 
-import { marksDirectory, startOf } from "../harness-postgres-marks";
+import { identityOf, marksDirectory, startOf } from "../harness-postgres-marks";
 
 /** The start of the process `pid` as `/proc` gives it, or "" where it is gone or a zombie. */
 function startTimeOf(pid: number): string {
@@ -101,7 +101,10 @@ export function plantHostileMark(run: string, tmp: string, owner: unknown): Host
   mkdirSync(join(run, marksDirectory), { recursive: true });
   const file = join(run, marksDirectory, "worker-0.json");
   const postmaster = { bin: plantedBin(tmp, marker), data: join(run, "worker-0", "pgdata") };
-  writeFileSync(file, JSON.stringify({ owner, run, sockets, postmaster }));
+  writeFileSync(
+    file,
+    JSON.stringify({ owner, run, identity: identityOf(run), sockets, postmaster })
+  );
   return {
     marker,
     live,

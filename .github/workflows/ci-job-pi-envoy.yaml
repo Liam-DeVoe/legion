@@ -27,8 +27,8 @@ jobs:
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are. Docker publishes it on a host port
-    # it chooses, which the test step reads from the job's service context: 127.0.0.1:4222, nats.js's
-    # default, stays free for extensions/envoy.test.ts's probe of what dials that port.
+    # it chooses, which the test step reads from the job's service context, so the job binds no
+    # fixed port of the runner, and no NATS of the job's listens on nats.js's default 127.0.0.1:4222.
     services:
       nats:
         # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
