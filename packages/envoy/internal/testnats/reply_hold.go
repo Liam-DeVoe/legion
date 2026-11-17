@@ -15,10 +15,12 @@ import (
 // requests the client sends on a subject: the request reaches the server, which answers it, and the
 // hold keeps that answer from the client, so the client waits on a reply that never comes, which
 // is what it sees of a request whose reply the connection's drop lost. Drop then ends every
-// connection the hold is relaying, as a network that ends a connection does; unlike Proxy.Cut, it
-// keeps accepting, so the client reconnects through it at once, on a connection whose replies are
-// no longer held unless Hold names them again. Every other protocol line is relayed as it is, so
-// the connection is a real one on a real server.
+// connection the hold is relaying, as a network that ends a connection does, and keeps accepting,
+// so the client reconnects through it at its next attempt; Cut ends them too and refuses every
+// reconnect until Restore, as Proxy.Cut does, so a test can see what the client does while it is
+// disconnected, however long the box takes. A new connection's replies are not held unless Hold
+// names them again. Every other protocol line is relayed as it is, so the connection is a real one
+// on a real server.
 type ReplyHold struct {
 	listener net.Listener
 	target   string
@@ -31,6 +33,8 @@ type ReplyHold struct {
 	// held is what the hold reports of the replies it holds now; nil while it holds none.
 	held  *HeldReplies
 	conns map[net.Conn]struct{}
+	// cut is set from Cut until Restore: every connection the hold accepts is closed at once.
+	cut bool
 }
 
 // HeldReplies is what a hold (ReplyHold.Hold) reports, as two events: a reply withheld, and the
@@ -96,6 +100,30 @@ func (h *ReplyHold) Hold(prefix string) *HeldReplies {
 func (h *ReplyHold) Drop() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.dropLocked()
+}
+
+// Cut is Drop that also refuses every connection the hold accepts until Restore, as a dial the
+// network refuses ends: each client through it is disconnected at once and stays disconnected, its
+// reconnects failing, until Restore.
+func (h *ReplyHold) Cut() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cut = true
+	h.dropLocked()
+}
+
+// Restore ends a Cut: the hold accepts and relays connections again, so a client through it
+// reconnects at its next attempt.
+func (h *ReplyHold) Restore() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cut = false
+}
+
+// dropLocked holds nothing more and closes every connection the hold is relaying; the caller holds
+// h.mu.
+func (h *ReplyHold) dropLocked() {
 	h.prefix, h.replies, h.held = "", nil, nil
 	for conn := range h.conns {
 		_ = conn.Close()
@@ -181,12 +209,26 @@ func (h *ReplyHold) serve() {
 // the server sends is relayed but for each held reply and its payload. Both ends are out of the
 // hold's map once the relay ends.
 func (h *ReplyHold) relay(client net.Conn) {
+	h.mu.Lock()
+	cut := h.cut
+	h.mu.Unlock()
+	if cut {
+		_ = client.Close()
+		return
+	}
 	server, err := net.Dial("tcp", h.target)
 	if err != nil {
 		_ = client.Close()
 		return
 	}
 	h.mu.Lock()
+	if h.cut {
+		// Cut while this connection was being dialled: it is refused as one accepted after the Cut.
+		h.mu.Unlock()
+		_ = client.Close()
+		_ = server.Close()
+		return
+	}
 	h.conns[client], h.conns[server] = struct{}{}, struct{}{}
 	h.mu.Unlock()
 	defer func() {

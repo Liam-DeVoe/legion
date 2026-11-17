@@ -15,9 +15,10 @@ import (
 )
 
 // heldListener is a listener's /v1 routes and session consumers on a server of their own, with
-// every NATS connection of the listener through a hold (testnats.ReplyHold), and the server's own
-// URL for the stand-ins and reads a test makes beside it.
-func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, string) {
+// every NATS connection of the listener through a hold (testnats.ReplyHold), the server's own URL
+// for the stand-ins and reads a test makes beside it, and the listener's own client, whose
+// connection the registry's and the session store's reads go through.
+func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, string, *bus.Client) {
 	t.Helper()
 	url := testnats.URL(t)
 	hold := testnats.StartReplyHold(t, url)
@@ -26,7 +27,7 @@ func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, strin
 		t.Fatalf("connect the listener through the hold: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newSessionConsumerRigOn(t, client, hold.URL()), hold, url
+	return newSessionConsumerRigOn(t, client, hold.URL()), hold, url, client
 }
 
 // A relay restart reads the session's interest row under the session's lock (sessionRelays.restart),
@@ -37,17 +38,20 @@ func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, strin
 // held-reconnect harness the fix was measured with, where 7 of 30 registrations after a held
 // reconnect answered 503 at main.
 //
-// What the row decides is that order, not a time, and it sees it through the restart's own cause:
-// the restart logs the read as one that lost its connection (connectionLost), which a read whose
-// own deadline fired first never is, since bindRequest names a request lost only while its own
-// context runs; a read that waited out its deadline logs "could not read the session's interests".
-// Every wait is bounded by the test's deadline alone (testnats.Remaining).
+// What the row decides is that order, not a time. The hold cuts the listener's connections and
+// refuses every reconnect (testnats.ReplyHold.Cut) until the row has seen the lock given up, so a
+// restart whose read fails only at the reconnect cannot pass; the lock must be given up while the
+// listener is still disconnected. The row sees the rest through the restart's own cause: the
+// restart logs the read as one that lost its connection (connectionLost), which a read whose own
+// deadline fired first never is, since bindRequest names a request lost only while its own context
+// runs; a read that waited out its deadline logs "could not read the session's interests". Every
+// wait is bounded by the test's deadline alone (testnats.Remaining).
 //
 // The control is the same row at main a97cd59397 (and 44a1f1fb97): the restart holds the lock
 // until its read's deadline, sessionConsumerCallTimeout (5 s), fires, and logs that read as one
 // it could not make.
 func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts(t *testing.T) {
-	rig, hold, url := heldListener(t)
+	rig, hold, url, client := heldListener(t)
 	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
@@ -81,10 +85,13 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 		unlock()
 	}()
 	dropped := time.Now()
-	hold.Drop()
+	hold.Cut()
 	select {
 	case at := <-locked:
-		t.Logf("the session's lock was given up %s after the drop", at.Sub(dropped))
+		if client.Connected() {
+			t.Fatalf("the session's lock was given up %s after the drop only once the listener was connected again, want it given up while the listener was disconnected", at.Sub(dropped))
+		}
+		t.Logf("the session's lock was given up %s after the drop, the listener still disconnected", at.Sub(dropped))
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the relay restart still held the session's lock at the test's deadline")
 	}
@@ -99,6 +106,8 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 	if logs := rig.harness.logs.String(); !strings.Contains(logs, lost) || strings.Contains(logs, ranOut) {
 		t.Fatalf("the relay restart's read ended other than at the drop, before its own deadline: want %q and not %q in the listener log", lost, ranOut)
 	}
+	// Only now can the listener reconnect: what follows runs on the new connection.
+	hold.Restore()
 
 	recorder := httptest.NewRecorder()
 	sent := time.Now()
@@ -134,7 +143,7 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 // its budget, sessionConsumerCallTimeout (5 s), fails, and repairs nothing, so the registration
 // answers with the session holding no consumer.
 func TestARegistrationsConfirmWhoseReadTheDropCutOffIsMadeAgainOnTheNewConnection(t *testing.T) {
-	rig, hold, url := heldListener(t)
+	rig, hold, url, _ := heldListener(t)
 	const sessionID = "ses_lost_confirm"
 	name, ok := bus.SessionConsumerName(sessionID)
 	if !ok {

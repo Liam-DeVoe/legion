@@ -58,3 +58,53 @@ func TestAReplyHoldReportsAFlushOnlyOnceItsPongReachesTheClient(t *testing.T) {
 		t.Fatalf("the held reply reached the client: %q", msg.Data)
 	}
 }
+
+// A cut hold keeps its clients disconnected: a client through it loses its connection at the Cut,
+// and is still disconnected after five of its reconnect waits, until Restore, after which it
+// reconnects. That is what lets a test see what a client does while it is still disconnected,
+// however long the box takes, where Drop lets it reconnect at its next attempt. The cut row checks
+// an absence, which a cut cannot break however slow the box is; every wait for a reconnect is
+// bounded by the test's deadline alone.
+//
+// The control is Drop in the same rig: the client reconnects without a Restore.
+func TestACutHoldRefusesEveryReconnectUntilRestore(t *testing.T) {
+	url := URL(t)
+	const wait = 100 * time.Millisecond
+	connectThrough := func(t *testing.T, hold *ReplyHold) *natsgo.Conn {
+		t.Helper()
+		client, err := natsgo.Connect(hold.URL(), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(wait))
+		if err != nil {
+			t.Fatalf("connect through the hold: %v", err)
+		}
+		t.Cleanup(client.Close)
+		return client
+	}
+	awaitConnected := func(t *testing.T, client *natsgo.Conn, want bool, what string) {
+		t.Helper()
+		for client.IsConnected() != want && Remaining(t) > 0 {
+			time.Sleep(time.Millisecond)
+		}
+		if client.IsConnected() != want {
+			t.Fatalf("%s by the test's deadline", what)
+		}
+	}
+	t.Run("cut", func(t *testing.T) {
+		hold := StartReplyHold(t, url)
+		client := connectThrough(t, hold)
+		hold.Cut()
+		awaitConnected(t, client, false, "the client was still connected after the Cut")
+		time.Sleep(5 * wait)
+		if client.IsConnected() {
+			t.Fatal("the client reconnected through a cut hold")
+		}
+		hold.Restore()
+		awaitConnected(t, client, true, "the client was not connected again after Restore")
+	})
+	t.Run("drop, the control", func(t *testing.T) {
+		hold := StartReplyHold(t, url)
+		client := connectThrough(t, hold)
+		hold.Drop()
+		awaitConnected(t, client, false, "the client was still connected after the Drop")
+		awaitConnected(t, client, true, "the client was not connected again after the Drop, with no Restore")
+	})
+}

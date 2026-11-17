@@ -14,14 +14,17 @@ import (
 )
 
 // What these rows decide is an order, not a time: a request whose reply the connection's drop
-// lost fails at the drop, before its own deadline fires, where nats.go alone leaves it to fail at
-// that deadline (processOpErr clears no pending request). A row gives its request a deadline of
-// its own that ends just short of the test binary's (ownWait), sees the order through the error
-// and that deadline - the answer is ErrConnectionLost, which bindRequest gives only to a request
-// whose own context is still running, and the request's own context has not fired when it comes -
-// and waits for it no shorter than the test's deadline (testnats.Remaining). So a loaded or
-// starved box can make a row slow, never fail it; a request that waits for its own deadline fails
-// it with the error that deadline gives.
+// lost fails at the drop, while the client is still disconnected and before its own deadline
+// fires, where nats.go alone leaves it to fail at that deadline (processOpErr clears no pending
+// request). The hold cuts the connection and refuses every reconnect (testnats.ReplyHold.Cut) until
+// the row has its answer, so a request that fails only at the reconnect cannot pass. A row gives
+// its request a deadline of its own that ends just short of the test binary's (ownWait), and sees
+// the order through the error, that deadline and the connection: the answer is ErrConnectionLost,
+// which bindRequest gives only to a request whose own context is still running; the request's own
+// context has not fired when it comes; and the client is not connected when it comes. Every wait
+// is bounded by the test's deadline alone (testnats.Remaining). So a loaded or starved box can make
+// a row slow, never fail it; a request that waits for its own deadline, or for the reconnect,
+// fails it.
 
 // ownWait is the deadline a row gives the request it holds: five seconds short of what the test
 // binary's deadline leaves, so the request's own deadline fires, and fails the row with its own
@@ -54,9 +57,11 @@ const (
 // requireLostAtTheDrop holds the replies to the requests on prefix, runs send with a context of
 // the request's own (ownWait), waits until the hold has withheld its reply and, for a request that
 // flushes, forwarded that flush's PONG, so the request is past its publish and its flush and
-// waiting for its reply, drops the connection, and requires send to fail with ErrConnectionLost
-// while its own context is still running. Every wait is bounded by the test's deadline alone.
-func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string, flush flushes, send func(ctx context.Context) error) {
+// waiting for its reply, then cuts the connection (testnats.ReplyHold.Cut). It requires send to
+// fail with ErrConnectionLost while its own context is still running and while connected, the
+// client's own report, is still false, and only then restores the hold, so the client reconnects
+// for what the row does next. Every wait is bounded by the test's deadline alone.
+func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, connected func() bool, prefix string, flush flushes, send func(ctx context.Context) error) {
 	t.Helper()
 	own, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
@@ -78,17 +83,22 @@ func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string,
 		waitFor(held.Flushed(), "forwarded the PONG of its flush")
 	}
 	dropped := time.Now()
-	hold.Drop()
+	hold.Cut()
+	defer hold.Restore()
 	select {
 	case err := <-answered:
 		took := time.Since(dropped)
+		reconnected := connected()
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the request on %s whose reply the drop lost answered %v %s after the drop, want ErrConnectionLost", prefix, err, took)
 		}
 		if own.Err() != nil {
 			t.Fatalf("the request on %s whose reply the drop lost answered %v only once its own deadline had fired, want it failed at the drop", prefix, err)
 		}
-		t.Logf("the request on %s whose reply the drop lost failed %s after the drop, its own deadline still running: %v", prefix, took, err)
+		if reconnected {
+			t.Fatalf("the request on %s whose reply the drop lost answered %v only once the client was connected again, want it failed while the client was disconnected", prefix, err)
+		}
+		t.Logf("the request on %s whose reply the drop lost failed %s after the drop, its own deadline still running and the client still disconnected: %v", prefix, took, err)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatalf("the request on %s whose reply the drop lost was still waiting at the test's deadline, want it failed at the drop", prefix)
 	}
@@ -165,7 +175,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			client, hold := heldClient(t)
-			requireLostAtTheDrop(t, hold, row.prefix, row.flush, row.prepare(t, client))
+			requireLostAtTheDrop(t, hold, client.Connected, row.prefix, row.flush, row.prepare(t, client))
 		})
 	}
 }
@@ -209,7 +219,7 @@ func TestAStreamReadTheDropCutOffReleasesTheCallsWaitingOnIt(t *testing.T) {
 		t.Fatalf("connect the session consumers: %v", err)
 	}
 	t.Cleanup(consumers.Close)
-	requireLostAtTheDrop(t, hold, "$JS.API.STREAM.INFO."+Stream, withFlush, func(ctx context.Context) error {
+	requireLostAtTheDrop(t, hold, consumers.client.Connected, "$JS.API.STREAM.INFO."+Stream, withFlush, func(ctx context.Context) error {
 		_, err := consumers.StreamID(ctx)
 		return err
 	})
@@ -269,14 +279,18 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	dropped := time.Now()
-	hold.Drop()
+	hold.Cut()
+	defer hold.Restore()
 	select {
 	case err := <-answered:
 		took := time.Since(dropped)
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the pull whose connection dropped ended %s after the drop with %v, want ErrConnectionLost before it stalled", took, err)
 		}
-		t.Logf("the pull whose connection dropped ended %s after the drop: %v", took, err)
+		if consumers.client.Connected() {
+			t.Fatalf("the pull whose connection dropped ended %s after the drop only once the client was connected again, want it ended while the client was disconnected", took)
+		}
+		t.Logf("the pull whose connection dropped ended %s after the drop, the client still disconnected: %v", took, err)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the pull whose connection dropped was still waiting at the test's deadline, want it ended at the drop")
 	}
@@ -319,12 +333,13 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 	pull.beforeWait = func() {
 		once.Do(func() {
 			dropped <- time.Now()
-			hold.Drop()
-			for pull.life.Err() == nil {
+			hold.Cut()
+			for pull.life.Err() == nil && testnats.Remaining(t) > 0 {
 				time.Sleep(time.Millisecond)
 			}
 		})
 	}
+	t.Cleanup(hold.Restore)
 	answered := make(chan error, 1)
 	go func() {
 		_, err := pull.Next(context.Background())
@@ -344,7 +359,10 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop with %v, want ErrConnectionLost before it stalled", took, err)
 		}
-		t.Logf("the pull whose connection dropped before its wait ended %s after the drop: %v", took, err)
+		if consumers.client.Connected() {
+			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop only once the client was connected again, want it ended while the client was disconnected", took)
+		}
+		t.Logf("the pull whose connection dropped before its wait ended %s after the drop, the client still disconnected: %v", took, err)
 	case <-time.After(testnats.Remaining(t)):
 		t.Fatal("the pull whose connection dropped before its wait was still waiting at the test's deadline, want it ended at the drop")
 	}
