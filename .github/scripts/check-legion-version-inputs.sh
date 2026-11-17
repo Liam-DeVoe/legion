@@ -46,16 +46,21 @@
 #      $GITHUB_PATH however it spells them or through a helper it calls; each piece is compared:
 #      the step's run: character for character after YAML has read it (an escaped `\$`, a `${{ }}`
 #      line, a comment or any added line is a difference), naming the first line that differs,
-#      and its env: key for key (a PATH there picks the bash release-push.sh's `#!/usr/bin/env
-#      bash` runs); every step before it one of STEPS_BEFORE_VERSION_STEPS on every key but name,
-#      id, if, timeout-minutes and continue-on-error; the workflow's env: a literal mapping of
-#      WORKFLOW_ENV_KEYS' variables alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is
-#      refused as one more unlisted name; the job setting only the module's JOB_KEYS, so no
-#      services:, container:, env:, defaults: or reusable workflow, on its runs-on: (a self-hosted
-#      runner runs its own hooks first); the workflow with no defaults but `run: {shell: bash}`;
-#      and the step under `bash` itself (`bash --rcfile x -i {0}` sources x first). An expression
-#      in place of any of
-#      those mappings is refused, since no one can read what it sets;
+#      its env: key for key (a PATH there picks the bash release-push.sh's `#!/usr/bin/env bash`
+#      runs), and its if: as the module names it, with no key but name and id free (an `if:
+#      false`, a continue-on-error: or a timeout-minutes: can end it with its decision thrown
+#      away); its job's version and skip outputs as the module names them, since the publish steps
+#      read the decision there (a `skip: "true"` skips the release the step chose); every step
+#      before it one of STEPS_BEFORE_VERSION_STEPS on every key but name, id, if, timeout-minutes
+#      and continue-on-error; the workflow's env: a literal mapping of WORKFLOW_ENV_KEYS' variables
+#      alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is refused as one more unlisted
+#      name; the job setting only the module's JOB_KEYS, so no services:, container:, env:,
+#      defaults: or reusable workflow, on its runs-on: (a self-hosted runner runs its own hooks
+#      first); the workflow with no defaults but `run: {shell: bash}`; and the step under `bash`
+#      itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of those
+#      mappings is refused, since no one can read what it sets. Whether a release workflow runs
+#      at all - its on: triggers, a job's if:, concurrency: and timeout-minutes:, the steps after
+#      the decision, the runner image behind the label - is outside this rule;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
@@ -453,6 +458,15 @@ def version_step(doc, spec):
         problem(f"{spec.job}'s runs-on: is {rendered(job.get('runs-on'))}, where {PLAN} names `{spec.runs_on}` for it: "
                 f"another runner, a self-hosted one above all, can run its own hooks and set its own environment "
                 f"before {where}, none of which this check reads", path)
+    outputs = job.get("outputs")
+    if spec.outputs is not None and not isinstance(outputs, dict):
+        problem(f"{spec.job}'s outputs: is {rendered(outputs)}, not a literal mapping holding {', '.join(spec.outputs)} as "
+                f"{PLAN} names them, so no one can read what it hands on of {where}'s decision", path)
+    for key, want in (spec.outputs or {}).items() if isinstance(outputs, dict) else ():
+        if outputs.get(key) != want:
+            problem(f"{spec.job}'s output {key} is {rendered(outputs.get(key))}, where {PLAN} names `{want}` for it: the "
+                    f"publish steps read needs.{spec.job}.outputs.{key} as {where}'s decision, so another value throws "
+                    f"that decision away (a `skip: \"true\"` skips the release the step chose)", path)
     steps = job.get("steps") if isinstance(job.get("steps"), list) else []
     found = [i for i, step in enumerate(steps) if isinstance(step, dict) and step.get("id") == spec.step_id]
     if len(found) != 1 or not isinstance(steps[found[0]].get("run"), str):
@@ -479,7 +493,14 @@ def version_step(doc, spec):
         problem(f"{where}'s env: must be, key for key, the one {PLAN} names for it ({rendered(spec.env)}), since a "
                 f"variable there can change what the command hands release-push.sh or what that script reads "
                 f"(PATH picks the bash its `#!/usr/bin/env bash` runs): {detail}", path)
-    for key in sorted(set(step) - set(FREE_STEP_KEYS) - {"run", "env", "shell"}):
+    if step.get("if") != spec.if_:
+        problem(f"{where}'s if: is {rendered(step.get('if'))}, where {PLAN} names {rendered(spec.if_)} for it: an if: "
+                f"that skips the step throws its decision away, and a skipped step hands on no version and no skip",
+                path)
+    # The step's free keys are its name: and id: alone. A continue-on-error: or timeout-minutes: can
+    # end it with its outputs empty and the job still green: the confirm step's empty `release` then
+    # skips every release step after it with no failure anywhere.
+    for key in sorted(set(step) - {"name", "id", "run", "env", "shell", "if"}):
         problem(f"{where} sets {key}: ({rendered(step[key])}), which a checked version step does not", path)
     for scope, shell in (("its own", step.get("shell")), ("the workflow's defaults.run", default_shell(doc.get("defaults")))):
         if shell is not None and shell != "bash":

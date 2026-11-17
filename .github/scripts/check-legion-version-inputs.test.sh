@@ -43,7 +43,11 @@ import release_version_inputs as plan
 kind, name = sys.argv[1], sys.argv[2]
 if kind == "version":
     spec = next(s for s in plan.VERSION_STEPS if f"{s.job}:{s.step_id}" == name)
-    fields = {"id": spec.step_id, "env": spec.env, "run": spec.run}
+    fields = {"id": spec.step_id, "if": spec.if_, "env": spec.env, "run": spec.run}
+elif kind == "outputs":
+    spec = next(s for s in plan.VERSION_STEPS if s.job == name)
+    print("\n".join(["    outputs:", *(f"      {k}: {json.dumps(v)}" for k, v in spec.outputs.items())]))
+    sys.exit(0)
 else:
     spec = next(s for s in plan.STEPS_BEFORE_VERSION_STEPS if s.name == name)
     fields = {"uses": spec.uses, "with": spec.with_, "env": spec.env, "run": spec.run}
@@ -56,13 +60,15 @@ for key, value in fields.items():
     elif isinstance(value, dict):
         lines += [f"{key}:", *(f"  {k}: {json.dumps(v)}" for k, v in value.items())]
     else:
-        lines.append(f"{key}: {value}")
+        lines.append(f"{key}: {json.dumps(value) if key == 'if' else value}")
 print("\n".join(f"      {'- ' if i == 0 else '  '}{line}" for i, line in enumerate(lines)))
 PY
 }
 legion_step=$(step version legion_build:version)
 envoy_build_step=$(step version release_build:version)
 envoy_confirm_step=$(step version release_publish:confirm)
+legion_outputs=$(step outputs legion_build)
+envoy_build_outputs=$(step outputs release_build)
 checkout_step=$(step before checkout)
 checkout_sha_step=$(step before "checkout of the event's commit")
 determine_step=$(step before "Determine latest")
@@ -125,6 +131,7 @@ EOF
 jobs:
   release_build:
     runs-on: ubuntu-24.04
+$envoy_build_outputs
     steps:
 $checkout_step
 $envoy_build_step
@@ -151,6 +158,7 @@ $hand_args
 jobs:
   legion_build:
     runs-on: ubuntu-24.04
+$legion_outputs
     steps:
 $checkout_step
 $legion_step
@@ -479,6 +487,54 @@ replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the workflow" "$(contains "$out" "legion_build sets uses: (\`./.github/workflows/other.yaml\`), which")"
+
+# The round-5 review's class: the version step's decision thrown away after it runs. The publish
+# steps read it as needs.<job>.outputs.version and .skip, so an output that is not the step's, or
+# a step that does not run or ends with its outputs empty, skips the release the step chose.
+echo "case: the job output skip is \"true\" in place of the version step's"
+root=$(written output-skip)
+replace "$root/.github/workflows/release.yaml" $'      skip: "${{ steps.version.outputs.skip }}"\n' $'      skip: "true"\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the output and the module's binding" \
+  "$(contains "$out" "legion_build's output skip is \`true\`, where $plan_file names \`\${{ steps.version.outputs.skip }}\` for it")"
+
+echo "case: the listener's job output version is \"0.0.0\""
+root=$(written output-version)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'      version: "${{ steps.version.outputs.version }}"\n' $'      version: "0.0.0"\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_build's output version is \`0.0.0\`, where")"
+root=$(written outputs-expression)
+replace "$root/.github/workflows/release.yaml" $'    outputs:\n      version: "${{ steps.version.outputs.version }}"\n      skip: "${{ steps.version.outputs.skip }}"\n' \
+  $'    outputs: ${{ fromJSON(needs.setup.outputs.decision) }}\n'
+run_check "$root"
+check "exits 1 on an expression in place of the outputs" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "legion_build's outputs: is \`\${{ fromJSON(needs.setup.outputs.decision) }}\`, not a literal mapping")"
+
+echo "case: the version step's if: false"
+root=$(written step-if-false)
+replace "$root/.github/workflows/release.yaml" $'      - id: version\n' $'      - id: version\n        if: false\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the if:" "$(contains "$out" "legion_build's step \`version\`'s if: is \`false\`, where $plan_file names nothing for it")"
+root=$(written confirm-if)
+replace "$root/.github/workflows/release-envoy-listener.yaml" " && needs.release_build.outputs.skip != 'true'\"" " && false\""
+run_check "$root"
+check "exits 1 on the confirm step's if: changed" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_publish's step \`confirm\`'s if: is \`needs.release_build.result == 'success' && false\`")"
+
+echo "case: continue-on-error: or timeout-minutes: on a version step"
+root=$(written continue-on-error)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'      - id: confirm\n' $'      - id: confirm\n        continue-on-error: true\n'
+run_check "$root"
+check "exits 1 on continue-on-error" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_publish's step \`confirm\` sets continue-on-error: (\`true\`), which a checked version step does not")"
+root=$(written timeout)
+replace "$root/.github/workflows/release.yaml" $'      - id: version\n' $'      - id: version\n        timeout-minutes: 1\n'
+run_check "$root"
+check "exits 1 on timeout-minutes" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "legion_build's step \`version\` sets timeout-minutes: (\`1\`), which a checked version step does not")"
 
 # The round-4 review's reproduction: the runner starts a service and waits for its health check
 # before the job's first step, so one with a writable host mount can replace host tools - a git

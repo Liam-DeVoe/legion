@@ -18,13 +18,18 @@ accounts for are one plan, kept here.
                                .github/agent-secrets-client-targets.json under CGO_ENABLED=0.
   VERSION_STEPS                each step that hands a line's paths to release-push.sh, with the
                                variables that hold those paths, the run: it must be, character for
-                               character after YAML has read it, its env:, key for key, and its
-                               job's runs-on:. Exact text is the rule because shell that reads like
-                               the command may not run it: an escaped `\\$`, a `${{ }}` line
-                               GitHub renders into an assignment, or any added line can keep the
-                               paths from release-push.sh, and a reader of shell finds one more
-                               such form each time. The runner is pinned because a self-hosted one
-                               runs its own hooks and environment before the job's first step.
+                               character after YAML has read it, its env:, key for key, its if:,
+                               its job's runs-on:, and the job outputs: that hand its decision on.
+                               Exact text is the rule because shell that reads like the command may
+                               not run it: an escaped `\\$`, a `${{ }}` line GitHub renders into an
+                               assignment, or any added line can keep the paths from
+                               release-push.sh, and a reader of shell finds one more such form
+                               each time. The runner is pinned because a self-hosted one runs its
+                               own hooks and environment before the job's first step. The if: and
+                               the outputs are pinned because the decision is the step's only
+                               product: an `if: false`, or a job output `skip: "true"` in place of
+                               the step's, throws away what the step computed, and the release
+                               downstream is skipped all the same.
   STEPS_BEFORE_VERSION_STEPS   every step that may run before one of those in its job: an action
                                at its pin with its with:, or a run: text, and in each case its
                                env:, all exactly. Any other step is code this check does not read,
@@ -79,10 +84,19 @@ JOB_KEYS = ("cache-mode", "concurrency", "if", "needs", "outputs", "permissions"
 RUNNER = "ubuntu-24.04"
 
 
+# The job outputs a build job hands its version step's decision on with: what the publish steps
+# read as needs.<job>.outputs.version and .skip.
+DECISION = {
+    "version": "${{ steps.version.outputs.version }}",
+    "skip": "${{ steps.version.outputs.skip }}",
+}
+
+
 class VersionStep(NamedTuple):
     """A step that hands a line's paths to release-push.sh: where it is, the workflow-level
-    variables that hold the paths, its whole run: text, its env: (None for a step with none) and
-    its job's runs-on:."""
+    variables that hold the paths, its whole run: text, its env: and its if: (None for a step with
+    none), its job's runs-on:, and the job outputs that must carry its decision as written here
+    (None for a job whose steps read the decision themselves)."""
 
     workflow: str
     job: str
@@ -91,17 +105,20 @@ class VersionStep(NamedTuple):
     run: str
     env: dict[str, str] | None = None
     runs_on: str = RUNNER
+    if_: str | None = None
+    outputs: dict[str, str] | None = None
 
 
 VERSION_STEPS = (
     VersionStep(RELEASE, "legion_build", "version", (LEGION_ARGS, LEGION_BLOCK), (
         "# shellcheck disable=SC2086 # the two are the argument list, split on purpose\n"
         '.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $LEGION_GO_INPUTS >> "$GITHUB_OUTPUT"\n'
-    )),
+    ), outputs=DECISION),
     VersionStep(LISTENER, "release_build", "version", (ENVOY_ARGS,), (
         "# shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose\n"
         '.github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"\n'
-    )),
+    ), outputs=DECISION),
+    # The confirm step's decision, release=true, stays in its own job, whose later steps read it.
     VersionStep(LISTENER, "release_publish", "confirm", (ENVOY_ARGS,), (
         "status=0\n"
         "# shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose\n"
@@ -117,7 +134,7 @@ VERSION_STEPS = (
         "GH_TOKEN": "${{ github.token }}",
         "LOST_RACES": "${{ inputs.lost_races || 0 }}",
         "VERSION": "${{ needs.release_build.outputs.version }}",
-    }),
+    }, if_="needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'"),
 )
 
 
