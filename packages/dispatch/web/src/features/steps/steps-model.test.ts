@@ -162,7 +162,7 @@ test("stepTasks keeps a run whose result or kind it does not know, in the server
     tasks: [
       {
         steps: [
-          record({ id: "skipped", result: "skipped" }),
+          record({ id: "skipped", result: "skipped" as StepRecord["result"] }),
           record({ id: "pause", kind: "pause" as StepRecord["kind"], step: 0 }),
         ],
         task: "default",
