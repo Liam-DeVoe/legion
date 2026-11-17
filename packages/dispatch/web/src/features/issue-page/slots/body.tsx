@@ -8,6 +8,7 @@ import { IssuePresetPanels } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
+import { useEditedTree } from "../model-rows/room-target";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
@@ -43,10 +44,13 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // The document a row of the outline is being edited in, so the body draws that document's one
   // editor for the row to take onto its own stage (`IssuePresetPanels`, `document-stage.tsx`).
   const [editing, setEditing] = useState<string | undefined>(undefined);
+  // A node written into the issue is edited in the tree artifact, which no document of the issue
+  // is, so its editor is drawn from the artifact read (dispatch://INFRA-4066 R5).
+  const tree = useEditedTree(issue, editing);
   const edited =
     editing === undefined
       ? undefined
-      : issue.artifacts?.find((artifact) => artifact.id === editing);
+      : (issue.artifacts?.find((artifact) => artifact.id === editing) ?? tree);
   const isClosed = issue.closed_at !== null;
   return (
     <NoTooltips>

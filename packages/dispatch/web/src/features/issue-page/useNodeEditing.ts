@@ -4,6 +4,7 @@ import type { Artifact } from "../../api/types";
 import { useMargin } from "../margin/margin-context";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { roomTarget, useRoomFacts } from "./model-rows/room-target";
 import { caretInBlock } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 
@@ -65,9 +66,27 @@ export function useNodeEditing({
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
   const { documentBridge } = useMargin();
+  // The room of the issue's tree read (dispatch://INFRA-4066 R5), read through a ref so `edit`
+  // keeps its dependencies. The writer names no issue on this branch, so the key is the one each
+  // document of the issue carries; an issue with no document is edited as it is without a room.
+  const room = useRoomFacts(artifacts.values().next().value?.issue_key ?? undefined);
+  const roomNow = useRef(room);
+  roomNow.current = room;
 
   const edit = useCallback(
     (row: string, node: TreeNode) => {
+      // An issue whose tree read the cache holds is edited in its room: a node of another issue,
+      // and on a converted issue the conversation, take no caret there (R5).
+      const facts = roomNow.current;
+      if (facts !== undefined) {
+        const target = roomTarget(node, artifacts, facts);
+        if ("report" in target) {
+          onReport(KEY_REPORTS[target.report]);
+          return;
+        }
+        setEditing({ artifactId: target.artifactId, blockId: target.blockId, row });
+        return;
+      }
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
         onReport(KEY_REPORTS.no_text);
