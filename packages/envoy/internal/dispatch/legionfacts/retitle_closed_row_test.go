@@ -56,7 +56,16 @@ func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 	}
 	before := rows[target]
 	const session = "s-one-role"
-	writeSessionEvent(t, run, session, target, before.OpenedAt.Add(time.Minute))
+	// A person moves the target out of `triage`, where it was filed, before the session writes
+	// on it: an hour in `triage` is out of the workflow, outside the work time
+	// (dispatch://INFRA-1077's 9f994275a7), so the hours the session's event adds to it count only
+	// once it is in the workflow.
+	run.exec(t, "move "+target+" to todo", `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
+		        'issue.updated', '{"kind":"user","id":"alice"}'::jsonb, '{"status":"todo"}'::jsonb, false, $2)`,
+		target, before.OpenedAt.Add(time.Minute))
+	writeSessionEvent(t, run, session, target, before.OpenedAt.Add(2*time.Minute))
 	run.at = run.at.Add(time.Minute)
 	run.pass(t)
 	gained := run.rows(t)[target]

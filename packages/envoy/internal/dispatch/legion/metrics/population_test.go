@@ -283,3 +283,60 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 		t.Fatalf("the implementer bar = %g hours, %+v, want seven hours with two waiting on a person", bar.Hours, bar.Segments)
 	}
 }
+
+// TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: ReadProject takes the scope's observations
+// and the project's reported set, with its trees, from one snapshot (read, readSampled), so a
+// sampler commit during the read moves both or neither. The commit here lands, on another
+// connection, the moment the first statement reading legion_observations or legion_current ends,
+// and every other such statement waits for it, so the two reads straddle it whether they run in
+// turn or side by side: it names INFRA-2 a tree of its own. The read the commit landed in takes
+// INFRA-2's newest `tree` observation and its Tree from before the commit, and the next read both
+// from the commit.
+func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
+	database := corpus(t)
+	ctx := t.Context()
+	treeAt := func(tree string, at time.Time) error {
+		_, err := database.Pool.Exec(ctx, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('INFRA', 'INFRA-2', $1, to_jsonb($2::text), $3)
+		`, legion.FieldTree, tree, at)
+		return err
+	}
+	if err := treeAt("INFRA-1", after(1)); err != nil {
+		t.Fatalf("record INFRA-2's tree: %v", err)
+	}
+	commits := storetest.NewCommitBetweenReads("legion_observations", "legion_current")
+	traced := storetest.Traced(t, database.Pool, commits, nil)
+	newest := func(population *Population) (observed, tree string) {
+		issue := population.Issues["INFRA-2"]
+		marks := issue.Observed[legion.FieldTree]
+		if len(marks) == 0 {
+			return "", issue.Tree
+		}
+		return legion.JSONString([]byte(marks[len(marks)-1].Value)), issue.Tree
+	}
+
+	commits.Arm(func() {
+		if err := treeAt("INFRA-2", after(11)); err != nil {
+			t.Errorf("commit INFRA-2's new tree during the read: %v", err)
+		}
+	})
+	population, err := ReadProject(ctx, traced, "INFRA", after(24))
+	if err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	if !commits.Fired() {
+		t.Fatal("no statement of the read named legion_observations or legion_current, so no commit landed during it")
+	}
+	if observed, tree := newest(population); observed != "INFRA-1" || tree != "INFRA-1" {
+		t.Errorf("the read the commit landed in has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-1 for both, from before the commit", observed, tree)
+	}
+
+	population, err = ReadProject(ctx, traced, "INFRA", after(24))
+	if err != nil {
+		t.Fatalf("read the population again: %v", err)
+	}
+	if observed, tree := newest(population); observed != "INFRA-2" || tree != "INFRA-2" {
+		t.Errorf("the next read has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-2 for both, the commit's", observed, tree)
+	}
+}

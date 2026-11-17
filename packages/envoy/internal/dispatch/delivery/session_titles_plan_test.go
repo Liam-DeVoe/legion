@@ -35,12 +35,11 @@ var sessionTitlePlanSessions = []string{titledPlanSession, untitledPlanSession, 
 // events that records each stamped title (migration 20261117100015): a session whose only title
 // is on an older event, a session whose every event carries none, a user actor sharing the titled
 // session's id (no session's title, which the trigger must not record), and a session nobody asks
-// about. seedTitlesIssue clears the issue's events and the listed sessions' titles first, so a
-// run against the database an earlier run left reads only these.
+// about.
 func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := deliveryTestPool(t)
-	seedTitlesIssue(t, ctx, pool, append(slices.Clone(sessionTitlePlanSessions), "ses_plan_not_asked_for")...)
+	seedTitlesIssue(t, ctx, pool)
 
 	at := time.Date(2024, 5, 1, 9, 0, 0, 0, time.UTC)
 	minute := 0
@@ -106,7 +105,7 @@ func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 func TestARetitleChangesTheStoredTitleInTheEventsOwnTransaction(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const session = "ses_retitled_in_its_transaction"
-	seedTitlesIssue(t, ctx, pool, session)
+	seedTitlesIssue(t, ctx, pool)
 	broker := events.NewBroker()
 	issue := titlesIssue
 	appendTitled := func(t *testing.T, title string) pgx.Tx {

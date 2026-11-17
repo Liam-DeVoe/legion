@@ -918,6 +918,12 @@ function withPicked(options: readonly string[], picked: readonly string[]): stri
   return [...options, ...picked.filter((value) => !options.includes(value))];
 }
 
+/** The group filter's option labels: the control hands its values over as strings, and a string
+ *  that names no group has no label. */
+const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
+  Object.entries(AGENT_GROUP_LABELS)
+);
+
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the three
  * narrowings that are no column of a table here - group, machine and role - and the chips of
@@ -998,7 +1004,7 @@ function AgentFilterBar({
                 onChange={(next) =>
                   onFilters({ groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
                 }
-                optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
+                optionLabel={(value) => GROUP_FILTER_LABELS.get(value)}
                 options={AGENT_GROUPS}
                 searchLabel="Search groups"
                 selected={filters.groups}

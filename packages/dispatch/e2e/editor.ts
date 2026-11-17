@@ -58,8 +58,8 @@ export async function openSpecAndAwaitHeadingIds(
 }
 
 /** Opens the page's Version list - the issue Spec tab's, or a document page's header's - and
- *  answers its options, the document's versions and its current text, which its text box
- *  narrows. */
+ *  answers the list, which its text box narrows: its options are the document's versions and
+ *  its current text. */
 export async function openVersions(page: Page): Promise<Locator> {
   await page.getByRole("button", { exact: true, name: "Version" }).click();
   return page.getByRole("listbox", { name: "Version options" });

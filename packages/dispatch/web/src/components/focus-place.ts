@@ -204,8 +204,10 @@ function countBefore(controls: readonly Element[], node: Node): number {
 
 /** Whether the keyboard focus is lost: on the body, or still on an element that has left the
  *  page. WebKit and Firefox move the focus off a removed element only at the next rendering
- *  update (the HTML spec's focus fixup), so until then the document still names it. */
-function focusLost(): boolean {
+ *  update (the HTML spec's focus fixup), so until then the document still names it. The one
+ *  check for a removed focus: the rescue below asks it, and so does a list closing over its own
+ *  text box (`MultiSelect`). */
+export function focusLost(): boolean {
   const focused = document.activeElement;
   return focused === null || focused === document.body || !focused.isConnected;
 }

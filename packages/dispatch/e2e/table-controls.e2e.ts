@@ -13,7 +13,7 @@ import {
   agentRow,
   type FakeSession,
   getSentMessages,
-  issueListOf,
+  issueSearchIn,
   pickAgentFilter,
   plannerSession,
   reviewerSession,
@@ -56,10 +56,10 @@ import {
   setSignIns,
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { control, controlRow, openFilterPanel } from "./filters";
+import { control, controlRow, displayChoice, openFilterPanel } from "./filters";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
-import { openFilterFields } from "./inbox-filter";
+import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
 import { askControls, hasReadingPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import {
   asSession,
@@ -2230,7 +2230,8 @@ async function seedKeptAgents(): Promise<string> {
   return issue.key;
 }
 
-/** Reads each of the four group headings' names and counts, in the order the page draws them. */
+/** Reads each group heading's name and count, finding each heading by its test id, in
+ *  `AGENT_GROUP_ORDER`. */
 async function expectAgentGroups(
   page: Page,
   headings: readonly [string, string, string, string],
@@ -2400,7 +2401,7 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   await page.keyboard.press("i");
   const picker = reviewer.getByRole("button", { name: "Choose issue" });
   await expect(picker, "the i key").toHaveAttribute("aria-expanded", "true");
-  await expect(issueListOf(reviewer).getByRole("combobox", { name: "Issue" })).toBeFocused();
+  await expect(issueSearchIn(reviewer)).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(picker, "the Escape key, out of the Issue list").toHaveAttribute(
     "aria-expanded",
@@ -2860,22 +2861,6 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   ).toContain(`/issues/${seed.rollout}`);
 });
 
-/** The ids a list inside `root` draws, top to bottom: the drawer's own, never the page's under it
- *  (`drawnIds` reads the page's). */
-function idsIn(root: Locator): Promise<string[]> {
-  return root
-    .locator("[data-inbox-row]")
-    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
-}
-
-/** Every band heading a list inside `root` draws, top to bottom, with its count. */
-function bandsIn(root: Locator): Promise<string[]> {
-  return root
-    .getByTestId("inbox-list")
-    .locator("h2 button")
-    .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
-}
-
 /** Shuts the surface's display menu by pressing its trigger again. Escape would be the drawer's
  *  too once the focus has left the menu, and would shut the drawer with it. */
 async function shutDisplay(root: Locator): Promise<void> {
@@ -2956,7 +2941,9 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await page.keyboard.press("i");
   await expect(peek, "the i key").toBeVisible();
   await expect(listed).toHaveCount(alices.length);
-  expect((await idsIn(peek)).sort(), "the drawer as it opens, on the reader's own").toEqual(alices);
+  expect((await drawnIds(peek)).sort(), "the drawer as it opens, on the reader's own").toEqual(
+    alices
+  );
   await page.keyboard.press("Escape");
   await expect(peek, "the drawer's own Escape").toHaveCount(0);
   await peekTrigger(page).click();
@@ -2965,9 +2952,9 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
 
   // The assignee control, with the count beside each person, cleared to everyone.
   await openFilterPanel(page, peek);
-  const assignee = page.getByRole("button", { name: "Filter by assignee" });
+  const assignee = assigneeFilter(page);
   await assignee.click();
-  const people = page.getByRole("listbox", { name: "Assignee options" });
+  const people = assigneeOptions(page);
   await expect(
     people.getByRole("option", { exact: true, name: "bob, 1 rows" }),
     "the count beside a person"
@@ -2990,7 +2977,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     await pickInboxField(page, field, value, peek);
     const expected = idsOf(matches);
     await expect(listed, `the drawer's ${field} field`).toHaveCount(expected.length);
-    expect((await idsIn(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
+    expect((await drawnIds(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
     await expect(chips.filter({ hasText: chip }), `the ${field} field's chip`).toHaveCount(1);
     await chips.filter({ hasText: chip }).click();
     await expect(listed).toHaveCount(rows.length);
@@ -3014,24 +3001,19 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
 
   // The six sorts, under no banding, and the seven groupings.
   const assigneeOf = new Map(rows.map((row) => [row.id, row.assignee]));
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Group by" })
-    .locator('input[value="none"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Group by", "none").click();
   for (const sort of ["newest", "priority", "urgency", "type", "project", "assignee"] as const) {
     const menu = await openDisplay(page, peek);
-    await menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`).click();
-    await expect(
-      menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`)
-    ).toBeChecked();
+    await displayChoice(menu, "Sort by", sort).click();
+    await expect(displayChoice(menu, "Sort by", sort)).toBeChecked();
     if (sort !== "assignee") {
       await expect
-        .poll(() => idsIn(peek), { message: `the drawer's ${sort} sort` })
+        .poll(() => drawnIds(peek), { message: `the drawer's ${sort} sort` })
         .toEqual(sortedIds(rows, sort, at));
       continue;
     }
     // Each person's rows together, the order of the people being the server's.
-    const runs = (await idsIn(peek))
+    const runs = (await drawnIds(peek))
       .map((id) => assigneeOf.get(id))
       .filter((person, index, all) => index === 0 || person !== all[index - 1]);
     expect(runs, "the drawer's assignee sort").toEqual([...new Set(runs)]);
@@ -3046,7 +3028,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     "none",
   ] as const) {
     const menu = await openDisplay(page, peek);
-    await menu.getByRole("group", { name: "Group by" }).locator(`input[value="${group}"]`).click();
+    await displayChoice(menu, "Group by", group).click();
     const expected =
       group === "none"
         ? []
@@ -3056,15 +3038,12 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
               (value) => `${bandLabel(group, value)} (${countsOf(rows, group).get(value)})`
             );
     await expect
-      .poll(() => bandsIn(peek), { message: `the drawer's ${group} grouping` })
+      .poll(() => bandHeadings(peek), { message: `the drawer's ${group} grouping` })
       .toEqual(expected);
   }
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Sort by" })
-    .locator('input[value="newest"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Sort by", "newest").click();
   await shutDisplay(peek);
-  await expect.poll(() => idsIn(peek)).toEqual(sortedIds(rows, "newest", at));
+  await expect.poll(() => drawnIds(peek)).toEqual(sortedIds(rows, "newest", at));
 
   // The keys over the rows: `f` and the Escape out of the box, `j`, `k` and the arrows.
   const order = sortedIds(rows, "newest", at);
@@ -3176,22 +3155,16 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     .toEqual([comment.id, message.id].sort());
 
   // The Dismissed view, and Move to Inbox from it.
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Show" })
-    .locator('input[value="dismissed"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Show", "dismissed").click();
   await shutDisplay(peek);
   await expect
-    .poll(async () => (await idsIn(peek)).sort(), { message: "the Dismissed view" })
+    .poll(async () => (await drawnIds(peek)).sort(), { message: "the Dismissed view" })
     .toEqual([comment.id, message.id].sort());
   await rowOf(comment.id).getByRole("checkbox").first().check();
   await bar.getByRole("button", { exact: true, name: "Move to Inbox selected threads" }).click();
   await expect(rowOf(comment.id), "Move to Inbox selected threads").toHaveCount(0);
   await expect.poll(dismissed, { message: "Move to Inbox" }).toEqual([message.id]);
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Show" })
-    .locator('input[value="inbox"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Show", "inbox").click();
   await shutDisplay(peek);
   await expect(rowOf(comment.id)).toHaveCount(1);
 
@@ -3215,7 +3188,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     ["Group by", "type"],
     ["Show", "dismissed"],
   ] as const) {
-    await menu.getByRole("group", { name: section }).locator(`input[value="${value}"]`).click();
+    await displayChoice(menu, section, value).click();
   }
   await shutDisplay(peek);
   await controlRow(peek).getByRole("button", { exact: true, name: "Clear filters" }).click();
@@ -3228,15 +3201,15 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     ["Show", "dismissed"],
   ] as const) {
     await expect(
-      kept.getByRole("group", { name: section }).locator(`input[value="${value}"]`),
+      displayChoice(kept, section, value),
       `Clear filters took the ${section}`
     ).toBeChecked();
   }
 
   // The thread order and a folded band, stored for the reader and found again after a reload.
-  await kept.getByRole("group", { name: "Show" }).locator('input[value="inbox"]').click();
-  await kept.getByRole("group", { name: "Group by" }).locator('input[value="priority"]').click();
-  await kept.getByRole("group", { name: "Thread order" }).locator('input[value="newest"]').click();
+  await displayChoice(kept, "Show", "inbox").click();
+  await displayChoice(kept, "Group by", "priority").click();
+  await displayChoice(kept, "Thread order", "newest").click();
   await shutDisplay(peek);
   await search.fill("");
   const p0 = peek.getByTestId("inbox-list").locator("h2 button").filter({ hasText: /^P0 / });
@@ -3248,9 +3221,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(listed.first()).toBeVisible();
   await expect(p0, "the folded band, after a reload").toHaveAttribute("aria-expanded", "false");
   await expect(
-    (await openDisplay(page, peek))
-      .getByRole("group", { name: "Thread order" })
-      .locator('input[value="newest"]'),
+    displayChoice(await openDisplay(page, peek), "Thread order", "newest"),
     "the thread order, after a reload"
   ).toBeChecked();
   await shutDisplay(peek);
@@ -3470,6 +3441,94 @@ interface DrawnItem {
 /** The four lists R8's row reads, each named as its failures name it. */
 type ItemList = "project Board" | "project List" | "Agents page" | "Delivery list";
 
+/** What R8 holds one row or card to: the parts it drew at the base, and its box there. Each size
+ *  is the px the base's CSS gave it, which no font moves; a height the fonts decide is `"lines"`
+ *  instead, the height `linedHeights` gives the item from the lines the page drew it in and the
+ *  base's classes. */
+interface ItemAtTheBase {
+  readonly parts: string;
+  readonly box: readonly [height: number | "lines", width: number, list: number];
+}
+
+/** The lists whose items' heights the fonts decide below `md`, as `linedHeights` reads them. */
+type LinedList = Extract<ItemList, "project Board" | "Agents page">;
+
+/**
+ * The height each item of `list` takes from the lines the page drew it in and the classes the
+ * base drew it with, for a list whose items' heights the fonts decide below `md`. There every
+ * control is at least 44 px tall and every link `inline-flex` (styles.css), so how many lines an
+ * item's controls wrap onto, and how tall the line box a link stands in is, follow the font's
+ * widths and its ascent and descent - the runner's installed fonts, since the stack (`Inter,
+ * ui-sans-serif, system-ui`, styles.css) loads none of its own. Read in this pod with three fonts
+ * in place of the stack's (DejaVu Sans Mono, and DejaVu Sans with its ascent and descent moved and
+ * its size 12% and 40% larger), these were the only sizes of R8's four lists that moved, in either
+ * project: the Board's cards from 129 to 130 px, and an Agents row from 126 to 174 px, at 390.
+ *
+ * - A Board card: its `border` (1 px) and `p-3` (12 px) above and below; the line box its title
+ *   link stands in, read from the page as the space from the top of the card's content box to the
+ *   margin of its row of controls - the font's part; that row's `mt-3` (12 px); and the row, each
+ *   of its lines the 44 px of its tallest control (PriorityControl's badge wrapper, `min-h-11`),
+ *   with `gap-2` (8 px) between two.
+ * - An Agents row: its `border` (1 px) and `py-1.5` (6 px) above and below, and `gap-y-1` (4 px)
+ *   between two of its lines; each line of controls is 44 px (the toggle's `min-h-11`, and every
+ *   control below 1280 px), and the directory's own line (`basis-full`) its lines of `text-xs`
+ *   (16 px). How many lines there are is the font's part.
+ */
+async function linedHeights(items: Locator, list: LinedList): Promise<number[]> {
+  return items.evaluateAll((nodes, which) => {
+    const px = (value: string): number => Number.parseFloat(value);
+    /** The boxes a flex box lays out: a `display: contents` wrapper's children stand in its
+     *  place, and an element drawn nowhere is no box. */
+    const flexItems = (container: Element): Element[] =>
+      [...container.children].flatMap((child): Element[] => {
+        if (getComputedStyle(child).display === "contents") return flexItems(child);
+        return child.getClientRects().length > 0 ? [child] : [];
+      });
+    /** How many lines `boxes` stand on: a box starts a line where it begins below every box of
+     *  the line before it. */
+    const lineCount = (boxes: readonly { bottom: number; top: number }[]): number => {
+      let lines = 0;
+      let bottom = Number.NEGATIVE_INFINITY;
+      for (const box of [...boxes].sort((a, b) => a.top - b.top)) {
+        if (box.top >= bottom) lines += 1;
+        bottom = box.top >= bottom ? box.bottom : Math.max(bottom, box.bottom);
+      }
+      return lines;
+    };
+    const rect = (element: Element) => element.getBoundingClientRect();
+    /** The lines `element`'s text is drawn on. */
+    const textLines = (element: Element): number => {
+      const rects: DOMRect[] = [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        rects.push(...[...range.getClientRects()].filter((line) => line.width > 0));
+      }
+      return lineCount(rects);
+    };
+    return nodes.map((node): number => {
+      if (which === "project Board") {
+        const row = node.querySelector("[data-issue-link]")?.nextElementSibling;
+        if (row === null || row === undefined) return Number.NaN;
+        const card = getComputedStyle(node);
+        const contentTop = rect(node).top + px(card.borderTopWidth) + px(card.paddingTop);
+        const titleLine = rect(row).top - px(getComputedStyle(row).marginTop) - contentTop;
+        const rowLines = lineCount(flexItems(row).map(rect));
+        return 1 + 12 + titleLine + 12 + rowLines * 44 + (rowLines - 1) * 8 + 12 + 1;
+      }
+      const box = node.firstElementChild;
+      if (box === null) return Number.NaN;
+      const directory = box.querySelector("[data-agent-dir]");
+      const boxes = flexItems(box).filter((item) => item !== directory);
+      const controlLines = lineCount(boxes.map(rect));
+      const directoryLines = directory === null ? 0 : textLines(directory);
+      const lines = controlLines + (directoryLines > 0 ? 1 : 0);
+      return 1 + 6 + controlLines * 44 + directoryLines * 16 + (lines - 1) * 4 + 6 + 1;
+    });
+  }, list);
+}
+
 /** Reads every item `items` finds, each against the nearest ancestor `list` names. */
 async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
   return items.evaluateAll((nodes, listSelector) => {
@@ -3540,13 +3599,27 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
  * found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
  * write `aria-rowindex` on each pull request's row in the list's body.
  *
+ * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
+ * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
+ * card's 288 px and its column's are `w-72`, and its 114 px at 1440 is `border`, `p-3`, its key and
+ * title each one `text-sm` line of 20 px with `mt-1`, `mt-3` and the 32 px of its row of controls
+ * from `md`. A List row is the cell's `py-2` and border with its tallest cell: one 20 px title
+ * line, `space-y-1` and the 20 px asks badge (61 px), else the 32 px priority control (49 px); at
+ * 390 the title link's 44 px and `space-y-1`, with the badge (85 px) or without (65 px). The
+ * List's widths are its columns' widths, the title's a share of the box
+ * (`ISSUE_TABLE_COLUMNS`), so no text sets them. An Agents row at 1440 is one line from `md`
+ * (`md:flex-nowrap`): `border`, `py-1.5` and its 32 px controls. The Delivery row is the table's
+ * 36 px row height and its filled width. The heights the fonts do decide - the Board's cards and
+ * the Agents rows at 390, where a link's line box and how many lines the controls wrap onto
+ * follow the font - are `"lines"`.
+ *
  * dispatch://INFRA-3221 changes two of the lists on purpose, so their parts and widths below are
  * this row's own reading of that change (builds Job infra-3221-t15-r3-7zphw), each box's height
  * still the base's: a Board card's open asks name what they count ("1 open ask"), and the
  * project List draws Open's columns in a project with no Legion daemon, with no Epic column and
  * Open asks before Assignee, so its rows are narrower.
  */
-const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnItem[]>>> = {
+const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAtTheBase[]>>> = {
   chromium: {
     "project Board": [
       {
@@ -3659,41 +3732,41 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
   iphone: {
     "project Board": [
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1" | "open" | "ask"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1" | "open" | "ask"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1" | "open" | "ask"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1" | "open" | "ask"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1" | "open" | "ask"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1" | "open" | "ask"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1" | "open" | "ask"',
       },
@@ -3742,12 +3815,12 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
     ],
     "Agents page": [
       {
-        box: [126, 342, 342],
+        box: ["lines", 342, 342],
         parts:
           'checkbox "Select Planner for broadcast" | button "Planner" | link "Open live conversation with Planner" | button "Copy session ID 019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01" | button "Copy session title Planner" | link "box-1" | "· /srv/planner" | "planner" | time | link "Needs you 1" | button "Pin Planner"',
       },
       {
-        box: [126, 342, 342],
+        box: ["lines", 342, 342],
         parts:
           'checkbox "Select Reviewer for broadcast" | button "Reviewer" | link "Open live conversation with Reviewer" | button "Copy session ID 019a1c03-2f0d-7c4c-ab85-0c7d1e4f5a03" | button "Copy session title Reviewer" | link "box-1" | "· /srv/reviewer" | "reviewer" | time | button "Pin Reviewer"',
       },
@@ -3767,17 +3840,36 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
   },
 };
 
+/** An ask card's "Asked of" line from `md`, at the base: the 32 px of its badge's wrapper
+ *  (`badgeSelectWrapper`'s `md:min-h-8`), with the hand-on laid over the badge taking no room -
+ *  a native select then, a button now whose 44 px below 1280 px (styles.css) overhangs it. */
+const ASKED_OF_LINE = 32;
+
+/** The issue header's Assignee badge from `md`, at the base: its wrapper, the badge's own item in
+ *  the header's wrapping row, 32 px (`badgeSelectWrapper`'s `md:min-h-8`), with the native
+ *  select laid over the badge taking no room - the list's 44 px trigger now, which overhangs it
+ *  below 1280 px (`badgeSelectTrigger`). */
+const ASSIGNEE_BADGE = 32;
+
+/** The issue header's `Repository:` line in its details rail from `md`, at the base: the 28 px of
+ *  its badge's wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), the select over the badge taking
+ *  no room - the list's trigger now, which overhangs it below 1280 px (`badgeSelectRailTrigger`). */
+const REPOSITORY_LINE = 28;
+
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
 // rows and its reading pane are the stub row's (`table-controls.stub.e2e.ts`), and the tables
 // with no controls the row above; this one holds the Board's cards and the rows of the Agents
 // page, the project List and the Delivery list to what they drew at the base
 // (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
-// size. The Delivery list draws its clock times in the browser's own zone and words, so both are
-// pinned to the ones the base was read in.
+// size, where a height the fonts decide is the one its lines and the base's classes give it
+// (`linedHeights`). It holds an ask card's "Asked of" line, and the issue header's Assignee badge
+// and `Repository:` line, to their heights at the base too, at 1024x768, between `md` and `xl`,
+// the widths where every button is 44 px tall. The Delivery list draws its clock times in the
+// browser's own zone and words, so both are pinned to the ones the base was read in.
 test.describe("R8's rows and cards", () => {
   test.use({ locale: "en-US", timezoneId: "UTC" });
 
-  // SLOW(>=2s): four pages over two seeded fixtures, each list read until it is the base's.
+  // SLOW(>=2s): six pages over two seeded fixtures, each list read until it is the base's.
   test("the Board's cards and the rows of the Agents page, the project List and the Delivery list draw the parts and the size they had at the base @phone", async ({
     page,
   }, testInfo) => {
@@ -3785,7 +3877,7 @@ test.describe("R8's rows and cards", () => {
     if (atTheBase === undefined) {
       throw new Error(`no reading at the base for the ${testInfo.project.name} project`);
     }
-    await seedRealStackSurfaces();
+    const { issue } = await seedRealStackSurfaces();
     await seedSurfaces();
     if (!isPhoneProject(testInfo)) await page.setViewportSize({ height: 900, width: 1440 });
     const main = page.getByTestId("main-content");
@@ -3834,40 +3926,121 @@ test.describe("R8's rows and cards", () => {
       await open();
       await expect(items.first(), `the ${name} draws no ${noun}`).toBeVisible();
       const base = atTheBase[name];
+      const lined = base.some((was) => was.box[0] === "lines");
+      /** What one reading draws other than the base: the parts of each item, and each size within
+       *  half a pixel, the rounding of a box's edge. */
+      const differences = (drawn: readonly DrawnItem[], heights: readonly number[]): string[] => {
+        const differs: string[] = [];
+        if (drawn.length !== base.length) {
+          differs.push(
+            `the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`
+          );
+        }
+        for (const [index, was] of base.entries()) {
+          const item = drawn[index];
+          if (item === undefined) continue;
+          const at = `the ${name}'s ${noun} ${index + 1}`;
+          if (item.parts !== was.parts) {
+            differs.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
+          }
+          const [height, width, listWidth] = was.box;
+          const ruled = height === "lines";
+          for (const [size, now, then, from] of [
+            [
+              "height",
+              item.box[0],
+              ruled ? (heights[index] ?? Number.NaN) : height,
+              ruled ? "by its lines and the base's classes" : "at the base",
+            ],
+            ["width", item.box[1], width, "at the base"],
+            ["list's width", item.box[2], listWidth, "at the base"],
+          ] as const) {
+            if (!(Math.abs(now - then) <= 0.5)) {
+              differs.push(
+                `${at}'s ${size} is ${now}px, and ${Math.round(then * 100) / 100}px ${from}`
+              );
+            }
+          }
+        }
+        return differs;
+      };
       // An item's parts arrive in turns - the read state, the asks, the live link - so the list
       // is read again until it is what the base drew or the wait runs out, and what differs
-      // then is named below.
-      let drawn: DrawnItem[] = [];
+      // then is named below; a list no read reached is named for that.
+      let found = [`the ${name} was never read`];
       await expect
         .poll(
           async () => {
-            drawn = await drawnItems(items, list);
-            return JSON.stringify(drawn);
+            const drawn = await drawnItems(items, list);
+            const heights =
+              lined && (name === "project Board" || name === "Agents page")
+                ? await linedHeights(items, name)
+                : [];
+            found = differences(drawn, heights);
+            return found;
           },
           { timeout: 5_000 }
         )
-        .toBe(JSON.stringify(base))
+        .toEqual([])
         .catch(() => undefined);
-      if (drawn.length !== base.length) {
-        changed.push(`the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`);
-      }
-      for (const [index, was] of base.entries()) {
-        const item = drawn[index];
-        if (item === undefined) continue;
-        const at = `the ${name}'s ${noun} ${index + 1}`;
-        if (item.parts !== was.parts) {
-          changed.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
-        }
-        // Within half a pixel, the rounding of a box's edge.
-        for (const [size, now, then] of [
-          ["height", item.box[0], was.box[0]],
-          ["width", item.box[1], was.box[1]],
-          ["list's width", item.box[2], was.box[2]],
-        ] as const) {
-          if (Math.abs(now - then) > 0.5) {
-            changed.push(`${at}'s ${size} is ${now}px, and ${then}px at the base`);
-          }
-        }
+      changed.push(...found);
+    }
+
+    await page.setViewportSize({ height: 768, width: 1024 });
+    await page.goto("/?assignee=everyone");
+    const handOns = main.locator("[data-ask-hand-on]");
+    await expect(handOns.first(), "the Inbox draws no ask card at 1024x768").toBeVisible();
+    const askedOf = await handOns.evaluateAll((wrappers) =>
+      wrappers
+        .filter((wrapper) => wrapper.getClientRects().length > 0)
+        .map(
+          (wrapper) =>
+            Math.round((wrapper.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
+        )
+    );
+    /** Each line read at 1024x768: what it is, its height now, and its height at the base. */
+    const lines: [line: string, height: number, base: number][] = askedOf.map((height, index) => [
+      `the Inbox's ask card ${index + 1}'s "Asked of" line`,
+      height,
+      ASKED_OF_LINE,
+    ]);
+
+    // The issue header's two badges, read once CORE maps a repository, so its rail draws one:
+    // the Assignee's wrapper, the badge's own item in the wrapping row, and the `Repository:`
+    // line around the repository's wrapper. Each control's wrapper is its parent, at the base as
+    // now.
+    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+    await page.goto(`/issues/${issue}`);
+    const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
+    const repositoryControl = page.getByLabel(`Repository of ${issue}`);
+    await expect(assigneeControl, "the issue header draws no Assignee at 1024x768").toBeVisible();
+    await expect(
+      repositoryControl,
+      "the issue header draws no Repository at 1024x768"
+    ).toBeVisible();
+    lines.push(
+      [
+        "the issue header's Assignee badge",
+        await assigneeControl.evaluate(
+          (control) =>
+            Math.round((control.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
+        ),
+        ASSIGNEE_BADGE,
+      ],
+      [
+        "the issue header's `Repository:` line",
+        await repositoryControl.evaluate(
+          (control) =>
+            Math.round(
+              (control.parentElement?.parentElement?.getBoundingClientRect().height ?? 0) * 100
+            ) / 100
+        ),
+        REPOSITORY_LINE,
+      ]
+    );
+    for (const [line, height, base] of lines) {
+      if (Math.abs(height - base) > 0.5) {
+        changed.push(`${line} at 1024x768 is ${height}px, and ${base}px at the base`);
       }
     }
     expect(
@@ -5099,13 +5272,18 @@ interface PickListSeed {
   readonly asks: readonly string[];
   /** The issue whose spec, and whose `notes.md`, are each in two versions. */
   readonly documented: string;
+  /** The issue whose header's Assignee, Repository and Priority to advance are read, assigned to
+   *  alice and inheriting CORE's default repository. */
+  readonly header: string;
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
- *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's Project list
- *  holds two projects and the people a question can be handed to are alice, bob and carol; a
- *  spec and a second document of one issue, each in two versions; and a question for each
- *  width. */
+ *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's and the Create
+ *  issue dialog's Project lists hold two projects and the people a question can be handed to, or
+ *  an issue assigned to, are alice, bob and carol; a spec and a second document of one issue,
+ *  each in two versions; a question for each width; two repositories mapped to CORE,
+ *  acme/widgets its default; three priorities; and an issue of CORE assigned to alice, which
+ *  names no repository of its own and advances no priority. */
 async function seedPickLists(): Promise<PickListSeed> {
   await seedAgents();
   await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
@@ -5137,11 +5315,19 @@ async function seedPickLists(): Promise<PickListSeed> {
     );
     asks.push(ask.id);
   }
-  return { asks, documented: documented.key };
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject("acme/gadgets", { project: "CORE" });
+  for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
+    await createPriority({ owner: "alice", title });
+  }
+  const header = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await patchIssue(header.key, { assignee: "alice" });
+  return { asks, documented: documented.key, header: header.key };
 }
 
-/** The eight lists, in the order the row reads them at one width; `step` is the width's place,
- *  which picks the question it hands on and the issue it addresses. */
+/** The twelve lists, in the order the row reads them at one width; `step` is the width's
+ *  place, which picks the question it hands on, the issue it addresses, and the person and the
+ *  repository the issue header's lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const palette = page.getByRole("dialog", { name: "Search" });
   const filters = page.getByRole("dialog", { name: "Filter" });
@@ -5178,6 +5364,20 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     step === 0
       ? ["rollout", "CORE-2 · Rollout plan", "CORE-2"]
       : ["keyboard", "CORE-1 · Keyboard issue", "CORE-1"];
+  const assignee = listTrigger(page, `Assignee of ${seed.header}`);
+  const repository = listTrigger(page, `Repository of ${seed.header}`);
+  const advance = listTrigger(page, "Priority to advance");
+  const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
+  const dialogProject = listTrigger(createIssueDialog, "Project");
+  // Each width's pick is a change: the first hands the issue from alice to bob, the second from
+  // bob to carol; the first gives it acme/gadgets of its own, the second takes it back to the
+  // default it inherits.
+  const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
+  const [repositoryWord, repositoryOption, repositoryPicked] =
+    step === 0
+      ? ["gadg", "acme/gadgets", /^acme\/gadgets$/]
+      : ["inh", "Inherit", /^acme\/widgets$/];
+  const reviewQueue = /^P\d+ Cut the review queue$/;
   return [
     {
       name: "the search bar's Project",
@@ -5287,32 +5487,90 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: [versionOne],
       picked: versionOne,
     },
+    {
+      name: "the issue header's Assignee",
+      reach: async () => {
+        await page.goto(`/issues/${seed.header}`);
+      },
+      trigger: assignee,
+      value: shown(assignee),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // Its value is the badge: the trigger's words of its own, which say whether the issue
+      // inherits it, are its description and are never shown.
+      name: "the issue header's Repository",
+      trigger: repository,
+      value: async () => (await repository.locator('[aria-hidden="true"]').innerText()).trim(),
+      word: repositoryWord,
+      left: [repositoryOption],
+      picked: repositoryPicked,
+    },
+    {
+      // A pick stages the priority, which Add would write.
+      name: "the issue header's Priority to advance",
+      reach: async () => {
+        await page
+          .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
+          .click();
+      },
+      trigger: advance,
+      value: shown(advance),
+      word: "queue",
+      left: [reviewQueue],
+      picked: reviewQueue,
+    },
+    {
+      // Opened with `c` over the issue page, whose project it starts on, and read once its title
+      // has the focus the dialog gives it on opening.
+      name: "the Create issue dialog's Project",
+      reach: async () => {
+        await page.locator("body").focus();
+        await page.keyboard.press("c");
+        await expect(createIssueDialog.getByRole("textbox", { name: "Title" })).toBeFocused();
+      },
+      trigger: dialogProject,
+      value: shown(dialogProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
   ];
 }
 
-// SLOW(>=2s): eight lists on four pages, each list opened twice at each of two widths.
+// SLOW(>=2s): twelve lists on five pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// Each list a reader picks one value from is the single-pick mode of the shared list
-// (`components/MultiSelect.tsx`): the search bar's Project and Status, the Inbox's Hand this
-// question to (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version (`SpecToolbar`),
-// and a document page's Version (`ArtifactHeader`) and its compare From and To
-// (`ArtifactDetails`). At each width each list is
+// The row covers the twelve single picks of the shared list (`components/MultiSelect.tsx`), the
+// lists whose options grow with the project among them: the search bar's Project and Status, the
+// Inbox's Hand this question to (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version
+// (`SpecToolbar`), a document page's Version (`ArtifactHeader`) and its compare From and To
+// (`ArtifactDetails`), the issue header's Assignee (`AssigneeControl`), Repository
+// (`RepoControl`) and Priority to advance (`IssuePriorityLine`), and the Create issue dialog's
+// Project (`CreateIssueDialog`). The short fixed lists - Priority (`PriorityControl`), Snooze
+// (`SnoozeControl`), the Inbox's bulk Snooze, the issue header's Status and the Agents page's
+// Delivery mode - stay native selects by the architect's ruling of 2026-11-17, and the row opens
+// none of them. At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
-// only the options it matches, Escape picks nothing and changes no value, and Enter picks the
-// option the word left - the trigger shows it with the focus back on it, or where the pick
-// takes the trigger away the panel hands the focus on. A list that holds no text box is named
-// and the row goes on, so one run names every such list.
-// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter and Escape - as each
-// engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
-// under.
+// only the options it matches, Escape picks nothing and changes no value, Tab out of the text box
+// (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, and Enter
+// picks the option the word left - the trigger shows it with the focus back on it, or where the
+// pick takes the trigger away the panel hands the focus on. A list that holds no text box is
+// named and the row goes on, so one run names every such list.
+// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter, Escape and Tab - as
+// each engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
+// under; and the close a Tab makes, which an engine that moves the focus off a removed element
+// only at its next rendering update answers while it still names the text box the close took away
+// as focused (`focusLost`, `components/focus-place.ts`).
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Five page loads at each width, with the lists read between them. Measured in an issue pod
-  // (two cores) while the row read seven: it took 1.2 to 1.5 min in Chromium and 1.9 to 2.6 min
-  // in Firefox, and four minutes keeps that under two thirds of the budget for WebKit, which no
-  // pod runs.
-  test.setTimeout(240_000);
+  // Six page loads and a dialog at each width, with the lists read between them. Measured in an
+  // issue pod (two cores) while the row read fourteen lists on eight page loads, each list opened
+  // three times: it took 2.9 min in Chromium and 3.4 min in Firefox, which six minutes keeps
+  // under two thirds of the budget, and WebKit, which no pod runs, is given the same.
+  test.setTimeout(360_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
    *  a list holding other than one text box. */
@@ -5322,7 +5580,7 @@ test("every list of options a reader picks from holds a text box that narrows it
   const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
     await list.trigger.click();
     const named = await expect(list.trigger)
-      .toHaveAttribute("aria-controls", /\S/, { timeout: 2_000 })
+      .toHaveAttribute("aria-controls", /\S/)
       .then(
         () => true,
         () => false
@@ -5386,6 +5644,18 @@ test("every list of options a reader picks from holds a text box that narrows it
         `${at}: Escape left the focus elsewhere`
       ).toBeFocused();
       expect(await list.value(), `${at}: Escape changed the list's value`).toBe(before);
+
+      // Tab out of the text box, or Shift+Tab, picks nothing and leaves the reader on the trigger.
+      const tab = step === 0 ? "Tab" : "Shift+Tab";
+      const tabbed = await open(list, at);
+      if (tabbed === undefined) continue;
+      await page.keyboard.press(tab);
+      await expect(list.trigger, `${at}: ${tab} left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await expect(list.trigger, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
+      expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
 
       // Enter picks the option the word left.
       const entered = await open(list, at);

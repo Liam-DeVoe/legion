@@ -1038,10 +1038,12 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
   try {
     await page.goto(`/issues/${issue.key}`);
     const control = page.getByLabel(`Assignee of ${issue.key}`);
-    await expect(control).toHaveValue("bob");
+    const people = page.getByRole("listbox", { name: `Assignee of ${issue.key} options` });
+    await expect(control).toHaveAccessibleDescription("bob");
     // Who has signed in is read only once the reader reaches for the control.
     await control.focus();
-    await expect(control.locator("option")).toHaveText(["Unassigned", "alice", "bob"]);
+    await control.click();
+    await expect(people.getByRole("option")).toHaveText(["Unassigned", "alice", "✓bob"]);
 
     // Anyone signed in may reassign: Alice takes it, and the header shows her at once.
     const patch = page.waitForRequest(
@@ -1049,10 +1051,10 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await control.selectOption("alice");
+    await people.getByRole("option", { exact: true, name: "alice" }).click();
     expect((await patch).postDataJSON()).toEqual({ assignee: "alice" });
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^alice$/ })
+      page.getByTestId("issue-header").getByText("alice", { exact: true })
     ).toBeVisible();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ assignee: "alice" });
     const events = await getIssueEvents(issue.key);
@@ -1068,12 +1070,15 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     });
 
     // Clearing it leaves the issue unassigned, and a reload agrees.
-    await control.selectOption("");
+    await control.click();
+    await people.getByRole("option", { exact: true, name: "Unassigned" }).click();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ assignee: null });
     await page.reload();
-    await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveValue("");
+    await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveAccessibleDescription(
+      "Unassigned"
+    );
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^Unassigned$/ })
+      page.getByTestId("issue-header").getByText("Unassigned", { exact: true })
     ).toBeVisible();
 
     // A session acting for Alice through her personal token creates issues assigned to her; a
@@ -1092,7 +1097,7 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     );
     expect(child.assignee).toBe("alice");
     await page.goto(`/issues/${hers.key}`);
-    await expect(page.getByLabel(`Assignee of ${hers.key}`)).toHaveValue("alice");
+    await expect(page.getByLabel(`Assignee of ${hers.key}`)).toHaveAccessibleDescription("alice");
   } finally {
     await context.close();
   }
@@ -1122,27 +1127,32 @@ test("issue header picks the issue's repository from its project's mappings, and
   try {
     await page.goto(`/issues/${parent.key}`);
     const header = page.getByTestId("issue-header");
-    // The visible badge; the select's description repeats its text in a span of its own.
+    // The visible badge; the trigger's description repeats its text in a span of its own.
     const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
     const control = page.getByLabel(`Repository of ${parent.key}`);
-    // The badge names the project's default, which the issue inherits, and so does the select's
+    const repositories = page.getByRole("listbox", { name: `Repository of ${parent.key} options` });
+    // The badge names the project's default, which the issue inherits, and so does the trigger's
     // description, which is what a screen reader hears beside Inherit.
-    await expect(control).toHaveValue("");
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
     await expect(control).toHaveAccessibleDescription(
       "acme/widgets, inherited or the project's default"
     );
     // The project's mappings are read once the reader reaches for the control; another project's
-    // are not offered.
+    // are not offered, and Inherit is the one picked.
     await control.focus();
-    await expect(control.locator("option")).toHaveText(["Inherit", "acme/gadgets", "acme/widgets"]);
+    await control.click();
+    await expect(repositories.getByRole("option")).toHaveText([
+      "✓Inherit",
+      "acme/gadgets",
+      "acme/widgets",
+    ]);
 
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${parent.key}`
     );
-    await control.selectOption("acme/gadgets");
+    await repositories.getByRole("option", { exact: true, name: "acme/gadgets" }).click();
     expect((await patch).postDataJSON()).toEqual({ repo: "acme/gadgets" });
     await expect(badge(/^acme\/gadgets$/)).toBeVisible();
     await expect(control).toHaveAccessibleDescription("acme/gadgets");
@@ -1163,12 +1173,15 @@ test("issue header picks the issue's repository from its project's mappings, and
     });
 
     // Inherit clears the issue's own repository: it resolves to the project's default again.
-    await control.selectOption("");
+    await control.click();
+    await repositories.getByRole("option", { exact: true, name: "Inherit" }).click();
     await expect
       .poll(() => getIssue(parent.key))
       .toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
     await page.reload();
-    await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveValue("");
+    await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveAccessibleDescription(
+      "acme/widgets, inherited or the project's default"
+    );
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
     // A project that maps no repository has nothing to pick: once the page has read the mappings,
@@ -1274,7 +1287,10 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
     failing = false;
     await rail.getByRole("button", { name: "Retry" }).click();
     const control = page.getByLabel(`Repository of ${issue.key}`);
-    await expect(control.locator("option")).toHaveText(["Inherit", "acme/gadgets", "acme/widgets"]);
+    await control.click();
+    await expect(
+      page.getByRole("listbox", { name: `Repository of ${issue.key} options` }).getByRole("option")
+    ).toHaveText(["✓Inherit", "acme/gadgets", "acme/widgets"]);
     await expect(rail.getByText("Could not load the repositories mapped to CORE.")).toHaveCount(0);
   } finally {
     await context.close();

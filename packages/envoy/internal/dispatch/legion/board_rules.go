@@ -241,6 +241,18 @@ func ParseSlot(value []byte) (*int, bool) {
 	return slot, true
 }
 
+// ParseAdmission is the admission block the project's `admission` observation records
+// (FieldAdmission, under AdmissionKey). The second answer is whether the value was read, which is
+// false for a value of another shape, as ParseWait's is. The board's header and waiting line and
+// the stored facts' waiting line read the block through it.
+func ParseAdmission(value []byte) (*Admission, bool) {
+	var admission Admission
+	if err := json.Unmarshal(value, &admission); err != nil {
+		return nil, false
+	}
+	return &admission, true
+}
+
 // Waiting is why an issue waits, since when, and the issues a blocker link holds it on. Since is
 // when the wait began: when the person was asked for a wait on a person, and the phase entry
 // otherwise; nil where neither was recorded.

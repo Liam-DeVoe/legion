@@ -333,8 +333,8 @@ func readWhole(ctx context.Context, q Querier, project string) (map[string]Row, 
 // readStored is the board's Read of every stored row of the project, each as of at: Read given
 // every key the project holds a row of, so a check of what a pass stored reads it through the
 // board's own statement and columns, whichever of the rows a board would show.
-func readStored(ctx context.Context, q Querier, project string, at time.Time) (map[string]Row, error) {
-	result, err := q.Query(ctx, `select issue_key from issue_facts where project_key = $1`, project)
+func readStored(ctx context.Context, pool *store.Pool, project string, at time.Time) (map[string]Row, error) {
+	result, err := pool.Query(ctx, `select issue_key from issue_facts where project_key = $1`, project)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +342,7 @@ func readStored(ctx context.Context, q Querier, project string, at time.Time) (m
 	if err != nil {
 		return nil, err
 	}
-	return Read(ctx, q, project, keys, nil, at)
+	return Read(ctx, pool, project, keys, nil, at)
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times
@@ -489,10 +489,11 @@ func depthOf(key string, parents map[string]string) int {
 }
 
 // cardReasons is why each issue of the project waits, worked out from the newest observation of
-// each of its fields, as the board reads them (api/legion_board.go's readObservations), and the
-// admission block the test wrote. It is the rule's own answer from the rule's own sources, which
-// is what a stored waiting_reason must equal. A project whose daemon recorded no admission block
-// is the third state of legion.Queued, which the board queues by Dispatch's rank.
+// each of its fields, as the board reads them (api/legion_board.go's readCurrent, over
+// legion.ReadCurrent's Newest), and the admission block the test wrote. It is the rule's own
+// answer from the rule's own sources, which is what a stored waiting_reason must equal. A project
+// whose daemon recorded no admission block is the third state of legion.Queued, which the board
+// queues by Dispatch's rank.
 func cardReasons(t *testing.T, seeded history) map[string]string {
 	t.Helper()
 	rows, err := seeded.database.Pool.Query(t.Context(), `

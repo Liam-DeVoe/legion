@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -996,17 +996,19 @@ test("IssuePage mounts the header without reading who has signed in until the as
   ]);
   const { unmount } = renderIssuePage();
   try {
-    const control = await screen.findByRole("combobox", { name: "Assignee of CORE-1" });
+    const control = await screen.findByRole("button", { name: "Assignee of CORE-1" });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
     // Focus has no user-event form; the control is reached for, never pressed.
     fireEvent.focus(control);
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(
-        [...(control as HTMLSelectElement).options].map((option) => option.textContent)
-      ).toContain("bob")
-    );
+    // The list draws its options only while it stands open.
+    await userEvent.setup().click(control);
+    expect(
+      await within(
+        await screen.findByRole("listbox", { name: "Assignee of CORE-1 options" })
+      ).findByRole("option", { name: "bob" })
+    ).toBeTruthy();
   } finally {
     unmount();
     restore();

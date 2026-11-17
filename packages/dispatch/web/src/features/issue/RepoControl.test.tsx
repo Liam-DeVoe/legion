@@ -1,10 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, openList, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
@@ -167,11 +168,14 @@ function renderControl(
   };
 }
 
-function select(): HTMLSelectElement {
-  return screen.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLSelectElement;
+/** The control's name: its trigger's, and its listbox's with ` options` after it. */
+const REPOSITORY = "Repository of CORE-1";
+
+function trigger(): HTMLButtonElement {
+  return screen.getByRole("button", { name: REPOSITORY }) as HTMLButtonElement;
 }
 
-/** The visible badge; the select's description repeats its text in a span of its own. */
+/** The visible badge; the trigger's description repeats its text in a span of its own. */
 const badge = 'span[aria-hidden="true"]';
 
 test("RepoControl lists the project's mapped repositories, shows the resolved one, and patches repo", async () => {
@@ -191,25 +195,19 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(listRepoProjects).not.toHaveBeenCalled();
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
+    fireEvent.focus(trigger());
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
     // Inherit first, then CORE's mappings sorted; OTHER's absent.
-    await waitFor(() =>
-      expect(Array.from(select().options).map((option) => option.value)).toEqual([
-        "",
-        "acme/gadgets",
-        "acme/widgets",
-      ])
-    );
-    expect(select().value).toBe("");
-    await user.selectOptions(select(), "acme/gadgets");
+    const list = await openList(user, REPOSITORY);
+    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/gadgets", "acme/widgets"]));
+    await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
     );
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(select().value).toBe("acme/gadgets");
+    expect(trigger()).toHaveAccessibleDescription("acme/gadgets");
     expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
   } finally {
@@ -227,8 +225,8 @@ test("RepoControl sends null for Inherit", async () => {
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
     // The issue's own repository is selectable before the mapping list has loaded.
-    expect(select().value).toBe("acme/gadgets");
-    await user.selectOptions(select(), "");
+    expect(trigger()).toHaveAccessibleDescription("acme/gadgets");
+    await pick(user, REPOSITORY, "Inherit");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
@@ -239,11 +237,9 @@ test("RepoControl sends null for Inherit", async () => {
   }
 });
 
-// The badge is decoration for sighted readers (aria-hidden); the select names the repository the
+// The badge is decoration for sighted readers (aria-hidden); the trigger names the repository the
 // issue resolves to in its description, so a screen reader hears the target as well as Inherit.
 test("RepoControl describes the repository the issue resolves to", async () => {
-  const description = () =>
-    document.getElementById(select().getAttribute("aria-describedby") ?? "")?.textContent ?? null;
   for (const [own, want] of [
     [
       { repo: null, resolvedRepo: "acme/widgets" },
@@ -254,8 +250,9 @@ test("RepoControl describes the repository the issue resolves to", async () => {
   ] as const) {
     const { unmount } = renderControl({ ...own });
     try {
-      await screen.findByRole("combobox", { name: "Repository of CORE-1" });
-      expect(description()).toBe(want);
+      expect(
+        await screen.findByRole("button", { name: "Repository of CORE-1" })
+      ).toHaveAccessibleDescription(want);
     } finally {
       unmount();
     }
@@ -287,9 +284,7 @@ test("RepoControl shows nothing for an issue whose project maps no repository", 
       expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
     );
     await act(async () => {});
-    expect(
-      screen.queryByRole("combobox", { name: "Repository of CORE-1" })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Repository of CORE-1" })).not.toBeInTheDocument();
     expect(screen.queryByText("Repository:")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -310,7 +305,8 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
     expect(screen.getByText("Repository:")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(select().options.length).toBe(3));
+    await waitFor(() => expect(trigger()).toBeTruthy());
+    expect(rows(await openList(user, REPOSITORY))).toHaveLength(3);
     expect(
       screen.queryByText("Could not load the repositories mapped to CORE.")
     ).not.toBeInTheDocument();
@@ -327,7 +323,7 @@ test("RepoControl shows a failed mappings read beside a resolved repository", as
   });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
+    fireEvent.focus(trigger());
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -346,18 +342,96 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
   const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(select());
-    await waitFor(() => expect(select().options.length).toBe(3));
-    await user.selectOptions(select(), "acme/gadgets");
+    fireEvent.focus(trigger());
+    await pick(user, REPOSITORY, "acme/gadgets");
     expect(
       await screen.findByText(
         "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)"
       )
     ).toBeTruthy();
-    expect(select().value).toBe("");
+    expect(trigger()).toHaveAccessibleDescription(
+      "acme/widgets, inherited or the project's default"
+    );
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
   } finally {
     unmount();
     patchIssue.mockRestore();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The issue header's Repository is such a list: its options are the repositories
+// mapped to the issue's project, which grow with the project. Opened, it holds a text box of its
+// own, a word typed into it leaves only the repositories that match, and a pick writes the
+// issue's own repository and puts the focus back on the control. Opened again it stands on the
+// value it holds, and Enter there writes nothing.
+test("the issue header's Repository list holds a text box that narrows the repositories, and a pick writes the issue's own", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/gadgets",
+    resolved_repo: "acme/gadgets",
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    const before = new Set(textBoxes());
+    await user.click(screen.getByRole("button", { name: "Repository of CORE-1" }));
+    // The mappings are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(screen.queryAllByRole("option", { name: "acme/gadgets" }).length).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Repository list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getByRole("option", { name: "Inherit" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await user.type(own[0] as HTMLElement, "gadg");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: "acme/widgets" }),
+        `"gadg" leaves acme/widgets in the Repository list`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(list).queryAllByRole("option", { name: "Inherit" }),
+      `"gadg" leaves Inherit in the Repository list`
+    ).toHaveLength(0);
+    await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+    expect(screen.queryByRole("listbox", { name: "Repository of CORE-1 options" })).toBeNull();
+    expect(trigger()).toHaveFocus();
+    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("acme/gadgets"));
+
+    await user.keyboard("{Enter}");
+    await screen.findByRole("listbox", { name: "Repository of CORE-1 options" });
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox", { name: "Repository of CORE-1 options" })).toBeNull();
+    await act(async () => {});
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// INFRA-3135, round 12: a list whose read failed says so. Beside a resolved repository the rail
+// shows the failure with a Retry, and the list the reader opens says it too, over the Inherit it
+// still offers.
+test("the issue header's Repository list says the repositories could not be loaded when their read fails", async () => {
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
+    failFirstRead: true,
+  });
+  try {
+    const list = await openList(user, REPOSITORY);
+    const panel = list.parentElement as HTMLElement;
+    expect(
+      await within(panel).findByText("Could not load the repositories mapped to CORE.")
+    ).toBeTruthy();
+    expect(rows(list)).toEqual(["✓Inherit"]);
+  } finally {
+    unmount();
   }
 });

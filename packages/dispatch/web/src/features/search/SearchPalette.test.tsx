@@ -6,7 +6,7 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -15,7 +15,7 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
 import { CONTROL } from "../../components/control-names";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -1426,6 +1426,37 @@ test("the bar's Project and Status lists each hold a text box that narrows their
       await user.keyboard("{Escape}");
       await user.keyboard("{Escape}");
     }
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// INFRA-3135, round 12: the Project list was drawn from whatever the bar's read of the projects
+// held, and said "No projects yet" while that read was still out and after it had failed. It says
+// which, as the Agents composer's Issue list does.
+test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
+  const user = userOnFakeClock();
+  const read = Promise.withResolvers<Project[]>();
+  const listProjects = spyOn(api, "listProjects").mockReturnValue(read.promise);
+  const view = renderPalette();
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const list = await screen.findByRole("listbox", { name: "Project options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(list).toHaveTextContent("Loading projects…");
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+
+    await act(async () => {
+      read.reject(new Error("projects unreachable"));
+      await read.promise.catch(() => undefined);
+    });
+    expect(await within(panel).findByText("Could not load projects.")).toBeTruthy();
+    expect(within(panel).queryByText("Loading projects…")).toBeNull();
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
   } finally {
     listProjects.mockRestore();
     view.unmount();

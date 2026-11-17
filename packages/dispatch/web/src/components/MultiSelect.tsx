@@ -1,6 +1,5 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { focusOnDocument } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -17,6 +16,7 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
+import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
 
 /** A value as a pick compares it: trimmed and lower-cased, as the server compares a label. The
@@ -71,9 +71,10 @@ interface SharedProps {
   readonly open: boolean;
   /** The values the host stores (URL keys, label strings) in list order. */
   readonly options: readonly string[];
-  /** Row text for a value; the search matches this text, and a single pick's trigger shows it
-   *  for the picked value. Defaults to the value itself. */
-  readonly optionLabel?: (value: string) => string;
+  /** Row text for a value, or `undefined` for a value the host has no text for, which then
+   *  reads as itself; the search matches this text, and a single pick's trigger shows it for the
+   *  picked value. Defaults to the value itself. */
+  readonly optionLabel?: (value: string) => string | undefined;
   /** Muted text at the end of a value's row, such as how many items carry it, or `undefined`
    *  for a row with no detail at all. The row's accessible name reads it after the label and a
    *  comma ("api, 3"), never run together. */
@@ -166,11 +167,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
-  // What an open reads of this render: whether it takes the focus, and the value it starts on.
-  const focusesOnOpen = useRef(focusOnOpen);
-  focusesOnOpen.current = focusOnOpen;
+  // What an open reads of this render: the value it starts on.
   const opensOn = useRef<string | undefined>(undefined);
 
   const searchText = query.trim();
@@ -178,8 +176,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // A host's label function can answer nothing for a value it does not know — a `?status=` of
   // another deploy, say — and a value with no label is still an option, read as itself.
   const labelOf = (option: string) => optionLabel(option) ?? option;
-  const visibleOptions = options.filter((option) => fold(labelOf(option)).includes(needle));
+  // The rows exist only in the open panel, so a closed list narrows nothing.
+  const visibleOptions = open
+    ? options.filter((option) => fold(labelOf(option)).includes(needle))
+    : [];
   const createValue =
+    open &&
     onCreate !== undefined &&
     searchText !== "" &&
     !options.some((option) => fold(option) === fold(searchText))
@@ -194,7 +196,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
   // A single pick opens on the option its value picks - in the option's own spelling, which is
   // the one the arrows find in the list - or on the value itself while no option has come yet.
-  opensOn.current = props.mode === "single" ? (options.find(isPicked) ?? props.value) : undefined;
+  // Only the render that opens the list reads it.
+  opensOn.current =
+    open && props.mode === "single" ? (options.find(isPicked) ?? props.value) : undefined;
   // A single pick puts the focus on the trigger before it hands the value over, so a pick that
   // takes the trigger away - the search bar's Project list, gone once its narrowing is on - takes
   // it from the trigger's own place, from which the panel around it hands the focus on
@@ -220,15 +224,20 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     setActiveValue(value);
   };
 
-  // Opening starts a fresh search on the value a single pick holds, and focuses the search unless
-  // the host hands the focus in itself. Closing returns the focus to the trigger when the close
-  // left it nowhere - the list that held it is gone - and leaves a focus that is somewhere.
+  // Opening starts a fresh search on the value a single pick holds; the panel hands the focus to
+  // the search unless the host hands it in itself (`focusOnOpen`). Closing returns the focus to
+  // the trigger when the close left it nowhere - the list that held it is gone - and leaves a
+  // focus that is somewhere. A focus still on the text box the close took away is nowhere
+  // (`focusLost`): an engine that moves the focus off a removed element only at its next
+  // rendering update still names the box focused when this effect runs, before that update, and a
+  // Tab out of the box would otherwise leave the focus there to the page's rescue rather than on
+  // the trigger. A press outside moves the focus after this runs, so the focus ends where that
+  // press put it.
   useEffect(() => {
     if (open) {
       setQuery("");
       setActiveValue(opensOn.current);
-      if (focusesOnOpen.current) inputRef.current?.focus();
-    } else if (wasOpen.current && focusOnDocument()) {
+    } else if (wasOpen.current && focusLost()) {
       triggerRef.current?.focus();
     }
     wasOpen.current = open;
@@ -324,7 +333,6 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               }}
               onKeyDown={handleKeyDown}
               placeholder={searchLabel}
-              ref={inputRef}
               role="combobox"
               type="search"
               value={query}

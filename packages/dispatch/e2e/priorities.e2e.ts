@@ -804,7 +804,11 @@ test("a person places an issue under a priority from the issue and takes it off 
     await page.goto(`/issues/${seed.clock}`);
 
     await page.getByRole("button", { name: `Add a priority to ${seed.clock}` }).click();
-    await page.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await page.getByRole("button", { exact: true, name: "Priority to advance" }).click();
+    await page
+      .getByRole("listbox", { name: "Priority to advance options" })
+      .getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` })
+      .click();
     await page.getByRole("button", { name: "Add", exact: true }).click();
     const named = page
       .getByTestId("issue-advances")
@@ -888,7 +892,11 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     // The reader places the issue under P2 from the header's own control. The write sends P1 and
     // P2, which the server takes; a set still naming P3 would be refused, a priority that is gone.
     await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
-    await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await reader.getByRole("button", { exact: true, name: "Priority to advance" }).click();
+    await reader
+      .getByRole("listbox", { name: "Priority to advance options" })
+      .getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` })
+      .click();
     await reader.getByRole("button", { name: "Add", exact: true }).click();
     const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
     await expect(added).toBeVisible();

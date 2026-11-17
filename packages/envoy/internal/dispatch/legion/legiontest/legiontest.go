@@ -93,7 +93,8 @@ type Spec struct {
 	// Unobserved is how many of the oldest trees the daemon's sampler never saw: their events
 	// and handoffs are written and no observation of them is, so the project's first
 	// observation falls partway through the history and the issues before it carry the event
-	// log alone, as a project's issues did before Dispatch read its daemon.
+	// log alone, as a project's issues did before Dispatch read its daemon. Each issue Legion
+	// works in them also carries the status write that handed it to Legion (handOver).
 	Unobserved int
 	// Queued has each observed root wait for a slot: the sampler records it admitted from its
 	// creation, an hour before it takes its slot, and the root of each odd tree gives its slot
@@ -322,6 +323,7 @@ func (s *seeding) tree(index int) {
 	root := s.issue(number, "A Legion root", "", 1, at(0), new(at(56)))
 	s.fixture.Roots = append(s.fixture.Roots, root)
 	s.event(root, "issue.created", person, `{"status":"triage"}`, at(0))
+	s.handOver(root, person, at(1))
 	s.roleEvent(root, "architect", "comment.created", `{"status":"in_progress"}`, at(1))
 	s.roleEvent(root, "planner", "comment.created", `{}`, at(6))
 	s.handoff(root, "plan", "planner", at(8))
@@ -358,6 +360,7 @@ func (s *seeding) tree(index int) {
 	// keeps a reader from taking every slot holder for a root.
 	implemented := s.issue(number+1, "An implemented child", root, 2, at(2), new(at(24)))
 	s.event(implemented, "issue.created", SessionActor("architect", root), filing(root), at(2))
+	s.handOver(implemented, SessionActor("architect", root), at(4))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
 	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
@@ -392,6 +395,7 @@ func (s *seeding) tree(index int) {
 	// one issue of the tree that reaches all three of the merger's phases.
 	reviewed := s.issue(number+2, "A reviewed child", root, 2, at(5), new(at(40)))
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
+	s.handOver(reviewed, SessionActor("architect", root), at(10))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
 	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
 	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
@@ -431,6 +435,7 @@ func (s *seeding) tree(index int) {
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)
 	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
+	s.handOver(open, SessionActor("architect", root), at(12))
 	s.roleEvent(open, "implementer", "comment.created", `{"status":"in_progress"}`, at(12))
 	s.event(open, "issue.updated", person, `{"status":"backlog"}`, at(20))
 	s.event(open, "issue.updated", person, `{"status":"in_progress"}`, at(26))
@@ -450,6 +455,7 @@ func (s *seeding) tree(index int) {
 	instant := s.issue(number+4, "A child that closed where it opened", root, 3, at(46), new(at(46)))
 	s.fixture.NoMeasuredWork = append(s.fixture.NoMeasuredWork, instant)
 	s.event(instant, "issue.created", person, `{"status":"triage"}`, at(46))
+	s.handOver(instant, person, at(46))
 	s.handoff(instant, "implement", "implementer", at(46))
 	s.event(instant, "issue.closed", person, `{"status":"done"}`, at(46))
 
@@ -552,6 +558,34 @@ func (s *seeding) event(issue, kind, actor, payload string, at time.Time) {
 func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
 	s.event(issue, kind, SessionActor(role, issue), payload, at)
 	s.carriesPhaseWork(issue)
+}
+
+// handOver writes the status write that hands an issue of a tree the sampler never saw
+// (Spec.Unobserved) to Legion, as an issue reaches Legion in production (AGENTS.md, "Handover"):
+// its move from `triage` to `todo`, by whoever hands it over, a person for an issue a person
+// filed and the tree's architect for a child it filed and releases. It falls at the hour the
+// issue's work starts, just before its first worker event, since that is the hour this history
+// admits it: in a tree the sampler saw, the same issue's first phase starts at that hour, with
+// its slot where it holds one of its own, and it never waits in the line for one (only an
+// observed root waits, under Spec.Queued).
+//
+// The write is there because before a project's first observation the metrics read where an
+// issue was out of the workflow from its statuses alone, from a `triage` status write to the next
+// status write (R6; metrics' outOfWorkflowByStatus, 9f994275a7), and the work time leaves those
+// hours out. Every issue here is filed in `triage`, and its workers' `in_progress` rides on
+// comments, which write no status, so without it an issue the sampler never saw would be out of
+// the workflow from its filing to its close and its work time would read 0.
+//
+// A tree the sampler saw gets none: each of its issues is observed by its first worker event, or
+// works no hour at all (the child that closed where it opened), so its `triage` stretch ends
+// before its work time starts, and its rows stay the ones the golden files were recorded over
+// (Spec). Nor does an issue no Legion role works (the follow-up a person filed, and
+// Spec.Filings' issues): nobody handed it to Legion.
+func (s *seeding) handOver(issue, actor string, at time.Time) {
+	if s.observed {
+		return
+	}
+	s.event(issue, "issue.updated", actor, `{"status":"todo"}`, at)
 }
 
 // ask writes one ask of the issue that the role's session opened and a person answered, which is

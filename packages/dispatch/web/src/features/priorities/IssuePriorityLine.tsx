@@ -1,11 +1,13 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
+import { TruncatedText } from "../../components/TruncatedText";
 import {
   dangerText,
   dismissButtonText,
@@ -53,6 +55,12 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
  * the issue is read again so the next press carries the revision it holds now. The list of
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
+ *
+ * The control adds in two steps. `+` opens a small form: its Priority to advance is the shared
+ * list's single pick (`MultiSelect`), whose text box narrows the priorities as the reader types,
+ * and a pick stages the priority there; Add writes it, and Cancel drops it. The list says the
+ * priorities are loading while their read is out, and that they could not be loaded where it
+ * failed.
  */
 export function IssuePriorityLine({
   disabled,
@@ -65,7 +73,7 @@ export function IssuePriorityLine({
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState("");
-  const selectId = useId();
+  const [listOpen, setListOpen] = useState(false);
   const queryClient = useQueryClient();
   const priorities = useQuery({
     ...prioritiesQuery(),
@@ -99,6 +107,7 @@ export function IssuePriorityLine({
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
+  const pickedLabel = picked === "" ? undefined : (labels.get(picked) ?? picked);
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -147,24 +156,34 @@ export function IssuePriorityLine({
         </span>
       ) : adding ? (
         <form className="flex shrink-0 items-center gap-2" onSubmit={add}>
-          <label className="sr-only" htmlFor={selectId}>
-            Priority to advance
-          </label>
-          <select
-            className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${inputClasses(true)}`}
-            id={selectId}
-            onChange={(event) => setPicked(event.target.value)}
-            value={picked}
+          <MultiSelect
+            emptyMessage={
+              priorities.isPending
+                ? "Loading priorities…"
+                : priorities.isError || choices.length > 0
+                  ? "No priority matches that."
+                  : "No priority left to add."
+            }
+            error={priorities.isError ? "Could not load the priorities." : null}
+            label="Priority to advance"
+            mode="single"
+            onOpenChange={setListOpen}
+            onPick={setPicked}
+            open={listOpen}
+            optionLabel={(id) => labels.get(id)}
+            options={choices.map((row) => row.id)}
+            searchLabel="Search priorities"
+            triggerClassName={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${inputClasses(true)}`}
+            value={picked === "" ? undefined : picked}
           >
-            <option value="">
-              {priorities.data === undefined ? "Loading priorities…" : "Choose a priority"}
-            </option>
-            {choices.map((row) => (
-              <option key={row.id} value={row.id}>
-                {labels.get(row.id) ?? row.id}
-              </option>
-            ))}
-          </select>
+            {/* Below 1280 px the trigger is a flex box, whose own text ends in no ellipsis
+                (`TruncatedText`); capped at the trigger's width inside its padding, the text
+                ends in one there too. */}
+            <TruncatedText className="block max-w-52" title={pickedLabel}>
+              {pickedLabel ??
+                (priorities.data === undefined ? "Loading priorities…" : "Choose a priority")}
+            </TruncatedText>
+          </MultiSelect>
           <button
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
             disabled={busy || picked === ""}

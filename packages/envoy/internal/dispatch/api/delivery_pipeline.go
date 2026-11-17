@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -58,14 +59,14 @@ type deliveryPipelinePRChecks struct {
 }
 
 // getDeliveryPipeline answers GET /api/v1/delivery/pipeline, computed from stored facts on
-// request. Its clock is `at` (RFC3339, default now): the seven shown days end on at's UTC day, and
-// the failing-jobs table looks back 24 hours from at, so a test or a screenshot pins "today" to a
-// fixture's day. A query naming at more than once is refused (repeatedDeliveryKey), since it would
-// be answered its first value's day. Runs are read by start over the whole of the shown days,
-// today included past at. The PR checks are the pull_request runs; the deploy jobs are read from
-// the push runs on main (decision 6); the lead times are every population pull request merged in
-// the shown days, before any facet, since the Pipeline page follows neither the timeline's window
-// nor its facets.
+// request. Its clock is `at` (RFC3339, default now; parsePipelineAt): the seven shown days end on
+// at's UTC day, and the failing-jobs table looks back 24 hours from at, so a test or a screenshot
+// pins "today" to a fixture's day. A query naming at more than once is refused
+// (repeatedDeliveryKey), since it would be answered its first value's day. Runs are read by start
+// over the whole of the shown days, today included past at. The PR checks are the pull_request
+// runs; the deploy jobs are read from the push runs on main (decision 6); the lead times are every
+// population pull request merged in the shown days, before any facet, since the Pipeline page
+// follows neither the timeline's window nor its facets.
 func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -75,12 +76,11 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
-	at, err := parseOptionalRFC3339(query, "at", time.Now().UTC())
+	at, err := parsePipelineAt(query, time.Now().UTC())
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
-	at = at.UTC()
 	settings, ok := s.deliverySettings(w, r)
 	if !ok {
 		return
@@ -91,6 +91,26 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryPipelineCompute(settings, population, at, time.Now().UTC()))
+}
+
+// parsePipelineAt is the Pipeline's at in UTC: query's at as every delivery read parses a moment
+// (parseOptionalRFC3339), or fallback where the query names none, refused too where the first of
+// the seven days it shows falls before the year 1 (R18). The years 1 to 9999 bound at itself, and
+// an at in the first six days of the year 1 shows days of the year 0, which the eval and delivery
+// reads refuse in a from. The first shown day is measures.WindowStart, the day the answer's own
+// day list starts on (measures.ShownDays). The route (getDeliveryPipeline) and the live hub's
+// pipeline view (parsePipelineLiveView) both read at here, so the two refuse one at alike.
+func parsePipelineAt(query url.Values, fallback time.Time) (time.Time, error) {
+	at, err := parseOptionalRFC3339(query, "at", fallback)
+	if err != nil {
+		return time.Time{}, err
+	}
+	at = at.UTC()
+	if first := measures.WindowStart(at); first.Year() < 1 {
+		return time.Time{}, fmt.Errorf("at %s shows the %d days from %s, a day of the year %d: the Pipeline's days must lie in the UTC years 1 to 9999",
+			at.Format(time.RFC3339Nano), measures.ShownDayCount, first.Format(time.DateOnly), first.Year())
+	}
+	return at, nil
 }
 
 // pipelinePopulation is every read the Pipeline page's answer for one `at` makes: the PR-checks

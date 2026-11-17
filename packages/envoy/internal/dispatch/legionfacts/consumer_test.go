@@ -275,7 +275,10 @@ func TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor(t *testing.T
 //
 // The event is a role session's first write on the follow-up a person filed, which no Legion
 // role had worked: the issue carries Legion phase work from that event on, so the pass gives it
-// the row a reader takes for "Legion worked this issue".
+// the row a reader takes for "Legion worked this issue". The write is a status write that takes
+// the follow-up out of `triage`, where it was filed: an hour in `triage` is out of the workflow,
+// outside its work time (dispatch://INFRA-1077's 9f994275a7), so a follow-up worked while still
+// in `triage` makes its root wait on nothing.
 func TestAnEventChangesTheIssuesRowAndItsAncestorsAndNoRowOutsideThatSet(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
@@ -285,7 +288,7 @@ func TestAnEventChangesTheIssuesRowAndItsAncestorsAndNoRowOutsideThatSet(t *test
 
 	child := run.fixture.NoPhaseWork[0]
 	root := run.fixture.Roots[0]
-	run.writeEvent(t, child, "implementer", "comment.created", `{"status":"in_progress"}`, run.at.Add(-10*time.Hour))
+	run.writeEvent(t, child, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-10*time.Hour))
 
 	want := statedSet(t, run, []string{child}, nil)
 	run.at = run.at.Add(10 * time.Minute)

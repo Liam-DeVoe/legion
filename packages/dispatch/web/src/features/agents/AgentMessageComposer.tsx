@@ -148,21 +148,20 @@ export function AgentMessageComposer({
     queryFn: () => api.listIssues({ open: true }),
     queryKey: ["agents", "issue-picker"],
   });
+  const titles = new Map((issues.data ?? []).map((issue) => [issue.key, issue.title]));
   /** The committed issue, once the open list has come back without it: closed since it was
    *  picked. The list and the toggle keep naming it, marked, until the reader picks another -
    *  the issue header's Status select keeps a closed issue's own status among its options the same
    *  way - so what the picker shows, what the toggle says and where the message goes stay one
    *  issue; a send to it posts, since a closed issue takes comments. */
-  const committedClosed =
-    issueKey !== "" &&
-    issues.data !== undefined &&
-    !issues.data.some((issue) => issue.key === issueKey);
+  const committedClosed = issueKey !== "" && issues.data !== undefined && !titles.has(issueKey);
   const committedLabel = committedClosed ? `${issueKey} (closed)` : issueKey;
-  const titles = new Map((issues.data ?? []).map((issue) => [issue.key, issue.title]));
-  // "No issue" is a pick no read stands behind, so only a list still on its way offers nothing.
-  const issueOptions = issues.isPending
-    ? []
-    : ["", ...(committedClosed ? [issueKey] : []), ...titles.keys()];
+  // "No issue" is a pick no read stands behind, so only a list still on its way offers nothing;
+  // a shut list draws no options, so it is handed none.
+  const issueOptions =
+    !issuePickerOpen || issues.isPending
+      ? []
+      : ["", ...(committedClosed ? [issueKey] : []), ...titles.keys()];
   // The list opens at once and draws its issues once the read lands, and only then takes the
   // focus, into its text box: it is what `i` needs (a key that opened something no keystroke
   // could then reach would be a dead end) and what a pointer wants too.

@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // indexScanTypes is every plan node that reads a relation through an index, and so every node
@@ -362,6 +362,13 @@ func (k *IndexKeys) RequireIndexKeyed(t testing.TB, plan json.RawMessage, index,
 	}
 }
 
+// Session is what GenericPlan needs of its connection: a way to open a transaction, and to run a
+// statement outside the one it opens. Both a *pgxpool.Conn and a pgx.Tx are one.
+type Session interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // GenericPlan is the plan Postgres builds for statement without knowing the values it will be
 // executed with, the plan a prepared statement settles on. It is the plan at risk: an index
 // whose eligibility depends on the bound value is lost there, and a fixture small enough for a
@@ -373,10 +380,14 @@ func (k *IndexKeys) RequireIndexKeyed(t testing.TB, plan json.RawMessage, index,
 // the planner can hash or merge a whole relation into needs those two off as well. The prepared
 // statement outlives the transaction that explains it and is deallocated by name on connection,
 // the one connection that holds it.
+//
+// connection is a pooled connection, or a transaction its caller holds open: Begin on a
+// transaction is a savepoint of it, so the plan is read under the settings that transaction set
+// as well as settings, and the forced mode then lasts to that transaction's end.
 func GenericPlan(
 	t testing.TB,
 	ctx context.Context,
-	connection *pgxpool.Conn,
+	connection Session,
 	name, statement string,
 	parameters, literals []string,
 	settings ...string,

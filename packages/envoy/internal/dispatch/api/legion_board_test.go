@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // nameLegionDaemon names project's daemon, which is what brings the board.
@@ -526,6 +527,91 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 	}
 	if root := population.TreeRoot("INFRA-3"); root != "INFRA-1" {
 		t.Errorf("the metrics put INFRA-3 in tree %q, want INFRA-1, as the board does", root)
+	}
+}
+
+// TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot: a board answer takes its cards and
+// the daemon's half of its tree walk from one repeatable-read transaction (readSampled), so a
+// sampler commit during the answer moves both or neither. The commit here lands, on another
+// connection, the moment the board's first statement reading legion_current ends: it moves the
+// child from `planning` in INFRA-1's tree to `testing` in a tree of its own. The answer is the
+// first read's whole and the next answer the second read's whole, where a read outside that
+// transaction would have put the child's `planning` card in the second read's tree.
+func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
+	database := storetest.Open(t)
+	commits := storetest.NewCommitBetweenReads("legion_current")
+	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
+	seedLegionProjects(t, handler, "INFRA")
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
+	seedLegionIssue(t, database, "INFRA", 1, "The root", "a", nil, "")
+	seedLegionIssue(t, database, "INFRA", 2, "The child", "b", nil, "INFRA-1")
+	daemon.pass(t, database, `{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1"},
+		"INFRA-2":{"key":"INFRA-2","phase":"planning","tree":"INFRA-1"}}}`)
+
+	commits.Arm(func() {
+		daemon.pass(t, database, `{"issues":{
+			"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1"},
+			"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-2"}}}`)
+	})
+	board := legionBoardOf(t, handler, "INFRA")
+	if !commits.Fired() {
+		t.Fatal("no statement of the board's answer read legion_current, so no commit landed during it")
+	}
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
+		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-2: its card is the first read's", got)
+	}
+	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-1" {
+		t.Errorf("the answer the commit landed in puts INFRA-2's card in tree %q, want INFRA-1: the first read's, as its card is", tree)
+	}
+
+	board = legionBoardOf(t, handler, "INFRA")
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+		t.Errorf("the next answer holds %v in testing, want INFRA-2: the commit's", got)
+	}
+	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-2" {
+		t.Errorf("the next answer puts INFRA-2 in tree %q, want INFRA-2: the commit's", tree)
+	}
+}
+
+// TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot: a board answer takes its header
+// (legion_reads) and its cards (legion_current) from one snapshot, so a sampler commit during the
+// answer moves both or neither. The newest read before the answer failed, which the header names
+// over the cards of the good read before it; the commit, a good read that moves INFRA-1 to
+// `testing`, lands on another connection the moment the board's first statement reading either
+// table ends. The answer is the failed read's header over `planning`, and the next answer the
+// commit's good header over `testing`, where reading the two tables at two moments would have
+// named the failure over the cards of the read after it.
+func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
+	database := storetest.Open(t)
+	commits := storetest.NewCommitBetweenReads("legion_reads", "legion_current")
+	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
+	seedLegionProjects(t, handler, "INFRA")
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
+	seedLegionIssue(t, database, "INFRA", 1, "The issue", "a", nil, "")
+	daemon.pass(t, database, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"planning","tree":"INFRA-1"}}}`)
+	daemon.pass(t, database, `not json`)
+
+	commits.Arm(func() {
+		daemon.pass(t, database, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"testing","tree":"INFRA-1"}}}`)
+	})
+	board := legionBoardOf(t, handler, "INFRA")
+	if !commits.Fired() {
+		t.Fatal("no statement of the board's answer read legion_reads or legion_current, so no commit landed during it")
+	}
+	if board.Header.ReadOK || board.Header.ReadError == nil {
+		t.Errorf("the answer the commit landed in has the header %+v, want the failed read the commit came after", board.Header)
+	}
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
+		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-1: the cards under the failed read's header are the good read's before it", got)
+	}
+
+	board = legionBoardOf(t, handler, "INFRA")
+	if !board.Header.ReadOK {
+		t.Errorf("the next answer has the header %+v, want the commit's good read", board.Header)
+	}
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
+		t.Errorf("the next answer holds %v in testing, want INFRA-1: the commit's", got)
 	}
 }
 

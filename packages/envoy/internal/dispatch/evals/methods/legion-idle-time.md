@@ -4,7 +4,7 @@
 2. The issue's observed phase is in the bar of R.
 3. The newest claim state the daemon observed for R (its `claim.<R>` observations) is not `working`. No claim counts as not working.
 
-The worked spans are the life of the issue less its parked hours and its hours in the queue: the spans that its work time counts. The phase is the observed one alone, so an hour before the daemon first observed the issue is in no bar. The bars are:
+The worked spans are the life of the issue less its parked hours, its hours in the queue and its hours out of the workflow before the close: the spans that its work time counts. The phase is the observed one alone, so an hour before the daemon first observed the issue is in no bar. The bars are:
 
 - architect: `design` and `accepting`
 - planner: `planning`
@@ -19,4 +19,4 @@ The day rows start on the first UTC midnight at or after the project's first cla
 
 **It is not the idle segment of phase time.** The idle segment of legion-phase-time is the hours of a bar that no other segment claimed. Here an hour of the bar of R, with R out of a turn, is idle whether or not CI, a person or a child held the issue in that hour.
 
-**What it does not count.** Hours in which the issue held no slot of its own, which legion-slot-wait counts, parked hours, hours back in the queue, and the phases on no role's bar.
+**What it does not count.** Hours in which the issue held no slot of its own, which legion-slot-wait counts, parked hours, hours back in the queue, hours out of the workflow before the close, and the phases on no role's bar.

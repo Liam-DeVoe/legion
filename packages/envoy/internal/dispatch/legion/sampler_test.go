@@ -467,12 +467,13 @@ func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testin
 	}
 }
 
-// TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped: the two reads every reader of
-// the newest observations takes are the newest good read's. NewestObservations, the board's cards,
-// holds no field that read no longer carries; ReportedIssues, by which the board and the metrics
-// place an issue in a tree, keeps an issue that left the daemon's state after Dispatch observed a
-// phase of it, with no tree, since its `tree` left with it. Both read legion_current, which the
-// trigger keeps equal to the newest row of each field the history holds, `null` rows included.
+// TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped: ReadCurrent answers the newest
+// good read. Its Newest, the board's cards, holds no field that read no longer carries, and the
+// project's own admission block under AdmissionKey; its Reported, by which the board and the
+// metrics place an issue in a tree, keeps an issue that left the daemon's state after Dispatch
+// observed a phase of it, with no tree, since its `tree` left with it, and names no issue for the
+// admission block. It reads legion_current, which the trigger keeps equal to the newest row of
+// each field the history holds, `null` rows included.
 func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing.T) {
 	daemon := newFakeDaemon(t, `{"issues":{
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1",
@@ -480,29 +481,26 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 		"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-1"}}}`)
 	database, sampler := configured(t, daemon.URL)
 	sampler.Pass(t.Context())
-	// The second read moves INFRA-1 on, drops its implementer's claim and no longer carries INFRA-2.
-	daemon.serves(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1"}}}`)
+	// The second read moves INFRA-1 on, drops its implementer's claim, no longer carries INFRA-2,
+	// and carries an admission block.
+	daemon.serves(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1"}},
+		"admission":{"cap":2}}`)
 	sampler.Pass(t.Context())
 
-	newest, err := NewestObservations(t.Context(), database.Pool, "INFRA")
+	state, err := ReadCurrent(t.Context(), database.Pool, "INFRA")
 	if err != nil {
-		t.Fatalf("read the newest observations: %v", err)
+		t.Fatalf("read the current state: %v", err)
 	}
 	var cards []string
-	for _, one := range newest {
+	for _, one := range state.Newest {
 		cards = append(cards, one.IssueKey+"/"+one.Field+"="+string(one.Value))
 	}
 	slices.Sort(cards)
-	if want := []string{`INFRA-1/phase="reviewing"`, `INFRA-1/tree="INFRA-1"`}; !slices.Equal(cards, want) {
+	if want := []string{`/admission={"cap": 2}`, `INFRA-1/phase="reviewing"`, `INFRA-1/tree="INFRA-1"`}; !slices.Equal(cards, want) {
 		t.Errorf("the newest observations are %v, want %v: the newest read carries nothing else", cards, want)
 	}
-
-	reported, err := ReportedIssues(t.Context(), database.Pool, "INFRA")
-	if err != nil {
-		t.Fatalf("read the reported issues: %v", err)
-	}
-	if want := map[string]string{"INFRA-1": "INFRA-1", "INFRA-2": ""}; !maps.Equal(reported, want) {
-		t.Errorf("the reported issues are %v, want %v: INFRA-2 left the daemon's state after Dispatch observed its phase, and its tree left with it", reported, want)
+	if want := map[string]string{"INFRA-1": "INFRA-1", "INFRA-2": ""}; !maps.Equal(state.Reported, want) {
+		t.Errorf("the reported issues are %v, want %v: INFRA-2 left the daemon's state after Dispatch observed its phase, and its tree left with it", state.Reported, want)
 	}
 
 	rowsOf := func(query string) []string {
@@ -530,4 +528,50 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 	if !slices.Equal(current, history) {
 		t.Errorf("legion_current holds %v, want the newest row of each field of the history, %v", current, history)
 	}
+}
+
+// TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn: ReadCurrent's statement sets no
+// order, and Postgres gives none without one, so Reported must name an issue's tree whichever of
+// the issue's rows the scan meets last. The issue's tree is written by a read before the one that
+// writes its phase and its slot, and ReadCurrent reads the rows in two orders the test sets rather
+// than the one Postgres picks: by field, which puts the `tree` row after the `phase` and `slot`
+// rows, and the reverse, which puts it before them. A reader that let a later row of the issue
+// overwrite the tree an earlier one named fails the second, whatever order Postgres would return.
+func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
+	database := storetest.Open(t)
+	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	tree := Observation{IssueKey: "INFRA-1", Field: FieldTree, Value: []byte(`"INFRA-1"`)}
+	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at, 42, []Observation{tree}); err != nil {
+		t.Fatalf("record the read that names the tree: %v", err)
+	}
+	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at.Add(time.Minute), 42, []Observation{
+		{IssueKey: "INFRA-1", Field: FieldPhase, Value: []byte(`"planning"`)},
+		tree,
+		{IssueKey: "INFRA-1", Field: FieldSlot, Value: []byte(`0`)},
+	}); err != nil {
+		t.Fatalf("record the read that adds the phase and the slot: %v", err)
+	}
+
+	for _, order := range []string{"field", "field desc"} {
+		current, err := ReadCurrent(t.Context(), inOrder{db: database.Pool, order: order}, "INFRA")
+		if err != nil {
+			t.Fatalf("read the current state ordered by %s: %v", order, err)
+		}
+		if want := map[string]string{"INFRA-1": "INFRA-1"}; !maps.Equal(current.Reported, want) {
+			t.Errorf("with the rows ordered by %s, the reported issues are %v, want %v: the tree INFRA-1's own row names",
+				order, current.Reported, want)
+		}
+	}
+}
+
+// inOrder is a Queryer that answers a statement's rows in the order its clause sets, around a
+// statement that sets none.
+type inOrder struct {
+	db    Queryer
+	order string
+}
+
+func (q inOrder) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return q.db.Query(ctx, "select * from ("+sql+") as unordered order by "+q.order, args...)
 }

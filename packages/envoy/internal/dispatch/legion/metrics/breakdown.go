@@ -123,10 +123,11 @@ type IssueFacts struct {
 	WorkFirstAt *time.Time `json:"work_first_at"`
 	WorkLastAt  *time.Time `json:"work_last_at"`
 
-	// ParkedHours and QueuedHours are what the work time took out of the issue's life, and
-	// StartedAt and MergedAt are its first worker event and the earliest merge of the pull
-	// requests Dispatch holds for it: the rest of metric 1's row. Both are nil for an issue with no
-	// work time, and MergedAt for one whose merge Dispatch holds none of.
+	// ParkedHours and QueuedHours are two of the three things the work time took out of the
+	// issue's life; the third, its hours out of the workflow before the close, is stored nowhere
+	// (workTimeRow). StartedAt and MergedAt are its first worker event and the earliest merge of
+	// the pull requests Dispatch holds for it. Both are nil for an issue with no work time, and
+	// MergedAt for one whose merge Dispatch holds none of.
 	ParkedHours float64    `json:"parked_hours"`
 	QueuedHours float64    `json:"queued_hours"`
 	StartedAt   *time.Time `json:"started_at"`

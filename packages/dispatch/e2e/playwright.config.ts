@@ -319,8 +319,8 @@ const parallelProjects = [
   // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
   // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
   // drive that list from the keyboard, and `table-controls`'s row that every list of options a
-  // reader picks from holds a text box, which types a word into each list and leaves it by Enter
-  // and Escape.
+  // reader picks from holds a text box, which types a word into each list and leaves it by
+  // Enter, Escape, and Tab or Shift+Tab.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -405,8 +405,8 @@ const parallelProjects = [
   // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
   // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
   // drive that list from the keyboard, and `table-controls`'s row that every list of options a
-  // reader picks from holds a text box, which types a word into each list and leaves it by Enter
-  // and Escape.
+  // reader picks from holds a text box, which types a word into each list and leaves it by
+  // Enter, Escape, and Tab or Shift+Tab.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's

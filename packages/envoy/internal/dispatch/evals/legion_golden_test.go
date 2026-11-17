@@ -20,16 +20,19 @@ import (
 
 // goldenComputeFiles are the reports the base's Legion metrics computation (metrics.Compute, which
 // this branch deleted) answers over one legiontest history, one file per window holding the three
-// scopes' reports. They are 89e7e83f's answers, recorded on a checkout of that base head with the
+// scopes' reports. They are 8f6e8562's answers, recorded on a checkout of that base head with the
 // seeder (legion/legiontest) of 02a7b3c6 and the recorder legion/metrics/golden_record_test.go of
 // 8a78cf55, which this branch has since deleted. They were 02a7b3c6's answers until the base
 // changed its rules on purpose (8beac41a07: retro is on the implementer's bar, a handoff starts
 // the work time only of an issue no worker wrote on, an issue first observed in flight keeps its
 // earlier phases; 687c7048d5: after a send-back a role's first event starts no phase), so the
 // oracle is the base's own code over the same history. The base's later rules (2eed8f979e: an
-// issue Dispatch observed stays a Legion issue; 22bd759ecb: a null phase mark ends no phase)
-// moved no value of this history, which holds no null mark, so 89e7e83f answers what 52bd50f0
-// did, value for value.
+// issue Dispatch observed stays a Legion issue; 22bd759ecb: a null phase mark ends no phase;
+// e2a409a4f5: an issue the daemon drops keeps the slot it held; 9f994275a7: an hour out of the
+// workflow before the close is outside the work time and on no bar) moved no value of this
+// history, which holds no null phase mark, no reopen, no `triage` write inside a work time and no
+// `done` observed before a close. So 8f6e8562 answers what 52bd50f0 did, value for value, and
+// adds each work-time row's out_of_workflow_hours, 0 for every issue, which no Legion eval reads.
 var goldenComputeFiles = filepath.Join("..", "legion", "metrics", "testdata", "golden_compute", "*.json")
 
 // goldenReports is one golden file.

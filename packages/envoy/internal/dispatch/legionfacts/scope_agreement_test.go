@@ -127,12 +127,8 @@ func cardAbove(t *testing.T, seeded history, key string) string {
 	if err != nil {
 		t.Fatalf("read the project's population: %v", err)
 	}
-	admission, err := readAdmission(t.Context(), seeded.database.Pool, seeded.fixture.Project)
-	if err != nil {
-		t.Fatalf("read the admission block: %v", err)
-	}
 	line := legion.NewWaitingLine(legion.WaitingLineInput{
-		Admission: admission,
+		Admission: population.Admission,
 		Issue:     func(key string) (legion.LineIssue, bool) { return lineIssue(population, key) },
 		Tree:      population.TreeNode,
 	})
