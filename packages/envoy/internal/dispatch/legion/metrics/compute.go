@@ -65,8 +65,8 @@ var classes = []string{ClassInTreeAtDesign, ClassInTreeLater, ClassOutOfTree, Cl
 
 // Report is one answer of the metrics computation: the window, the issues that finished in it,
 // and the four metrics. No route of this repository serves it — the root spec says the metrics
-// route never ships — so its one caller is whatever reads the computation, the evals of
-// dispatch://INFRA-2916 among them, and the shape is this type rather than an OpenAPI schema.
+// route never ships — so only tests call it today, and it is here for the evals of
+// dispatch://INFRA-2916 to call; the shape is this type rather than an OpenAPI schema.
 type Report struct {
 	Project    string    `json:"project"`
 	From       time.Time `json:"from"`
@@ -283,7 +283,7 @@ func (c *computation) finished() []*Issue {
 }
 
 // finishedInWindow is the finished rule itself, before any scope. It reads Legion phase work and
-// not the wider rule that places an issue in a tree (Population.isLegionIssue): an issue the
+// not the wider rule that places an issue in a tree (legion.IsLegionIssue): an issue the
 // daemon reports and no role ever worked is in its tree, and finished nothing.
 func (c *computation) finishedInWindow(issue *Issue) bool {
 	if issue.ClosedAt == nil || issue.ClosedAt.Before(c.population.From) || !issue.ClosedAt.Before(c.population.To) {

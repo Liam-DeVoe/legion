@@ -70,7 +70,7 @@ func (i *Issue) asked(from, to time.Time) *Issue {
 // fixture is a population of hand-built issues over [from, to), with its trees linked as Read
 // links them.
 //
-// It fills the two sets the tree rule reads (Population.isLegionIssue) as a read fills them: an
+// It fills the two sets the tree rule reads (legion.IsLegionIssue) as a read fills them: an
 // issue the fixture gave an observation of is one the daemon reports, with the `tree` it last
 // named, and an issue the fixture gave a role event or a handoff carries Legion phase work.
 // They are the project's own facts, which no fixture states twice.

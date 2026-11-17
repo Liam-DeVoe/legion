@@ -202,13 +202,14 @@ func PruneReads(ctx context.Context, pool *store.Pool) (int64, error) {
 // a first observation whose value is null writes nothing either: nothing moved from nothing.
 //
 // The `null` row is what makes the newest row of every field the newest good read's own: the
-// board's cards (NewestObservations) read a field the read no longer carries as absent, and the
-// record keeps when it left, which is where the metrics' observed timeline ends the issue's phase.
+// board's cards (ReadCurrent) read a field the read no longer carries as absent, and the record
+// keeps when it left, which is where the metrics' observed timeline ends the issue's phase.
 //
-// The newest rows it compares against are newestValues, legion_current's: the trigger of migration
+// The newest rows it compares against are legion_current's: the trigger of migration
 // 20261117022936 keeps that table in the same transaction as every insert here, so the comparison
-// reads one row per field rather than the project's whole history. A field whose newest row is
-// `null` is not among them, and compares as `null` all the same, as a field with no row does.
+// reads one row per field rather than the project's whole history. It takes the rows that hold a
+// value; a field whose newest row is `null` compares as `null` all the same, as a field with no
+// row does.
 //
 // One statement, so a pass of some hundreds of fields is one round trip, and Postgres's own jsonb
 // comparison decides what changed: a Go encoding that ordered an object's keys differently from
@@ -225,7 +226,11 @@ func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.
 		with found as (
 			select observed.issue_key, observed.field, observed.value::jsonb as value
 			from unnest($2::text[], $3::text[], $4::text[]) as observed(issue_key, field, value)
-		), newest as (`+newestValues+`)
+		), newest as (
+			select issue_key, field, value
+			from legion_current
+			where project = $1 and value <> 'null'::jsonb
+		)
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		select $1, coalesce(found.issue_key, newest.issue_key), coalesce(found.field, newest.field),
 			coalesce(found.value, 'null'::jsonb), $5::timestamptz
@@ -239,19 +244,6 @@ func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.
 	return tag.RowsAffected(), nil
 }
 
-// newestValues is the one statement of "the newest value of each field": every field of project $1
-// whose newest row holds a value, with that value and when it was observed, from legion_current,
-// which holds the newest row of each (project, issue, field) legion_observations holds a row of
-// (migration 20261117022936). A field whose newest row is `null` holds nothing as of the newest
-// good read, so it is left out. The sampler's write compares a read against it
-// (recordObservations) and the Legion board takes its cards from it (NewestObservations), so the
-// two read one rule, and one row per field rather than the history.
-const newestValues = `
-	select issue_key, field, value, observed_at
-	from legion_current
-	where project = $1 and value <> 'null'::jsonb
-`
-
 // Newest is one field's newest value, never `null`, and when the sampler recorded it: when the
 // field took that value, since a row is written only where a value moved.
 type Newest struct {
@@ -259,71 +251,73 @@ type Newest struct {
 	ObservedAt time.Time
 }
 
-// NewestObservations is every field of project that holds a value as of the newest good read, with
-// that value (newestValues): every field of every issue that read carried, and the project's own
-// under AdmissionKey. A field the read no longer carried, and every field of an issue gone from the
-// daemon's state, has a `null` newest row (recordObservations) and is not in it, so an issue that
-// left the daemon's state has no field here. The Legion board's cards are these.
-func NewestObservations(ctx context.Context, pool *store.Pool, project string) ([]Newest, error) {
-	rows, err := pool.Query(ctx, newestValues, project)
+// Queryer is what ReadCurrent needs of its connection: the pool, or a transaction a reader holds
+// open on it so its other reads of what the sampler writes answer the same moment — the Legion
+// board's header (api/legion_board.go's readSampled) and the metrics' observations (theirs).
+type Queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// Current is what project's legion_current holds as of the newest good read, both halves taken
+// from the one statement of ReadCurrent, so a reader of both reads one snapshot: a sampler commit
+// between two reads would give the Legion board a card of the older read and a tree of the newer.
+type Current struct {
+	// Newest is every field that holds a value: every field of every issue the newest good read
+	// carried, and the project's own under AdmissionKey. The Legion board's cards are these.
+	Newest []Newest
+	// Reported is every issue the daemon reports, against the `tree` the newest good read names
+	// for it, "" where it names none (ReadCurrent says which issues those are).
+	Reported map[string]string
+}
+
+// ReadCurrent reads project's legion_current in one statement, one row per field and none of the
+// history: every row that holds a value, and every `phase` row. A field the newest good read no
+// longer carries, and every field of an issue gone from the daemon's state, has a `null` newest
+// row (recordObservations), so it is in no Newest.
+//
+// Reported is the daemon's half of what makes an issue a Legion issue (TreeNode), which the Legion
+// board and the metrics both read here, so the two place an issue in one tree. The daemon reports
+// an issue that is in its state, or that Dispatch observed a phase of (dispatch://INFRA-1077's
+// spec, "The top issue of a tree"): an issue with a field whose newest row holds a value, which is
+// the newest good read carrying it, or with a `phase` row at all. The sampler writes no first
+// `null`, so a field that has a row was once given a value, and an issue that left the daemon's
+// state keeps its `phase` row, written `null` when it left: it stays a Legion issue, so a child of
+// it climbs through it to the tree above, while it carries no card and no tree, since its `tree`
+// was written `null` with the rest. The rows under AdmissionKey belong to no issue — the admission
+// block and the daemon's settings — so they report nothing.
+func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
+	rows, err := db.Query(ctx, `
+		select issue_key, field, nullif(value, 'null'::jsonb), observed_at
+		from legion_current
+		where project = $1 and (value <> 'null'::jsonb or field = $2)
+	`, project, FieldPhase)
 	if err != nil {
-		return nil, fmt.Errorf("read the newest Legion observations of %s: %w", project, err)
+		return Current{}, fmt.Errorf("read the current Legion state of %s: %w", project, err)
 	}
 	defer rows.Close()
-	var newest []Newest
+	current := Current{Reported: map[string]string{}}
 	for rows.Next() {
 		var one Newest
 		var value []byte
 		if err := rows.Scan(&one.IssueKey, &one.Field, &value, &one.ObservedAt); err != nil {
-			return nil, fmt.Errorf("scan a newest Legion observation of %s: %w", project, err)
+			return Current{}, fmt.Errorf("scan a current Legion observation of %s: %w", project, err)
+		}
+		if one.IssueKey != AdmissionKey {
+			tree := current.Reported[one.IssueKey]
+			if one.Field == FieldTree {
+				tree = JSONString(value)
+			}
+			current.Reported[one.IssueKey] = tree
+		}
+		if value == nil {
+			// A `phase` written `null`, which reports its issue and holds no value.
+			continue
 		}
 		one.Value = value
-		newest = append(newest, one)
+		current.Newest = append(current.Newest, one)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the newest Legion observations of %s: %w", project, err)
+		return Current{}, fmt.Errorf("read the current Legion state of %s: %w", project, err)
 	}
-	return newest, nil
-}
-
-// ReportedIssues is every issue of project the daemon reports, against the `tree` the newest good
-// read names for it, "" where it names none: the daemon half of what makes an issue a Legion issue
-// (tree.go's TreeNode), which the Legion board and the metrics both read here, so the two place an
-// issue in one tree.
-//
-// The daemon reports an issue that is in its state, or that Dispatch observed a phase of
-// (dispatch://INFRA-1077's spec, "The top issue of a tree"): an issue with a field whose newest
-// row holds a value, which is the newest good read carrying it, or with a `phase` row at all. The
-// sampler writes no first `null`, so a field that has a row was once given a value, and an issue
-// that left the daemon's state keeps its `phase` row, written `null` when it left: it stays a
-// Legion issue, so a child of it climbs through it to the tree above, while it carries no card
-// (NewestObservations) and no tree, since its `tree` was written `null` with the rest. Both halves
-// are read from legion_current, one row per field, and not from the history.
-//
-// The rows under AdmissionKey belong to no issue — the admission block and the daemon's settings —
-// so they report nothing.
-func ReportedIssues(ctx context.Context, pool *store.Pool, project string) (map[string]string, error) {
-	rows, err := pool.Query(ctx, `
-		select issue_key, coalesce(max(value::text) filter (where field = $3), 'null')
-		from legion_current
-		where project = $1 and issue_key <> $2
-		group by issue_key
-		having bool_or(field = $4 or value <> 'null'::jsonb)
-	`, project, AdmissionKey, FieldTree, FieldPhase)
-	if err != nil {
-		return nil, fmt.Errorf("read the issues %s's Legion daemon reports: %w", project, err)
-	}
-	defer rows.Close()
-	reported := map[string]string{}
-	for rows.Next() {
-		var key, tree string
-		if err := rows.Scan(&key, &tree); err != nil {
-			return nil, fmt.Errorf("scan an issue %s's Legion daemon reports: %w", project, err)
-		}
-		reported[key] = JSONString([]byte(tree))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the issues %s's Legion daemon reports: %w", project, err)
-	}
-	return reported, nil
+	return current, nil
 }

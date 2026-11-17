@@ -9,32 +9,40 @@ package legion
 // TreeNode is what the walk reads of one issue: the tree root the daemon named for it, the parent
 // Dispatch records, and whether the walk may climb through it from a child below.
 //
-// Tree is the daemon's own `tree` for the issue, which names its top issue outright. It is a fact
-// of the project and not of any window, so a population answers it for every issue the daemon
-// named one for, not for the issues one report happens to read. It is the newest good read's, and
-// empty where that read named none: every daemon before dispatch://INFRA-980, and an issue that
-// left the daemon's state.
+// Tree is the daemon's own `tree` for the issue, which names its top issue outright: ReadCurrent's
+// Reported, empty where the newest good read named none, as no daemon before dispatch://INFRA-980
+// names one. It is a fact of the project and not of any window, so a population answers it for
+// every issue the daemon named one for, not for the issues one report happens to read.
 //
-// Legion is one rule, the same for every reader: an issue is a Legion issue when the daemon
-// reports it — it is in the daemon's state, or Dispatch observed a phase of it (ReportedIssues) —
-// or when it carries Legion phase work, a worker event or a handoff (dispatch://INFRA-1077's
-// spec, "The top issue of a tree"). A population answers it for the issues it holds and false for
-// the rest; it is not the rule that picks which finished issues a metric counts, which needs phase
-// work. A chain stops below the first issue that is not a Legion issue, which is what keeps a tree
-// from climbing into the tracking issues above it. An issue that left the daemon's state is still
-// a Legion issue, so a child of it still climbs through it.
+// Legion is one rule, the same for every reader, and IsLegionIssue is its code: an issue is a
+// Legion issue when the daemon reports it (ReadCurrent's Reported) or when it carries Legion phase
+// work, a worker event or a handoff (dispatch://INFRA-1077's spec, "The top issue of a tree"). A
+// population answers it for the issues it holds and false for the rest; it is not the rule that
+// picks which finished issues a metric counts, which needs phase work. A chain stops below the
+// first issue that is not a Legion issue, which is what keeps a tree from climbing into the
+// tracking issues above it.
 //
 // Both halves are facts of the project and not of any window, so neither reader reads them for a
-// window. Both readers take the daemon's reports, and each reported issue's Tree, from one read of
-// the project's newest observations (ReportedIssues). The phase work the metrics read in one read
-// of every handoff and every Legion role session's event (PhaseWorkKeys), and the board only for
-// the issues its walk can climb onto that the daemon reports nothing of, from all of those issues'
-// own rows (PhaseWorkOf), which is the whole log's answer for each of them. A window narrows which
+// window: the daemon's half is ReadCurrent's, and the phase work the metrics read in one read of
+// every handoff and every Legion role session's event (PhaseWorkKeys), and the board only for the
+// issues its walk can climb onto that the daemon reports nothing of, from all of those issues' own
+// rows (PhaseWorkOf), which is the whole log's answer for each of them. A window narrows which
 // issues a metric measures, never which issues are Legion's.
 type TreeNode struct {
 	Tree   string
 	Parent string
 	Legion bool
+}
+
+// IsLegionIssue is TreeNode's Legion for key, from the two sets the rule reads: reported, the
+// issues the daemon reports (ReadCurrent's Reported), and phaseWork, the issues that carry Legion
+// phase work (PhaseWorkKeys, PhaseWorkOf). Each reader fills its TreeNode's Legion here.
+func IsLegionIssue(key string, reported map[string]string, phaseWork map[string]struct{}) bool {
+	if _, held := reported[key]; held {
+		return true
+	}
+	_, worked := phaseWork[key]
+	return worked
 }
 
 // TreeRoot is the issue's tree root: the `tree` the daemon named where a read carried one, and
