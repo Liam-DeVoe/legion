@@ -41,7 +41,8 @@ const implementer: StepRecord = {
   report: "9b2e4d6f-8a1c-4e3b-a5d7-c9f1e3b5d7a9",
 };
 
-/** The tester's run of step 3, still running: no end, no result, and no model answered yet. */
+/** The tester's run of step 3, still running: no end, no result, and no session or model, which
+ *  only the end writes, as one read of its agent. */
 const tester: StepRecord = {
   id: "5a1d9c3e-7b2f-5d8a-8e4c-6f0a2b4c6d81",
   issue: "LEG-1",
@@ -51,7 +52,7 @@ const tester: StepRecord = {
   role: "tester",
   type: "testing",
   agent: "legion-leg-leg-1-tester",
-  session: "ses-tester",
+  session: "",
   model: "",
   generation: 1,
   attempt: 1,
