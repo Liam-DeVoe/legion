@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -199,6 +200,80 @@ func TestAnEndAfterAnEndKeepsTheFirst(t *testing.T) {
 	}
 }
 
+// The result of a run and the step it returned to are one fact, the outcome one end reported, so
+// only the write that sets the result sets its destination: a node that holds a result keeps the
+// destination its own end named, none included, in the write's answer, in the issue's read and in
+// the log. Which of the start and the end came first does not matter.
+func TestARunKeepsTheDestinationOfTheEndThatSetItsResult(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	ended := func(id, result string, at time.Time, returned *int) StepWrite {
+		end := endOf(implementer(id), result, at)
+		end.ReturnedTo = returned
+		return end
+	}
+	for name, row := range map[string]struct {
+		writes   func(id string) []StepWrite
+		result   string
+		returned *int
+	}{
+		"a later end does not add a destination": {
+			writes: func(id string) []StepWrite {
+				return []StepWrite{
+					startOf(implementer(id), minute(0)),
+					ended(id, ResultStopped, minute(1), nil),
+					ended(id, ResultFailed, minute(2), new(2)),
+				}
+			},
+			result: ResultStopped,
+		},
+		"an end before its start": {
+			writes: func(id string) []StepWrite {
+				return []StepWrite{
+					ended(id, ResultFailed, minute(1), new(2)),
+					startOf(implementer(id), minute(0)),
+				}
+			},
+			result: ResultFailed, returned: new(2),
+		},
+		"an end repeated, then another destination": {
+			writes: func(id string) []StepWrite {
+				return []StepWrite{
+					startOf(implementer(id), minute(0)),
+					ended(id, ResultFailed, minute(1), new(2)),
+					ended(id, ResultFailed, minute(1), new(2)),
+					ended(id, ResultFailed, minute(2), new(3)),
+					ended(id, ResultStopped, minute(3), new(0)),
+				}
+			},
+			result: ResultFailed, returned: new(2),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := uuid.NewString()
+			var answered Step
+			for index, write := range row.writes(id) {
+				answered = put(t, pool, write, minute(index))
+			}
+			read := stepOf(t, pool, "LEG-1", id).Step
+			for what, step := range map[string]Step{"the last write's answer": answered, "the read": read} {
+				if step.Result != row.result || !reflect.DeepEqual(step.ReturnedTo, row.returned) {
+					t.Errorf("%s reads result %q returned_to %s, want %q returned_to %s",
+						what, step.Result, destination(step.ReturnedTo), row.result, destination(row.returned))
+				}
+			}
+			want := 0
+			if row.returned != nil {
+				want = 1
+			}
+			for field, count := range map[string]int{AttributeResult: 1, AttributeReturnedTo: want} {
+				if got := valueTuples(t, pool, id, field); got != count {
+					t.Errorf("the log holds %d %s tuples of the run, want %d", got, field, count)
+				}
+			}
+		})
+	}
+}
+
 // A write that names another value for a field the node holds leaves the held value, whichever of
 // the start and the end came first, and appends no tuple for it: the first value of each field
 // stands, in the write's answer and in the issue's read.
@@ -240,16 +315,8 @@ func TestAHeldFieldKeepsItsFirstValue(t *testing.T) {
 				written, again := writes(id)
 				put(t, pool, written, minute(0))
 				answered := put(t, pool, again, minute(1))
-				var read *Step
-				for _, step := range issueSteps(t, pool, "LEG-1") {
-					if step.ID == id {
-						read = &step.Step
-					}
-				}
-				if read == nil {
-					t.Fatalf("LEG-1 does not list the run %s", id)
-				}
-				for what, step := range map[string]Step{"the second write's answer": answered, "the read": *read} {
+				read := stepOf(t, pool, "LEG-1", id).Step
+				for what, step := range map[string]Step{"the second write's answer": answered, "the read": read} {
 					if got := row.held(step); got != row.want {
 						t.Errorf("%s holds %s %v, want the first write's %v", what, name, got, row.want)
 					}
@@ -259,6 +326,41 @@ func TestAHeldFieldKeepsItsFirstValue(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A write that does not name a field the node holds leaves it: the report the daemon writes to a
+// run that already ended names its identity and the report alone, and the run keeps the session
+// and the model its end wrote, in the write's answer, in the issue's read and in the log. An empty
+// session states nothing, as an absent one.
+func TestALateReportKeepsTheEndedRunsSession(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	for name, session := range map[string]*string{"no session": nil, "an empty session": new("")} {
+		t.Run(name, func(t *testing.T) {
+			id, report := uuid.NewString(), uuid.NewString()
+			put(t, pool, startOf(implementer(id), minute(0)), minute(0))
+			end := endOf(implementer(id), ResultPassed, minute(1))
+			end.Session, end.Model = new("ses-first"), new("anthropic/claude-opus-5")
+			if ended := put(t, pool, end, minute(1)); ended.Session != "ses-first" || ended.Model != "anthropic/claude-opus-5" {
+				t.Fatalf("the end answers session %q model %q, want the pair it wrote", ended.Session, ended.Model)
+			}
+
+			late := implementer(id)
+			late.Report, late.Session = new(report), session
+			answered := put(t, pool, late, minute(2))
+			read := stepOf(t, pool, "LEG-1", id).Step
+			for what, step := range map[string]Step{"the report's answer": answered, "the read": read} {
+				if step.Session != "ses-first" || step.Model != "anthropic/claude-opus-5" || step.Report != report {
+					t.Errorf("%s holds session %q model %q report %q, want the end's ses-first and anthropic/claude-opus-5 beside report %s",
+						what, step.Session, step.Model, step.Report, report)
+				}
+			}
+			for _, field := range []string{AttributeSession, AttributeModel, AttributeReport} {
+				if count := valueTuples(t, pool, id, field); count != 1 {
+					t.Errorf("the log holds %d %s tuples of the run, want one", count, field)
+				}
+			}
+		})
 	}
 }
 
@@ -282,8 +384,8 @@ func TestAWriteThatMakesANodeNamesItsIdentity(t *testing.T) {
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("a first write with no %s answered %v, want %v", name, err, ErrStepInput)
 			}
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("the refusal %q does not name the missing %s", err, name)
+			if !strings.Contains(err.Error(), "does not name its "+name+":") {
+				t.Errorf("the refusal %q does not name the missing %s alone", err, name)
 			}
 			if nodes := countNodes(t, pool, id); nodes != 0 {
 				t.Errorf("the refused write left %d nodes, want none", nodes)
@@ -415,13 +517,7 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 			return
 		}
 		defer second.Rollback(ctx)
-		var pid uint32
-		if err := second.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
-			backend <- 0
-			answered <- err
-			return
-		}
-		backend <- pid
+		backend <- second.Conn().PgConn().PID()
 		if _, err := PutStep(ctx, second, end(ResultPassed, minute(2)), daemon, minute(2)); err != nil {
 			answered <- err
 			return
@@ -455,8 +551,9 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 
 // The attempt is the place of a record among the records of the same task, step and kind,
 // ordered by generation, then start (a record with no start first), then id. The retro and the
-// merge are both step 0 and count apart, by their kind; two tasks whose runs interleave at one
-// place count them apart, and so do two issues.
+// merge are both step 0 and count apart, by their kind; two places of one task that a plan gives
+// one role count apart, by their place; two tasks whose runs interleave at one place count them
+// apart, and so do two issues.
 func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	ofKind := func(kind string, place int, role string, generation int64) StepWrite {
@@ -475,6 +572,8 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 		startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(1)),
 		inTask("docs", startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(1).Add(30*time.Second))),
 		startOf(ofKind(StepKindStep, 3, "tester", 1), minute(2)),
+		// A plan may name one role at two places: each place counts its own runs.
+		startOf(ofKind(StepKindStep, 4, "tester", 1), minute(2).Add(30*time.Second)),
 		startOf(ofKind(StepKindRetro, 0, "implementer", 1), minute(3)),
 		startOf(ofKind(StepKindMerge, 0, "merger", 1), minute(4)),
 		// The merge returned the task.
@@ -501,16 +600,17 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	attempts := map[string][]int{}
 	var order []string
 	for _, step := range issueSteps(t, pool, "LEG-1") {
-		key := step.Task + "/" + step.Kind + "/" + step.Role
+		key := step.Task + "/" + step.Kind + "/" + strconv.Itoa(step.Place)
 		attempts[key] = append(attempts[key], step.Attempt)
 		order = append(order, step.ID)
 	}
 	want := map[string][]int{
-		"default/step/implementer":  {1, 2, 3},
-		"docs/step/implementer":     {1, 2},
-		"default/step/tester":       {1, 2},
-		"default/retro/implementer": {1, 2},
-		"default/merge/merger":      {1, 2},
+		"default/step/2":  {1, 2, 3},
+		"docs/step/2":     {1, 2},
+		"default/step/3":  {1, 2},
+		"default/step/4":  {1},
+		"default/retro/0": {1, 2},
+		"default/merge/0": {1, 2},
 	}
 	if !reflect.DeepEqual(attempts, want) {
 		t.Errorf("the attempts read %v, want %v", attempts, want)
@@ -622,7 +722,9 @@ func TestTheTablesAreThePriorityShape(t *testing.T) {
 	}
 }
 
-// A value outside its form is refused ErrStepInput, naming what is wrong, and writes nothing.
+// A value outside its form is refused ErrStepInput by the rule of the field the row names, whose
+// refusal begins with that field, and writes nothing. A retro or a merge away from place 0 names
+// no type, so only the rule of its place can refuse it.
 func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	for name, change := range map[string]func(*StepWrite){
@@ -632,15 +734,22 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"result without end": func(write *StepWrite) { write.Result = new(ResultPassed) },
 		"type of a retro":    func(write *StepWrite) { write.Kind, write.Place = new(StepKindRetro), new(0) },
 		"type of a merge":    func(write *StepWrite) { write.Kind, write.Place = new(StepKindMerge), new(0) },
+		"step of a retro":    func(write *StepWrite) { write.Kind, write.Type = new(StepKindRetro), nil },
+		"step of a merge":    func(write *StepWrite) { write.Kind, write.Type = new(StepKindMerge), nil },
 		"returned_to": func(write *StepWrite) {
 			write.ReturnedTo, write.Result, write.EndedAt = new(2), new(ResultPassed), new(minute(1))
+		},
+		"returned_to below 0": func(write *StepWrite) {
+			write.ReturnedTo, write.Result, write.EndedAt = new(-1), new(ResultFailed), new(minute(1))
+		},
+		"returned_to with no result": func(write *StepWrite) {
+			write.ReturnedTo = new(2)
 		},
 		"report":     func(write *StepWrite) { write.Report = new("not-a-uuid") },
 		"id":         func(write *StepWrite) { write.ID = "not-a-uuid" },
 		"task":       func(write *StepWrite) { write.Task = new("Default") },
 		"role":       func(write *StepWrite) { write.Role = new("Implementer") },
 		"type":       func(write *StepWrite) { write.Type = new("Review") },
-		"step":       func(write *StepWrite) { write.Kind = new(StepKindRetro) },
 		"generation": func(write *StepWrite) { write.Generation = new(int64(0)) },
 		"issue":      func(write *StepWrite) { write.Issue = "" },
 	} {
@@ -651,8 +760,9 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("the write answered %v, want %v", err, ErrStepInput)
 			}
-			if field := strings.Fields(name)[0]; !strings.Contains(err.Error(), field) {
-				t.Errorf("the refusal %q does not name %s", err, field)
+			field := strings.Fields(name)[0]
+			if detail := strings.TrimPrefix(err.Error(), ErrStepInput.Error()+": "); !strings.HasPrefix(detail, field+" ") {
+				t.Errorf("the refusal %q is not the rule of %s", err, field)
 			}
 		})
 	}
@@ -681,10 +791,8 @@ func TestARetroOrAMergeTakesNoType(t *testing.T) {
 			if after := wholeLog(t, pool); !reflect.DeepEqual(after, before) {
 				t.Errorf("the refused write moved the log from %d tuples to %d", len(before), len(after))
 			}
-			for _, step := range issueSteps(t, pool, "LEG-1") {
-				if step.ID == id && step.Type != "" {
-					t.Errorf("the %s holds type %q, want none", kind, step.Type)
-				}
+			if step := stepOf(t, pool, "LEG-1", id); step.Type != "" {
+				t.Errorf("the %s holds type %q, want none", kind, step.Type)
 			}
 		})
 	}
@@ -723,6 +831,17 @@ func issueSteps(t *testing.T, pool *store.Pool, issue string) []StepRead {
 		t.Fatalf("read the steps of %s: %v", issue, err)
 	}
 	return steps
+}
+
+// stepOf is the run id as the read of issue lists it; a read that does not list it fails the test.
+func stepOf(t *testing.T, pool *store.Pool, issue, id string) StepRead {
+	t.Helper()
+	steps := issueSteps(t, pool, issue)
+	index := slices.IndexFunc(steps, func(step StepRead) bool { return step.ID == id })
+	if index < 0 {
+		t.Fatalf("%s does not list the run %s", issue, id)
+	}
+	return steps[index]
 }
 
 func countNodes(t *testing.T, pool *store.Pool, id string) int {
@@ -823,4 +942,12 @@ func valueTuples(t *testing.T, pool *store.Pool, id, attribute string) int {
 		t.Fatalf("count the %s tuples of step %s: %v", attribute, id, err)
 	}
 	return count
+}
+
+// destination is a run's returned_to as a failure message prints it.
+func destination(returned *int) string {
+	if returned == nil {
+		return "none"
+	}
+	return strconv.Itoa(*returned)
 }

@@ -33,7 +33,10 @@ var (
 // stands after the write. It sets each field the write states that the node does not hold yet,
 // appending one value tuple for each, and leaves each field the node holds as it is, appending
 // nothing for it. So a start and an end merge in either order, a write that runs again changes
-// nothing, and a later end never replaces an earlier one.
+// nothing, and a later end never replaces an earlier one. The one field taken otherwise is
+// returned_to: the result of a run and the step it returned to are one fact, the outcome one end
+// reported, so only the write that sets the result sets it, and a node that holds a result keeps
+// the destination its own end named, none included.
 //
 // The write that finds no node makes it, whichever of the two it is, and states the `part_of`
 // relation to the issue; it must name the step's whole identity (task, kind, step, role and
@@ -87,24 +90,16 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	if err := json.Unmarshal(heldText, &held); err != nil {
 		return Step{}, fmt.Errorf("decode the attributes of step %s: %w", id, err)
 	}
+	current, err := stepFrom(id, heldText)
+	if err != nil {
+		return Step{}, err
+	}
 	if !made {
-		var issue string
-		if raw, holds := held[AttributeIssue]; holds {
-			if err := json.Unmarshal(raw, &issue); err != nil {
-				return Step{}, fmt.Errorf("decode the issue of step %s: %w", id, err)
-			}
-		}
-		if issue != write.Issue {
-			return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, issue, write.Issue)
-		}
-		var kind string
-		if raw, holds := held[AttributeKind]; holds {
-			if err := json.Unmarshal(raw, &kind); err != nil {
-				return Step{}, fmt.Errorf("decode the kind of step %s: %w", id, err)
-			}
+		if current.Issue != write.Issue {
+			return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, current.Issue, write.Issue)
 		}
 		if write.Type != nil {
-			if err := typeOfKind(kind, *write.Type); err != nil {
+			if err := typeOfKind(current.Kind, *write.Type); err != nil {
 				return Step{}, err
 			}
 		}
@@ -113,8 +108,13 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	setting := map[string]any{}
 	var tuples []tuple
 	var report string
+	_, ended := held[AttributeResult]
+	setsResult := !ended && write.Result != nil && *write.Result != ""
 	for _, attribute := range stated {
 		if _, holds := held[attribute.name]; holds {
+			continue
+		}
+		if attribute.name == AttributeReturnedTo && !setsResult {
 			continue
 		}
 		setting[attribute.name] = attribute.value
@@ -130,7 +130,7 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		tuples = append(tuples, tuple{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report})
 	}
 	if len(setting) == 0 {
-		return stepFrom(id, heldText)
+		return current, nil
 	}
 
 	moved, err := json.Marshal(setting)
