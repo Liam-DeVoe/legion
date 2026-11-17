@@ -19,7 +19,11 @@
 //	spec-check print --approved <approved.json> --id <id> [--id <id>...]
 //	spec-check guard --root <dir>
 //	spec-check state --scenario <dir> [--json]
-//	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)
+//	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
+//	  a check of production or of the graph is judged only at a deploy, and one of the graph reads
+//	  unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
+//	  by commit, and a result at one commit counts at another only when the check's tie is known at
+//	  both and no path that changed between them is covered by the tie at either)
 //	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
 //	    --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
 //	spec-check changed --repo <root> --base <commit> [--head <commit>]
@@ -116,11 +120,17 @@
 // error naming the file and the fault, for one it does not: a file or a field that the format does
 // not hold (JSON that is not UTF-8, or a member written in other letters or given two times, too),
 // a missing file, spec files that do not parse or that the rules of tree refuse, or a loop of parent
-// and support relations in the approved spec. A check of the graph has a state only at a subject
-// that names its graph_tx, and a result counts only at the subject that it read: a result of a
-// graph check at another transaction reads as a subject that moved. A subject names graph_tx only
-// with a deploy, and a result names one subject, so the reader refuses graph_tx on a branch and a
-// result that names two of commit, deploy and graph_tx.
+// and support relations in the approved spec. A check of production or of the graph is judged only
+// at a subject that names a deploy, and there a check of the graph counts only the results at the
+// subject's graph_tx, so it reads unknown when the subject names no graph_tx or one that no result
+// read; a result of a graph check at another transaction reads as a subject that moved. A subject
+// names graph_tx only with a deploy, each name of a subject has a letter or a digit, and a result
+// names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
+// graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
+// ties.json holds the tie of each check at each commit, and a result at one commit counts at another
+// only when the check's tie is known at both commits and no path that changed between them is
+// covered by the tie at either commit; the reader refuses a commit of ties.json of no letter and no
+// digit, as it refuses such a commit of a subject.
 //
 // citations names each program check of a directory of spec files that CI refuses at the commit of
 // the repository at <root> (specgraph.Citations, R48): its test is not in the code (GoCode, go list
@@ -206,7 +216,11 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check print --approved <approved.json> --id <id> [--id <id>...]
        spec-check guard --root <dir>
        spec-check state --scenario <dir> [--json]
-         (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)
+         (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
+         a check of production or of the graph is judged only at a deploy, and one of the graph reads
+         unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
+         by commit, and a result at one commit counts at another only when the check's tie is known at
+         both and no path that changed between them is covered by the tie at either)
        spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
            --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
        spec-check changed --repo <root> --base <commit> [--head <commit>]`

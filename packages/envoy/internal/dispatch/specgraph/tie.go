@@ -35,38 +35,18 @@ func NewTie(paths []string) (Tie, error) {
 	return Tie{Paths: slices.Compact(slices.Sorted(slices.Values(paths))), Known: true}, nil
 }
 
-// ReadTies reads ties in the form of a scenario's ties.json, {"<check id>":["<path or glob>", …]},
-// each tie as NewTie takes it. A check that the form does not name has no entry, which reads as a
-// tie that is not known. It reads the JSON with decodeJSON, the package's one reader of a JSON
-// file of a format, so it refuses what that reader refuses, a check that the object names two
-// times among them, and it names the check of a tie that NewTie refuses.
-func ReadTies(r io.Reader) (map[string]Tie, error) {
-	var paths map[string][]string
-	if err := decodeJSONFrom(r, &paths); err != nil {
-		return nil, err
-	}
-	ties := make(map[string]Tie, len(paths))
-	for _, check := range slices.Sorted(maps.Keys(paths)) {
-		tie, err := NewTie(paths[check])
-		if err != nil {
-			return nil, fmt.Errorf("check %q: %w", check, err)
-		}
-		ties[check] = tie
-	}
-	return ties, nil
-}
-
-// CommitTies is ties by commit: the id of a commit, then the id of a check, then its tie at that
-// commit. A commit that it does not hold has no known tie, and a check that a commit's ties do not
-// hold has a tie at that commit that is not known. Each entry of a tie is a path or a pattern of
-// the three forms of Tie.
+// CommitTies is the tie of each check at each commit, by commit and then by check id, since a tie
+// is a fact of a commit (R18: "At each commit, Dispatch derives four ties"). A check that the map
+// of a commit does not hold has a tie that is not known at that commit, and so has each check at a
+// commit that it does not hold.
 type CommitTies map[string]map[string]Tie
 
-// ReadCommitTies reads ties by commit, {"<commit id>": {"<check id>": ["<path or pattern>", …]}},
-// with decodeJSON, so it refuses what that reader refuses. A commit id has a letter or a digit, as
-// a scenario names its commits; a reader that needs full object names, as spec-check citations
-// does, checks them after the read. Each tie is as NewTie takes it, and a refusal names its commit
-// and its check.
+// ReadCommitTies reads ties in the form of a scenario's ties.json,
+// {"<commit>":{"<check id>":["<path or pattern>", …]}}, each tie as NewTie takes it. It reads the
+// JSON with decodeJSON, the package's one reader of a JSON file of a format, so it refuses what
+// that reader refuses. It refuses a commit of no letter and no digit (hasWord), as the scenario
+// reader refuses such a commit of a subject, since it names no commit, and it names the commit and
+// the check of a tie that NewTie refuses.
 func ReadCommitTies(r io.Reader) (CommitTies, error) {
 	var paths map[string]map[string][]string
 	if err := decodeJSONFrom(r, &paths); err != nil {
@@ -75,7 +55,7 @@ func ReadCommitTies(r io.Reader) (CommitTies, error) {
 	ties := make(CommitTies, len(paths))
 	for _, commit := range slices.Sorted(maps.Keys(paths)) {
 		if !hasWord(commit) {
-			return nil, fmt.Errorf("commit %q: names no commit: it has no letter and no digit", commit)
+			return nil, fmt.Errorf("commit %q: a commit of no letter and no digit names no commit", commit)
 		}
 		ties[commit] = make(map[string]Tie, len(paths[commit]))
 		for _, check := range slices.Sorted(maps.Keys(paths[commit])) {

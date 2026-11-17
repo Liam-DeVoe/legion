@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -159,10 +158,14 @@ func TestScenarioRefusals(t *testing.T) {
 			"results.json", `member "/0/outcome" is in one object two times`},
 		{"a byte that is not UTF-8", "carry", replace("subjects.json", `"branch": "main"`, "\"branch\": \"ma\xffin\""),
 			"subjects.json", "it is not UTF-8"},
-		{"one tie two times", "carry", write("ties.json", `{"a-restart-loses-no-message":["packages/envoy/go.mod"],"a-restart-loses-no-message":["docs/x.md"]}`),
-			"ties.json", `member "/a-restart-loses-no-message" is in one object two times`},
-		{"a tie glob", "carry", write("ties.json", `{"a-restart-loses-no-message":["p/*.go"]}`),
-			"ties.json", `check "a-restart-loses-no-message": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`},
+		{"one tie two times", "carry", write("ties.json", `{"c1":{"a-restart-loses-no-message":["packages/envoy/go.mod"],"a-restart-loses-no-message":["docs/x.md"]}}`),
+			"ties.json", `member "/c1/a-restart-loses-no-message" is in one object two times`},
+		{"a tie glob", "carry", write("ties.json", `{"c1":{"a-restart-loses-no-message":["p/*.go"]}}`),
+			"ties.json", `commit "c1": check "a-restart-loses-no-message": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`},
+		// A tie is a fact of a commit (R18: "At each commit, Dispatch derives four ties"), and a commit
+		// of ties.json is taken by the rule that the reader takes the commit of a subject with.
+		{"a commit of ties.json that holds only blanks", "carry", write("ties.json", `{" \t ":{"a-restart-loses-no-message":["go.work"]}}`),
+			"ties.json", `commit " \t ": a commit of no letter and no digit names no commit`},
 		{"a subject with a branch and a deploy", "carry",
 			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","deploy":"d1","now":"2026-11-14T00:00:00Z"}]`),
 			"subjects.json", "subject 1: it sets both branch and deploy; a subject sets exactly one of them"},
@@ -173,6 +176,21 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a subject of a branch with a transaction of the graph", "carry",
 			write("subjects.json", `[{"commit":"c2","branch":"listener-restart","graph_tx":"tx1","now":"2026-11-14T00:00:00Z"}]`),
 			"subjects.json", "subject 1: it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"},
+		// A graph_tx of no letter and no digit, by the test that the reader takes a missing text with,
+		// names no transaction (TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject takes tx1).
+		{"a subject whose graph_tx holds only blanks", "carry",
+			replace("subjects.json", `"branch": "listener-change"`, `"deploy": "d1", "graph_tx": " \t "`),
+			"subjects.json", "subject 4: it sets a graph_tx of no letter and no digit, which names no transaction of the graph"},
+		{"a subject whose commit holds only blanks", "carry", func(t *testing.T, dir string) {
+			replaceIn(t, filepath.Join(dir, "subjects.json"), `"commit": "c4"`, `"commit": " \t "`)
+			if err := os.Rename(filepath.Join(dir, "files", "c4"), filepath.Join(dir, "files", " \t ")); err != nil {
+				t.Fatal(err)
+			}
+		}, "subjects.json", "subject 4: it sets a commit of no letter and no digit, which names no commit"},
+		{"a subject whose branch holds only blanks", "carry", replace("subjects.json", `"branch": "listener-change"`, `"branch": " \t "`),
+			"subjects.json", "subject 4: it sets a branch of no letter and no digit, which names no branch"},
+		{"a subject whose deploy holds only blanks", "carry", replace("subjects.json", `"branch": "listener-change"`, `"deploy": " \t "`),
+			"subjects.json", "subject 4: it sets a deploy of no letter and no digit, which names no deploy"},
 		{"a subject with no time", "carry", write("subjects.json", `[{"commit":"c2","branch":"listener-restart"}]`),
 			"subjects.json", "subject 1: it sets no now"},
 		{"no subject", "carry", write("subjects.json", `[]`), "subjects.json", "it holds no subject"},
@@ -215,6 +233,20 @@ func TestScenarioRefusals(t *testing.T) {
 		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "missing")
 		expect(t, runBinary(t, binary, "", "state", "--scenario", missing), result{code: 2, stderr: "spec-check: " + missing + ": does not exist\n"})
+	})
+	// encoding/json/v2 words the fault of a value of another type with a modal verb that it picks at
+	// random once per process ("cannot" or "unable to", errorModalVerb), so this row reads the file,
+	// the type and the member, and not the verb.
+	t.Run("ties by check, with no commit", func(t *testing.T) {
+		t.Parallel()
+		dir := copyScenario(t, "carry")
+		writeFile(t, filepath.Join(dir, "ties.json"), []byte(`{"a-restart-loses-no-message":["go.work"]}`))
+		got := runBinary(t, binary, "", "state", "--scenario", dir)
+		prefix := "spec-check: " + filepath.Join(dir, "ties.json") + ": json: "
+		fault := ` unmarshal JSON array into Go map[string][]string within "/a-restart-loses-no-message"` + "\n"
+		if got.code != 2 || got.stdout != "" || !strings.HasPrefix(got.stderr, prefix) || !strings.HasSuffix(got.stderr, fault) || strings.Count(got.stderr, "\n") != 1 {
+			t.Errorf("exit %d, stdout %q, stderr %q: want exit 2, nothing on stdout, and one line %q…%q", got.code, got.stdout, got.stderr, prefix, fault)
+		}
 	})
 }
 
@@ -348,11 +380,14 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 }
 
 // R13: a query "reads the graph at one transaction". R7: "A result counts only for the procedure
-// that ran it and for the subject that it read." Through the command, a check of the graph is judged
-// at the graph_tx of the subject, which the subject line names, whichever transaction is newer or
-// was recorded last, and has no state at a subject that names none. Each row: carry at m2 alone, as
-// the commit that production runs at deploy d1, with a query of the graph under its leaf: a failure
-// at tx2, then a pass at tx1 recorded later, and a caught failing example.
+// that ran it and for the subject that it read." R10: "A check whose subject is production decides
+// nothing for the head of a branch", and the graph is production's data. Through the command, a
+// check of the graph is judged at the commit that production runs, at the graph_tx of the subject,
+// which the subject line names, whichever transaction is newer or was recorded last, and reads
+// unknown at a subject that names no graph_tx or one that no result read (R10: "Unknown: every
+// other case"). Each row: carry at m2 alone, as the commit that production runs at deploy d1, with a
+// query of the graph as the one check of its leaf (carry's code check taken out), the row's runs of
+// it, and a caught failing example.
 func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -361,21 +396,35 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 		Claim:          "Each message record of the graph has a delivery record.",
 		ProcedureText:  "The query reads each message record of the graph.\nIt returns each message record that has no delivery record.",
 		FailingExample: "A copy of the graph with one message record that has no delivery record."}
-	for _, row := range []struct{ graphTx, subjectLine, checkLine string }{
-		{"tx2", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx2",
-			"  check " + graph.ID + ": false (failed, counted from tx2)"},
-		{"tx1", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx1",
-			"  check " + graph.ID + ": true (passed, counted from tx1)"},
-		{"tx3", "spec-check: subject m2, the commit that production runs at deploy d1, and the graph at transaction tx3",
-			"  check " + graph.ID + ": unknown (subject_moved)"},
-		{"", "spec-check: subject m2, the commit that production runs at deploy d1", ""},
+	run := func(outcome, tx, at string, seq int) any {
+		return map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": outcome, "graph_tx": tx, "at": at, "seq": seq}
+	}
+	twoRuns := []any{run("fail", "tx2", "2026-11-13T12:00:00Z", 21), run("pass", "tx1", "2026-11-13T13:00:00Z", 22)}
+	deploy := "spec-check: subject m2, the commit that production runs at deploy d1"
+	leaf, check := "statement a-stored-message-survives-a-restart: ", "  check "+graph.ID+": "
+	unknown := []string{leaf + "unknown (check " + graph.ID + ": subject_moved)", check + "unknown (subject_moved)"}
+	for _, row := range []struct {
+		name, graphTx string
+		runs          []any
+		subjectLine   string
+		want          []string // lines that stdout holds
+	}{
+		{"a failure at tx2, then a pass at tx1; graph_tx tx2", "tx2", twoRuns, deploy + ", and the graph at transaction tx2",
+			[]string{leaf + "not met (check " + graph.ID + " is false)", check + "false (failed, counted from tx2)"}},
+		{"a failure at tx2, then a pass at tx1; graph_tx tx1", "tx1", twoRuns, deploy + ", and the graph at transaction tx1",
+			[]string{leaf + "met", check + "true (passed, counted from tx1)"}},
+		{"a failure at tx2, then a pass at tx1; graph_tx tx3", "tx3", twoRuns, deploy + ", and the graph at transaction tx3", unknown},
+		{"a failure at tx2, then a pass at tx1; no graph_tx", "", twoRuns, deploy, unknown},
+		{"a failure at tx1; no graph_tx", "", []any{run("fail", "tx1", "2026-11-13T12:00:00Z", 21)}, deploy, unknown},
+		{"a pass at tx1; no graph_tx", "", []any{run("pass", "tx1", "2026-11-13T12:00:00Z", 21)}, deploy, unknown},
 	} {
-		t.Run("graph_tx "+strconv.Quote(row.graphTx), func(t *testing.T) {
+		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			dir := copyScenario(t, "carry")
 			for _, commit := range []string{"c2", "c3", "c4"} {
 				removeAll(t, filepath.Join(dir, "files", commit))
 			}
+			removeCheck(t, dir, "a-restart-loses-no-message")
 			subject := map[string]any{"commit": "m2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}
 			if row.graphTx != "" {
 				subject["graph_tx"] = row.graphTx
@@ -394,10 +443,8 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			writeFile(t, spec, append(append(content, '\n'), block...))
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			results = append(results,
-				map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-13T11:00:00Z", "seq": 20},
-				map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": "fail", "graph_tx": "tx2", "at": "2026-11-13T12:00:00Z", "seq": 21},
-				map[string]any{"check": graph.ID, "check_version": 1, "kind": "run", "outcome": "pass", "graph_tx": "tx1", "at": "2026-11-13T13:00:00Z", "seq": 22})
+			fault := map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-13T11:00:00Z", "seq": 20}
+			results = append(append(results, fault), row.runs...)
 			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
 			got := runBinary(t, binary, "", "state", "--scenario", dir)
 			if got.code != 0 || got.stderr != "" {
@@ -407,12 +454,117 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			if lines[0] != row.subjectLine {
 				t.Errorf("the subject line %q, want %q", lines[0], row.subjectLine)
 			}
-			judged := slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "  check "+graph.ID+":") })
-			switch {
-			case row.checkLine == "" && judged:
-				t.Errorf("a subject with no graph_tx judged the check of the graph:\n%s", got.stdout)
-			case row.checkLine != "" && !slices.Contains(lines, row.checkLine):
-				t.Errorf("no line %q in:\n%s", row.checkLine, got.stdout)
+			for _, want := range row.want {
+				if !slices.Contains(lines, want) {
+					t.Errorf("no line %q in:\n%s", want, got.stdout)
+				}
+			}
+		})
+	}
+}
+
+// R8: "A result at one commit also counts at another commit when no code that the check runs
+// changed between the two (R18)", "A check whose tie to its code is unknown runs on each push to the
+// branch", and "A failing example that the check's test caught counts at another commit only while
+// no file that the test reads changed". R18: "At each commit, Dispatch derives four ties". Through
+// the command, a result at c1 counts at c2 only when the check's tie is known at both commits and no
+// path that changed between them is covered by the tie at either commit. Each row: carry at c2
+// alone, whose tree differs from c1's in docs/x.md and in the row's files under testdata, with the
+// row's tie of the check at c1 and at c2 (tie: carry's tie; narrow: that tie with no entry of
+// testdata). A program row takes carry's code check out for a program check of production, at
+// deploy d1, with a pass of its test at c2 and a failing example that its test caught at c1.
+func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	program := specgraph.Check{ID: "a-production-restart-loses-no-message", Serves: "a-stored-message-survives-a-restart",
+		Subject: specgraph.SubjectProduction, Procedure: specgraph.ProcedureProgram,
+		Test:           &specgraph.Test{Runner: "go", Selector: "github.com/sjawhar/envoy/cmd/listener TestAProductionRestartLosesNoMessage", Job: "production-checks"},
+		Claim:          "A message that production stores before a restart reaches its session after the restart.",
+		ProcedureText:  "The program stores one message in production, starts the listener again and reads the messages of the session.\nIt must find the message one time.",
+		FailingExample: "A listener that deletes its stored messages when it starts."}
+	const testdata = "packages/envoy/cmd/listener/testdata/a.json"
+	tie := []string{"go.work", "packages/contracts/fixtures/dispatch-targeted-delivery.json", "packages/envoy/cmd/listener/*",
+		"packages/envoy/cmd/listener/testdata/**", "packages/envoy/go.mod", "packages/envoy/go.sum"}
+	narrow := slices.DeleteFunc(slices.Clone(tie), func(p string) bool { return p == "packages/envoy/cmd/listener/testdata/**" })
+	carried, moved := "true (passed, counted from c1)", "unknown (subject_moved)"
+	for _, row := range []struct {
+		name         string
+		program      bool
+		atC1, atC2   []string // the files under testdata that only c1, only c2 holds
+		tieC1, tieC2 []string // nil: the object of the commit holds no tie of the check
+		noC1         bool     // ties.json holds no object of c1
+		want         string   // the state of the row's check at c2
+	}{
+		{name: "control: c2 changes docs/x.md, which neither tie covers", tieC1: tie, tieC2: tie, want: carried},
+		{name: "control: the ties differ, and no path that changed is in either", tieC1: tie, tieC2: narrow, want: carried},
+		{name: "(a) c2 deletes a file under testdata that only the tie at c1 covers", atC1: []string{testdata}, tieC1: tie, tieC2: narrow, want: moved},
+		{name: "control: c2 deletes a file that both ties cover", atC1: []string{testdata}, tieC1: tie, tieC2: tie, want: moved},
+		{name: "c2 adds a file under testdata that only the tie at c2 covers", atC2: []string{testdata}, tieC1: narrow, tieC2: tie, want: moved},
+		{name: "(c) ties.json holds no object of c1", noC1: true, tieC2: tie, want: moved},
+		{name: "(d) the check has a tie at c2 only", tieC2: tie, want: moved},
+		{name: "the check has a tie at c1 only", tieC1: tie, want: moved},
+		{name: "(b) a program check: c2 deletes a file under testdata that only the tie at c1, where its test caught the fault, covers",
+			program: true, atC1: []string{testdata}, tieC1: tie, tieC2: narrow, want: "unknown (no_failing_example)"},
+		{name: "control (b): a program check whose ties differ, and no path that changed is in either",
+			program: true, tieC1: tie, tieC2: narrow, want: "true (passed, counted from d1)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, "carry")
+			for _, commit := range []string{"m2", "c3", "c4"} {
+				removeAll(t, filepath.Join(dir, "files", commit))
+			}
+			check, subject := "a-restart-loses-no-message", map[string]any{"commit": "c2", "branch": "listener-restart", "now": "2026-11-14T00:00:00Z"}
+			subjectLine := "c2, the head of listener-restart"
+			if row.program {
+				check, subject = program.ID, map[string]any{"commit": "c2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}
+				subjectLine = "c2, the commit that production runs at deploy d1"
+				removeCheck(t, dir, "a-restart-loses-no-message")
+				addApproved(t, dir, program.ID, program)
+				block, err := program.Print()
+				if err != nil {
+					t.Fatal(err)
+				}
+				spec := filepath.Join(dir, "files", "c2", "spec.md")
+				content, err := os.ReadFile(spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, spec, append(append(content, '\n'), block...))
+				var results []any
+				readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+				results = append(results,
+					map[string]any{"check": program.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "test_commit": "c1",
+						"at": "2026-11-13T11:00:00Z", "seq": 20, "fault_author": "agent-b", "test_authors": []string{"agent-a"}},
+					map[string]any{"check": program.ID, "check_version": 1, "kind": "run", "outcome": "pass", "deploy": "d1", "job": "production-checks",
+						"test_commit": "c2", "at": "2026-11-13T12:00:00Z", "seq": 21})
+				writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+			}
+			writeJSONFile(t, filepath.Join(dir, "subjects.json"), []any{subject})
+			var history specgraph.FixtureHistory
+			readJSONFile(t, filepath.Join(dir, "history.json"), &history)
+			for _, c := range history.Commits {
+				for _, file := range map[string][]string{"c1": row.atC1, "c2": row.atC2}[c.ID] {
+					c.Files[file] = "1"
+				}
+			}
+			writeJSONFile(t, filepath.Join(dir, "history.json"), history)
+			ties := map[string]map[string][]string{"c1": {}, "c2": {}}
+			for commit, paths := range map[string][]string{"c1": row.tieC1, "c2": row.tieC2} {
+				if paths != nil {
+					ties[commit][check] = paths
+				}
+			}
+			if row.noC1 {
+				delete(ties, "c1")
+			}
+			writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
+			got := runBinary(t, binary, "", "state", "--scenario", dir)
+			if got.code != 0 || got.stderr != "" {
+				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+			}
+			if want := "  check " + check + ": " + row.want; !slices.Contains(subjectLines(got.stdout, subjectLine), want) {
+				t.Errorf("no line %q at subject %s in:\n%s", want, subjectLine, got.stdout)
 			}
 		})
 	}
@@ -445,9 +597,9 @@ func approvedNode(t *testing.T, nodes []specgraph.ApprovedNode, id string) *spec
 }
 
 // removeCheck takes the check id out of the scenario at dir: its node of approved.json, its block
-// from each spec file (the block of its version 1, which the files hold), its results and its tie.
-// The results and the ties are edited as JSON values, since no type of specgraph holds the form of
-// results.json, and a row of a test takes a member out of a result.
+// from each spec file (the block of its version 1, which the files hold), its results and its tie
+// at each commit. The results and the ties are edited as JSON values, since no type of specgraph
+// holds the form of results.json, and a row of a test takes a member out of a result.
 func removeCheck(t *testing.T, dir, id string) {
 	t.Helper()
 	var block string
@@ -479,9 +631,11 @@ func removeCheck(t *testing.T, dir, id string) {
 	readJSONFile(t, filepath.Join(dir, "results.json"), &results)
 	results = slices.DeleteFunc(results, func(r map[string]any) bool { return r["check"] == id })
 	writeJSONFile(t, filepath.Join(dir, "results.json"), results)
-	var ties map[string]any
+	var ties map[string]map[string]any
 	readJSONFile(t, filepath.Join(dir, "ties.json"), &ties)
-	delete(ties, id)
+	for _, commit := range ties {
+		delete(commit, id)
+	}
 	writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
 }
 

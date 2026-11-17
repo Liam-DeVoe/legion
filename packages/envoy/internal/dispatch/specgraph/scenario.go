@@ -14,14 +14,14 @@ import (
 
 // Scenario is a scenario of The Spec, in the format of testdata/scenarios that `spec-check state`
 // reads: the approved spec, the spec files at the commit of each subject, the history of the
-// repository, the tie of each check by its id, every result, the runs of CI jobs, the subjects, the
-// checks that CI refused at each commit (R48) by commit, and the work units. Units is nil exactly
-// when the scenario has no units.json.
+// repository, the tie of each check at each commit, every result, the runs of CI jobs, the
+// subjects, the checks that CI refused at each commit (R48) by commit, and the work units. Units is
+// nil exactly when the scenario has no units.json.
 type Scenario struct {
 	Approved Approved
 	Files    map[string]Tree // by commit
 	History  FixtureHistory
-	Ties     map[string]Tie
+	Ties     CommitTies
 	Results  []Result
 	JobRuns  []JobRun
 	Subjects []ScenarioSubject
@@ -91,13 +91,19 @@ type scenarioResult struct {
 //     statements exist, so an approved leaf can have no check, and the files then do not hold it;
 //   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
 //     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
-//     graph that the subject reads, only with a deploy, and a subject that names none judges no
-//     check of the graph;
+//     graph that the subject reads, only with a deploy. Each of commit, branch, deploy and graph_tx
+//     that a subject sets has a letter or a digit (hasWord), since one with none names nothing.
+//     A check of production or of the graph is judged only at a deploy, and a check of the graph
+//     reads unknown there when graph_tx is absent or names a transaction that no result read;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it;
-//   - ties.json, as ReadTies reads it: a check that it does not name has a tie that is not known;
+//   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
+//     a check that the object of a commit does not name has a tie that is not known at that commit,
+//     and so has each check at a commit that the file does not name. A result at one commit counts
+//     at another only when the check's tie is known at both commits and no path that changed
+//     between them is covered by the tie at either commit;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
 //     names an approved version of the check, whose Digest the result carries; kind is run or
@@ -142,7 +148,7 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.History, err = readWith(fsys, "history.json", ReadFixtureHistory); err != nil {
 		return s, err
 	}
-	if s.Ties, err = readWith(fsys, "ties.json", ReadTies); err != nil {
+	if s.Ties, err = readWith(fsys, "ties.json", ReadCommitTies); err != nil {
 		return s, err
 	}
 	if s.Results, err = readResults(fsys, s.Approved); err != nil {
@@ -185,6 +191,8 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 		switch {
 		case sub.Commit == "":
 			fault = "it sets no commit"
+		case !hasWord(sub.Commit):
+			fault = "it sets a commit of no letter and no digit, which names no commit"
 		case sub.Now.IsZero():
 			fault = "it sets no now"
 		case sub.Branch != "" && sub.Deploy != "":
@@ -193,6 +201,12 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 			fault = "it sets neither branch nor deploy; a subject sets exactly one of them"
 		case sub.GraphTx != "" && sub.Deploy == "":
 			fault = "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
+		case sub.Branch != "" && !hasWord(sub.Branch):
+			fault = "it sets a branch of no letter and no digit, which names no branch"
+		case sub.Deploy != "" && !hasWord(sub.Deploy):
+			fault = "it sets a deploy of no letter and no digit, which names no deploy"
+		case sub.GraphTx != "" && !hasWord(sub.GraphTx):
+			fault = "it sets a graph_tx of no letter and no digit, which names no transaction of the graph"
 		}
 		if fault != "" {
 			return nil, scenarioFault("subjects.json", "subject %d: %s", i+1, fault)
