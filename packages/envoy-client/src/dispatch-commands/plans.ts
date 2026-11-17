@@ -28,8 +28,8 @@ function oneLineJson(text: string): string {
 /** Each retro's rating with its reason, in the order the retros ran. The reason is a JSON string
  *  with no line break in it, so a quotation mark or a line break of any kind in the reason keeps
  *  the issue on one line. */
-function ratingsText(ratings: readonly PlanRating[]): string {
-  if (ratings.length === 0) return "ratings none";
+function ratingsText(ratings: readonly PlanRating[] | null): string {
+  if (ratings === null || ratings.length === 0) return "ratings none";
   return `ratings ${ratings.map((rating) => `${rating.rating}/5 ${oneLineJson(rating.reason)}`).join(", ")}`;
 }
 
@@ -47,7 +47,7 @@ function issueLine(issue: FinishedIssue): string {
     "closed",
     issue.closed_at,
     planText(issue.plan),
-    ratingsText(issue.ratings ?? []),
+    ratingsText(issue.ratings),
     timeText(issue.duration_seconds),
     "failed steps",
     issue.failed_steps,
