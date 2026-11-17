@@ -507,6 +507,52 @@ test("with the person's setting on, the operation asks first and is sent confirm
   }
 });
 
+test("with the person's setting on, a submit pressed again while the confirmed writes are out, and again once they landed, asks nothing and writes none of them again", async () => {
+  settings.mockResolvedValue({ confirm_writes: true });
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    const first = Promise.withResolvers<GoingWriteLine>();
+    written.mockImplementation((_run, input) =>
+      input.invocation === 0 ? first.promise : Promise.resolve(landedLine(input))
+    );
+    await submit(user);
+    await user.click(
+      within(await screen.findByTestId("going-confirm-step")).getByRole("button", {
+        name: "Confirm",
+      })
+    );
+    await waitFor(() => expect(written).toHaveBeenCalledTimes(1));
+
+    // Both writes are made, one out and one waiting its turn: nothing is left to confirm.
+    await submit(user);
+    await tick(1000);
+    expect(screen.queryByTestId("going-confirm-step")).not.toBeInTheDocument();
+    first.resolve(
+      landedLine({ approved: "confirmed", invocation: 0, offer: "dispatch_issue_update" })
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-state"))
+      ).toEqual(["done", "done"])
+    );
+
+    // Both landed: still nothing to confirm.
+    await submit(user);
+    await tick(1000);
+    expect(screen.queryByTestId("going-confirm-step")).not.toBeInTheDocument();
+    expect(sent()).toEqual([
+      { approved: "confirmed", invocation: 0, offer: "dispatch_issue_update" },
+      { approved: "confirmed", invocation: 1, offer: "dispatch_issue_update" },
+    ]);
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("a write Dispatch refused because the person's setting asks first makes the next press ask first", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -941,6 +987,81 @@ test("an invocation missing one argument asks for it, and the write carries the 
     await waitFor(() =>
       expect(sent()).toEqual([
         { approved: "auto", fill: "Planner", invocation: 0, offer: "dispatch_follow" },
+      ])
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
+/** A follow of ask-1 and of ask-2, each missing the session that follows it. */
+const follows: GoingProposalEvent = {
+  data: {
+    offers: [
+      {
+        action: "dispatch_follow",
+        invocations: ["ask-1", "ask-2"].map((id) => ({
+          arguments: { action: "follow", ask: id },
+          automatic: true,
+          missing: { field: "@session", kind: "text" },
+          target_argument: "ask",
+        })),
+        offered: true,
+      },
+    ],
+  },
+  event: "proposal",
+};
+
+test("after one invocation landed and another was refused for the setting, the next press asks only the refused one's missing argument, and sends that one alone", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_follow"]), follows, ended);
+    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
+    await waitFor(() => expect(settings).toHaveBeenCalledTimes(1));
+    // The setting was turned on in another tab between the turn's two requests.
+    settings.mockResolvedValue({ confirm_writes: true });
+    written.mockImplementation(async (_run, input) => {
+      if (input.approved === "auto" && input.invocation === 1) {
+        throw new ApiError(409, {
+          code: "GOING_CONFIRMATION_REQUIRED",
+          error: "your setting asks you to confirm every write of the bar",
+        });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    await user.type(
+      await screen.findByRole("textbox", { name: "Fill the session for ask-1" }),
+      "Planner"
+    );
+    await user.type(screen.getByRole("textbox", { name: "Fill the session for ask-2" }), "Tester");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
+      ).toEqual([null, "GOING_CONFIRMATION_REQUIRED"])
+    );
+
+    const row = await screen.findByRole("option", { name: /^Run follow on ask-2/ });
+    await user.click(within(row).getByRole("button", { name: "Run" }));
+
+    // ask-1's follow landed: the press asks for ask-2's session alone.
+    const field = await screen.findByRole("textbox", { name: "Fill the session for ask-2" });
+    expect(screen.queryByRole("textbox", { name: "Fill the session for ask-1" })).toBeNull();
+    await user.type(field, "Reviewer");
+    await user.keyboard("{Enter}");
+    const step = await screen.findByTestId("going-confirm-step");
+    const listed = within(step).getAllByTestId("going-write-line");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toHaveTextContent("ask-2");
+    await user.click(within(step).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(sent().slice(2)).toEqual([
+        { approved: "confirmed", fill: "Reviewer", invocation: 1, offer: "dispatch_follow" },
       ])
     );
   } finally {

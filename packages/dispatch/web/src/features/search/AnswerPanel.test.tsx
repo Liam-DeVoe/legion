@@ -186,6 +186,88 @@ test("one more letter keeps the answer on the screen as the earlier words', with
   }
 });
 
+test("the render the next letter makes already draws the answer typed past, marked as the earlier words', before any effect of that render runs", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  // What each render of the bar showed as it reached the page, before any of its effects ran:
+  // the words in the box, and the panel's state, text and mark.
+  const commits: { readonly box: string; readonly panel: string }[] = [];
+  const bar = renderBar(() => {
+    const box = document.querySelector<HTMLInputElement>('input[role="combobox"]');
+    const panel = document.querySelector('[data-testid="going-answer"]');
+    const text = panel?.querySelector('[data-testid="going-answer-text"]')?.textContent ?? "";
+    const mark = panel?.querySelector('[data-testid="going-answer-stale"]') ?? null;
+    commits.push({
+      box: box?.value ?? "",
+      panel:
+        panel === null
+          ? "no panel"
+          : `${panel.getAttribute("data-state")}: ${text}${mark === null ? "" : " (marked)"}`,
+    });
+  });
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The first answer")
+    );
+
+    await user.keyboard("s");
+    await expectKeptFor("astrolabe");
+
+    // From the first render with the new words in the box on, the panel drew the answer to the
+    // words before, marked as theirs: no render left it out, emptied it or drew it unmarked.
+    const typedPast = commits.filter((commit) => commit.box === "astrolabes");
+    expect(typedPast.length).toBeGreaterThan(0);
+    expect([...new Set(typedPast.map((commit) => commit.panel))]).toEqual([
+      "stale: The first answer (marked)",
+    ]);
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("a kept answer cut off before it finished says so beside the words it answers, and one that finished says nothing of the kind", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  const stopped = /stopped before it finished/;
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+    streams[0]?.send({ data: { items: 0, words: 3 }, event: "end" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer")).toHaveAttribute("data-state", "ended")
+    );
+
+    // Typed past once it ended: the whole answer is kept, and its line says no more than whose.
+    await user.keyboard("s");
+    await expectKeptFor("astrolabe");
+    expect(screen.getByTestId("going-answer-stale")).not.toHaveTextContent(stopped);
+
+    // The next answer, typed past while it was still being written: what it drew is kept, and
+    // its line says it stopped there.
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    streams[1]?.send({ data: { text: "The second" }, event: "text" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The second")
+    );
+    await user.keyboard("e");
+    await expectKeptFor("astrolabes");
+    expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The second");
+    expect(screen.getByTestId("going-answer-stale")).toHaveTextContent(stopped);
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("a next run that finds no answer or fails takes the kept answer's place, and one with no words of its own leaves nothing to keep", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();

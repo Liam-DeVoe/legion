@@ -56,9 +56,11 @@ function changedText(dropped: number): string {
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a
- * line naming the words it answers, until the next answer has something of its own to draw. That
- * line is a status, so a screen reader hears it once, and the answer, which is in no live region,
- * is not read out again; the panel is not busy while it shows, as nothing more of it is coming.
+ * line naming the words it answers - and, where its run was still writing it then, saying it
+ * stopped before it finished, so part of an answer never reads as the whole - until the next
+ * answer has something of its own to draw. That line is a status, so a screen reader hears it
+ * once, and the answer, which is in no live region, is not read out again; the panel is not busy
+ * while it shows, as nothing more of it is coming.
  *
  * The decision and the proposal are the bar's operations' to draw (`GoingAnswer`), so nothing of
  * them shows here.
@@ -109,6 +111,7 @@ function AnswerBody({
       {stale ? (
         <p className={`mb-2 ${noteClassName}`} data-testid="going-answer-stale" role="status">
           Answer to your earlier words: “{answer.words}”
+          {answering ? ", stopped before it finished" : null}
         </p>
       ) : null}
       <div

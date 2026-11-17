@@ -83,6 +83,13 @@ export function awaitsConfirmation(line: TurnLine): boolean {
   return line.state === "refused" && line.refusal?.code === CONFIRMATION_REQUIRED;
 }
 
+/** Whether `line`'s write settles its invocation: waiting its turn, out or landed (`sending`,
+ *  `done`), as `made` holds it, so no further press of the turn sends it again
+ *  (`runGoingWrite`). A refused or a stopped line leaves the invocation the person's to send. */
+export function settlesInvocation(line: TurnLine): boolean {
+  return line.state === "sending" || line.state === "done";
+}
+
 /**
  * The kind of every write of a turn and of every turn's undo: a plain write that, once it lands,
  * has the bar read its hits again (`["search", …]`, `useTieredSearch`), since a hit shows the

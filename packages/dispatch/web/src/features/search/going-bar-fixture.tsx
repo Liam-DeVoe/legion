@@ -1,6 +1,7 @@
 import { type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
+import { Profiler } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -105,14 +106,22 @@ export function spyOnGoingBar(): GoingBarSpies {
   };
 }
 
-/** The bar, open over a project's issue list. */
-export function renderBar(): { unmount: () => void } {
+/** The bar, open over a project's issue list. `onCommit` is called as each render of the bar
+ *  reaches the page, in the commit itself: before any effect of that render runs. */
+export function renderBar(onCommit?: () => void): { unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const palette = <SearchPalette onClose={() => {}} open />;
   const view = render(
     <MemoryRouter initialEntries={["/projects/LEGION/issues"]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <SearchPalette onClose={() => {}} open />
+          {onCommit === undefined ? (
+            palette
+          ) : (
+            <Profiler id="bar" onRender={() => onCommit()}>
+              {palette}
+            </Profiler>
+          )}
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>

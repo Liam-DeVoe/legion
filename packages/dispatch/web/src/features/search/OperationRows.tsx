@@ -25,6 +25,7 @@ import {
   type GoingApproval,
   runGoingWrite,
   runGoingWrites,
+  settlesInvocation,
   shownValue,
   type Turn,
   type TurnLine,
@@ -137,6 +138,21 @@ function runIndexes(
   });
 }
 
+/** The invocations of `offer` a press still sends (`runIndexes`), less each one a write of `turn`
+ *  settles already (`settlesInvocation`), which no press sends again: what the operation row
+ *  names, the fill step asks for, and the confirm step lists and sends. */
+function unsettledIndexes(
+  offer: GoingOffer | undefined,
+  turn: Turn | undefined,
+  approved: GoingApproval,
+  picked?: readonly number[]
+): number[] {
+  const settled = new Set(turn?.lines.filter(settlesInvocation).map((line) => line.key));
+  return runIndexes(offer, approved, picked).filter(
+    (index) => !settled.has(`${offer?.action}:${index}`)
+  );
+}
+
 /** `offer` with only the invocations at `indexes`, for a row that names their items alone. */
 function offerWith(offer: GoingOffer, indexes: readonly number[]): GoingOffer {
   return { ...offer, invocations: offer.invocations.filter((_, index) => indexes.includes(index)) };
@@ -170,12 +186,14 @@ function rowLabel(action: string, offer: GoingOffer | undefined): string {
  * action threshold) or a pick comes to, from what the run has streamed so far. A run that has not
  * decided, or a decision whose proposal has not arrived, is `preparing`; an answer that ended
  * without either has nothing to run. A submit runs only the invocations the proposal marked
- * automatic (`runIndexes`), and one with none is `picks`: the person picks the rest.
+ * automatic (`runIndexes`), and one with none is `picks`: the person picks the rest. A press whose
+ * every invocation a write of `turn` settles already is `idle`: nothing is left to ask for or send.
  */
 function nextStep(
   words: string,
   wanted: Wanted,
   answer: GoingAnswer | undefined,
+  turn: Turn | undefined,
   confirmWrites: boolean | undefined
 ): Step {
   if (answer === undefined || answer.runId === undefined || answer.decision === undefined) {
@@ -195,8 +213,11 @@ function nextStep(
   }
   const offer = offerOf(answer.proposal, action);
   if (offer === undefined) return { action, kind: "unoffered", words };
-  const runs = runIndexes(offer, wanted.approved, wanted.picked);
-  if (runs.length === 0) return { action, kind: "picks", words };
+  if (runIndexes(offer, wanted.approved, wanted.picked).length === 0) {
+    return { action, kind: "picks", words };
+  }
+  const runs = unsettledIndexes(offer, turn, wanted.approved, wanted.picked);
+  if (runs.length === 0) return { kind: "idle", words };
   const unfilled = runs.some(
     (index) =>
       offer.invocations[index]?.missing !== null && (wanted.fills[index] ?? "").trim() === ""
@@ -312,22 +333,15 @@ export function useGoingOperations({
   const counted = turn?.lines.filter((line) => !awaitsConfirmation(line)) ?? [];
   const ran = new Set(counted.map((line) => line.action));
   // Each line's own invocation, `action:index`, so an action whose automatic invocations ran
-  // still offers the ones the person has to pick.
+  // still offers the ones the person has to pick. Unlike `unsettledIndexes`, a line the route
+  // refused counts as run here, so the row does not come back after a route refusal with the
+  // setting off.
   const ranInvocations = new Set(counted.map((line) => line.key));
-  // The invocations a write of the turn still settles - one sending, or done - which a further
-  // submit sends again none of; a refused or a stopped line is the person's to send again.
-  const settled = new Set(
-    (turn?.lines ?? [])
-      .filter((line) => line.state === "sending" || line.state === "done")
-      .map((line) => line.key)
-  );
   // What the confirm step lists and what its Confirm sends: one set, so the person agrees to
   // exactly the writes the bar then makes.
   const confirming =
     stage?.kind === "confirming"
-      ? runIndexes(offerOf(proposal, stage.action), "confirmed").filter(
-          (index) => !settled.has(`${stage.action}:${index}`)
-        )
+      ? unsettledIndexes(offerOf(proposal, stage.action), turn, "confirmed")
       : [];
   // The field a missing argument is asked in takes focus as it appears, so the person types the
   // value where the bar asked for it; a ref of one identity, so a later render moves nothing.
@@ -375,7 +389,7 @@ export function useGoingOperations({
     if (step.kind === "run") run(step.action, step.approved, step.fills, step.picked);
     else setStage(step);
   };
-  const begin = (wanted: Wanted) => apply(nextStep(words, wanted, current, confirmWrites));
+  const begin = (wanted: Wanted) => apply(nextStep(words, wanted, current, turn, confirmWrites));
 
   // A submit made before the run could say what to run waits for it: the decision, its proposal
   // and the setting, each as it arrives.
@@ -383,17 +397,9 @@ export function useGoingOperations({
   // biome-ignore lint/correctness/useExhaustiveDependencies: `apply` reads this render's run, and the step changes only with what it is computed from
   useEffect(() => {
     if (preparing === undefined) return;
-    const step = nextStep(words, preparing, current, confirmWrites);
+    const step = nextStep(words, preparing, current, turn, confirmWrites);
     if (step.kind !== "preparing") apply(step);
-  }, [preparing, current, confirmWrites, words]);
-
-  // A confirm step with nothing left to send - every write of the action sent or done - closes:
-  // there is nothing for the person to agree to.
-  const confirmsNothing = stage?.kind === "confirming" && confirming.length === 0;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the stage moves only when the step is left with nothing to confirm
-  useEffect(() => {
-    if (confirmsNothing) setStage({ kind: "idle", words });
-  }, [confirmsNothing]);
+  }, [preparing, current, turn, confirmWrites, words]);
 
   const submit = () => {
     if (stage?.kind === "filling") {
@@ -424,11 +430,9 @@ export function useGoingOperations({
       );
       if (proposal === undefined || automatic.length > 0) {
         const waiting = stage?.kind === "preparing";
-        // The row names what its press sends: every automatic invocation no write still settles,
-        // a refused one included, as the confirm step it may open lists them.
-        const sends = runIndexes(actedOffer, "auto").filter(
-          (index) => !settled.has(`${acted}:${index}`)
-        );
+        // The row names what its press sends, a refused invocation included, as the fill step and
+        // the confirm step it may open ask for and list them.
+        const sends = unsettledIndexes(actedOffer, turn, "auto");
         const label = rowLabel(acted, actedOffer && offerWith(actedOffer, sends));
         options.push({
           hint: waiting ? (
@@ -582,7 +586,12 @@ export function useGoingOperations({
             offer={offerOf(proposal, stage.action)}
             onFill={(fills) => setStage({ ...stage, fills })}
             onSubmit={submit}
-            runs={runIndexes(offerOf(proposal, stage.action), stage.approved, stage.picked)}
+            runs={unsettledIndexes(
+              offerOf(proposal, stage.action),
+              turn,
+              stage.approved,
+              stage.picked
+            )}
           />
         ) : null}
         {stage?.kind === "confirming" ? (
@@ -619,8 +628,8 @@ export function useGoingOperations({
 }
 
 /** The field an invocation's one missing argument is asked in: a text, a number, one of an
- *  enumeration's values, or an item the bar's hits list - for each invocation the write will run
- *  (`runs`, `runIndexes`). */
+ *  enumeration's values, or an item the bar's hits list - for each invocation the press still
+ *  sends (`runs`, `unsettledIndexes`). */
 function MissingArguments({
   focusField,
   fills,
@@ -707,8 +716,9 @@ function MissingArguments({
 }
 
 /** The step a person whose setting asks before every write takes before the bar writes: the
- *  writes a confirm would make (`runs`: the automatic ones, as a submit would), each in its line,
- *  and Confirm or Cancel. An invocation the person has to pick is not among them. */
+ *  writes a confirm would make (`runs`: the automatic ones no write of the turn settles, as a
+ *  submit would), each in its line, and Confirm or Cancel. An invocation the person has to pick
+ *  is not among them. */
 function ConfirmStep({
   action,
   offer,

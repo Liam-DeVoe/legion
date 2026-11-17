@@ -63,6 +63,15 @@ function keptAnswer(
   return answerArrived(before) ? undefined : kept;
 }
 
+/** What the panel keeps (`keptAnswer`), and the words, project and `enabled` of the render that
+ *  worked it out: a change of any of them works it out again. */
+interface Keeping {
+  readonly answer: GoingAnswer | undefined;
+  readonly words: string;
+  readonly project: string;
+  readonly enabled: boolean;
+}
+
 /** `answer` where it answers `words`, the words in the box: the replay while the box is empty,
  *  else the run of those very words. */
 function answerTo(answer: GoingAnswer | undefined, words: string): GoingAnswer | undefined {
@@ -265,13 +274,27 @@ export function useGoingAnswer({
   readonly words: string;
 }): GoingAnswerHook {
   const [answer, setAnswer] = useState<GoingAnswer | undefined>(undefined);
-  // What the panel keeps of the answer to words the person typed past (`keptAnswer`).
-  const [earlier, setEarlier] = useState<GoingAnswer | undefined>(undefined);
-  // The answer as the last render drew it, and the words the effect below last ran for: the
-  // effect reads what the person typed past from these, as it stood at the keystroke.
-  const answerNow = useRef(answer);
-  answerNow.current = answer;
-  const wordsBefore = useRef(words);
+  // What the panel keeps of the answer to words the person typed past, worked out once, in the
+  // render the words change in: that render still holds the answer they typed past, which the
+  // effect below lets go only after it, so the render already draws what is kept. Where the
+  // person typed on, the panel keeps what it drew of that run (`keptAnswer`); where they emptied
+  // the box, the chip asks the same words of another project or the bar stops asking, it keeps
+  // none.
+  const [keeping, setKeeping] = useState<Keeping>(() => ({
+    answer: undefined,
+    enabled,
+    project,
+    words,
+  }));
+  if (keeping.words !== words || keeping.project !== project || keeping.enabled !== enabled) {
+    setKeeping({
+      answer:
+        keeping.words !== words && words !== "" ? keptAnswer(answer, keeping.answer) : undefined,
+      enabled,
+      project,
+      words,
+    });
+  }
   const out = useRef<OutRun | null>(null);
   // The pause standing for the words in the box, which a submit inside it cuts short.
   const pause = useRef<{ readonly timer: number; readonly ask: () => void } | null>(null);
@@ -401,13 +424,8 @@ export function useGoingAnswer({
   // person stopped on.
   useEffect(() => {
     // The run before answers words the person has typed past, so it is cancelled and its answer
-    // let go; the replay stays only while the box is still empty. Where the person typed on, the
-    // panel keeps what it drew of that run as the earlier words' answer (`keptAnswer`); where
-    // they emptied the box, or the chip asks the same words of another project, it keeps none.
-    const typed = wordsBefore.current !== words;
-    wordsBefore.current = words;
-    const before = answerNow.current;
-    setEarlier((kept) => (typed && words !== "" ? keptAnswer(before, kept) : undefined));
+    // let go; the replay stays only while the box is still empty. What the panel keeps of it the
+    // render the words changed in worked out already (`keeping`).
     if (out.current?.replayed !== true || words !== "") {
       stop();
     }
@@ -461,14 +479,10 @@ export function useGoingAnswer({
     return run !== null && !run.replayed && run.words === wordsNow.current;
   }, []);
 
-  // The render the words change in comes before the effect above runs, so it already keeps what
-  // that effect will keep, from the answer the effect is about to let go.
-  const keeping =
-    words === "" ? undefined : keptAnswer(answer?.words === words ? undefined : answer, earlier);
   const current = answerTo(answer, words);
   return {
     answer: current,
     askNow,
-    earlier: current !== undefined && answerArrived(current) ? undefined : keeping,
+    earlier: current !== undefined && answerArrived(current) ? undefined : keeping.answer,
   };
 }
