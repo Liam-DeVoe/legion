@@ -546,7 +546,7 @@ func topLevelNames(t *testing.T) (map[string]bool, int) {
 // The default steps are stated in one place, the project's setting (config.Project.RunsByDefault,
 // which the daemon wires as Config.DefaultSteps). With default_steps [implementer, reviewer], the
 // plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
-// default of those two steps, and the package declares no DefaultSteps of its own: a scan of its
+// default of those two steps, which needs no task, and the package declares no DefaultSteps of its own: a scan of its
 // source finds none, and the same scan finds PlanID, so it read the package. An issue with no
 // plan rows runs today's steps at today's places whatever the project names (R20): under the
 // same setting its implementer is step 2 and its tester step 3 of the task default.
@@ -568,7 +568,7 @@ func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 		if err := json.Compact(&tasks, fields["tasks"]); err != nil {
 			t.Fatalf("compact the plan node's tasks %q: %v", fields["tasks"], err)
 		}
-		if want := `[{"id":"default","steps":["implementer","reviewer"]}]`; tasks.String() != want {
+		if want := `[{"id":"default","needs":[],"steps":["implementer","reviewer"]}]`; tasks.String() != want {
 			t.Fatalf("the plan node's tasks = %s, want %s", tasks.String(), want)
 		}
 	})
