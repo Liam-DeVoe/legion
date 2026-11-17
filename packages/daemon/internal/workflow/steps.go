@@ -121,26 +121,34 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 // endStep writes the end of the step before stands in (record.StandsAt, so a held issue ends the
 // step of the phase its hold is from), before being the issue as it stood before the write that
 // ends the step. The record is the one its start wrote: the same generation and the count of
-// starts unchanged (record.Store.StepStarts), and the agent and the moment that start wrote, so
-// the two writes agree whichever reaches Dispatch first. A step running when this release
+// starts unchanged, and the agent and the moment that start wrote, so the two writes agree
+// whichever reaches Dispatch first. One run gets one end: the end marks the run ended in the
+// store, in its own transaction (record.Store.EndStepStart), and an end of a run already marked
+// writes nothing, so a run two writes end — the linger's and the hand-over's of one member — keeps
+// the first end, and Dispatch never takes the later one for it. A step running when this release
 // deployed has no count, and its end writes the record with the count 0, the agent its start would
-// have named and, for a phase worker, the moment its role's entry was raised: the route makes the
-// node from the end alone. The end carries the moment now, end's fields, and the session and the
-// model the daemon reads of the agent now. A phase that runs no step writes nothing, and neither
-// does a record key that is no issue key (recordsSteps).
+// have named and, for a phase worker, the moment its role's entry was raised, and marks that run
+// ended too (record.Store.EndUncountedStep): the route makes the node from the end alone. The end
+// carries the moment now, end's fields, and the session and the model the daemon reads of the
+// agent now. A phase that runs no step writes nothing, and neither does a record key that is no
+// issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
 	at := record.StandsAt(before)
 	place, step, role, typ, ok := stepOf(at)
 	if !ok || !recordsSteps(before) {
 		return nil
 	}
-	start, err := e.store.StepStarts(ctx, tx, before.Key, place)
+	start, open, err := e.store.EndStepStart(ctx, tx, before.Key, place)
 	if err != nil {
 		return err
 	}
 	agent, startedAt := claim.Token(start.Agent), start.StartedAt
-	if start.Starts == 0 {
+	if !open {
 		if agent, startedAt, err = e.upgradedStart(ctx, tx, before, at); err != nil {
+			return err
+		}
+		first, err := e.store.EndUncountedStep(ctx, tx, before.Key, place, string(agent), startedAt)
+		if err != nil || !first {
 			return err
 		}
 	}
@@ -255,18 +263,28 @@ func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.P
 
 // EndRunningStep ends, stopped, the step before stands in: admission's re-admission of an issue
 // whose run ends under it (admit's readmit), and its promotion's end of a member's merge a linger
-// left open (admit's startMidPhaseMembers).
+// left open (admit's startMidPhaseMembers). A run another write ended already gets no second end
+// (endStep).
 func (e *Engine) EndRunningStep(ctx context.Context, tx pgx.Tx, before record.Issue) error {
 	return e.endStep(ctx, tx, before, stepStopped)
 }
 
 // StartStepRecord writes the start of the step issue stands in, under the agent that step names
 // (startAgent): admission's promotion of a member whose phase worker it does not start (admit's
-// startMidPhaseMembers), whose step starts again all the same.
+// startMidPhaseMembers), whose step starts again all the same. A step whose latest run is still
+// open goes on, and nothing is written: a member held from merging, whose merge step the linger
+// left open (beginLinger) and whose retry goes on with it, or a role the promotion found already
+// started for this run (workflow.StartFor). A second start there would open a run while the one
+// before it has no end, and the count would leave that one none.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	at := record.StandsAt(issue)
-	if _, _, _, _, ok := stepOf(at); !ok || !recordsSteps(issue) {
+	place, _, _, _, ok := stepOf(at)
+	if !ok || !recordsSteps(issue) {
 		return nil
+	}
+	latest, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	if err != nil || latest.Starts > 0 && !latest.Ended {
+		return err
 	}
 	agent, err := e.startAgent(ctx, tx, issue, at)
 	if err != nil {

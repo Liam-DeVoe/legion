@@ -200,6 +200,69 @@ func TestAConflictEndsTheStepStopped(t *testing.T) {
 	assertEnd(t, writes[0], "step", 3, 1, "stopped", new(2))
 }
 
+// One run of a step gets one end, however many writes end it: a second end of the same run, in
+// the same transaction or a later one, finds the first end's mark in the store and queues nothing,
+// and so does a second end of a step that started under the release before. The promotion's start
+// of a step whose run is open writes nothing either (StartStepRecord), since that run goes on; a
+// start once the run ended opens the next run, whose end is queued again.
+func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
+	pool := migratedPool(t)
+	stepRoot(t, pool, phase.Implementing)
+	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
+	engine := stepEngine(nil)
+	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	inStore := func(key string, write func(ctx context.Context, tx pgx.Tx, issue record.Issue) error) {
+		t.Helper()
+		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := engine.store.Issue(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			return write(ctx, tx, *issue)
+		})
+	}
+	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		if err := engine.EndRunningStep(ctx, tx, issue); err != nil {
+			return err
+		}
+		return engine.EndRunningStep(ctx, tx, issue)
+	}
+	for _, key := range []string{"LEGION-208", "LEGION-209"} {
+		inStore(key, endTwice)
+		inStore(key, endTwice)
+	}
+	testingWrites := func(key string) (starts, ends []record.StepRecord) {
+		for _, w := range stepWrites(t, pool, key) {
+			switch {
+			case w.Step != 3:
+			case isStart(w):
+				starts = append(starts, w)
+			case isEnd(w):
+				ends = append(ends, w)
+			}
+		}
+		return starts, ends
+	}
+	if starts, ends := testingWrites("LEGION-208"); len(starts) != 1 || len(ends) != 1 || ends[0].ID != starts[0].ID {
+		t.Fatalf("four ends of one run of testing wrote starts %+v and ends %+v, want one start and its one end", starts, ends)
+	}
+	if starts, ends := testingWrites("LEGION-209"); len(starts) != 0 || len(ends) != 1 || ends[0].ID != StepID("LEGION-209", 3, "default", "step", 3, 0) {
+		t.Fatalf("four ends of a run no start counted wrote starts %+v and ends %+v, want one end at the count 0", starts, ends)
+	}
+	startTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		if err := engine.StartStepRecord(ctx, tx, issue); err != nil {
+			return err
+		}
+		return engine.StartStepRecord(ctx, tx, issue)
+	}
+	inStore("LEGION-208", startTwice)
+	inStore("LEGION-208", endTwice)
+	starts, ends := testingWrites("LEGION-208")
+	if len(starts) != 2 || len(ends) != 2 || starts[1].ID != StepID("LEGION-208", 1, "default", "step", 3, 2) || ends[1].ID != starts[1].ID {
+		t.Fatalf("a start after the end, a second start and two ends wrote starts %+v and ends %+v, want the second run's one start and one end", starts, ends)
+	}
+}
+
 // The end of a step carries the session and the model the daemon reads of its agent at that end,
 // and the handoff record the ending role's completion named; the start carries the session alone.
 // A daemon that reads no agent writes neither, which leaves them for a later write to fill.
