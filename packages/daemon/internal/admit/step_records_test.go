@@ -2,7 +2,6 @@ package admit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,12 +30,8 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 	defer rows.Close()
 	var got []record.StepRecord
 	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan a step record of %s: %v", issue, err)
-		}
 		var write record.StepRecord
-		if err := json.Unmarshal(payload, &write); err != nil {
+		if err := rows.Scan(&write); err != nil {
 			t.Fatalf("decode a step record of %s: %v", issue, err)
 		}
 		got = append(got, write)
