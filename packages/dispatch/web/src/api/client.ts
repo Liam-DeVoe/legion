@@ -731,10 +731,10 @@ function watchBody(response: Response, arrived: () => void): Response {
 }
 
 /**
- * One node of the issue's tree read (`getIssueTree`). The route is INFRA-1253's plan task t16a,
- * which the OpenAPI document does not hold yet, so its answer is named here from the prose of
- * that issue's R8, by the prose's own names where it gives one; INFRA-4062's task t11 moves this
- * and the two types below onto the generated contract once INFRA-1253 pushes it.
+ * One node of the issue's tree read (`getIssueTree`). The route is the model's, which the
+ * OpenAPI document does not hold yet, so its answer is named here from the prose of the model's
+ * contract, by the prose's own names where it gives one; this and the two types below move onto
+ * the generated contract once the model pushes it.
  */
 export interface IssueTreeNode {
   /** The node's own id: a block's id, an ask's, a comment's, a message's, a child issue's key. */
@@ -767,7 +767,7 @@ export interface IssueTreeNode {
   /** On a view's node: its parent's id, kind and first line, so a row names that parent with no
    *  read of its own. */
   parent_line?: { id: string; supertag: string; line: string };
-  /** On a decision node: what INFRA-1150's decisions read answers for that decision
+  /** On a decision node: what the decisions read answers for that decision
    *  (`model.Decision`), by the same names and values: `kept` is the Keep that stands, or null,
    *  and each link names the node it reaches. Who decided is no member: it is a `decided_by`
    *  tuple, with the person node it names as context. */
@@ -1274,10 +1274,10 @@ export class DispatchApiClient {
   }
 
   /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree, or of one of its views
-   *  (`view`), from the node `cursor` names on (`IssueTreeAnswer.cursor`). The route is
-   *  INFRA-1253's plan task t16a, which the document does not hold yet, so its answer's shape is
-   *  named here (`IssueTreeAnswer`) and it goes through `json` with `routeUrl`, as the events
-   *  read does; INFRA-4062's task t11 moves both onto the generated contract. A caller passes the
+   *  (`view`), from the node `cursor` names on (`IssueTreeAnswer.cursor`). The route is the
+   *  model's, which the document does not hold yet, so its answer's shape is named here
+   *  (`IssueTreeAnswer`) and it goes through `json` with `routeUrl`, as the events read does;
+   *  both move onto the generated contract once the document holds the route. A caller passes the
    *  `signal` of the read it is still interested in, so a read given up ends its page in flight. */
   async getIssueTree(
     key: string,

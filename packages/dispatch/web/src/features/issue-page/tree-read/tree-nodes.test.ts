@@ -34,18 +34,18 @@ import {
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } from "./tree-read";
 
 /**
- * The tree read's answer as F's drafts (`dispatch://INFRA-4062/artifact/plan-md#b-t4`). Each case
- * writes the answer as the contract describes it (dispatch://INFRA-1253 R8): every node with its
- * `parent`, in the read's walk order, a typed block with the `document` it is written in, and the
- * tuples between them. The tree is built from the drafts as `buildIssueTree` builds it, with
- * `assemble`, F's word rules and F's reading of the issue's names.
+ * The tree read's answer as the outline's drafts. Each case writes the answer as the contract
+ * describes it: every node with its `parent`, in the read's walk order, a typed block with the
+ * `document` it is written in, and the tuples between them. The tree is built from the drafts as
+ * `buildIssueTree` builds it, with `assemble`, the outline's word rules and its reading of the
+ * issue's names.
  */
 
 const KEY = "CORE-1";
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
- *  to `treeDraftSteps` (a lens, a finding, a risk and a constraint are part W's, a criterion and
- *  a reading part Y's). */
+ *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint, a criterion
+ *  and a reading). */
 const UNDRAWN = "unknown_kind";
 
 function artifact(id: string, slug: string, name: string, primary = false): Artifact {
@@ -322,8 +322,8 @@ test("a node stands under its parent, in the read's order", () => {
   ]);
 });
 
-// R1: a node's words are the server's reading of them (`text_tree`), read by F's word rules, and
-// never its stored text, whose marks are no word of it.
+// R1: a node's words are the server's reading of them (`text_tree`), read by the outline's word
+// rules, and never its stored text, whose marks are no word of it.
 test("a node's words come from its text_tree", () => {
   const { root } = drawn(
     answer([
@@ -349,9 +349,9 @@ test("a node's words come from its text_tree", () => {
 });
 
 // R1, R2: on an issue that has not converted, a typed block stands under the parent the read
-// answers - a plan task under the question it answers, not under the issue as F drew every block -
-// and its `document` member names the document it is written in and its place there, which is
-// its order among that document's blocks whatever its place in the walk.
+// answers - a plan task under the question it answers, not under the issue as the outline drew
+// every block - and its `document` member names the document it is written in and its place
+// there, which is its order among that document's blocks whatever its place in the walk.
 test("an unconverted issue's typed block stands under the parent the read answers, its document and order from its document member", () => {
   const tree = answer(
     [
@@ -404,8 +404,8 @@ test("a node whose parent is not drawn stands under its nearest drawn ancestor",
 
 // R1, root R4: a check stands under the requirement the read answers and again under each other
 // requirement its `serves` tuples name, transcluded there; a plan task's `needs` tuple is a chip
-// labelled as F labels it; a decision's `shaped` tuple is a chip naming what it shaped by that
-// node's line, and places nothing.
+// labelled as the outline labels it; a decision's `shaped` tuple is a chip naming what it shaped
+// by that node's line, and places nothing.
 test("a tuple between two nodes becomes F's chip and placement", () => {
   const { root } = drawn(
     answer(
@@ -490,10 +490,10 @@ test("a node of a kind the page does not draw reaches reads.tree and draws no ro
   expect(reads.tree).toEqual(held);
 });
 
-// R1 (plan's map, `id`): a typed block of this issue keeps F's `<slug>#b-<id>` from its
-// `document`, an ask F's id from the block the asks read names, a comment, a message and a child
-// issue their own ids, the issue its key, and a node of the issue's own tree with no document
-// the read's id, so every reader of a node's id reads the tree as it read F's.
+// R1 (plan's map, `id`): a typed block of this issue keeps the outline's `<slug>#b-<id>` from its
+// `document`, an ask the outline's id from the block the asks read names, a comment, a message
+// and a child issue their own ids, the issue its key, and a node of the issue's own tree with no
+// document the read's id, so every reader of a node's id reads the tree as it read the outline's.
 test("a block keeps F's id where the read names its document", () => {
   const tree = answer([
     block("r1", "requirement", KEY, SPEC, 0),
@@ -525,7 +525,7 @@ test("a block keeps F's id where the read names its document", () => {
   expect([...drawn(tree, reads).drafts.keys()]).toEqual(ids.slice(1));
 });
 
-// R1 (plan's map, `id`, decision 130): a block of another issue keeps the read's id even where its
+// R1 (plan's map, `id`): a block of another issue keeps the read's id even where its
 // document carries this issue's slug, as a child's Verification document does, so it is never
 // taken for this issue's block; and a check of an issue under this one, which the read reaches
 // through its `serves`, is out of this part's scope and draws no row, here or under the
@@ -607,9 +607,9 @@ test("a Change is the comment the read hangs under its decision", () => {
   });
 });
 
-// R2's second difference (decision 128): an ask block carrying `shaped` ties draws them as chips
-// on its row in the outline `buildIssueTree` draws, each naming a node the ask shaped by that
-// node's line, beside how the asks read says it stands.
+// R2's second difference: an ask block carrying `shaped` ties draws them as chips on its row in
+// the outline `buildIssueTree` draws, each naming a node the ask shaped by that node's line,
+// beside how the asks read says it stands.
 test("an ask's shaped ties are chips on its row, each naming a node the ask shaped", () => {
   const root = buildIssueTree({
     asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q1", state: "answered" })],
@@ -644,12 +644,12 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   });
 });
 
-// R3, decision 65: a decision of today's decisions read - a section of `decisions.md`, which no
-// node of the answer holds - finds its Change by its words, with no block of the decisions
-// document read: the change is the first decision whose words hold the anchor's quote. The read
-// hangs the comment under the issue, since no node holds the decision, and the outline draws it
-// under the decision it changes, which reads Change requested; a comment quoting words no
-// decision holds is no change and stays where the read hangs it.
+// R3: a decision of today's decisions read - a section of `decisions.md`, which no node of the
+// answer holds - finds its Change by its words, with no block of the decisions document read:
+// the change is the first decision whose words hold the anchor's quote. The read hangs the
+// comment under the issue, since no node holds the decision, and the outline draws it under the
+// decision it changes, which reads Change requested; a comment quoting words no decision holds is
+// no change and stays where the read hangs it.
 test("a decisions.md section finds its Change by its words", () => {
   const section = (id: string, heading: string, words: string): Decision => ({
     asks: [],
@@ -783,7 +783,7 @@ test("blocksOf answers a role's typed blocks in the blocks read's shape", () => 
   ]);
 });
 
-// The read id and the context a later part's step or mark reads (parts W, X, Y, U): every draft
+// The read id and the context a later part's step or mark reads: every draft
 // carries the answer's own id, which the tree's node keeps on each of its placements, and the
 // context answers a node's tree id and its line once every node has been offered, and nothing of
 // a node no draft stands for.
@@ -888,8 +888,8 @@ test("the cursor's pages are read in turn and the tree is built once", async () 
   }
 });
 
-// INFRA-1196 decision 181: the tree read honours TanStack's abort signal, so a read given up - a
-// reset, the last observer gone - asks for no next page, and a walk of many pages stops there.
+// The tree read honours TanStack's abort signal, so a read given up - a reset, the last observer
+// gone - asks for no next page, and a walk of many pages stops there.
 test("a read given up asks for no next page", async () => {
   const first: TreeAnswer = {
     ...answer([block("r1", "requirement", KEY, SPEC, 0)]),
@@ -916,4 +916,195 @@ test("a read given up asks for no next page", async () => {
   } finally {
     read.mockRestore();
   }
+});
+
+/** Reads the tree once through `issueTreeQuery`, with every page `serve` answers for the cursor
+ *  it is asked with. The server answers at most `bound` pages and then refuses, so a walk that
+ *  never ends fails the case rather than holding it. */
+async function walkWith(serve: (cursor: string | undefined) => TreeAnswer, bound = 10) {
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
+    if (read.mock.calls.length > bound) throw new Error(`more than ${bound} page reads`);
+    return serve(page?.cursor);
+  });
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const outcome = await client.fetchQuery(issueTreeQuery(KEY)).then(
+      (merged) => ({ nodes: merged.nodes.map((one) => one.id) }),
+      (error: unknown) => ({ error: String(error) })
+    );
+    return { cursors: read.mock.calls.map(([, page]) => page?.cursor), outcome };
+  } finally {
+    read.mockRestore();
+  }
+}
+
+// A page that names no next page is the last one, however the server writes "none": a server
+// whose paged answers leave an empty cursor out of the body, as Go's `omitzero` does, or write it
+// as the empty string, sends one page, and the walk ends there instead of asking for the first
+// page again, without end.
+test("a page that names no next page ends the walk, the cursor left out or empty", async () => {
+  const only = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const { cursor: _none, ...leftOut } = only;
+  for (const last of [leftOut as TreeAnswer, { ...only, cursor: "" }]) {
+    expect(await walkWith(() => last)).toEqual({
+      cursors: [undefined],
+      outcome: { nodes: [KEY, "r1"] },
+    });
+  }
+});
+
+// A server that names the same next page again never ends a walk that follows it: the walk asks
+// for each page at most once and ends, with an answer or a failure, instead of asking without
+// end.
+test("a cursor the server names twice ends the walk", async () => {
+  const { cursors, outcome } = await walkWith((cursor) =>
+    cursor === undefined
+      ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
+      : { ...answer([]), cursor: "page-2", nodes: [node("c1", "comment", "r1")] }
+  );
+  expect(cursors).toEqual([undefined, "page-2"]);
+  expect(JSON.stringify(outcome)).not.toContain("page reads");
+});
+
+/** Each row of `root` as its depth in dashes, its id and its kind, every branch open. */
+function rowsOf(root: TreeNode, depth = 0): string[] {
+  return root.children.flatMap((child) => [
+    `${"-".repeat(depth)}${child.id} ${child.type}`,
+    ...rowsOf(child, depth + 1),
+  ]);
+}
+
+// A block id is unique only inside its document, and an issue that has not converted can hold
+// one id in two documents: each block is a row of its own, by its document's id for it, and a
+// comment the read hangs under the second stands under that one, the nearest node before it of
+// the id its parent names.
+test("two documents' blocks with one block id are two rows, each its own document's", () => {
+  const { root } = drawn(
+    answer(
+      [
+        block("a1", "requirement", KEY, SPEC, 0),
+        block("a1", "plan_task", KEY, PLAN, 0),
+        personsComment("c1", "a1", "2026-11-06T00:00:00Z"),
+      ],
+      [],
+      { converted: false, documents: { plan: PLAN.id, spec: SPEC.id }, tree: null }
+    )
+  );
+
+  expect(rowsOf(root)).toEqual([
+    `${blockNodeId("spec", "a1")} requirement`,
+    `${blockNodeId("plan-md", "a1")} plan_task`,
+    "-c1 comment",
+  ]);
+});
+
+// A child's Verification document carries its parent's slug, and the parent's read holds the
+// child's check beside the parent's own when they share a block id: the parent's check keeps its
+// document's id and its place under the statement it serves, and the child's draws no row.
+test("this issue's check keeps its document's id beside a child's check of the same block id", () => {
+  const tree = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0),
+      block("c1", "check", "r1", VERIFICATION, 0),
+      node("CORE-2", "issue", KEY, { text: "A child of the issue" }),
+      node("c1", "check", "CORE-2", {
+        document: {
+          artifact_id: "artifact-child-verification",
+          position: 0,
+          slug: "verification-md",
+        },
+        issue: "CORE-2",
+      }),
+    ],
+    [tuple("serves", "c1", "r1")],
+    { converted: false, documents: { spec: SPEC.id, verification: VERIFICATION.id }, tree: null }
+  );
+  const reads = { issue: issueDetails() };
+
+  expect(treeIdOf(tree, reads)("c1")).toBe(blockNodeId("verification-md", "c1"));
+  expect(rowsOf(drawn(tree, reads).root)).toEqual([
+    `${blockNodeId("spec", "r1")} requirement`,
+    `-${blockNodeId("verification-md", "c1")} check`,
+    "CORE-2 child_issue",
+  ]);
+});
+
+// A node's role is read node by node: on an issue that has converted, a statement written in the
+// spec carries the spec's `document`, and a criterion, written into the issue's own tree, names
+// none and plays the role whose query takes its kind, so the spec's blocks hold both, in the
+// walk's order; a node of another issue plays no role of this one.
+test("a converted issue's spec blocks hold its criteria beside the statements its spec names", () => {
+  const tree = answer([
+    node("criterion-1", "criterion", KEY),
+    block("r1", "requirement", "criterion-1", SPEC, 0),
+    node("r-above", "requirement", "CORE-0", { issue: "CORE-0" }),
+    block("t1", "plan_task", KEY, PLAN, 0),
+  ]);
+  const issue = { ...issueDetails(), plan_artifact_id: PLAN.id };
+
+  expect(blocksOfRole(tree, "spec", issue)?.map((one) => [one.id, one.from])).toEqual([
+    ["criterion-1", 1],
+    ["r1", 2],
+  ]);
+  expect(blocksOfRole(tree, "plan", issue)?.map((one) => [one.id, one.from])).toEqual([["t1", 0]]);
+});
+
+// Owed: a tuple names its two ends by the read's bare id, so where this issue's plan task `t1`
+// and a child's plan task `t1` are both in the read, the child's `serves` tuple cannot be told
+// from the parent's, and the parent's task is placed again under the statement only the child's
+// task serves. It waits on the model naming a tuple's ends by each node's own identity.
+test.skip("this issue's plan task is not placed by a child's plan task of the same block id @owed", () => {
+  const tree = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0),
+      block("t1", "plan_task", "r1", PLAN, 0),
+      block("r2", "requirement", KEY, SPEC, 1),
+      node("CORE-2", "issue", KEY, { text: "A child of the issue" }),
+      node("t1", "plan_task", "CORE-2", {
+        document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan-md" },
+        issue: "CORE-2",
+      }),
+    ],
+    [tuple("serves", "t1", "r1"), tuple("serves", "t1", "r2")],
+    { converted: false, documents: { plan: PLAN.id, spec: SPEC.id }, tree: null }
+  );
+
+  expect(rowsOf(drawn(tree).root)).toEqual([
+    `${blockNodeId("spec", "r1")} requirement`,
+    `-${blockNodeId("plan-md", "t1")} plan_task`,
+    `${blockNodeId("spec", "r2")} requirement`,
+    "CORE-2 child_issue",
+  ]);
+});
+
+// The asks read says the ask `ask-1` was indexed from the spec's ask block `q-block`, so the two
+// are one row, in the block's place: what the ask node shaped is named on that row as chips, as
+// what the block shaped is, and what the read hangs under the ask stands under that row.
+test("an ask drawn in its block's row names what the ask shaped there", () => {
+  const tree = answer(
+    [
+      block("q-block", "ask", KEY, SPEC, 0),
+      block("r1", "requirement", KEY, SPEC, 1),
+      node("ask-1", "ask", KEY),
+      personsComment("c-under-ask", "ask-1", "2026-11-06T00:00:00Z"),
+    ],
+    [tuple("shaped", "ask-1", "r1")],
+    { converted: false, documents: { spec: SPEC.id }, tree: null }
+  );
+  const reads: IssueTreeReads = {
+    asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q-block" })],
+    issue: issueDetails(),
+  };
+  const { root } = drawn(tree, reads);
+  const row = nodeOf(root, blockNodeId("spec", "q-block"));
+  const shaped = nodeOf(root, blockNodeId("spec", "r1"))?.reference ?? "";
+
+  expect(shaped, "the statement has an address").not.toBe("");
+  expect({
+    children: row?.children.map((child) => child.id),
+    chips: row?.chips.map((chip) => chip.ref),
+  }).toEqual({
+    children: ["c-under-ask"],
+    chips: [shaped],
+  });
 });

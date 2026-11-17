@@ -1,11 +1,11 @@
-/** `bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> [--part <branch>=<commit> ...]`:
- *  records the rows the new issue page draws from F's reads into
- *  `e2e/fixtures/issue-page-t-rows.json`, the fixture part T of dispatch://INFRA-1196
- *  (dispatch://INFRA-4062, task t2 of its plan) compares the tree read's rows with.
+/** `bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> [--part <commit> ...]`:
+ *  records the rows the new issue page draws from its reads into
+ *  `e2e/fixtures/issue-page-t-rows.json`, the fixture the rows of `e2e/issue-page-t.e2e.ts`
+ *  compare the tree read's rows with.
  *
  *  What it records. For each of the 14 seeds of `e2e/issue-layout-seed.ts`, in the order that
  *  file writes them, on an emptied database, read by alice with the new page on at 1440 by 900
- *  (G's `phase`):
+ *  (`phase`):
  *
  *  - `loadRequests`: the requests under `/api/` the page sent from the navigation until it was
  *    quiet and drew the same rows twice with no request sent between (`watchApiRequests`,
@@ -16,18 +16,19 @@
  *  - `filters`: for Spec, Verification, Plan and Decisions, the keys of the rows the filter
  *    draws, in drawing order, and the count its control draws.
  *
- *  Each row is named by what the seed returned (T's `seedKeys` and `keyedRows`), never by an id
+ *  Each row is named by what the seed returned (`seedKeys` and `keyedRows`), never by an id
  *  the server minted, and its time by the read it came from, never as an instant. The recorder
  *  fails rather than write a UUID or an instant, and it fails where two rows of the outline have
  *  the same key and the same parent key, since a comparison by key could not tell them apart.
  *
- *  On which commit. The recording base: a commit that holds every part T holds and neither the
- *  model (INFRA-1253's branch) nor any commit of T after R, the commit that adds this file. The
- *  first base is R. `--recorded-on` names the base, and each `--part` one part T holds, by its
- *  branch and the commit of that branch the base holds; give one `--part` for each such part,
- *  and none for a part `main` holds. The recorder runs no git, so it writes the names it is
- *  given. `ISSUE_PAGE_T_RECORDED_ON` and `ISSUE_PAGE_T_PARTS` (a comma-separated list of
- *  `<branch>=<commit>`) give the same values, and a flag wins over its variable.
+ *  On which commit. The recording base: a commit that holds every part of the new page this
+ *  branch holds, and neither the model's tree read nor any commit of this branch after R, the
+ *  commit that adds this file. The first base is R. `--recorded-on` names the base, and each
+ *  `--part` the commit the base holds of one part of the page that `main` does not hold; give
+ *  one `--part` for each such part, and none for a part `main` holds. The fixture lists those
+ *  commits sorted, as `parts`. The recorder runs no git, so it writes the commits it is given.
+ *  `ISSUE_PAGE_T_RECORDED_ON` and `ISSUE_PAGE_T_PARTS` (a comma-separated list of commits) give
+ *  the same values, and a flag wins over its variable.
  *
  *  How to run it, from `packages/dispatch` of a worktree at the base whose `packages/contracts`
  *  and dashboard are built (`bun run build:web`):
@@ -35,7 +36,7 @@
  *    bun e2e/harness-up.ts > "$TMPDIR/t-harness.sh" &
  *    …wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`…
  *    . "$TMPDIR/t-harness.sh" && bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> \
- *      --part <branch>=<commit> ...
+ *      --part <commit> ...
  *    …then stop the harness by its own process id.
  *
  *  It empties the database `DATABASE_URL` names before each seed, so it runs only where
@@ -52,10 +53,11 @@
  *  it carries the suite's own settings a recording reads by: its origin, its desktop browser, its
  *  expect and action timeouts, one worker and no retry.
  *
- *  When to run it again: at task t13, and whenever a part T holds changes what F draws, what the
- *  seeds write, what the page reads at load or what a filter draws. So that two runs on one base
- *  write the same bytes, every object's fields are sorted, and the file is written as Biome
- *  formats it, which is also what `bunx biome check .` requires of it.
+ *  When to run it again: once `main` is merged forward for the last time before this branch
+ *  merges, and whenever a part this branch holds changes what the page draws from its reads,
+ *  what the seeds write, what the page reads at load or what a filter draws. So that two runs on
+ *  one base write the same bytes, every object's fields are sorted, and the file is written as
+ *  Biome formats it, which is also what `bunx biome check .` requires of it.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,13 +90,12 @@ import { resetDatabase } from "../seed";
 import { type ApiRequests, watchApiRequests } from "../traffic";
 
 const usage =
-  "usage: bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> " +
-  "[--part <branch>=<commit> ...]\n" +
-  "  --recorded-on  the commit the stack was built from, which holds every part T holds and no\n" +
-  "                 model (else ISSUE_PAGE_T_RECORDED_ON)\n" +
-  "  --part         one part T holds, by its branch and the commit of it the base holds; once\n" +
-  "                 for each part main does not hold (else ISSUE_PAGE_T_PARTS, a comma-separated\n" +
-  "                 list of <branch>=<commit>)";
+  "usage: bun e2e/tools/issue-page-t-record.ts --recorded-on <commit> [--part <commit> ...]\n" +
+  "  --recorded-on  the commit the stack was built from, which holds every part of the new page\n" +
+  "                 this branch holds and not the model (else ISSUE_PAGE_T_RECORDED_ON)\n" +
+  "  --part         the commit the base holds of one part of the page main does not hold; once\n" +
+  "                 for each such part (else ISSUE_PAGE_T_PARTS, a comma-separated list of\n" +
+  "                 commits)";
 
 /** The four filters, in the order the view row draws them (`PRESET_ORDER`). Conversation, the
  *  fifth control, is the page with no filter on. */
@@ -126,9 +127,10 @@ const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const fixturePath = fileURLToPath(FIXTURE_FILE);
 
-/** The commits the fixture says it was recorded on. */
+/** The commits the fixture says it was recorded on: the base, and the commit the base holds of
+ *  each part of the page `main` does not hold, sorted. */
 interface RecordingBase {
-  readonly parts: Readonly<Record<string, string>>;
+  readonly parts: readonly string[];
   readonly recordedOn: string;
 }
 
@@ -184,19 +186,13 @@ function recordingBase(): RecordingBase {
       .split(",")
       .map((entry) => entry.trim())
       .filter((entry) => entry !== "");
-  const parts = new Map<string, string>();
-  for (const entry of named) {
-    // A branch name may hold `=`, and a hash never does, so the last one divides the two.
-    const at = entry.lastIndexOf("=");
-    const branch = entry.slice(0, at);
-    const commit = entry.slice(at + 1);
-    if (at <= 0 || !COMMIT.test(commit)) {
-      refuse(`The part ${JSON.stringify(entry)} is not <branch>=<commit>.`);
-    }
-    if (parts.has(branch)) refuse(`The part ${branch} is named twice.`);
-    parts.set(branch, commit);
+  const parts = new Set<string>();
+  for (const commit of named) {
+    if (!COMMIT.test(commit)) refuse(`The part ${JSON.stringify(commit)} is not a commit's hash.`);
+    if (parts.has(commit)) refuse(`The part ${commit} is named twice.`);
+    parts.add(commit);
   }
-  return { parts: Object.fromEntries(parts), recordedOn };
+  return { parts: [...parts].sort(), recordedOn };
 }
 
 /** The config the runner is started with: this file as its one test file, and the suite's own
@@ -252,6 +248,7 @@ function biomeFormatted(json: string): string {
 /** The command: checks the arguments, runs the recording in the runner, writes the fixture, and
  *  answers the exit status. */
 async function main(): Promise<number> {
+  const base = recordingBase();
   if (process.env.DISPATCH_E2E_REUSE_SERVERS !== "1") {
     console.error(
       "issue-page-t-record.ts reads a stack that is already running, and empties its database.\n" +
@@ -262,11 +259,6 @@ async function main(): Promise<number> {
     );
     return 2;
   }
-  const base = recordingBase();
-  // The one thing the fixture holds that no seed's record does (each is checked as it is made,
-  // `recordSeed`) and no commit's pattern rules out: the parts' branch names. Checked before the
-  // recording, so a name the fixture cannot hold fails at once.
-  expectNothingMinted(base.parts, "the parts");
   const scratch = mkdtempSync(join(tmpdir(), "issue-page-t-record-"));
   try {
     const config = join(scratch, "playwright.config.mjs");

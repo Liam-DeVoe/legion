@@ -18,6 +18,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
+import { TreeReadFailed } from "../tree-read/view-read";
 import { useToolbarSink } from "../useDocumentToolbars";
 import { useIssueTree } from "../useIssueTree";
 
@@ -77,6 +78,9 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
           column. On a phone 4 px from the left edge and 10 px from the right, as the
           prototype's `#reading` is there, so the bullets keep the picture's place. */}
       <div className="mx-auto flex w-full max-w-[1000px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">
+        {/* A tree read refused before it first answered leaves the tree the issue alone, which
+            draws no row, so the outline says so over the tree, with a Retry. */}
+        <TreeReadFailed issue={issue} />
         <IssueTree
           artifacts={artifacts}
           context={view.context}
