@@ -12,7 +12,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor, withoutUserinfo } from "./errors";
+import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -735,6 +735,8 @@ export class EnvoyApiError extends Error {
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;
+      /** The origin a refused redirect points at (`redirectOrigin`), which the message names. */
+      readonly redirectedTo?: string | undefined;
     }
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
@@ -748,7 +750,7 @@ export class EnvoyApiError extends Error {
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
       parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}: ${details.responseBody}`
+        ? `${details.method} ${details.url} failed with ${details.status}${details.redirectedTo === undefined ? "" : `, redirecting to ${details.redirectedTo}`}: ${details.responseBody}`
         : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
@@ -922,7 +924,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       // No call follows a redirect: fetch sends the credential's DPoP proof and the body on to the
-      // origin a redirect names, and the listener answers no route with a 3xx.
+      // origin a redirect names. The listener's routes answer no 3xx; its router answers one only
+      // to a path it cleans (a doubled slash, a subtree root without its slash), a caller's mistake.
       response = await config.fetch(url, {
         ...init,
         redirect: "manual",
@@ -985,6 +988,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         url: withoutUserinfo(url),
         status: response.status,
         responseBody: body,
+        redirectedTo: redirectOrigin(response, url),
       });
       if (response.status >= 500) {
         options.onUnanswered?.();

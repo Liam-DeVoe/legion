@@ -10,9 +10,9 @@
  * caller reads only behind a guard of its own (`??`, `=== undefined`, an explicit refusal) is
  * named as optional: its absence is what that caller already handles, and a row stricter than
  * Dispatch's true answer would turn a good answer into `ANSWER_LOST`. A row keeps every member it
- * does not name (`z.looseObject`), and the caller reads the answer as it came.
+ * does not name, at every depth (`z.looseObject`), and the caller reads the answer as it came.
  * `__tests__/dispatch-write-rows.test.ts` drives every method against the least and the most
- * answer its route declares.
+ * answer its route declares, and holds every row to that rule.
  *
  * Where `@legion/contracts` declares a member in the form the route answers, the row takes that
  * declaration (`issueFields`, `askFields`, `commentFields`, `messageFields`, `artifactFields`,
@@ -185,6 +185,12 @@ export function rowStores(row: z.ZodType): boolean {
   return !STORE_NOTHING.has(row);
 }
 
+/** A priority an issue advances and a link it carries, in the payload's forms (`issueFields`,
+ *  `ExternalLinkSchema`), whose items refuse a member they do not name: here each keeps it, as
+ *  every row does. */
+const advance = z.looseObject(issueFields.advances.unwrap().unwrap().element.unwrap().shape);
+const externalLink = z.looseObject(ExternalLinkSchema.unwrap().shape);
+
 /** An issue as `issueUpdateCommand` reads the answer of its PATCH (`WRITE_ROWS.updateIssue`). */
 const updatedIssue = z.looseObject({
   key: issueFields.key,
@@ -199,8 +205,8 @@ const updatedIssue = z.looseObject({
   resolved_repo: issueFields.resolved_repo.optional(),
   labels: issueFields.labels.nullish(),
   blocked_by: issueFields.blocked_by.nullish(),
-  advances: issueFields.advances,
-  external_links: z.array(ExternalLinkSchema).nullish(),
+  advances: z.array(advance).nullable().optional(),
+  external_links: z.array(externalLink).nullish(),
   advice,
 });
 

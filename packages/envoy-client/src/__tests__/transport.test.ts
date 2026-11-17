@@ -1968,6 +1968,40 @@ describe("a listener answer that redirects to another origin", () => {
       other.stop(true);
     }
   });
+
+  // The refusal says where the redirect points, so an operator who wrote `http://` for an
+  // `https://` listener fixes the URL from the line: the scheme and the host, never a path, a
+  // query or a user, any of which can carry a secret.
+  test("is refused with a line that names the origin it points at, and nothing else of it", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://listener.example.com/v1/roles/reviewer");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://listener.example.com"],
+      ["/v1/roles/reviewer?again=1", "http://listener.test"],
+    ] as const) {
+      const client = createEnvoyClient({
+        baseUrl: "http://listener.test/",
+        fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch,
+        retry: false,
+      });
+      const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EnvoyApiError);
+      const { message } = failure as EnvoyApiError;
+      expect(message, location).toContain(`redirecting to ${origin}`);
+      for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "again=1"]) {
+        expect(message, location).not.toContain(part);
+      }
+    }
+  });
 });
 
 describe("newClientInstanceID", () => {

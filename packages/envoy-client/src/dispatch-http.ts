@@ -100,7 +100,7 @@ import type { ZodType } from "zod";
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
 import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
-import { messageFor, withoutUserinfo } from "./errors";
+import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 
 export type {
   CredentialPendingResponse,
@@ -299,9 +299,10 @@ export class DispatchWriteLandedError extends Error {
 
 /**
  * A 2xx of a POST that stores nothing (`rowStores`: Dispatch's parse of a text, the related-item
- * check) that is not this call's answer: no JSON, an empty body, JSON that is not its row, or an
- * answer naming another request's key back. The call made nothing, so this is no landing and
- * leaves no outcome unknown, and asking again is safe. `code` is `DISPATCH_ANSWER_LOST`.
+ * check) that is not this call's answer: no JSON, an empty body, JSON that is not its row, a
+ * replay whose first answer Dispatch did not keep, or an answer naming another request's key back.
+ * The call made nothing, so this is no landing and leaves no outcome unknown, and asking again is
+ * safe. `code` is `DISPATCH_ANSWER_LOST`.
  */
 export class DispatchAnswerMissingError extends Error {
   override readonly name = "DispatchAnswerMissingError";
@@ -2784,8 +2785,11 @@ export class DispatchClient {
    * travels in a header, never the URL), the status and reason phrase, a one-line plain-text
    * excerpt of the body (or, when none of what the excerpt reads is text, the body's size), and
    * what asking again can do for that method and status. A write Dispatch made whose answer is
-   * gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a 2xx `#writtenRow` reads as a landing — is a
-   * `DispatchWriteLandedError`, neither a refusal nor a payload.
+   * gone — `409 IDEMPOTENCY_KEY_COMMITTED` that names the call's key back, or a 2xx `#writtenRow`
+   * reads as a landing — is a `DispatchWriteLandedError`, neither a refusal nor a payload. A
+   * `409 IDEMPOTENCY_KEY_COMMITTED` that does not name it back is no verdict of Dispatch's keyed
+   * layer on this write, which names the key back on every answer it gives one, so the write's
+   * outcome is unknown (`#notThisCallsAnswer`), as for a 2xx.
    */
   async #response<T>(
     method: string,
@@ -2808,7 +2812,20 @@ export class DispatchClient {
     if (!response.ok) {
       const error = asErrorShape(payload);
       if (typeof error.error === "string") {
-        if (response.status === 409 && error.code === IDEMPOTENCY_KEY_COMMITTED) {
+        if (
+          response.status === 409 &&
+          error.code === IDEMPOTENCY_KEY_COMMITTED &&
+          written !== undefined
+        ) {
+          if (!keyEchoed(response, written.call.key)) {
+            throw this.#notThisCallsAnswer(
+              method,
+              url,
+              response,
+              this.#bodyText(text, "the write's answer"),
+              written.call
+            );
+          }
           throw new DispatchWriteLandedError(
             IDEMPOTENCY_KEY_COMMITTED,
             response.status,
@@ -2826,12 +2843,15 @@ export class DispatchClient {
           retryAfterMs(response) || null
         );
       }
+      // A redirect no request follows names the origin it points at, never its path or query.
+      const target = redirectOrigin(response, url);
       throw this.#gateway(
         method,
         url,
         response,
         this.#bodyText(text, "Dispatch's error JSON"),
-        gatewayAdvice(method, response.status)
+        gatewayAdvice(method, response.status),
+        target === undefined ? "" : `redirecting to ${target}, `
       );
     }
     return payload as T;
@@ -2888,9 +2908,10 @@ export class DispatchClient {
    * - a 2xx that names no key back and gives the row is the answer of a Dispatch that runs no keyed
    *   layer, the build before it, which this client still writes to (`#runsKeyedLayer`);
    * - every other 2xx — one that names another request's key back, or names none and gives no row
-   *   (a proxy's page, a server that is not Dispatch) — is no answer of Dispatch's to this call,
-   *   and the write may have reached Dispatch behind what answered it: its outcome is unknown, a
-   *   `DispatchWriteUnsettledError` whose last answer is that 2xx as a `DispatchGatewayError`.
+   *   (a proxy's page, a server that is not Dispatch, or a Dispatch older than the key's echo that
+   *   lost the body after it stored) — is no answer this client can take as Dispatch's to this
+   *   call, and the write may have reached Dispatch behind what answered it: its outcome is
+   *   unknown (`#notThisCallsAnswer`).
    * A route that stores nothing (`rowStores`) made nothing either way, so a 2xx of it that is not
    * its answer is a `DispatchAnswerMissingError`. The row is the answer as it came, so a caller
    * reads every member Dispatch sent, the ones the check names among them.
@@ -2917,6 +2938,7 @@ export class DispatchClient {
     if (parsed && echoed) {
       const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
       if (answerNotKept(response.status, replayed, payload)) {
+        if (!rowStores(row)) throw new DispatchAnswerMissingError(response.status, method, url);
         throw new DispatchWriteLandedError(
           IDEMPOTENCY_ANSWER_NOT_KEPT,
           response.status,
@@ -2940,8 +2962,26 @@ export class DispatchClient {
       text === undefined
         ? `a body that could not be read whole (${messageFor(unread)})`
         : this.#bodyText(text, "the write's answer");
-    const names = named === "" ? "naming no key back" : "naming another request's key back";
-    throw new DispatchWriteUnsettledError(
+    throw this.#notThisCallsAnswer(method, url, response, body, call);
+  }
+
+  /**
+   * The outcome of a write's answer that only Dispatch's keyed layer gives and that does not name
+   * the call's key back (a 2xx that is not the call's row, a `409 IDEMPOTENCY_KEY_COMMITTED`): no
+   * verdict of Dispatch's on this write, which may have reached Dispatch behind what answered it,
+   * so its outcome is unknown, a `DispatchWriteUnsettledError` whose last answer is that answer as
+   * a `DispatchGatewayError`. `body` is what came, as `#bodyText` names it.
+   */
+  #notThisCallsAnswer(
+    method: string,
+    url: string,
+    response: Response,
+    body: string,
+    call: WriteCall
+  ): DispatchWriteUnsettledError {
+    const names =
+      keyNamedBack(response) === "" ? "naming no key back" : "naming another request's key back";
+    return new DispatchWriteUnsettledError(
       this.#gateway(
         method,
         url,
