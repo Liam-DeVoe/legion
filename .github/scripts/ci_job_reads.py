@@ -2583,7 +2583,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
-        ("scripts/e2e/lib/leftovers.sh", "packages/dispatch/e2e/__tests__/harness-postgres-leftover.test.ts:1280,1395 sources it "
+        ("scripts/e2e/lib/leftovers.sh", "packages/dispatch/e2e/__tests__/harness-postgres-leftover.test.ts:1366,1481 sources it "
                                          "in the shell stacks the visual job's image rows start, and runs its removal"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
