@@ -1,6 +1,9 @@
 -- 20261116213930_ci_check_results.up.sql
 --
--- One row per result a CI job recorded against a check its ci_check names
+-- Two tables of what a CI job recorded: ci_check_results, its results, and
+-- ci_check_result_retractions, the retractions of them.
+--
+-- ci_check_results holds one row per result a CI job recorded against a check its ci_check names
 -- (POST /api/v1/issues/{key}/results under a results token the secrets broker minted for the
 -- job's run). The row holds what Dispatch read from the token, from GitHub and from the check,
 -- never what the caller said of itself:
@@ -26,8 +29,8 @@
 --   event_seq          the seq of the result.recorded event on the check's issue.
 -- Nothing updates or deletes a row: a result is a record of one run, and another run or another
 -- attempt is another row. One writer inserts them (insertCIJobCheckResult), and a retraction of
--- one is a row of its own (ci_check_result_retractions, 20261117205502). A row goes only with its
--- issue or its document, by the cascade check_results takes too.
+-- one is a row of ci_check_result_retractions, below. A row goes only with its issue or its
+-- document, by the cascade check_results takes too.
 --
 -- A table of its own rather than more rows of check_results, which holds what a role recorded:
 -- the release before this one reads every check_results row against a check block as a reason
@@ -35,10 +38,10 @@
 -- the live document. It reads no row of this table, so no CI job's result changes a check block
 -- under any build.
 --
--- A new table: nothing existing is read, locked or rewritten, and the release before this one
--- neither reads nor writes it, so it rolls beside this one (cmd/dispatch/README.md, "Database
+-- New tables: nothing existing is read, locked or rewritten, and the release before this one
+-- neither reads nor writes either, so they roll beside this one (cmd/dispatch/README.md, "Database
 -- migrations"). The census answers 0, and rolling back past it is an image rollback alone: the
--- release before reads none of its rows, so a result a job recorded changes nothing it serves.
+-- release before reads none of their rows, so a result a job recorded changes nothing it serves.
 create table ci_check_results (
     id uuid primary key default gen_random_uuid(),
     issue_key text not null references issues (key) on delete cascade,
@@ -65,3 +68,27 @@ create table ci_check_results (
 create index ci_check_results_check on ci_check_results (check_artifact_id, check_block_id, created_at desc);
 -- Every result an issue recorded, which the delete of an issue cascades through.
 create index ci_check_results_issue on ci_check_results (issue_key);
+
+-- ci_check_result_retractions holds one row per retracted result of ci_check_results: the record
+-- that says such a result is wrong (POST /api/v1/results/{id}/retract), which takes a CI job's
+-- result from the same three callers as a role's, in the shape check_result_retractions gives a
+-- role's. Nothing in ci_check_results is updated or deleted, so the result and its retraction
+-- stay readable together, each with its own reason and actor.
+--   result_id    the retracted result, and this table's key. One retraction per result: a
+--                second retraction of one result is refused by this primary key and by the
+--                route before it.
+--   reason       why the result is wrong, which the person or session who retracted it wrote.
+--   session      the session that retracted it ('' for a person).
+--   actor        the actor that retracted it, in the shape every other table stores an actor in.
+--   created_at   when the retraction was written.
+--   event_seq    the seq of the result.retracted event on the check's issue.
+-- A table of its own rather than rows of check_result_retractions, whose result_id is a foreign
+-- key into check_results: a row here goes with its result, by its own foreign key's cascade.
+create table ci_check_result_retractions (
+    result_id uuid primary key references ci_check_results (id) on delete cascade,
+    reason text not null check (reason <> ''),
+    session text not null default '',
+    actor jsonb not null,
+    created_at timestamptz not null default now(),
+    event_seq bigint
+);

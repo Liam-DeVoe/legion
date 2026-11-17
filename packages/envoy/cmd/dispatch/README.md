@@ -2352,21 +2352,18 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261116213930_ci_check_results` creates `ci_check_results`, one row per result a CI job recorded against a check its `ci_check` names (`POST /api/v1/issues/{key}/results` under a results token).
+Migration `20261116213930_ci_check_results` creates `ci_check_results`, one row per result a CI job recorded against a check its `ci_check` names (`POST /api/v1/issues/{key}/results` under a results token), and `ci_check_result_retractions`, one row per retraction of such a result.
 A row names the issue the result was recorded on, the check's own issue, document, block id, that block's `changed_version` and `text_sha256`, the check run's name as `run`, the check's `surface` and `negative_control`, `observed`, the commit the job tested, the `branch` whose push it ran on, the `verdict`, the in-toto statement of the run (`attestation`), the session and actor of the run, and the `event_seq` of its `result.recorded` event.
 Nothing updates or deletes a row; a row goes only with its issue or its document, by the cascade `check_results` takes.
 `ci_check_results_check` serves the results read, and `ci_check_results_issue` the cascade of an issue's delete.
 `check_results` holds what a role recorded, as before this migration: the release before reads every `check_results` row against a check block as a reason that the check is no check CI proves, and its settlement then deletes the block's `ci_check` from the live document, so a CI job's row there would change a document under that release.
 It reads no row of `ci_check_results`.
-A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
-Rolling back past it is an image rollback alone, with no step before it: the release before reads none of its rows, so no result a job recorded changes what that release serves.
-A block that holds a role's result takes no `ci_check` under either build, since both hold a document write to the same four rules (`400 INVALID_CI_CHECK`, below), so the release before's settlement finds no block this release gave a `ci_check` that it must take away.
-
-Migration `20261117205502_ci_check_result_retractions` creates `ci_check_result_retractions`, one row per retraction of a result a CI job recorded (`POST /api/v1/results/{id}/retract`), which takes a CI job's result as it takes a role's, from the same three callers.
-A row has the shape of a row of `check_result_retractions`, the retractions of a role's results: the result's id as its key, the reason, the session and actor that retracted it, `created_at` and the `event_seq` of its `result.retracted` event.
+`ci_check_result_retractions` takes a CI job's result from `POST /api/v1/results/{id}/retract`, which judges the same three callers as for a role's result.
+Its row has the shape of a row of `check_result_retractions`, the retractions of a role's results: the result's id as its key, the reason, the session and actor that retracted it, `created_at` and the `event_seq` of its `result.retracted` event.
 Its key is a foreign key into `ci_check_results`, so a row goes with its result; the results read carries it as `retracted` on that result, and nothing in `ci_check_results` changes.
-A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
-Rolling back past it is an image rollback alone: the release before reads neither this table nor `ci_check_results`.
+Both are new tables: nothing existing is read, locked or rewritten, the previous release neither reads nor writes them, and the census answers `0`.
+Rolling back past it is an image rollback alone, with no step before it: the release before reads none of their rows, so no result a job recorded changes what that release serves.
+A block that holds a role's result takes no `ci_check` under either build, since both hold a document write to the same four rules (`400 INVALID_CI_CHECK`, below), so the release before's settlement finds no block this release gave a `ci_check` that it must take away.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
