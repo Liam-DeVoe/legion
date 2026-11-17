@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,16 +220,26 @@ func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 }
 
 // registerBurst registers every session with the listener on port in consumer mode, a few at a
-// time, with no resume point, and fails the test unless each answer says consumer.
+// time, with no resume point, and fails the test unless each answer says consumer. A session the
+// listener refuses with a 503 is registered again until it is answered: the listener refuses a
+// registration while it cannot write the session's record (its bus or its store does not
+// answer), and that 503 asks the client to try the same route again, so the refusal is no
+// verdict, and only the test's deadline limits the retries. Any other answer is the verdict.
 func registerBurst(t *testing.T, port int, sessionIDs []string) {
 	t.Helper()
 	work := make(chan string)
-	errs := make(chan error, len(sessionIDs))
+	type answer struct {
+		sessionID string
+		refused   bool
+		err       error
+	}
+	answers := make(chan answer, len(sessionIDs))
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
 			for sessionID := range work {
-				errs <- registerConsumerSession(port, sessionID)
+				refused, err := registerConsumerSession(port, sessionID)
+				answers <- answer{sessionID, refused, err}
 			}
 		})
 	}
@@ -237,40 +248,59 @@ func registerBurst(t *testing.T, port int, sessionIDs []string) {
 	}
 	close(work)
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
+	close(answers)
+	for answer := range answers {
+		if !answer.refused {
+			if answer.err != nil {
+				t.Fatal(answer.err)
+			}
+			continue
 		}
+		t.Logf("%v; registering again", answer.err)
+		testwait.Until(t, "the listener to answer the registration of "+answer.sessionID+" it refused with a 503", func() (string, bool) {
+			refused, err := registerConsumerSession(port, answer.sessionID)
+			if !refused && err != nil {
+				t.Fatal(err)
+			}
+			return fmt.Sprint(err), !refused
+		})
 	}
 }
 
-// registerConsumerSession registers sessionID with the listener on port in consumer mode and
-// reports an answer that is not 200 with consumer delivery.
-func registerConsumerSession(port int, sessionID string) error {
+// registerConsumerSession registers sessionID with the listener on port in consumer mode. It
+// reports a 503, the listener's refusal while it cannot write the session's record, as refused
+// with that answer, and any other answer that is not 200 with consumer delivery as an error.
+func registerConsumerSession(port int, sessionID string) (refused bool, err error) {
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+"/v1/interests/subscribe", strings.NewReader(consumerRegistration(sessionID, "epoch-1")))
 	if err != nil {
-		return err
+		return false, err
 	}
 	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("register %s: %w", sessionID, err)
+		return false, fmt.Errorf("register %s: %w", sessionID, err)
 	}
 	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return false, fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
+	}
+	if response.StatusCode == http.StatusServiceUnavailable {
+		return true, fmt.Errorf("register %s: status 503: %s", sessionID, strings.TrimSpace(string(body)))
+	}
 	var answer subscribeAnswer
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
-		return fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return false, fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
 	}
 	if response.StatusCode != http.StatusOK || answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer {
-		return fmt.Errorf("register %s: status %d, delivery %+v; want 200 in consumer mode", sessionID, response.StatusCode, answer.Delivery)
+		return false, fmt.Errorf("register %s: status %d, delivery %+v; want 200 in consumer mode", sessionID, response.StatusCode, answer.Delivery)
 	}
-	return nil
+	return false, nil
 }
 
-// awaitPulled waits up to 30 s until every session's consumer has a pull request waiting: the
-// listener's relay has restarted it and pulls it.
+// awaitPulled waits until every session's consumer has a pull request waiting: the listener's
+// relay has restarted it and pulls it.
 func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []string) {
 	t.Helper()
 	for _, sessionID := range sessionIDs {
@@ -284,9 +314,9 @@ func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []str
 // A listener killed (SIGKILL) while it relays many sessions restarts every one of their consumers
 // at once when it starts again, from its watched session cache, with no new registration: each
 // session, none of which ever sent a resume point, receives the messages stored while the listener
-// was down within 10 s of its restart, each once and in stream order. The restarts wait their turn
-// (relayRestartLimit) and their calls' timeout starts only once they hold it, so none times out
-// waiting, and none leaves its consumer missing.
+// was down once its restart has restarted the consumers, each once and in stream order. The
+// restarts wait their turn (relayRestartLimit) and their calls' timeout starts only once they hold
+// it, so none times out waiting, and none leaves its consumer missing.
 func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
