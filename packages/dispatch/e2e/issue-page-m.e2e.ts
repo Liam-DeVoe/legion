@@ -63,6 +63,7 @@ import {
   closeDetails,
   gotoIssue,
   issueRead,
+  marginResizeHandle,
   marginShell,
   openDetails,
   phase,
@@ -1230,6 +1231,125 @@ test("Load older by keyboard keeps the focus in view when the older page extends
     expect(
       (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
       `Load older handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
+
+// The Details focus keeper (`details-focus-keeper.ts`): when the control that holds the focus
+// turns disabled or goes away and no site hands the focus on, the keeper gives it to the control
+// nearest to where the lost one stood, so the reader's next Tab goes on from that place. The
+// drawer's resize handle is fixed to the screen and as tall as it, so it stands at no distance from
+// any place in Details, and it comes before the body in the box's order: the keeper picks it every
+// time. From the handle the next Tab goes to Close and the one after to the first control of
+// Details, which scrolls Details back to its top. Found by the tester on a running build of
+// f589637b with a copy of a large real issue, at 1440 px and 768 px: the Retry of what the issue
+// blocks, pressed by keyboard with Details scrolled 500 px down, turned busy and then went once
+// its read answered; the focus was on the resize handle, and two Tabs took Details to 0.
+test("a control of Details that goes away under the focus hands it to a control of Details' body, never the drawer's resize handle", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A read that fails once" });
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const blocks = /\/api\/v1\/references\?.*kind=blocked_by/;
+    await page.route(blocks, (route) =>
+      route.fulfill({
+        body: JSON.stringify({ error: { code: "INTERNAL", message: "refused by the row" } }),
+        contentType: "application/json",
+        status: 500,
+      })
+    );
+    await gotoIssue(page, `/issues/${issue.key}`);
+    await openDetails(page);
+    const retry = marginShell(page).getByRole("button", { name: CONTROL_LABELS.retry });
+    await expect(retry, "Details draws no Retry for the read that failed").toHaveCount(1, {
+      timeout: 30_000,
+    });
+    await page.unroute(blocks);
+    await retry.focus();
+    await nextFrames(page);
+    await page.keyboard.press("Enter");
+    await expect(retry, "the Retry stayed after its read answered").toHaveCount(0);
+    await nextFrames(page);
+    const focus = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        inDetails:
+          document.querySelector('[data-testid="desktop-margin-shell"]')?.contains(active) ?? false,
+        name: `${active?.tagName} "${(active?.getAttribute("aria-label") ?? active?.textContent ?? "").trim().slice(0, 40)}"`,
+      };
+    });
+    expect(focus.inDetails, `the focus left Details for ${focus.name}`).toBe(true);
+    expect(
+      await marginResizeHandle(page).evaluate((handle) => handle === document.activeElement),
+      `the keeper handed the focus to the drawer's resize handle (${focus.name}), from which the next Tabs go to Close and the top of Details`
+    ).toBe(false);
+  } finally {
+    await context.close();
+  }
+});
+
+// The focus rule of `IssueHistory.tsx`, with long agents' turns just above Load older. A turn is
+// cut to six lines only once it comes near the screen (`clamp-measurer.ts`), so turns far below
+// the reader are drawn whole. Moving the focus to Load older scrolls them into view, and Enter
+// pressed at once lands the next page before they are cut: the page's own hand-on puts the focus
+// on a new control in view, then the turns above it are cut, about a thousand pixels each, and
+// the reader's place is held on one of them, so the focused control moves up out of Details'
+// view. Found by the tester on a running build of f589637b with a copy of a large real issue: the
+// second press of Load older, made as the focus reached it, left the focus on a turn's time link
+// 212 px above Details' view at 1440 px (two runs of four), 224 px above at 768 px and 280 px
+// above at 390 px; a second and a half between the focus and Enter left it in view.
+test("Load older pressed as the focus reaches it keeps the focus in view while the turns above it are cut", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Long turns above Load older" });
+  // Each turn is about a thousand pixels whole at Details' width and six lines cut, as the long
+  // turns of the real issue were.
+  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
+  for (let index = 0; index < 205; index += 1) {
+    await createMessage(
+      issue.key,
+      {
+        body: Array.from(
+          { length: 10 },
+          (_, part) => `Turn ${index}, part ${part}: ${paragraph}`
+        ).join("\n\n"),
+      },
+      attentionSession
+    );
+  }
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
+    await expect(loadOlder, "the log's first page offers no Load older").toHaveCount(1);
+    await loadOlder.focus();
+    await page.keyboard.press("Enter");
+    await expect(loadOlder, "Load older stayed after the log's last page").toHaveCount(0);
+    // Long enough for every turn that came near to be cut, and for the reader's place to be held.
+    await page.waitForTimeout(2_000);
+    await nextFrames(page);
+    const clip = await historyViewport(page);
+    const focused = await page.evaluate(() => {
+      const active = document.activeElement;
+      const box =
+        active === null || active === document.body ? undefined : active.getBoundingClientRect();
+      return box === undefined ? null : { bottom: box.bottom, top: box.top };
+    });
+    expect(focused, "Load older left the focus on the page").not.toBeNull();
+    expect(
+      (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
+      `Load older handed the focus to a control that the cut of the turns above it moved out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
     ).toBe(true);
   } finally {
     await context.close();
