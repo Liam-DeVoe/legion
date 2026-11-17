@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -460,5 +461,58 @@ func TestARepeatedLensWriteUnderItsKeyWritesOnce(t *testing.T) {
 	}
 	if after, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind); after != before+1 {
 		t.Fatalf("the store holds %d lenses after two writes under one key, and held %d before", after, before)
+	}
+}
+
+// TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt: a lens invoked on a comment's
+// block names the block by its item's block kind, comment_block, the kind graph_nodes keys such a
+// block by and every reader of an edge into one keys it by (farEndOf). Its part_of tuple stands on
+// the comment_block, its answer names the block as the node it stands on, and the block's ?to=
+// list, its backlink count and the lens read of it each hold the lens, and alice's own lens for
+// alice alone.
+func TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt(t *testing.T) {
+	rig := newReasoningRig(t)
+	comment := createThreadComment(t, rig.handler, rig.issue, map[string]any{"body": "The first remark.\n\nThe second remark."}, "alice")
+	node := "comment/" + comment.ID + "#b1"
+	block := "dispatch://" + rig.issue + "/comment/" + comment.ID + "#b-b1"
+	lens := rig.invoke(block, "botec", "alice", nil)
+	hidden := rig.invoke(block, "botec", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
+	for _, invoked := range []lensInvoked{lens, hidden} {
+		if invoked.On != block {
+			t.Errorf("the lens %s answers it stands on %q, want the comment's block %s", invoked.Address, invoked.On, block)
+		}
+		if got, want := rig.current(graphstore.KindLens, invoked.ID, graphstore.TuplePartOf), []string{refs.ItemComment.BlockKind() + "/" + node}; !slices.Equal(got, want) {
+			t.Errorf("the lens %s stands on %v, want %v", invoked.Address, got, want)
+		}
+	}
+
+	for login, want := range map[string][]string{"alice": {lens.Address, hidden.Address}, "bob": {lens.Address}} {
+		counts, err := refs.BacklinkCounts(t.Context(), rig.database.Pool, model.Actor{Kind: "user", ID: login},
+			refs.ItemComment.BlockKind(), []string{node}, nil)
+		if err != nil {
+			t.Fatalf("count the comment block's backlinks as %s: %v", login, err)
+		}
+		response := referencesAt(t, rig.handler, "to", block, login)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s's ?to= of the comment's block answers %d %s, want 200", login, response.Code, response.Body.String())
+		}
+		listed := edgeEnds(decodeBody[model.GraphReferences](t, response).Edges)
+		wantListed := make([]string, len(want))
+		for index, address := range want {
+			wantListed[index] = "in part_of " + address
+		}
+		slices.Sort(wantListed)
+		if counts[node] != len(want) || !slices.Equal(listed, wantListed) {
+			t.Errorf("%s counts %d backlinks of the comment's block and lists %v, want %d and %v", login, counts[node], listed, len(want), wantListed)
+		}
+		read := rig.lenses(block, login)
+		if got, wanted := slices.Sorted(slices.Values(readAddresses(read.Lenses))), slices.Sorted(slices.Values(want)); !slices.Equal(got, wanted) {
+			t.Errorf("%s's lens read of the comment's block answers %v, want %v", login, got, wanted)
+		}
+		for _, onBlock := range read.Lenses {
+			if onBlock.On == nil || *onBlock.On != block {
+				t.Errorf("%s's lens read answers the lens %s on %v, want the comment's block %s", login, onBlock.Address, onBlock.On, block)
+			}
+		}
 	}
 }

@@ -303,16 +303,14 @@ func storeKinds() []StoreKind {
 // states beside its node, and the document_block_texts rows of the versions written inside it,
 // each with whether the block's row before it held a text (null for the block's first row).
 //
-// A comment's facts are read off its row as their writers read them: its author as commentAuthor
+// A comment's facts are read off its row as their writers read them: its author as authoredLink
 // does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
 // address fits the store's bound, and its aliases as graphstore's aliases states them - the owner a
 // session's credential proved, the session a person's credential proved, and the raw id a person
 // was recorded under where that is not their canonical login.
 var sizingWritesWith = `
 	with sized_comments as (
-		select (case when c.author->>'kind' <> '` + graphstore.KindSession + `'
-		                  or octet_length(coalesce(c.author->>'id', '')) <= ` + addressBound + `
-		             then ` + commentAuthor + ` end) is not null as authored,
+		select (` + authoredLink("c.author") + `) is not null as authored,
 		       coalesce(octet_length(anchor.ref_key) <= ` + addressBound + `, false) as anchored,
 		       coalesce(octet_length(owner.ref_key) <= ` + addressBound + `, false) as owned,
 		       (case when c.author->>'kind' = '` + graphstore.KindSession + `' and coalesce(c.author->>'id', '') <> ''

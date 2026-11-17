@@ -199,9 +199,10 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/results":                   noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}":          noObject,
 	"POST /api/v1/results/{id}/retract":                   noObject,
-	// The reasoning nodes of dispatch://INFRA-1950 and a node's state: each writes nodes and
-	// tuples of the store alone and no row of a project-owned table, and the fixture's paths name
-	// no node of the issue under {id}, so each is called with the empty body and refused.
+	// The reasoning nodes of dispatch://INFRA-1950, a node's state and the pre-mortem conversion:
+	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
+	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each
+	// is called with the empty body and refused.
 	"POST /api/v1/issues/{key}/lenses":                                     noObject,
 	"POST /api/v1/issues/{key}/risks":                                      noObject,
 	"POST /api/v1/issues/{key}/constraints":                                noObject,
@@ -209,6 +210,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers":                        noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/state":                           noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":                          noObject,
+	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert":         noObject,
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions":                noObject,
 	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":                   noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": noObject,

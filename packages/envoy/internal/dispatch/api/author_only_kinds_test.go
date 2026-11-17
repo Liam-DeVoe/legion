@@ -100,21 +100,44 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 // or where the reader is that person, and otherwise, byte for byte, what a login nobody holds
 // answers. carol's only node is a comment reserved for her: bob reads her page as a login nobody
 // holds, and carol reads her own with the comment as author. alice holds a project comment, one
-// reserved for her, and a lens on the issue reserved for her: bob's page of her lists the project
-// comment alone, and hers lists all three, the lens titled by its verdict and opening the issue's
-// page. Each row answers its state and its visibility.
+// reserved for her, a lens on the issue reserved for her, a run of the command bar her cookie
+// asked and one her personal token asked: bob's page of her lists the project comment alone; the
+// page her cookie reads lists the three, the lens titled by its verdict and opening the issue's
+// page, and the cookie's run titled by the first line of its words and opening nothing; and the
+// page her token reads lists the project comment, the lens, whose predicate compares the person,
+// and the token's run, and neither the comment nor the run her cookie wrote, whose predicates
+// compare the whole credential. Each row answers its state and its visibility.
 //
 // The store's writer takes no comment reserved for its author (graphstore.ErrVisibilityNotAdmitted),
 // so each such comment's node is seeded as such a write would store it
 // (graphstoretest.SeedAuthorOnly), with its row and its authored_by tuple beside it. The lens is
-// written through the one write path of its kind (writeReasoningNodes).
+// written through the one write path of its kind (writeReasoningNodes), and each run through the
+// going POST's own record (recordGoingRequest), the token's as the token resolves.
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	server := directServer(deps)
+	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "PAGE", "A person's page", "# Spec\n\nA passage.\n")
 	public := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark alice wrote for everyone."}, "alice")
 	alicesPrivate := seedAuthorOnlyComment(t, database, issue.Key, model.Actor{Kind: "user", ID: "alice"}, "A remark alice keeps.")
 	carolsPrivate := seedAuthorOnlyComment(t, database, issue.Key, model.Actor{Kind: "user", ID: "carol"}, "A remark carol keeps.")
 	alicesLens := writeAuthorOnlyLens(t, database, issue.Key, model.Actor{Kind: "user", ID: "alice"}, "A verdict alice keeps.")
+	cookieRun, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "",
+		"Which risk did alice's cookie ask about?\nA second line no title shows.")
+	if err != nil {
+		t.Fatalf("record the run alice's cookie asked: %v", err)
+	}
+	token := personalTokenOwnedBy(t, database, "alice", model.ScopePerson)
+	resolving := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/people/alice/nodes", nil)
+	resolving.Header.Set("Authorization", "Bearer "+token)
+	tokenActor, _, err := server.optionalActor(resolving)
+	if err != nil || tokenActor.Owner == nil || *tokenActor.Owner != "alice" {
+		t.Fatalf("alice's personal token resolves as %+v (%v), want a credential alice owns", tokenActor, err)
+	}
+	tokenRun, err := server.recordGoingRequest(ctx, tokenActor, "", "Which risk did alice's token ask about?")
+	if err != nil {
+		t.Fatalf("record the run alice's token asked: %v", err)
+	}
 	page := func(person, reader string) *httptest.ResponseRecorder {
 		t.Helper()
 		return dispatchRequest(t, handler, http.MethodGet, "/api/v1/people/"+person+"/nodes", nil, reader)
@@ -137,26 +160,34 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 	comment := func(visibility string) personPageRow {
 		return personPageRow{kind: graphstore.KindComment, visibility: visibility}
 	}
+	lens := personPageRow{kind: graphstore.KindLens, visibility: graphstore.VisibilityAuthor,
+		title: "A verdict alice keeps.", href: "/issues/" + issue.Key}
 	requirePage(t, page("carol", "carol"), "carol", map[string]personPageRow{carolsPrivate: comment(graphstore.VisibilityAuthor)})
 
 	requirePage(t, page("alice", "bob"), "alice", map[string]personPageRow{public.ID: comment(graphstore.VisibilityProject)})
 	requirePage(t, page("alice", "alice"), "alice", map[string]personPageRow{
-		public.ID: comment(graphstore.VisibilityProject), alicesPrivate: comment(graphstore.VisibilityAuthor),
-		alicesLens: {kind: graphstore.KindLens, visibility: graphstore.VisibilityAuthor,
-			title: "A verdict alice keeps.", href: "/issues/" + issue.Key},
+		public.ID: comment(graphstore.VisibilityProject), alicesPrivate: comment(graphstore.VisibilityAuthor), alicesLens: lens,
+		cookieRun.ID: {kind: graphstore.KindInteraction, visibility: graphstore.VisibilityAuthor,
+			title: "Which risk did alice's cookie ask about?", opensNothing: true},
+	})
+	requirePage(t, personPageRequest(t, handler, "/api/v1/people/alice/nodes", token), "alice", map[string]personPageRow{
+		public.ID: comment(graphstore.VisibilityProject), alicesLens: lens,
+		tokenRun.ID: {kind: graphstore.KindInteraction, visibility: graphstore.VisibilityAuthor,
+			title: "Which risk did alice's token ask about?", opensNothing: true},
 	})
 }
 
 // personPageRow is what a row of a person's page is held to: its kind and visibility, and, where
-// they are set, its title and the dashboard path it opens.
+// they are set, its title and the dashboard path it opens, or that it opens none.
 type personPageRow struct {
 	kind, visibility string
 	title, href      string
+	opensNothing     bool
 }
 
 // requirePage fails unless response is person's page, 200, listing exactly the nodes want names,
-// each live, of the kind and at the visibility want gives it, and with the title and the href want
-// gives it where want gives one.
+// each live, of the kind and at the visibility want gives it, with the title and the href want
+// gives it where want gives one, and with no href where want says it opens nothing.
 func requirePage(t *testing.T, response *httptest.ResponseRecorder, person string, want map[string]personPageRow) {
 	t.Helper()
 	if response.Code != http.StatusOK {
@@ -177,9 +208,10 @@ func requirePage(t *testing.T, response *httptest.ResponseRecorder, person strin
 			t.Errorf("the page of %s answers %s at state %q and visibility %q, want %q and %q",
 				person, row.ID, row.State, row.Visibility, graphstore.StateLive, wanted.visibility)
 		}
-		if (wanted.title != "" && row.Title != wanted.title) || (wanted.href != "" && row.Href != wanted.href) {
-			t.Errorf("the page of %s titles %s %q and opens it at %q, want %q at %q",
-				person, row.ID, row.Title, row.Href, wanted.title, wanted.href)
+		if (wanted.title != "" && row.Title != wanted.title) || (wanted.href != "" && row.Href != wanted.href) ||
+			(wanted.opensNothing && row.Href != "") {
+			t.Errorf("the page of %s titles %s %q and opens it at %q, want %q at %q (opening nothing: %t)",
+				person, row.ID, row.Title, row.Href, wanted.title, wanted.href, wanted.opensNothing)
 		}
 	}
 }

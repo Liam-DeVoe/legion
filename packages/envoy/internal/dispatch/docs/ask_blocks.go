@@ -1328,6 +1328,10 @@ func createAskBlock(
 		return model.Ask{}, openedFollow{}, err
 	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, author, createdAt, graphstore.NoEvent, places)
+	// The ask is the node this block makes, the first AskFacts gives, marked changed
+	// (graphstore.Node's Changed) so a version written for a run names it as changed by it. Its
+	// author's node is never marked.
+	nodes[0].Changed = true
 	node, err := graphstore.WriteUncaused(ctx, tx, nodes, facts)
 	if err != nil {
 		return model.Ask{}, openedFollow{}, fmt.Errorf("write the node of a new ask block: %w", err)

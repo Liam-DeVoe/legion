@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -34,7 +35,9 @@ type personNode struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask:
 	// a comment's own place in its issue or its document, and for a lens, a finding, a risk or a
-	// constraint, which the dashboard opens no page of, the page of the issue it stands under.
+	// constraint, which the dashboard opens no page of, the page of the issue it stands under. A
+	// run of the command bar stands under no issue and has no page, so its row opens nothing and
+	// its href is empty.
 	Href string `json:"href"`
 	// State is the node state the store holds for the node (graphstore.NodeStates), live for a
 	// node it holds no row of, as every read of a node answers it. A node that is gone is on no
@@ -134,12 +137,17 @@ var personPageShownQuery = personNodesHeld + `
 //
 // The items arm resolves each held node into the row a reader opens. A node of a kind this build
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
-// build wrote: today the page opens comments, and the lenses, findings, risks and constraints of
-// dispatch://INFRA-1950, and a kind joins here when this build learns to open it, its predicate
-// already bound by the arm above. A lens, a finding, a risk or a constraint is a row of the store
-// alone: its title is its text (refs.StandingTextSQL), its time its row's made_at, and it opens the
-// page of the issue it stands under (refs.StandingIssueSQL), so one that stands under no issue - a
-// constraint of the lens catalogue - is skipped as a comment with no place is.
+// build wrote: today the page opens comments, and the lenses, findings, risks, constraints and
+// runs of dispatch://INFRA-1950, and a kind joins here when this build learns to open it, its
+// predicate already bound by the arm above. A lens, a finding, a risk or a constraint is a row of
+// the store alone: its title is its text (refs.StandingTextSQL), its time its row's made_at, and it
+// opens the page of the issue it stands under (refs.StandingIssueSQL), so one that stands under no
+// issue - a constraint of the lens catalogue - is skipped as a comment with no place is. A run of
+// the command bar (an interaction) is a row of the store alone too, listed to the credential that
+// asked it and to no other by its kind's whole-credential predicate, which the arm above binds, so
+// a person's cookie lists none of what their personal token asked: its title is its words
+// (graphstore.AttributeWords), its time its row's made_at, and it opens nothing, since a run stands
+// under no issue and the dashboard has no page of one.
 var personNodesQuery = personNodesHeld + `, items as (
 		select h.from_kind as kind, c.id::text as id, h.relations, c.body as text, c.created_at, h.stored,
 		       case
@@ -163,6 +171,11 @@ var personNodesQuery = personNodesHeld + `, items as (
 			where ` + graphstore.AddressKindSQL("h.from_kind", "h.from_id") + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `')
 		) standing
 		where standing.issue_key is not null
+		union all
+		select h.from_kind, h.from_id, h.relations, coalesce(n.attributes->>'` + graphstore.AttributeWords + `', ''), n.made_at, h.stored, ''
+		from held h
+		join graph_nodes n on n.kind = h.from_kind and n.id = h.from_id
+		where h.from_kind = '` + graphstore.KindInteraction + `'
 	)
 	select count(*) over () as total, kind, id, relations, text, created_at, href, stored
 	from items
@@ -187,7 +200,20 @@ var personNodesQuery = personNodesHeld + `, items as (
 // where they hold nothing: a person who has written nothing and been reached by nothing opens
 // their own page from the signed-in login, and telling them they are who they signed in as tells
 // them nothing new.
+//
+// Each row's predicate is bound at the credential the request itself proved, not at the person
+// actingPerson reads it as: a kind that compares the whole credential - a run of the command bar -
+// is listed to the credential that wrote it and to no other, so a person's cookie lists none of
+// what their personal token asked and their token none of what the cookie asked, while a kind that
+// compares the person lists the same for both. The caller is resolved once, here, and handed to
+// actingPerson on the request's context, as the layers in front of a handler hand it on.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
+	credential, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: credential, human: human}))
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
 		return
@@ -200,7 +226,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	login := model.CanonicalLogin(r.PathValue("login"))
 	// The acting credential is marshalled once and bound by both reads: it is one value for
 	// the request, and the two statements name the same reader.
-	seen := refs.VisibilityArg(caller)
+	seen := refs.VisibilityArg(credential)
 	var shown bool
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), personPageShownQuery, login, seen).Scan(&shown); err != nil {
 		s.writeHandlerError(w, err)

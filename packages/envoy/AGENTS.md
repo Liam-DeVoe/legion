@@ -1835,6 +1835,18 @@ Each node's visibility is `graphstore.VisibilityFor` of what it asked for and th
 a node written on the shared bearer states no `authored_by` and makes no node of the session its body claims.
 `envoy-dispatch census --store` owes a `person` or `session` node to the author of each such node that holds an asserted `authored_by` (`graphcensus`'s `reasoningAuthored`).
 
+A run of the command bar is an `interaction` node (dispatch://INFRA-1950), and `going_requests` and `going_events` are its projections (`api/going.go`).
+`recordGoingRequest` writes, in its one transaction and through `graphstore.InteractionFacts`, the node at the run's uuid, always `author` and made by the whole credential the `POST` proved, carrying `words`, `ends_at` and the run's project, with its `authored_by` and the author's node where `graphstore.AuthorOf` names one, and then the `going_requests` row, whose `author` is that `made_by`.
+`appendGoingEvent` is the one path of every frame - the answer's, its ending, a reader's at the deadline and the sweep's, through `endGoingRun` - each in a transaction of its own that takes the run's interaction node row `for no key update` first, then the run's row `for key share`, appends one `frame` value tuple (`graphstore.FrameTuple`, its text `graphstore.FrameValueSQL`), then writes the `going_events` row, and takes no revision fence;
+a run with no node, which a pod of the release before records, gets it first from its row through `graphcensus.WriteRun`, the backfill's writer for one run.
+The read registry holds `interaction` through `credentialAuthoredKind`, so a run reaches the credential that asked it alone, and its backlink count is the `changed_by_run` tuples into it.
+An edge at a run shows its words cut at 240 runes, as every edge's excerpt is, and a read of the run's own address, `dispatch://interaction/<uuid>` (`refs.Node`), answers them whole as the node's `text`, behind the same predicate; the person page lists a run to the credential that asked it, titled by its words and opening nothing.
+A run is kept, row, frames and node, until `envoy-dispatch erase --node interaction:<uuid>` removes all three (`grapherase`'s `runTables`, locked after the node row, the run's row before its frames); `sweepGoingRequests` ends the overdue runs whose `ends_at` passed within the last day (`goingSweepWindow`) and deletes none, the boot pass ends every older one, and `contracts.GoingRequestTTL` is read by nothing in this build.
+The sweep reads that day as one range of `going_requests_ends_at` (`goingOverdueRuns`, migration `20261116232634`, built concurrently), so its read does not grow with the runs kept; a run whose `ends_at` passed longer ago with no terminal frame stored is ended by the boot pass, which every process runs once at boot before `RunMaintenanceSweep`'s first tick and under no lease (`EndGoingRunsOverdueAtBoot`, reading `goingEveryOverdueRun`, the same index from its first entry up to now, and logging how many runs it ended and how long it took), or by its reader if one reads it first (`streamGoingAnswer`, on `readGoingStream`'s `PastDeadline`), each through `endGoingRun`.
+Migration `20261116205055_interaction_nodes` writes the node, author and `frame` values of every run recorded before it; `backfill-graph-store` mends what an older pod writes during a roll by anti-join, row by row (`graphcensus`'s `backfillRuns`, `backfillRunFrames`, `backfillGoneRuns`, the last stating `gone` an interaction whose row is gone).
+`census --store` holds `interaction` to `going_requests`, `frame` to `going_events`, and the `visibility` and `state` columns of each interaction, lens, finding, risk, constraint and lens kind to its newest tuples (`baseAttributeCensus`); none refuses on zero rows.
+The erase's blockers are only the tuple kinds the census digests for the stating node's row (`graphcensus.DigestedTuple`), plus a finding or risk under an erased lens and a reasoning node or run whose `authored_by` names an erased person.
+
 The pointer tuples of those kinds and a risk's place are held to one table of type rules (`graphstore`'s `pointerRules`, dispatch://INFRA-1950/spec#b-r-constraint-risk):
 
 | Tuple | From | To | Also |
@@ -2971,10 +2983,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The first rule is the restore (`restoresApprovedText`): N's stored markdown byte for byte that of A - an accidental edit undone exactly, or a version a route wrote over a document that changed nothing - carries the approval, since it holds nothing its reviewer has not agreed to.
   Only a stored A of N's size is read (`octet_length`, which reads a stored text's size without decompressing it), so the write of any other text reads no document.
   Its `reason` is `Carried forward from the approval of version <A>: this version's text is that version's, unchanged.`
+
 - The second is the carry cases (`carryVerdict` over `carryCases`, which compose): A's stored tree and N's, each taken through every case, which takes out of a tree what the case may change, must render byte for byte the same, at least one case must have taken something out, A's stored markdown must be what this build renders A's tree to (so what is compared is the bytes the person approved, and a renderer change between A and N is a difference no case carries), and every typed block id of A must still stand in N (`blockIDsStand`).
   The one case today is R10's (`attributeRemovalCase`): the eight server-owned attributes of every ask block (`askServerAttributeNames`, the one place the eight are spelled, read by the carry alone), which the first accepted write on a fleet of one build drops, and which an answer, a close or a reopen written while two builds serve keeps in step with the asks row, so the release before's answer carry and reopen carry are cases of it.
   Its `reason` is `Carried forward from the approval of version <A>: ` and the change of each case that took something out.
   The readings of R2, the conversion of D6 and the restore of D1 join `carryCases` as further cases of the same rule.
+
 - Every carried `reason` opens with the daemon's `intake.CarriedApprovalReasonPrefix`, so a carried approval queues no parked root and reopens a design gate as a carried approval does;
   the write that carries supersedes no approval, so its advice carries no `superseded_approval`.
   The carry writes an `approved` review pinned to N in the approval's own actor and `artifact.approved`, ahead of the version's own `artifact.version`;
@@ -5441,6 +5455,15 @@ a caller that is another person, compared as `model.CanonicalLogin` compares the
 Another tab can sign someone else in in place, and a retry can go out on the new cookie before this tab knows;
 the page drops the presser's writes on that answer.
 A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
+
+A write made for a run of the command bar names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), which `api.GoingCaller.Do` sends on every write for its `Run`.
+`withinGoingRun` (`internal/dispatch/api/going_run_header.go`) is its one reader, wrapped around every `POST`, `PATCH`, `PUT` and `DELETE` route inside the project and session scope checks and outside the key layer.
+The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.ProvesAuthor` and `model.Actor.SameCredential`);
+anything else, a header sent twice or no uuid among it, is `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
+A request without the header costs nothing new: it resolves no caller there and sends no query.
+The admitted run rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed (`graphstore.Node.Changed`, `graphstore.Tuple.Changes`) to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run.
+The writers that mark: `refs.IndexBlocks` (each block whose words a version adds, changes or restores, and each it drops), the comment path, the issue, document, ask and message creates, an issue's own `PATCH` (`patchIssue`, which for a run alone writes the issue's node, restating it, when it changes any field, and states it under the `PATCH`'s own event), `writeReasoningNodes`, the pointer route (the node the pointer goes out of) and `writeNodeState`; an author's `person` or `session` node is never marked.
+A write on a context with no run appends none, so the block-index reconciliation tick, which indexes a version above `deferBlockIndexBlocks` or one with no rendering, names no run.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.

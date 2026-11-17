@@ -388,13 +388,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
 	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
-	// below (graphstore.Caused). Each row names its node in the same transaction.
+	// below (graphstore.Caused). Each row names its node in the same transaction. Both are nodes
+	// this write creates, so each is marked changed (graphstore.Node's Changed): a create made
+	// for a run names them as changed by it.
 	createdAt := time.Now().UTC()
 	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
-	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
-		graphstore.IssueNode(key, input.Project, actor, createdAt),
-		graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt),
-	}, []graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
+	issueNode := graphstore.IssueNode(key, input.Project, actor, createdAt)
+	specNode := graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt)
+	issueNode.Changed, specNode.Changed = true, true
+	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode},
+		[]graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

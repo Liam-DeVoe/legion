@@ -443,13 +443,18 @@ func foldsAnswers(query Query) bool {
 // Artifacts are addressed by ref_key on the to side of an edge and by uuid on the from side;
 // found is false when no such node exists, and false too for a node reserved for an author who
 // is not who - a read of such an address answers, byte for byte, what an address nobody holds
-// answers (visibility.go).
+// answers (visibility.go). A node whose own address answers its whole text (resolvedNode's
+// wholeText: a run's words) carries it as its Text, from the same read and so behind the same
+// predicate; an edge at it shows only the head of that text (excerptOf).
 func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRefKey bool) (model.GraphNode, bool, error) {
 	nodes, err := resolveNodes(ctx, q, who, byRefKey, []edgeRow{{otherKind: kind, otherID: id}})
 	if err != nil {
 		return model.GraphNode{}, false, err
 	}
 	node, found := nodes[[2]string{kind, id}]
+	if node.wholeText {
+		node.GraphNode.Text = node.text
+	}
 	return node.GraphNode, found, nil
 }
 
@@ -501,11 +506,15 @@ func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
-// excerpt, already cut.
+// excerpt, already cut. wholeText says a read of the node's own address answers that text whole
+// as the node's Text (Node), which an interaction's loader says of a run's words
+// (dispatch://INFRA-1950/spec#b-r-interaction): an edge at the run cuts them at excerptRunes, and
+// the run's own address answers every word of them.
 type resolvedNode struct {
 	model.GraphNode
-	text   string
-	refKey string
+	text      string
+	refKey    string
+	wholeText bool
 }
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may

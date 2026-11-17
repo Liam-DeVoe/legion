@@ -510,6 +510,18 @@ var authoredByReasoning = backlinkArm{kind: graphstore.TupleAuthoredBy, storedFr
 // no tuple is counted by two arms.
 var lensStandsOn = backlinkArm{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens}}
 
+// changedByRun is the arm that counts, on a run's interaction node, the changed_by_run tuple of
+// each node a write made for that run created or changed (dispatch://INFRA-1950/spec#b-r-interaction),
+// which the view answers from the tuples alone, out of any node. A node of each kind the store
+// holds and a write made for a run can mark is a source here: an issue, a document, an ask, a
+// comment or a message, a document's block, and a lens, a finding of one, a risk or a constraint.
+// The author's own person or session node is never marked, so neither is a source. The tuple
+// points away from the node that changed, so it raises the count of the run alone.
+var changedByRun = backlinkArm{kind: graphstore.TupleChangedByRun, storedFrom: []string{
+	graphstore.KindArtifact, graphstore.KindAsk, BlockNodeKind, graphstore.KindComment, graphstore.KindConstraint, graphstore.KindIssue,
+	graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindMessage, graphstore.KindRisk,
+}}
+
 // backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
 // kind is a literal and whose target is a node of that kind, and each edge kind the view's tuple
 // arm answers into that kind from the store alone, as an arm of that kind (storedFrom).
@@ -649,6 +661,10 @@ var backlinkArms = map[string][]backlinkArm{
 	},
 	graphstore.KindLensBlock: {lensStandsOn},
 	graphstore.KindRisk:      {lensStandsOn},
+	// A run's interaction node is pointed at by the changed_by_run tuple of each node a write made
+	// for the run changed (changedByRun), an arm of the store alone. Its own authored_by points
+	// away from it, at its author, whose count holds it (authoredByReasoning).
+	graphstore.KindInteraction: {changedByRun},
 	// No arm of the view whose edge kind is a literal targets a document's block: such a block
 	// is pointed at by mentions, a reply naming the block of an ask, a comment or a message
 	// instead, and by the tuples of the store alone - a lens invoked on it, and the prevented_by of

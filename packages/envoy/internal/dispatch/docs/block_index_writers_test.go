@@ -518,6 +518,28 @@ var indexPasses = map[string]string{
 	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
 	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
 	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
+	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
+	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
+	// is named (changed_by_run). It reads no row of either side to decide what the other says.
+	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	// A run of the command bar: its interaction node, its author's node and their tuples, written
+	// from the POST alone before the going_requests row that projects them, and each frame's value,
+	// written from the frame its writer hands it before the going_events row that projects it.
+	// Neither reads a row of either side to decide what the other should say.
+	"api/going.go#recordGoingRequest": "the POST's question, its project and the credential it proved",
+	"api/going.go#appendGoingEvent":   "the frame its writer hands it and the run's last sequence",
+	// The backfill's writer for one run a pod of the release before recorded with no node: its
+	// input is that going_requests row's own content and the run's going_events rows, as the other
+	// backfill passes read each pre-store row's own, and a run whose node is already written it
+	// leaves alone rather than mending.
+	"graphcensus/interactions.go#writeRun": "one going_requests row an earlier build recorded with no node, and that run's going_events rows",
+	// The backfill's passes over what a process of the release before writes of a run during a
+	// roll: the frames it appended with no value, whose input is each going_events row's own
+	// content, found by an anti-join with the run's frame values and stated from the row, never
+	// read back; and a run whose row it deleted, whose input is that the row is gone and the node
+	// as the store holds it, of which it moves the state alone, never mending a row from the store.
+	"graphcensus/backfill.go#writeRunFrames": "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
+	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.

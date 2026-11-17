@@ -1245,7 +1245,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty-six of the twenty-eight dispatch tools that write, of the forty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The two it leaves out are dispatch_review and dispatch_settle, on purpose: each records a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal - and the loop that proposes operations must never propose one. Twenty-six actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty-six of the twenty-nine dispatch tools that write, of the forty-six tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The three it leaves out are dispatch_review, dispatch_settle and dispatch_premortem_convert, on purpose: the first two each record a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal - and the conversion retires a document once, and the loop that proposes operations must never propose one. Twenty-six actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1445,6 +1445,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Convert the issue's pre-mortem document {slug}, by slug, into nodes, once {prevented_by, dry_run?, actor?}: one lens of kind pre-mortem under the issue, whose verdict is the document's verdict followed by its two closing sections, What a world-class implementation looks like and The smallest first slice that proves the model, word for word; under it one risk for risk 0 and each numbered risk of the document's newest version, each with its heading, early warning and prevention and a prevented_by tuple to each check its entry names; then a moved_to tuple from the document's address to the lens, which retires the document. prevented_by holds one entry {risk, checks, reason} for each risk the document holds: its number as the document numbers it, the dispatch:// addresses of the check blocks that prevent it, of any issue, empty for none, and why. An entry for a number the document does not hold, a number twice, a risk with no entry, an address that names no check block that is not gone and that the caller may see, a blank reason or check, and an entry of any other shape or type are 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, or the risk no entry names; a body that is not JSON is 400 INVALID_JSON; no document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that holds no verdict, risk or closing section 400 ARTIFACT_INPUT. Each writes nothing. With dry_run every write runs in a savepoint that is rolled back, and the answer is what the call would write, with no address. A document converted already answers 200, writes nothing and names its lens. The write appends no event. Answers 200 {document {address, id, version, moved_to}, dry_run, already_converted, lens {address, kind, on, verdict}, risks [{number, address, heading, early_warning, prevention, prevented_by, reason}], summary}. */
+    post: operations["postApiV1IssuesByKeyArtifactsBySlugPremortemConvert"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/artifacts/{slug}/text": {
     parameters: {
       query?: never;
@@ -1592,7 +1609,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, its block's node state, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. A requirement at node state proposed is a question still open and raises neither gap. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
+    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, its block's node state, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. A check or a plan task at node state proposed is a question still open and is not counted. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. A requirement at node state proposed is a question still open and raises neither gap. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
     get: operations["getApiV1IssuesByKeyCoverage"];
     put?: never;
     post?: never;
@@ -1816,7 +1833,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Write the node state of the node {id} names {state}: proposed or overtaken on any node, live on any node that is not gone, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. {id} is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so are gone on a block of a document or an issue, a document, an ask, a comment or a message, and any value on a gone node, each naming the node's kind, its state and the value asked for. The write appends one state tuple written by the caller and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before. */
+    /** @description Write the node state of the node {id} names {state}: proposed or overtaken on any node the store holds, live on any such node that is not gone, and gone only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block. A block of an ask, a comment or a message is no node the store holds: every read answers it live, and every value on it is 409 NODE_STATE_NOT_WRITABLE, saying so. {id} is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole dispatch:// address), percent-encoded as one path segment; a node the caller may not see under the issue is 404 NOT_FOUND. The value is checked first: a word that is none of live, gone, proposed, settled and overtaken is 400 INVALID_ATTRIBUTE_VALUE, naming the attribute state and the word, and nothing is stored. settled is 409 NODE_STATE_NOT_WRITABLE, since POST /api/v1/issues/{key}/nodes/{id}/settle alone settles a proposed node, and so are gone on a block of a document or an issue, a document, an ask, a comment or a message, and any value on a gone node, each naming the node's kind, its state and the value asked for. The write appends one state tuple written by the caller and no event, and every read of the node answers the new state at once; a write of the state the node holds appends nothing. Answers 200 {node: {address, kind, state, visibility}, previous}, previous the state it held before. */
     post: operations["postApiV1IssuesByKeyNodesByIdState"];
     delete?: never;
     options?: never;
@@ -4989,6 +5006,13 @@ export interface components {
       block_id?: string;
       text: string;
     };
+    GraphFrame: {
+      data: {
+        [key: string]: unknown;
+      } | null;
+      name: string;
+      sequence: number;
+    };
     GraphNode: {
       block_id?: string;
       /** Format: date-time */
@@ -4996,6 +5020,7 @@ export interface components {
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
       document?: string;
+      frames?: components["schemas"]["GraphFrame"][];
       id: string;
       issue_key?: string;
       /** @enum {string} */
@@ -5009,6 +5034,7 @@ export interface components {
         | "comment_block"
         | "component"
         | "constraint"
+        | "interaction"
         | "issue"
         | "lens"
         | "lens_block"
@@ -5047,6 +5073,7 @@ export interface components {
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
       document?: string;
+      frames?: components["schemas"]["GraphFrame"][];
       id: string;
       issue_key?: string;
       /** @enum {string} */
@@ -5060,6 +5087,7 @@ export interface components {
         | "comment_block"
         | "component"
         | "constraint"
+        | "interaction"
         | "issue"
         | "lens"
         | "lens_block"
@@ -6077,6 +6105,45 @@ export interface components {
       kind: string;
       node: components["schemas"]["ReasoningEnd"];
       to: components["schemas"]["ReasoningEnd"];
+    };
+    PremortemConvertInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      dry_run?: boolean;
+      prevented_by: components["schemas"]["PremortemEntry"][];
+    };
+    PremortemDocument: {
+      address: string;
+      id: string;
+      moved_to: null | string;
+      version: number;
+    };
+    PremortemEntry: {
+      checks: string[] | null;
+      reason: string;
+      risk: number;
+    };
+    PremortemLens: {
+      address: null | string;
+      kind: string;
+      on: string;
+      verdict: null | string;
+    };
+    PremortemReport: {
+      already_converted: boolean;
+      document: components["schemas"]["PremortemDocument"];
+      dry_run: boolean;
+      lens: components["schemas"]["PremortemLens"];
+      risks: components["schemas"]["PremortemRisk"][] | null;
+      summary: string;
+    };
+    PremortemRisk: {
+      address: null | string;
+      early_warning: string;
+      heading: string;
+      number: number;
+      prevented_by: string[] | null;
+      prevention: string;
+      reason: string;
     };
     Priorities: {
       empty?: string;
@@ -10456,6 +10523,45 @@ export interface operations {
             | components["schemas"]["EditPreconditionError"]
             | components["schemas"]["EditLostError"]
             | components["schemas"]["AmbiguousTargetError"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1IssuesByKeyArtifactsBySlugPremortemConvert: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        slug: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PremortemConvertInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PremortemReport"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14920,6 +15026,7 @@ export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
+export type GraphFrame = components["schemas"]["GraphFrame"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
@@ -15027,6 +15134,12 @@ export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRev
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
 export type PointerInput = components["schemas"]["PointerInput"];
 export type PointerWritten = components["schemas"]["PointerWritten"];
+export type PremortemConvertInput = components["schemas"]["PremortemConvertInput"];
+export type PremortemDocument = components["schemas"]["PremortemDocument"];
+export type PremortemEntry = components["schemas"]["PremortemEntry"];
+export type PremortemLens = components["schemas"]["PremortemLens"];
+export type PremortemReport = components["schemas"]["PremortemReport"];
+export type PremortemRisk = components["schemas"]["PremortemRisk"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];

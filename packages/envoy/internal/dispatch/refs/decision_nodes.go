@@ -652,7 +652,10 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 			// block index wrote its node.
 			continue
 		}
-		nodes = append(nodes, blockNode(address, document, versionAt, graphstore.StateLive, facts.supertags[id]))
+		// The typed pass moves a node's supertag or state and no block's words, so it marks no
+		// node changed (blockNode): the block index marks each block whose words the version
+		// moved.
+		nodes = append(nodes, blockNode(address, document, versionAt, graphstore.StateLive, facts.supertags[id], false))
 	}
 	var tuples []graphstore.Tuple
 	// Each author's node and the aliases the server proved of it are stated once however many

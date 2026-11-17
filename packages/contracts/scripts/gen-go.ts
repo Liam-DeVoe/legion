@@ -82,6 +82,7 @@ import {
   GOING_MODEL_CALL_MAX,
   GOING_REQUEST_RUNE_MAX,
   GOING_REQUEST_TTL_MS,
+  GOING_RUN_HEADER,
   GOING_RUN_MS,
   GOING_SEARCH_MAX,
   GOING_SEARCH_TOOL,
@@ -388,12 +389,23 @@ const GoingModelCallMax = ${GOING_MODEL_CALL_MAX}
 // apart.
 const GoingWordsMax = ${GOING_WORDS_MAX}
 
-// GoingRunWindow is how long one run may take, measured from the POST that started it, and
-// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
-// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
-// server's windows and the page's account of them cannot drift apart.
+// GoingRunWindow is how long one run may take, measured from the POST that started it. Generated
+// from GOING_RUN_MS in packages/contracts so the server's window and the page's account of it
+// cannot drift apart.
 const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
+
+// GoingRequestTTL is the age past which a process of the release before still deletes a run
+// during a roll. This build reads it nowhere: a run is kept until an erase removes it, since a
+// node of the store is removed by erasure alone. Generated from GOING_REQUEST_TTL_MS in
+// packages/contracts.
 const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
+
+// GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
+// server holds the run to the caller's whole credential and to its window before the write runs,
+// and the nodes a write it accepts creates or changes each carry a changed_by_run tuple to the
+// run's interaction. Generated from GOING_RUN_HEADER in packages/contracts so the server's check
+// and every caller that sends the header name it once.
+const GoingRunHeader = ${JSON.stringify(GOING_RUN_HEADER)}
 
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.

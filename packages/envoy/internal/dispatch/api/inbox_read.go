@@ -508,6 +508,34 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // the node whose pointer it moves before the rest of its write. The reasoning write
 // (writeReasoningNodes) takes its issue's owner row first, as invariant 1 says, and writes its
 // nodes in one graphstore.Write.
+//
+// A run of the command bar (api/going.go) owns no issue and no document, so none of its writes
+// takes an owner row. Its record (recordGoingRequest) writes the run's interaction node, its
+// author's node and their tuples in one graphstore.Write, and only then the going_requests row
+// that projects the node. A frame of a run takes the run's interaction graph_nodes row
+// `for no key update` first, in a transaction of its own (appendGoingEvent, which the answer, a
+// reader at the deadline and the sweep all write through), so two frames of one run queue at that
+// row and the second reads the sequence the first took. A run a pod of the release before
+// recorded with no node gets its node there first: graphcensus.WriteRun takes the run's
+// going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
+// and the frame then takes the node's row. Then the frame takes the run's going_requests row
+// `for key share`, the lock the going_events foreign key takes, appends the frame value tuple and
+// writes the going_events row. No frame takes the revision fence.
+//
+// A write made for a run (graphstore.WithRun, which withinGoingRun puts on a request that names
+// its run) adds one read and no lock: graphstore.Write, after its node step, and graphstore.Caused
+// read which of the nodes the write marks changed already hold that run's changed_by_run tuple,
+// and append the tuples still owed with the write's own. The read takes no row, so it moves no
+// step of the order, and two writes of one node for one run are ordered by what each holds before
+// it reads - the node's row, or the owner row a pointer's write takes first - so the second reads
+// the tuple the first committed and appends none.
+//
+// An issue's own field write made for a run (patchIssue) is the one writer that writes a node only
+// because a run asked it to name what it changed. It takes the issue's row as its owner row first
+// (lockPatchRows), writes the issue's row, and then, after every row and document it writes, the
+// issue's node (graphstore.WriteUncaused), the last node row its transaction takes; it appends
+// the issue's own event, and then what that node states with its changed_by_run under that event
+// (graphstore.Caused).
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

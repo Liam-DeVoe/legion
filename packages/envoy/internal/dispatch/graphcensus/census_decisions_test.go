@@ -202,11 +202,12 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 // and the session row sides read what it read bound as arrays (censusAuthors), so neither reads
 // the history again. What each still reads of graph_tuples goes through graph_tuples_current,
 // keyed on the node it probes: the person side reads the proved owners' alias_of and, for each of
-// its two arms over the reasoning nodes (reasoningAuthored: the author's login and a proved
-// session's owner), each node's current authored_by; the session side reads only that authored_by,
-// in its one arm over the reasoning nodes. The store-only kinds read their tuples through
-// graph_tuples_store_only, the partial index of those two kinds (migration 20261116220307), and
-// through no other.
+// its two arms over the nodes whose own record names their author (storeAuthored: the author's
+// login and a proved session's owner), the current authored_by of each reasoning node
+// (reasoningAuthored) and of each run whose row is gone (goneRunsAuthored); the session side reads
+// only those two authored_by reads, in its one arm over those nodes. The store-only kinds read
+// their tuples through graph_tuples_store_only, the partial index of those two kinds (migration
+// 20261116220307), and through no other.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -217,15 +218,15 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	bound := []any{[]string{}, []string{}, []time.Time{}}
 	if keyed := requireKeyedTupleReads(t, keys, "the person row side",
 		planWithoutSeqScans(t, database, `select p.login from (`+recordedPeople(censusAuthors)+`) p`, bound...),
-		"graph_tuples_current"); keyed != 3 {
-		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want three: the owners' alias_of and the"+
-			" reasoning nodes' authored_by in each of its two arms over them", keyed)
+		"graph_tuples_current"); keyed != 5 {
+		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want five: the owners' alias_of, and the"+
+			" reasoning nodes' and the gone runs' authored_by in each of its two arms over them", keyed)
 	}
 	if keyed := requireKeyedTupleReads(t, keys, "the session row side",
 		planWithoutSeqScans(t, database, `select s.id from (`+recordedSessions(censusAuthors)+`) s`, bound...),
-		"graph_tuples_current"); keyed != 1 {
-		t.Errorf("the session row side reads graph_tuples through %d scan(s), want one, the reasoning nodes' authored_by:"+
-			" the stored authors are bound", keyed)
+		"graph_tuples_current"); keyed != 2 {
+		t.Errorf("the session row side reads graph_tuples through %d scan(s), want two, the reasoning nodes' and the gone"+
+			" runs' authored_by: the stored authors are bound", keyed)
 	}
 
 	plan := planWithoutSeqScans(t, database, storeOnlyRead)

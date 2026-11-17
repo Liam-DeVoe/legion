@@ -787,6 +787,11 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
 	if route.Method != http.MethodGet {
+		// A write made for a run of the command bar: the one reader of its header, inside the
+		// checks below, so a caller they refuse is told that first, and outside the keyed
+		// layer and the upload's spool, so a run it refuses claims no key and costs no body
+		// (withinGoingRun).
+		handler = s.withinGoingRun(handler)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a credential that names no person
 		// claims no idempotency key and costs no body (withinProjectScope,

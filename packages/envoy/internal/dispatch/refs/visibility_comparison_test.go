@@ -84,15 +84,21 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 		t.Errorf("the registry flags %s, which is always project-visible", graphstore.KindLensKind)
 	}
 	// The kinds of that child registered so far, each as R1 has it: a constraint, a lens, a finding
-	// of a lens and a risk are flagged and compare the person a credential proves, and a lens kind
-	// of the catalogue is registered unflagged. The first two are written by migration
-	// 20261116123354 and the other three by the reasoning write, which is where they register. A
-	// finding is stored as a block, so its entry reads the store under that kind, and every other
-	// entry under its own.
+	// of a lens and a risk are flagged and compare the person a credential proves, an interaction
+	// is flagged and compares the whole credential, and a lens kind of the catalogue is registered
+	// unflagged. The first two are written by migration 20261116123354, the next three by the
+	// reasoning write and an interaction by the going POST, which is where they register. A finding
+	// is stored as a block, so its entry reads the store under that kind, and every other entry
+	// under its own.
 	for _, kind := range []string{graphstore.KindConstraint, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk} {
 		if entry, held := nodeRegistry[kind]; !held || !entry.authorOnly || entry.visibility.compares != comparesPerson {
 			t.Errorf("the registry holds %s as %+v (held %t), want it flagged and comparing the person", kind, entry, held)
 		}
+	}
+	if entry, held := nodeRegistry[graphstore.KindInteraction]; !held || !entry.authorOnly || entry.visibility.compares != comparesCredential ||
+		entry.load == nil {
+		t.Errorf("the registry holds %s as %+v (held %t), want it resolved, flagged and comparing the whole credential",
+			graphstore.KindInteraction, entry, held)
 	}
 	if _, held := nodeRegistry[graphstore.KindLensKind]; !held {
 		t.Errorf("the registry holds no %s, which the catalogue's migration writes", graphstore.KindLensKind)

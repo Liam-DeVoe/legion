@@ -1,12 +1,16 @@
 //go:build basebuild
 
-// The three tests of this tag are dispatch://INFRA-1149's acceptance runs:
+// Three tests of this tag are dispatch://INFRA-1149's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit this
-// branch forked from (baseBuild) and compares it with this build, so each needs a checkout that
-// holds origin/main, and each takes from 2 to 45 minutes on an issue pod. They carry a build tag
-// of their own and no CI job runs it: they are run on the pod, one at a time and by name, as
+// (read_cost_test.go), which share graph_cost_test.go. The fourth is dispatch://INFRA-1950's
+// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go), which shares it
+// too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at a base commit
+// (baseBuild) and compares it with this build: the commit BASELINE_SHA names, or, where it is
+// unset, the commit this branch forked from, `git merge-base origin/main HEAD`. So each needs a
+// checkout that holds that commit, and origin/main where BASELINE_SHA is unset, and each takes
+// from 2 to 45 minutes on an issue pod. They carry a build tag of their own and no CI job runs
+// it: they are run on the pod, one at a time and by name, as
 //
 //	go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
 
@@ -284,18 +288,23 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 
 // ───── the older build ────────────────────────────────────────────────────
 
-// baseBuild builds `./cmd/dispatch` at the commit this branch forked from and answers the binary.
-// The commit is `git merge-base origin/main HEAD` and the source is that commit's own tree, taken
-// out of the repository with `git archive` into a directory of this test's own, so the build is
-// the fork point's and not this working copy's. The directory and the binary go when the test
-// ends, so every run extracts and builds again, which is about a minute.
+// baselineEnv names the commit baseBuild builds where a run names one: the base build of a check
+// whose branch builds on branches that have not merged yet is a commit holding every such branch,
+// which no merge-base with origin/main is (dispatch://INFRA-1950's c-read-cost).
+const baselineEnv = "BASELINE_SHA"
+
+// baseBuild builds `./cmd/dispatch` at the base commit and answers the binary. The commit is the
+// one BASELINE_SHA names, and where it is unset, the commit this branch forked from, `git
+// merge-base origin/main HEAD` (baseCommit). The source is that commit's own tree, taken out of
+// the repository with `git archive` into a directory of this test's own, so the build is that
+// commit's and not this working copy's. The binary is stamped with that commit as the image build
+// stamps one, `-ldflags "-X main.buildCommit=<commit>"`, so the process registers and reports the
+// build it is (processes.Live reads two unstamped builds as one fleet). The directory and the
+// binary go when the test ends, so every run extracts and builds again, which is about a minute.
 func baseBuild(t *testing.T) string {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
-	if len(commit) < 12 {
-		t.Fatalf("git merge-base origin/main HEAD answered %q", commit)
-	}
+	commit, named := baseCommit(t, root)
 	// No socket is bound anywhere under the tree, so the room asked for is the directory the
 	// build runs in rather than the longest path of the archive.
 	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
@@ -327,10 +336,33 @@ func baseBuild(t *testing.T) string {
 		Name:   "envoy-dispatch-base",
 		Dir:    filepath.Join(source, "packages", "envoy"),
 		Target: "./cmd/dispatch",
+		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
 		Env:    os.Environ(),
 	})
-	t.Logf("the older build is %s, from %s", binary, commit)
+	t.Logf("the older build is %s, from %s, %s, stamped with that commit", binary, commit, named)
 	return binary
+}
+
+// baseCommit is the full sha of the commit baseBuild builds, and how it was named. A
+// BASELINE_SHA that names no commit this repository holds fails the test: a run of a check
+// against a base the run did not mean is no reading of that check.
+func baseCommit(t *testing.T, root string) (string, string) {
+	t.Helper()
+	if named := strings.TrimSpace(os.Getenv(baselineEnv)); named != "" {
+		resolve := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", named+"^{commit}")
+		out, err := resolve.Output()
+		commit := strings.TrimSpace(string(out))
+		if err != nil || commit == "" {
+			t.Fatalf("%s=%q names no commit this repository holds (git rev-parse --verify: %v): fetch that commit, or unset %s to build git merge-base origin/main HEAD",
+				baselineEnv, named, err, baselineEnv)
+		}
+		return commit, fmt.Sprintf("the commit %s=%s names", baselineEnv, named)
+	}
+	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
+	if len(commit) < 12 {
+		t.Fatalf("git merge-base origin/main HEAD answered %q", commit)
+	}
+	return commit, "git merge-base origin/main HEAD, " + baselineEnv + " being unset"
 }
 
 func gitOutput(t *testing.T, dir string, args ...string) string {

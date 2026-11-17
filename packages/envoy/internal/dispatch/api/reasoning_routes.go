@@ -92,11 +92,11 @@ func (s *server) reasoningCallerOf(w http.ResponseWriter, r *http.Request, suppl
 	return reasoningCaller{proving: proving, recorded: recorded}, true
 }
 
-// storedEnd is a node as a tuple names it: the kind and the id the store keys the node by.
+// storedEnd is a node as one end of a tuple names it: a kind and an id.
 type storedEnd struct{ kind, id string }
 
 // findStoredNodeUnderIssue is FindNodeUnderIssue's node for address, with the kind and the id
-// the store keys it by (storedEndOf), which a tuple naming it carries.
+// the store keys it by (storedEndOf), which the node's own tuples carry as their near end.
 func findStoredNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, address string) (model.GraphNode, storedEnd, error) {
 	node, err := FindNodeUnderIssue(ctx, q, who, key, address)
 	if err != nil {
@@ -105,17 +105,47 @@ func findStoredNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Act
 	return node, storedEndOf(node, address), nil
 }
 
-// storedEndOf is the kind and the id the store keys node by, where address is what named it
-// (decodeNodeAddress). They are the node's own kind and id but for two: a finding of a lens is a
-// node of kind block at its own id (graphstore.AddressKind), and a document, whose node answers
-// its uuid, is keyed by its ref_key, the id its address decodes to.
-func storedEndOf(node model.GraphNode, address string) storedEnd {
+// findFarEndUnderIssue is FindNodeUnderIssue's node for address, with the kind and the id a tuple
+// whose far end it is names it by (farEndOf).
+func findFarEndUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, address string) (model.GraphNode, storedEnd, error) {
+	node, err := FindNodeUnderIssue(ctx, q, who, key, address)
+	if err != nil {
+		return model.GraphNode{}, storedEnd{}, err
+	}
+	return node, farEndOf(node, address), nil
+}
+
+// farEndOf is the kind and the id a tuple whose far end is node names it by, where address is what
+// named it (decodeNodeAddress): the node's own kind and id, but for a document, whose node answers
+// its uuid and which a tuple names by its ref_key, the id its address decodes to, and for a block
+// of an ask, a comment or a message, whose node answers the kind block as a document's block does
+// (refs' loadItemBlockNodes) and which a tuple names by its item's block kind, the kind its address
+// decodes to (comment_block; refs.TargetOf). graph_nodes keys such a block under that kind, and
+// every reader of an edge into one keys it so: graph_edges, the references read of the block, the
+// backlink arm of a lens standing on it and the lens read. A finding of a lens is named lens_block,
+// the kind the graph addresses it by, at its own id, as a tuple into a block of an item names that
+// item's block kind: graph_edges answers the tuple as it is stated, so every read of an edge into a
+// finding - refs.Edges, the backlink arm of a lens standing on it, the lens read - finds it under
+// that kind, and a predicate over that end reads the store's block row behind it
+// (refs.VisibleEnd).
+func farEndOf(node model.GraphNode, address string) storedEnd {
 	end := storedEnd{kind: node.Kind, id: node.ID}
 	switch node.Kind {
-	case graphstore.KindLensBlock:
-		end.kind = refs.BlockNodeKind
 	case graphstore.KindArtifact:
 		_, end.id, _ = decodeNodeAddress(address)
+	case refs.BlockNodeKind:
+		end.kind, _, _ = decodeNodeAddress(address)
+	}
+	return end
+}
+
+// storedEndOf is the kind and the id the store keys node by, where address is what named it, the
+// near end the node's own tuples carry: its far end (farEndOf), but for a finding of a lens, which
+// the store holds as a node of kind block at its own id (graphstore.AddressKind).
+func storedEndOf(node model.GraphNode, address string) storedEnd {
+	end := farEndOf(node, address)
+	if node.Kind == graphstore.KindLensBlock {
+		end.kind = refs.BlockNodeKind
 	}
 	return end
 }
@@ -281,7 +311,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	on, onEnd, err := findStoredNodeUnderIssue(ctx, tx, reader, key, input.On)
+	on, onEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, input.On)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -307,7 +337,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	}
 	var triggeredBy *string
 	if input.TriggeredBy != nil {
-		trigger, triggerEnd, err := findStoredNodeUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
+		trigger, triggerEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -507,7 +537,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lens, lensEnd, err := findStoredNodeUnderIssue(ctx, tx, reader, key, input.Lens)
+	lens, lensEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, input.Lens)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -524,7 +554,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	}
 	preventedBy := []string{}
 	if input.PreventedBy != nil {
-		check, checkEnd, err := findStoredNodeUnderIssue(ctx, tx, reader, key, *input.PreventedBy)
+		check, checkEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, *input.PreventedBy)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -854,8 +884,8 @@ type pointerWritten struct {
 }
 
 // pointerEnd is the far end address names for a tuple of kind out of a node of the issue key,
-// read for who, with the kind and the id the store keys it by. A has_kind's far end is a
-// lens_kind of the catalogue (lensKindNamed). Every other far end stands under the issue
+// read for who, with the kind and the id the tuple names it by (farEndOf). A has_kind's far end
+// is a lens_kind of the catalogue (lensKindNamed). Every other far end stands under the issue
 // (FindNodeUnderIssue), but for a constrained_by at a constraint of the catalogue, which stands
 // under no issue and is read through refs.Node; a constraint of another issue is no far end of
 // this one, and answers as one that does not exist.
@@ -864,7 +894,7 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 		node, err := lensKindNamed(ctx, q, who, address)
 		return node, storedEnd{kind: graphstore.KindLensKind, id: node.ID}, err
 	}
-	node, end, err := findStoredNodeUnderIssue(ctx, q, who, key, address)
+	node, end, err := findFarEndUnderIssue(ctx, q, who, key, address)
 	if err == nil || kind != graphstore.TupleConstrainedBy {
 		return node, end, err
 	}

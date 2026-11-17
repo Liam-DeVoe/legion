@@ -570,8 +570,11 @@ func (s *server) storeArtifact(
 			if kind != "doc" {
 				facts = graphstore.ArtifactBytes(facts, refKey, input.contentType, int64(len(input.content)), sha, actor, at)
 			}
-			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{graphstore.ArtifactNode(
-				refKey, deref(project), deref(session), actor, at)}, facts)
+			// The document is the node this create makes, so it is marked changed
+			// (graphstore.Node's Changed): a create made for a run names it as changed by it.
+			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at)
+			node.Changed = true
+			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, facts)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return

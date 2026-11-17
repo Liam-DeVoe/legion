@@ -35,7 +35,7 @@ var blockProjections = []projection{{
 		join artifacts a on a.id = d.artifact_id
 		where octet_length(d.node_id) <= ` + addressBound,
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + placedLinks(`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
+		select n.id, md5(n.id || '|' || ` + placedLinks(kindIn("t.kind", blockLinkKinds)) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
