@@ -14,7 +14,7 @@ import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
+import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -438,8 +438,11 @@ test("a press inside a row does not scroll the page under it, and a key's focus 
     );
   const pressed = draw();
   try {
-    const control = pressed.getByRole("button", { name: "Keep open" });
-    await user.pointer({ keys: "[MouseLeft>]", target: control });
+    // The row's words, which a press focuses the row through: Keep open leaves the focus where
+    // it is (decision 141).
+    const words = pressed.container.querySelector("[data-node-words]");
+    if (words === null) throw new Error("the row draws no words");
+    await user.pointer({ keys: "[MouseLeft>]", target: words });
     expect(
       pressed.container.querySelector("[data-node-row]")?.contains(document.activeElement)
     ).toBe(true);
@@ -1468,6 +1471,36 @@ test("a focused row under the view row that stays is placed below it, and one be
     expect(scrollBy, "a row already below the view row was scrolled").not.toHaveBeenCalled();
   } finally {
     scrollBy.mockRestore();
-    document.documentElement.style.removeProperty("--issue-view-row-height");
+    document.documentElement.style.removeProperty("scroll-padding-top");
+  }
+});
+
+// Decision 141: a press on Keep open or Let close leaves the focus where it is, as the row's
+// other press controls do. Under part I's press deferral, Let close on a pinned row that does
+// not hold the focus took it, closed the body under the pointer and dropped the focus to the page.
+test("a press on Keep open or Let close leaves the focus where it is", async () => {
+  const user = userEvent.setup();
+  for (const pinned of [true, false]) {
+    const pressed: boolean[] = [];
+    const view = render(
+      <>
+        <button type="button">Held</button>
+        <KeepOpen onPin={() => pressed.push(true)} pinned={pinned} tabStops={false} />
+      </>
+    );
+    try {
+      const held = view.getByRole("button", { name: "Held" });
+      act(() => held.focus());
+      const control = view.getByRole("button", {
+        name: pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open,
+      });
+      await user.pointer({ keys: "[MouseLeft>]", target: control });
+      expect(document.activeElement, `a press on ${control.textContent} took the focus`).toBe(held);
+      await user.pointer({ keys: "[/MouseLeft]", target: control });
+      expect(pressed, `the press on ${control.textContent} did nothing`).toEqual([true]);
+      expect(document.activeElement).toBe(held);
+    } finally {
+      view.unmount();
+    }
   }
 });

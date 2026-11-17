@@ -1234,6 +1234,10 @@ export function KeepOpen({
       <button
         className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
         onClick={onPin}
+        // A press leaves the focus where it is, as the row's other press controls do: "Let
+        // close" on a row that does not hold the focus would take it, close the body under the
+        // pointer and drop the focus to the page (decision 141).
+        onMouseDown={(event) => event.preventDefault()}
         tabIndex={tabStops ? undefined : -1}
         type="button"
         {...pageChrome}
