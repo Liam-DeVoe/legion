@@ -1011,8 +1011,8 @@ cmd_stop() {
   done
 }
 
-# cmd_status prints the stack's ports, which follow LOADTEST_ROOT, and the file that records them,
-# so two roots' stacks are told apart by their ports.
+# cmd_status prints the stack's ports, which the operator gave its setup, and the file that records
+# them, so two roots' stacks are told apart by their ports.
 cmd_status() {
   need_stack
   printf 'stack %s, root %s\nports     %s (%s)\n' "$(stack_name)" "$ROOT" "$(jq -c .ports "$STACK")" "$STACK"
