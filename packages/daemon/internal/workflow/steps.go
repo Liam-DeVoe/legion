@@ -16,10 +16,10 @@ import (
 // every step of it is a step of this task.
 const defaultTask = "default"
 
-// StepAgent is what the daemon reads of a step's agent where it writes the step's record: the
-// session its claim records now, and the model that answered it last in that session as
-// `<provider>/<model>`. Either is "" where the daemon reads none, and a record leaves out a field
-// read empty, so a later write can still fill it (record.StepRecord).
+// StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
+// write of a step's record that names either field (endStep): the session its claim records now,
+// and the model that answered it last in that session as `<provider>/<model>`. Either is "" where
+// the daemon reads none, and the end then leaves that field out, so the record names none.
 type StepAgent struct {
 	Session string
 	Model   string

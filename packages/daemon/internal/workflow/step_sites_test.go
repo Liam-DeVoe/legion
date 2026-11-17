@@ -322,8 +322,8 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 // The end of a step carries the session and the model the daemon reads of its agent at that end,
 // one read's pair, and the handoff record the ending role's completion named; the start carries
 // neither, since Dispatch keeps the first value it is given of each field and only the end names
-// the model. A daemon that reads no agent writes neither, which leaves them for a later write to
-// fill.
+// the model. A daemon that reads no agent writes neither, so the record names no session and no
+// model.
 func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Testing)
