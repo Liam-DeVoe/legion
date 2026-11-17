@@ -1,9 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { focusManager, QueryClientProvider } from "@tanstack/react-query";
-import { act, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
-import { renderWithQueries } from "../../__tests__/query-provider";
 import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
@@ -58,12 +57,12 @@ function renderLiveTab(read: () => IssueSteps | Promise<IssueSteps>, shown = tru
   const client = new DispatchQueryClient({
     defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
   });
-  const tab = (active: boolean) => <StepsTab active={active} issueKey="CORE-1" />;
-  const view = renderWithQueries(tab(shown), {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    ),
-  });
+  const tab = (active: boolean) => (
+    <QueryClientProvider client={client}>
+      <StepsTab active={active} issueKey="CORE-1" />
+    </QueryClientProvider>
+  );
+  const view = render(tab(shown));
   return {
     deliver: () => refreshQueries(client, eventRefreshTargets(released)),
     /** The feed's refresh of the whole cache after a gap, which names no target. */
