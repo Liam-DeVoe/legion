@@ -45,8 +45,11 @@ Dispatch message (step 5) is for a finished retro only.
 ## Steps
 
 1. **Read the evidence:** the issue, its checks (`dispatch results --issue <issue>`), the pull
-   request, and the handoff of each step of your task: each `Step <j> (<role>) reported:` line of
-   your task names one, read with `dispatch handoff-read --issue <issue> --phase <word> --version <v>`.
+   request, and the handoff of each step of your task. Your task's `Task:` line is `Task: <id>.`
+   alone and names no step's handoff: `dispatch steps --issue <issue>` lists each run of each
+   step of the issue and how it ended, and `dispatch handoff-read --issue <issue> --phase <word>`
+   reads the newest handoff of a step's phase (`plan`, `implement`, `test` or `review`),
+   `--version <v>` an earlier one.
    A task with no `Task:` line ran today's line, so read the tester's and reviewer's handoffs
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command

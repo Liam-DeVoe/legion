@@ -276,7 +276,8 @@ var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has
 // task writes, and each the task writes is one they name: the label is one constant, every line is
 // built from it, and a rename on either side alone fails here. The forms the prompts spell out
 // with placeholders (go/worker-common.md) are the task's words exactly, once the placeholders hold
-// a step's values.
+// a step's values, and the form of the retro's and the merger's task, which runs no step, is the
+// end of their task.
 func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
@@ -321,6 +322,25 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		}
 		if want := strings.NewReplacer(values...).Replace(strings.Trim(template, "`")); !strings.Contains(written, " "+want) {
 			t.Errorf("the task %q does not say %q, the words of %s", written, want, template)
+		}
+	}
+
+	// The retro and the merge run no step of the task: their task names the task alone and its
+	// steps, with no step, no step's text and no step's report after them.
+	const noStep = "`Task: <id>.`"
+	if !strings.Contains(readers, noStep) {
+		t.Errorf("no prompt or skill a worker reads spells out %s, the task of the retro and of the merger", noStep)
+	}
+	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
+		after := issue
+		after.Phase = p
+		at, err := standingText(after, func(record.Issue) string { return "/work" }, w, rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
+		if !strings.HasSuffix(string(at), want) {
+			t.Errorf("the task of %s ends %q, want it to end %q, the words of %s and the task's steps", p, at, want, noStep)
 		}
 	}
 }
