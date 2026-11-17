@@ -34,7 +34,7 @@ import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { useKeymapScope } from "../shell/keymap";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
@@ -1120,6 +1120,77 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   }
 });
 
+// R5 and the review of 5f46a483: Add is drawn while a property it lists has no value and its
+// control is on the page. An issue with a value for every other property loses its last label;
+// while the save is out the labels' control is named "Saving labels of CORE-1", and in the render
+// where the save landed Add looked for "Add a label to CORE-1", which that render's commit had not
+// drawn yet, so it drew nothing and nothing drew it again.
+test("removing the last label draws Add, whose Labels the row's control now answers", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  const full: IssueDetails = {
+    ...issue,
+    advances: [{ id: "PRI-7", inherited: false }],
+    assignee: "alice",
+    blocked_by: ["CORE-3"],
+    components: {
+      mode: "inherit",
+      ids: ["api"],
+      unknown: [],
+      reason: null,
+      inherited_from: "CORE-2",
+    },
+    labels: ["bug"],
+    parent: "CORE-2",
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+    route: "role:legion-controller-core",
+  };
+  getIssue.mockResolvedValue(full);
+  const patched: unknown[] = [];
+  patchIssue.mockImplementation(async (_key, update) => {
+    patched.push(update);
+    return narrowIssue({ ...full, labels: [...(update.labels ?? full.labels ?? [])] });
+  });
+  const view = renderDetails();
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: CONTROL_LABELS.add })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit labels" }));
+    await user.click(await screen.findByRole("option", { name: "bug" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(patched.length).toBeGreaterThan(0));
+    expect(
+      await screen.findByRole("button", { name: labelsControlName([], "CORE-1", CONTROL_LABELS) }),
+      "the label was not removed"
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: CONTROL_LABELS.add }),
+        "Labels has no value and its control is drawn, but Details draws no Add"
+      ).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      await screen.findByRole("menuitem", { name: PROPERTY_LABELS.labels }),
+      "the add menu lists no Labels for the control the row draws"
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 /** A second caller of the issue's writes on the page, as the header slot is: slots share no
  *  state, so each makes its own set (`slots/details.tsx`). */
 function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {
@@ -1474,6 +1545,68 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
   }
 });
 
+// Decision 145 of the parts: while a save of the labels is out, the labels' control is named for
+// it ("Saving labels of CORE-1", `labelsControlName` given the page's `ANSWER_LINES`), and the
+// key `l` finds it by that name. While `l` looked for the name the issue's labels give the
+// control, it found none for the length of the save.
+test("while the labels are saving, the key l finds the labels control by the name it draws", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  // The labels' popover reads the project's issues for the labels it offers.
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const labelled: IssueDetails = { ...issue, labels: ["bug"] };
+  const saving = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueKeys />
+          <MarginProvider>
+            <MarginSlotProvider drawsSlot>
+              <DetailsSlot issue={labelled} route={{ key: "CORE-1", kind: "issue" }} />
+              <MarginBody />
+            </MarginSlotProvider>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const savingName = labelsControlName([], "CORE-1", CONTROL_LABELS, ANSWER_LINES);
+
+  try {
+    const row = await waitFor(() => rowAt("labels"));
+    await user.click(
+      within(row).getByRole("button", {
+        name: labelsControlName(["bug"], "CORE-1", CONTROL_LABELS),
+      })
+    );
+    await user.click(await screen.findByRole("option", { name: "bug" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(
+      await within(row).findByRole("button", { name: savingName }),
+      "the labels control is not named for its save while the save is out"
+    ).toBeInTheDocument();
+    expect(
+      appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
+      "l found no labels control while the labels were saving"
+    ).toBe(true);
+
+    saving.resolve(narrowIssue({ ...labelled, labels: [] }));
+    await waitFor(() =>
+      expect(within(row).queryByRole("button", { name: savingName })).not.toBeInTheDocument()
+    );
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    restore();
+  }
+});
+
 /** The project's one architecture source, so the components line draws its picker
  *  (`shared-writes.test.ts`'s `architectureSource`). */
 const architectureSource: ArchitectureSource = {
@@ -1644,7 +1777,9 @@ test("Details clears the parent with an empty editor save", async () => {
 });
 
 // The editor closes as the save goes out, so a parent Dispatch refuses is said in the row the
-// reader saved it from, in Dispatch's own words, and not as the line for a write that failed.
+// reader saved it from, in Dispatch's own words, and not as the line for a write that failed. The
+// focus is back on the row's control by then, so the line is an alert: it is announced as it
+// arrives.
 test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1672,6 +1807,10 @@ test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason
         "the Parent row does not say why Dispatch refused the parent"
       ).toBe(reason)
     );
+    expect(
+      within(detailsRow(PROPERTY_LABELS.parent)).queryByRole("alert")?.textContent,
+      "the Parent row does not announce why Dispatch refused the parent"
+    ).toBe(reason);
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
   } finally {
     unmount();

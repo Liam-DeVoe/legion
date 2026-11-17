@@ -41,9 +41,9 @@ function edge(fields: {
   excerpt?: string;
   id: string;
   issueKey?: string;
-  kind: string;
-  nodeKind: string;
-  parent?: { id: string; kind: string; ref?: string };
+  kind: GraphEdge["kind"];
+  nodeKind: GraphEdge["node"]["kind"];
+  parent?: NonNullable<GraphEdge["node"]["parent"]>;
   project?: string;
   ref?: string;
   text?: string;

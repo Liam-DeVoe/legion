@@ -91,6 +91,7 @@ import {
   rowFacts,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
+import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
@@ -869,6 +870,11 @@ test("a reader scrolled down the history keeps their place when a new entry arri
   try {
     const page = await context.newPage();
     await openHistory(page, issue.key, "Existing message 29");
+    // The browser's own scroll anchoring is turned off. No box of the page sets
+    // `overflow-anchor`, so Chromium anchors Details' box itself and would put the entry back
+    // where it was when the arrival lands above it: the row would pass with the history's own
+    // `ViewportAnchor` taken out. With it off, only that anchor keeps the reader's place.
+    await withoutScrollAnchoring(page);
     // The reader is put on an entry in the middle of the history rather than at a fixed
     // offset, because the panel's properties take the top of its box and a fixed offset need
     // not reach an entry at all - and a reader on no entry is not what this row is about.
@@ -894,7 +900,12 @@ test("a reader scrolled down the history keeps their place when a new entry arri
     await createMessage(issue.key, { body: "Arrived while reading" }, attentionSession);
 
     await expect(historyPanel(page).getByText("Arrived while reading")).toBeAttached();
-    await expect.poll(async () => (await anchor.boundingBox())?.y).toBe(before);
+    await expect
+      .poll(
+        async () => (await anchor.boundingBox())?.y,
+        "the entry the reader is on moved when an entry arrived above it"
+      )
+      .toBe(before);
   } finally {
     await context.close();
   }
@@ -988,6 +999,11 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     await expect(page.getByRole("button", { name: CONTROL_LABELS.load_older })).toHaveCount(0);
 
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    // The browser's own scroll anchoring is turned off, as in the row of an arrival above, so
+    // the poll below reads the page alone. The older page lands beneath the reader: what can
+    // move the entry the reader is on is a history that draws something else in place of its
+    // list while that page is read, or that hands the focus to a control off screen once it lands.
+    await withoutScrollAnchoring(page);
     const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
     await expect(loadOlder).toBeVisible();
     await loadOlder.scrollIntoViewIfNeeded();
@@ -1007,7 +1023,12 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // The proof the older page landed is the oldest entry of all: the issue's own creation,
     // which only the page beneath the first 200 holds.
     await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
-    await expect.poll(async () => (await anchor.boundingBox())?.y).toBe(before);
+    await expect
+      .poll(
+        async () => (await anchor.boundingBox())?.y,
+        "loading older entries moved the entry the reader is on"
+      )
+      .toBe(before);
 
     // Pressed until it goes: each press reads the next page, and the last page takes it away.
     for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
@@ -1928,7 +1949,10 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
       await expect(
         marginShell(page).getByRole("heading", { exact: true, name: CONTROL_LABELS.history })
       ).toHaveCount(1);
-      await expect(facts).toHaveAttribute("data-focused-node", seeded.first);
+      await expect(facts, "the facts are not the row the reader is on").toHaveAttribute(
+        "data-focused-node",
+        seeded.first
+      );
       await expect(facts).toContainText("The first row's words.");
       // R9: the collaborators are read only once their list opens, and Details opens with it
       // shut. The history's log, read as Details opens, says Details' reads have gone out.

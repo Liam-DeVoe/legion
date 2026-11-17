@@ -40,6 +40,7 @@ import type {
   ArtifactVersionText,
   AuthenticatedUser,
   CreateArtifactInput,
+  Decision,
   DispatchEvent,
   DispatchUser,
   DisplayTree,
@@ -766,18 +767,20 @@ export interface IssueTreeNode {
   /** On a view's node: its parent's id, kind and first line, so a row names that parent with no
    *  read of its own. */
   parent_line?: { id: string; supertag: string; line: string };
-  /** On a decision node: what the decisions read answers for that decision, by the same names. */
-  text_sha256?: string;
-  kind?: string;
-  replaced?: boolean;
-  waiting_review?: boolean;
-  changed_version?: number;
-  changed_at?: string;
-  kept?: boolean;
-  kept_by?: string | null;
-  kept_at?: string | null;
-  asks?: string[];
-  links?: unknown[];
+  /** On a decision node: what INFRA-1150's decisions read answers for that decision
+   *  (`model.Decision`), by the same names and values: `kept` is the Keep that stands, or null,
+   *  and each link names the node it reaches. Who decided is no member: it is a `decided_by`
+   *  tuple, with the person node it names as context. */
+  text_sha256?: Decision["text_sha256"];
+  kind?: Decision["kind"];
+  unsure?: Decision["unsure"];
+  replaced?: Decision["replaced"];
+  waiting_review?: Decision["waiting_review"];
+  changed_version?: Decision["changed_version"];
+  changed_at?: Decision["changed_at"];
+  kept?: Decision["kept"];
+  asks?: Decision["asks"];
+  links?: Decision["links"];
 }
 
 /** One tuple of the tree read (`serves`, `shaped`, `needs` and the rest), between two nodes the

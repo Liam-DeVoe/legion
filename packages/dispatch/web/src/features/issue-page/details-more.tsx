@@ -200,7 +200,7 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * address is told by are the outline's own reads, under its keys.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
-  const { hash, pathname, search } = useLocation();
+  const { hash, key, pathname, search } = useLocation();
   const navigate = useNavigate();
   const route = parseIssuePath(pathname);
   const addressed =
@@ -249,14 +249,20 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const openDetails = drawer?.setOpen;
   const openDetailsAt = useOpenDetailsAt();
   const panelAddress = opensCollaborators || opensHistory ? `${pathname}${search}` : undefined;
+  // One arrival at such an address is one navigation to it: the address with the key
+  // react-router gives each navigation (`location.key`), so a link the reader follows to the
+  // address they are on, which replaces it with itself (`RowText.tsx`), is an arrival too and
+  // opens Details again. The address is part of it because a load, and a history entry the
+  // router did not write, all carry the key "default".
+  const arrival = panelAddress === undefined ? undefined : `${key} ${panelAddress}`;
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (panelAddress === undefined || openDetails === undefined) {
-      openedFor.current = panelAddress;
+    if (arrival === undefined || openDetails === undefined) {
+      openedFor.current = arrival;
       return;
     }
-    if (openedFor.current === panelAddress) return;
-    openedFor.current = panelAddress;
+    if (openedFor.current === arrival) return;
+    openedFor.current = arrival;
     openDetails(true);
     // At the collaborators' row, its control focused, with the People section that holds it
     // opened if the reader closed it. The panel hears that request only once it is placed in
@@ -266,7 +272,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     if (opensCollaborators) {
       requestAnimationFrame(() => onceInDetails(HISTORY, () => openDetailsAt("collaborators")));
     }
-  }, [openDetails, openDetailsAt, opensCollaborators, panelAddress]);
+  }, [arrival, openDetails, openDetailsAt, opensCollaborators]);
   const drawsHistory = drawer?.open === true || opensHistory;
   // The reader's read mark for this visit, where the history draws the line that says what is
   // new (R2): where it stood when the history first drew for this issue, and lower once it has

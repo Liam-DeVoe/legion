@@ -7,8 +7,9 @@
  *  file writes them, on an emptied database, read by alice with the new page on at 1440 by 900
  *  (G's `phase`):
  *
- *  - `loadRequests`: the requests under `/api/` the page sent from the navigation until it went
- *    quiet (`watchApiRequests`, `expectLoadSettled`);
+ *  - `loadRequests`: the requests under `/api/` the page sent from the navigation until it was
+ *    quiet and drew the same rows twice with no request sent between (`watchApiRequests`,
+ *    `expectLoadSettled`);
  *  - `opened`: every row as the page opens, folded as it opens, with no body;
  *  - `rows`: every row once every branch is open (`unfoldEveryBranch`), each with the body it
  *    draws while it has the focus;
@@ -41,16 +42,27 @@
  *  `DISPATCH_E2E_REUSE_SERVERS=1` says that the variables are a stack's that `e2e/harness-up.ts`
  *  started; it starts no stack of its own.
  *
+ *  Why it runs Playwright's test runner. The seeds call the runner's own API (the fake GitHub's
+ *  `seedFakeGithub` calls `test.skip`), which throws outside a test. So the command checks its
+ *  arguments, writes a Playwright config of its own into a new directory under `$TMPDIR`, and runs
+ *  `playwright test` on this same file with that config: loaded by the runner, the file declares
+ *  one test, which does the recording and hands the seeds' records back through a file in that
+ *  directory. The command then writes the fixture and deletes the directory. The config is not a
+ *  file of the suite, so the suite's projects, its global setup and its fixtures stay out of it;
+ *  it carries the suite's own settings a recording reads by: its origin, its desktop browser, its
+ *  expect and action timeouts, one worker and no retry.
+ *
  *  When to run it again: at task t13, and whenever a part T holds changes what F draws, what the
  *  seeds write, what the page reads at load or what a filter draws. So that two runs on one base
  *  write the same bytes, every object's fields are sorted, and the file is written as Biome
  *  formats it, which is also what `bunx biome check .` requires of it.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { type Browser, chromium, expect, type Page } from "@playwright/test";
+import { type Browser, devices, type Page, test } from "@playwright/test";
 
 import { PRESET_NAMES, type Preset } from "../../web/src/features/issue-page/page-words";
 import { baseUrl, getIssue } from "../api";
@@ -72,8 +84,8 @@ import {
   seedWholeIssueAdvancing,
 } from "../issue-layout-seed";
 import { gotoIssue, presetCount, presetToggle } from "../issue-page";
-import { expectIssuePageDrawn, phase, unfoldEveryBranch } from "../issue-page-g";
-import { activePreset, expectActivePreset, pickPreset } from "../issue-page-i";
+import { DESKTOP, expectIssuePageDrawn, phase, unfoldEveryBranch } from "../issue-page-g";
+import { expectActivePreset, pickPreset } from "../issue-page-i";
 import {
   drawnRowReadings,
   type KeyedRow,
@@ -122,14 +134,13 @@ const SEEDS = {
 const FILTERS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
 type Filter = (typeof FILTERS)[number];
 
-/** How long one action may take: the suite's own `actionTimeout` (`e2e/playwright.config.ts`),
- *  which a page opened outside Playwright's test runner does not inherit. */
+/** The suite's own expect and action timeouts (`e2e/playwright.config.ts`), which the recorder's
+ *  config sets for its one test as the suite's config does for every row. */
+const EXPECT_MS = 15_000;
 const ACTION_MS = 45_000;
 
-/** How long the view row may take to show the view a press asked for: the suite's own expect
- *  timeout. An `expect` outside the test runner waits 5 s unless it is told otherwise, and I's
- *  `expectActivePreset` names no timeout, so the recorder waits this long before calling it. */
-const VIEW_MS = 15_000;
+/** How long the one test may take: every seed, each with a body read for every row. */
+const RECORDING_MS = 60 * 60_000;
 
 /** How many readings a steady reading takes before it gives up on the page settling. */
 const STEADY_TRIES = 20;
@@ -144,6 +155,11 @@ const MINTED: readonly { readonly pattern: RegExp; readonly what: string }[] = [
   { pattern: /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/, what: "an instant" },
 ];
 
+/** The variable that names the file the test writes the seeds' records to. */
+const OUTPUT_VARIABLE = "ISSUE_PAGE_T_RECORDS";
+
+const thisFile = fileURLToPath(import.meta.url);
+const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const fixturePath = fileURLToPath(new URL("../fixtures/issue-page-t-rows.json", import.meta.url));
 
@@ -181,6 +197,10 @@ interface SeedRecord {
   readonly opened: readonly KeyedRow[];
   readonly rows: readonly KeyedRow[];
 }
+
+// ---------------------------------------------------------------------------------------------
+// The command: its arguments, the runner it starts, and the file it writes.
+// ---------------------------------------------------------------------------------------------
 
 function refuse(message: string): never {
   console.error(`${message}\n\n${usage}`);
@@ -230,6 +250,100 @@ function recordingBase(): RecordingBase {
   return { parts: Object.fromEntries(parts), recordedOn };
 }
 
+/** The config the runner is started with: this file as its one test file, and the suite's own
+ *  settings for what a recording reads (the paragraph of the head comment on the runner). It is
+ *  written as data, since a config outside the package could not import the package's
+ *  Playwright. */
+function configSource(scratch: string): string {
+  const config = {
+    expect: { timeout: EXPECT_MS },
+    fullyParallel: false,
+    outputDir: join(scratch, "test-results"),
+    reporter: "list",
+    retries: 0,
+    testDir: dirname(thisFile),
+    testMatch: basename(thisFile),
+    timeout: RECORDING_MS,
+    use: {
+      ...devices["Desktop Chrome"],
+      actionTimeout: ACTION_MS,
+      baseURL: baseUrl,
+      headless: true,
+      trace: "off",
+      viewport: { height: DESKTOP.height, width: DESKTOP.width },
+    },
+    workers: 1,
+  };
+  return `export default ${JSON.stringify(config, null, 2)};\n`;
+}
+
+/** `json` as Biome formats it, which is what `bunx biome check .` holds a committed file to:
+ *  Biome writes a short list on one line, where `JSON.stringify` gives each item a line. */
+function biomeFormatted(json: string): string {
+  const biome = Bun.which("biome", {
+    PATH: [join(repoRoot, "node_modules/.bin"), process.env.PATH ?? ""].join(":"),
+  });
+  if (biome === null) {
+    throw new Error("The recorder writes the fixture through Biome: run `bun install` first.");
+  }
+  const formatted = Bun.spawnSync({
+    cmd: [biome, "format", `--stdin-file-path=${relative(repoRoot, fixturePath)}`],
+    cwd: repoRoot,
+    stderr: "inherit",
+    stdin: new TextEncoder().encode(json),
+  });
+  if (formatted.exitCode !== 0) throw new Error("biome format refused the fixture");
+  const source = formatted.stdout.toString();
+  // Biome answers nothing for a file over its size limit (`files.maxSize`, 1 MiB unless the
+  // configuration says otherwise), and `biome check` passes over such a file in the same way,
+  // so the file is then written as `JSON.stringify` wrote it.
+  return source === "" ? json : source;
+}
+
+/** The command: checks the arguments, runs the recording in the runner, writes the fixture, and
+ *  answers the exit status. */
+async function main(): Promise<number> {
+  if (process.env.DISPATCH_E2E_REUSE_SERVERS !== "1") {
+    console.error(
+      "issue-page-t-record.ts reads a stack that is already running, and empties its database.\n" +
+        "Start one from packages/dispatch with\n" +
+        '  bun e2e/harness-up.ts > "$TMPDIR/t-harness.sh" &\n' +
+        "wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then run\n" +
+        '  . "$TMPDIR/t-harness.sh" && bun e2e/tools/issue-page-t-record.ts ...'
+    );
+    return 2;
+  }
+  const base = recordingBase();
+  const scratch = mkdtempSync(join(tmpdir(), "issue-page-t-record-"));
+  try {
+    const config = join(scratch, "playwright.config.mjs");
+    const records = join(scratch, "records.json");
+    writeFileSync(config, configSource(scratch));
+    // The package's own `e2e` script runs the same `playwright test`.
+    const runner = Bun.spawn(["bunx", "playwright", "test", "--config", config], {
+      cwd: packageRoot,
+      env: { ...process.env, [OUTPUT_VARIABLE]: records },
+      stdio: ["inherit", "inherit", "inherit"],
+    });
+    const status = await runner.exited;
+    // A runner a signal ended answers no status of its own, and still recorded nothing.
+    if (status !== 0 || runner.signalCode !== null) return status === 0 ? 1 : status;
+    const seeds: unknown = JSON.parse(readFileSync(records, "utf8"));
+    const fixture = sortedFields({ parts: base.parts, recordedOn: base.recordedOn, seeds });
+    expectNothingMinted(fixture, "the fixture");
+    mkdirSync(dirname(fixturePath), { recursive: true });
+    writeFileSync(fixturePath, biomeFormatted(`${JSON.stringify(fixture, null, 2)}\n`));
+    console.error(`wrote ${relative(process.cwd(), fixturePath)}`);
+    return 0;
+  } finally {
+    rmSync(scratch, { force: true, recursive: true });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The recording, which runs inside the runner.
+// ---------------------------------------------------------------------------------------------
+
 /**
  * Reads `read` until two readings in a row are the same. Before each reading it waits for the
  * page to go quiet, and after it for two frames, so a row or a count that is still arriving is
@@ -254,18 +368,6 @@ async function steadily<T>(
   throw new Error(`${what} changed at each of ${STEADY_TRIES} readings, so it never settled`);
 }
 
-/** Waits until the view row has the view `name` on, then holds the page to it with I's own
- *  check. */
-async function expectViewOn(page: Page, name: string): Promise<void> {
-  await expect
-    .poll(() => activePreset(page), {
-      message: `the view row never turned ${name} on`,
-      timeout: VIEW_MS,
-    })
-    .toBe(name);
-  await expectActivePreset(page, name);
-}
-
 /** Turns `filter` on, reads what it draws once it is steady, and turns it off again, which puts
  *  the page back on Conversation. */
 async function readFilter(
@@ -275,27 +377,34 @@ async function readFilter(
 ): Promise<FilterReading> {
   const name = PRESET_NAMES[filter];
   await pickPreset(page, name);
-  await expectViewOn(page, name);
+  await expectActivePreset(page, name);
   const drawn = await steadily(page, traffic, `the ${name} filter`, async () => ({
     count: await presetCount(page, filter).textContent(),
     rows: await drawnRowReadings(page, { bodies: false }),
   }));
   // Pressing the control that is on turns it off (`IssuePresets.tsx`'s `press`).
   await presetToggle(page, filter).click();
-  await expectViewOn(page, PRESET_NAMES.conversation);
+  await expectActivePreset(page, PRESET_NAMES.conversation);
   return { ...drawn, filter };
 }
 
 /** Everything the recorder reads of issue `key`'s page, in the order a reader reaches it. */
 async function readPage(page: Page, key: string): Promise<PageReading> {
   const traffic = watchApiRequests(page);
-  // The page has no base URL outside the test runner, so the address is a whole one.
-  await gotoIssue(page, new URL(`/issues/${key}`, baseUrl).href);
-  await expectLoadSettled(traffic);
-  const loadRequests = traffic.total();
+  await gotoIssue(page, `/issues/${key}`);
   await expectIssuePageDrawn(page);
-  const opened = await steadily(page, traffic, `${key} as the page opens`, () =>
-    drawnRowReadings(page, { bodies: false })
+  // The load's requests are counted with the rows, once two readings of both agree, and not
+  // the first time the page goes quiet: a read the page sends only after a long render can
+  // start after a quiet window, and one recording of `seedWholeIssueAdvancing` counted 17
+  // requests where every other load of that seed counted 18.
+  const { loadRequests, opened } = await steadily(
+    page,
+    traffic,
+    `${key} as the page opens`,
+    async () => ({
+      loadRequests: traffic.total(),
+      opened: await drawnRowReadings(page, { bodies: false }),
+    })
   );
   await unfoldEveryBranch(page);
   await steadily(page, traffic, `${key} with every branch open`, () =>
@@ -361,7 +470,6 @@ async function recordSeed(
   await resetDatabase();
   const recorded: SeedRecord[] = [];
   await phase(browser, seed, async (page, seeded) => {
-    page.setDefaultTimeout(ACTION_MS);
     const drawn = await readPage(page, seeded.key);
     // A block's node is named under its document's slug (`seedKeys`), and the seeds return the
     // documents' ids and not their slugs. The read comes after the page has drawn everything it
@@ -371,8 +479,36 @@ async function recordSeed(
   });
   const [record] = recorded;
   if (record === undefined) throw new Error(`${name} recorded nothing`);
+  // Checked seed by seed, so a value of one run fails the recording at the seed that drew it.
+  expectNothingMinted(record, `the fixture's seeds.${name}`);
   return record;
 }
+
+/** The one test the runner finds in this file: every seed, in order, and their records written
+ *  where the command that started the runner reads them. */
+async function recordEverySeed(browser: Browser): Promise<void> {
+  const output = process.env[OUTPUT_VARIABLE] ?? "";
+  if (output === "") {
+    throw new Error(
+      `${OUTPUT_VARIABLE} names no file: run this file as \`bun e2e/tools/issue-page-t-record.ts\`, ` +
+        "which starts the runner itself"
+    );
+  }
+  const seeds: Record<string, SeedRecord> = {};
+  for (const [name, seed] of Object.entries(SEEDS)) {
+    const record = await recordSeed(browser, name, seed);
+    seeds[name] = record;
+    console.error(
+      `${name}: ${record.loadRequests} requests at load, ${record.opened.length} rows as the ` +
+        `page opens, ${record.rows.length} with every branch open`
+    );
+  }
+  writeFileSync(output, JSON.stringify(seeds));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shared by both.
+// ---------------------------------------------------------------------------------------------
 
 /** `value` with every object's fields in sorted order at every depth, so the bytes of the file
  *  do not depend on the order a reader or a seed wrote its fields in. A list keeps its order,
@@ -411,58 +547,17 @@ function expectNothingMinted(value: unknown, path: string): void {
   }
 }
 
-/** `json` as Biome formats it, which is what `bunx biome check .` holds a committed file to:
- *  Biome writes a short list on one line, where `JSON.stringify` gives each item a line. */
-function biomeFormatted(json: string): string {
-  const biome = Bun.which("biome", {
-    PATH: [join(repoRoot, "node_modules/.bin"), process.env.PATH ?? ""].join(":"),
-  });
-  if (biome === null) {
-    throw new Error("The recorder writes the fixture through Biome: run `bun install` first.");
-  }
-  const formatted = Bun.spawnSync({
-    cmd: [biome, "format", `--stdin-file-path=${relative(repoRoot, fixturePath)}`],
-    cwd: repoRoot,
-    stderr: "inherit",
-    stdin: new TextEncoder().encode(json),
-  });
-  if (formatted.exitCode !== 0) throw new Error("biome format refused the fixture");
-  const source = formatted.stdout.toString();
-  // Biome answers nothing for a file over its size limit (`files.maxSize`, 1 MiB unless the
-  // configuration says otherwise), and `biome check` passes over such a file in the same way,
-  // so the file is then written as `JSON.stringify` wrote it.
-  return source === "" ? json : source;
-}
-
-if (process.env.DISPATCH_E2E_REUSE_SERVERS !== "1") {
-  console.error(
-    "issue-page-t-record.ts reads a stack that is already running, and empties its database.\n" +
-      "Start one from packages/dispatch with\n" +
-      '  bun e2e/harness-up.ts > "$TMPDIR/t-harness.sh" &\n' +
-      "wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then run\n" +
-      '  . "$TMPDIR/t-harness.sh" && bun e2e/tools/issue-page-t-record.ts ...'
+// Run as a command, this file starts the runner on itself; loaded by the runner, it is the test.
+if (import.meta.main) {
+  main().then(
+    (status) => process.exit(status),
+    (error: unknown) => {
+      console.error(error);
+      process.exit(1);
+    }
   );
-  process.exit(2);
+} else {
+  test("records the rows the new issue page draws from F's reads", async ({ browser }) => {
+    await recordEverySeed(browser);
+  });
 }
-
-const base = recordingBase();
-const seeds: Record<string, SeedRecord> = {};
-const browser = await chromium.launch();
-try {
-  for (const [name, seed] of Object.entries(SEEDS)) {
-    const record = await recordSeed(browser, name, seed);
-    seeds[name] = record;
-    console.error(
-      `${name}: ${record.loadRequests} requests at load, ${record.opened.length} rows as the ` +
-        `page opens, ${record.rows.length} with every branch open`
-    );
-  }
-} finally {
-  await browser.close();
-}
-
-const fixture = sortedFields({ parts: base.parts, recordedOn: base.recordedOn, seeds });
-expectNothingMinted(fixture, "the fixture");
-mkdirSync(dirname(fixturePath), { recursive: true });
-writeFileSync(fixturePath, biomeFormatted(`${JSON.stringify(fixture, null, 2)}\n`));
-console.error(`wrote ${relative(process.cwd(), fixturePath)}`);

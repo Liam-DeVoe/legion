@@ -368,7 +368,7 @@ export function IssueMarginPanel({
             writes={writes}
           />
           {writes.parentSaveFailed ? (
-            <p className={`w-full text-sm ${pageFailedText}`} id="issue-parent-error">
+            <p className={`w-full text-sm ${pageFailedText}`} id="issue-parent-error" role="alert">
               {writes.parentError}
             </p>
           ) : null}

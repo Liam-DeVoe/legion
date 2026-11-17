@@ -555,9 +555,9 @@ test("the entry of one author's uploads has Pin, as every other line of the hist
 
 // Details is reached by Tab, so a control of the history that goes away under the focus leaves
 // the focus in the history rather than on the page, as Details' Unpin does (IssueMargin.test.tsx):
-// Load older, gone once the log has ended, hands it to the last control of the list, beside the
-// entries it added; the Retry of a failed read, gone once the read lands, to the history's
-// heading.
+// Load older, gone once the log has ended, hands it to a control the page it read added, where
+// Load older stood; the Retry of a failed read, gone once the read lands, to the history's
+// heading. Neither move scrolls Details: the reader keeps their place (R3).
 test("a control of the history that goes away under the focus leaves the focus in the history", async () => {
   const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
@@ -576,17 +576,24 @@ test("a control of the history that goes away under the focus leaves the focus i
   try {
     const drawn = drawHistory(undefined);
     unmount = drawn.unmount;
-    (await screen.findByRole("button", { name: CONTROL_LABELS.load_older })).focus();
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    const focus = spyOn(HTMLElement.prototype, "focus");
+    older.focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
     );
-    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
-    const controls = [...list.querySelectorAll<HTMLElement>("a[href], button")];
+    const active = document.activeElement;
     expect(
-      document.activeElement,
-      "Load older went away with the log's end and the focus fell to the page"
-    ).toBe(controls.at(-1) ?? null);
+      active !== null && list.contains(active) && !before.has(active),
+      "Load older went away with the log's end and the focus did not go to the page it read"
+    ).toBe(true);
+    expect(focus.mock.calls.at(-1), "handing the focus on scrolled Details").toEqual([
+      { preventScroll: true },
+    ]);
+    focus.mockRestore();
 
     down = true;
     await act(async () => {
