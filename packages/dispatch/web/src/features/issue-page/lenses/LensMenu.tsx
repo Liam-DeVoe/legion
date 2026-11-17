@@ -23,16 +23,18 @@ import { storeAddressReference } from "../../refs/store-address";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
-import { lensKindsQuery, useInvokeLens } from "./lens-reads";
+import { lensKindsQuery, type StandingAddress, useInvokeLens } from "./lens-reads";
 
 /**
- * What a focused row needs to offer the Lens act: the issue the page is on, and whether the
- * address's preset is the outline, the one place the act is drawn. `TreeRows.tsx` provides it
- * from the address; a route that names no issue provides none, and `RowActs` then draws no act.
+ * What a focused row needs to offer the Lens act: the issue the page is on, whether the
+ * address's preset is the outline, the one place the act is drawn, and where the reader stands
+ * now, which a pick's answer reads as it lands. `TreeRows.tsx` provides it from the address; a
+ * route that names no issue provides none, and `LensMenu` then draws no act.
  */
 export interface LensAct {
   readonly issueKey: string;
   readonly outline: boolean;
+  readonly standing: StandingAddress;
 }
 
 export const LensActContext = createContext<LensAct | undefined>(undefined);
@@ -75,7 +77,7 @@ const STORE_KINDS = ["lens", "risk", "constraint"] as const;
  * issue, a result, the issue, a document, a handoff and a node of another issue get none. A
  * closed issue keeps the act: the server decides.
  */
-export function lensActFor(node: TreeNode, act: LensAct): boolean {
+export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outline">): boolean {
   const reference = node.reference;
   if (!act.outline || !INVOKED_ON[node.type] || reference === undefined) return false;
   const issue = `dispatch://${act.issueKey}`;
@@ -87,7 +89,8 @@ export function lensActFor(node: TreeNode, act: LensAct): boolean {
 }
 
 /**
- * The Lens act of a focused row and the menu of lens kinds it opens.
+ * The Lens act of a focused row and the menu of lens kinds it opens, on a row that offers the
+ * act (`lensActFor`); on any other row, nothing.
  *
  * The act is one of `RowActs`' controls, drawn the way they are and out of the tab order unless
  * `tabStops` holds, so `f` reaches it as a control no key presses (`useTreeKeymap.ts`'s
@@ -108,31 +111,38 @@ export function lensActFor(node: TreeNode, act: LensAct): boolean {
  *
  * A pick sends the node's address and the kind's id, nothing more (`useInvokeLens`). A refusal
  * closes the menu, gives the focus back to the row and says so after the act until the menu
- * opens again; the row losing the focus unmounts `RowActs`, which ends it too.
+ * opens again on that node. The refusal is kept with the node's invocations, not in the menu,
+ * since the row losing the focus unmounts `RowActs`: a row that lost the focus while its pick was
+ * out says the refusal once it is focused again.
  */
 export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const act = useContext(LensActContext);
   const on = node.reference;
-  if (act === undefined || on === undefined) return null;
-  return <ActAndMenu issueKey={act.issueKey} on={on} tabStops={tabStops} />;
+  if (act === undefined || on === undefined || !lensActFor(node, act)) return null;
+  return <ActAndMenu act={act} on={on} tabStops={tabStops} />;
 }
 
 /** What a refused invocation says: the node is gone (404), or anything else. */
 type Refusal = "gone" | "failed";
 
+function refusalOf(error: Error | undefined): Refusal | undefined {
+  if (error === undefined) return undefined;
+  return error instanceof ApiError && error.status === 404 ? "gone" : "failed";
+}
+
 function ActAndMenu({
-  issueKey,
+  act,
   on,
   tabStops,
 }: {
-  issueKey: string;
+  act: LensAct;
   on: string;
   tabStops: boolean;
 }): ReactNode {
-  const invoke = useInvokeLens(issueKey);
+  const invocation = useInvokeLens(act.issueKey, on, act.standing);
+  const refusal = refusalOf(invocation.refusal);
   const [open, setOpen] = useState(false);
   const [examining, setExamining] = useState(false);
-  const [refusal, setRefusal] = useState<Refusal | undefined>(undefined);
   const kinds = useQuery(lensKindsQuery(open));
   const listed = kinds.data;
   const control = useRef<HTMLButtonElement>(null);
@@ -186,12 +196,12 @@ function ActAndMenu({
   }, [open]);
 
   const openMenu = () => {
-    setRefusal(undefined);
+    invocation.forget();
     setOpen(true);
   };
 
   /** Closes the menu once an invocation is answered, giving the focus back to the row where it
-   *  was still in the menu. */
+   *  was still in the menu. A refusal is the invocation's to keep (`useInvokeLens`). */
   const answered = () => {
     setExamining(false);
     if (menu.current?.contains(document.activeElement) === true) focusRow(control.current);
@@ -202,15 +212,10 @@ function ActAndMenu({
   const pick = (kind: string) => {
     if (examining) return;
     setExamining(true);
-    void invoke(on, kind).then(
-      // By the time `useInvokeLens` answers, it has read the tree again and, where Dispatch
-      // answered the lens it made, moved the address to the new lens's row.
-      answered,
-      (error: unknown) => {
-        setRefusal(error instanceof ApiError && error.status === 404 ? "gone" : "failed");
-        answered();
-      }
-    );
+    // By the time `useInvokeLens` answers, it has read the tree again and, where Dispatch
+    // answered the lens it made and the reader still stands on the outline, moved the address
+    // to the new lens's row.
+    void invocation.invoke(kind).then(answered, answered);
   };
 
   // Every key but Tab is the menu's while it is open, its default prevented, so the page's

@@ -5,7 +5,14 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import {
+  MemoryRouter,
+  type NavigateFunction,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import { realClock, tick } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
@@ -45,6 +52,16 @@ const statement = node({
   id: STATEMENT_ID,
   reference: STATEMENT,
   text: "Store the notices for a day",
+  type: "requirement",
+});
+
+/** A second statement, whose row a case moves the focus to. */
+const OTHER_ID = "spec/r2";
+
+const other = node({
+  id: OTHER_ID,
+  reference: statementRef("r2"),
+  text: "Send the notices at noon",
   type: "requirement",
 });
 
@@ -142,6 +159,35 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
       threads={new Map()}
       unplaced={undefined}
     />
+  );
+}
+
+/** Where the router stands, as `Where` last drew it, and the router's own way of moving it, as
+ *  a reader's press on a link moves it. */
+interface Address {
+  at: string;
+  go: NavigateFunction | undefined;
+}
+
+/** Keeps `address` with the router's, and draws nothing. */
+function Where({ address }: { address: Address }): ReactNode {
+  const { pathname, search } = useLocation();
+  address.at = `${pathname}${search}`;
+  address.go = useNavigate();
+  return null;
+}
+
+/** The rows as the page draws them, on an issue's outline and nowhere else: one of the issue's
+ *  views and a page that is no issue's draw none, so a move there unmounts them. */
+function Outline({ address, nodes }: { address: Address; nodes: readonly TreeNode[] }) {
+  return (
+    <>
+      <Routes>
+        <Route element={<Rows nodes={nodes} />} path="/issues/:key" />
+        <Route element={null} path="*" />
+      </Routes>
+      <Where address={address} />
+    </>
   );
 }
 
@@ -600,6 +646,114 @@ test("a refusal adds no row", async () => {
   } finally {
     failing.unmount();
     realClock();
+  }
+});
+
+// A 201 that comes after the reader left this issue's outline moves nothing: the reader stays
+// where they went, on a page that is no issue's, on another issue's outline or on one of this
+// issue's views, whose own query stands.
+test("a 201 after the reader left the outline leaves them where they went", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  let out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json(invoked("pre-mortem"), { status: 201 });
+  });
+  for (const away of ["/inbox?filter=mine", "/issues/CORE-2?q=notices", `/issues/${KEY}/spec`]) {
+    out = Promise.withResolvers<void>();
+    const sent = bodies.length;
+    const address: Address = { at: "", go: undefined };
+    const client = signedIn();
+    const view = renderAt(<Outline address={address} nodes={[statement]} />, undefined, client);
+    try {
+      await user.click(await focusedAct(view));
+      await user.click((await drawnItems(view))[1] as HTMLElement);
+      await waitFor(() => expect(bodies).toHaveLength(sent + 1));
+      act(() => address.go?.(away));
+      expect(address.at).toBe(away);
+
+      out.resolve();
+      await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+      await letRequestsSettle();
+      expect(address.at, `the 201 moved a reader who went to ${away}`).toBe(away);
+    } finally {
+      out.resolve();
+      view.unmount();
+    }
+  }
+});
+
+// Where the reader still stands on this issue's outline as the 201 comes, the page lands on the
+// new lens's row though the row it was picked on lost the focus, and its menu with it: at the
+// address that stands then, which keeps the words filter the reader typed after the pick.
+test("a 201 lands on the outline the reader still stands on", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json(invoked("pre-mortem"), { status: 201 });
+  });
+  const address: Address = { at: "", go: undefined };
+  const view = renderAt(
+    <Outline address={address} nodes={[statement, other]} />,
+    `/issues/${KEY}?q=notices`
+  );
+  try {
+    await user.click(await focusedAct(view));
+    await user.click((await drawnItems(view))[1] as HTMLElement);
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    await focusedAct(view, OTHER_ID);
+    expect(menuOf(view), "the menu outlived its row's focus").toBeNull();
+    act(() => address.go?.(`/issues/${KEY}?q=day`));
+
+    out.resolve();
+    await waitFor(() =>
+      expect(address.at).toBe(`/issues/${KEY}?q=day&node=${invoked("pre-mortem").id}`)
+    );
+  } finally {
+    out.resolve();
+    view.unmount();
+  }
+});
+
+// A refusal that comes after the row lost the focus, and its menu with it, is said at that row
+// once it is focused again, and at no other; the next opening of the menu lets it go.
+test("a refusal after the row lost the focus is said when it is focused again", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json({ code: "NOT_FOUND", error: "no node at that address" }, { status: 404 });
+  });
+  const client = signedIn();
+  const view = renderAt(<Rows nodes={[statement, other]} />, undefined, client);
+  try {
+    await user.click(await focusedAct(view));
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    await focusedAct(view, OTHER_ID);
+
+    out.resolve();
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    await letRequestsSettle();
+    expect(refusal(view), "another row said the refusal").toBeNull();
+
+    const control = await focusedAct(view);
+    expect(refusal(view)).toBe(LENS_ANSWERS.gone);
+    const status = view.container.querySelector(REFUSAL);
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.hasAttribute("data-page-chrome")).toBe(true);
+    expect(control.nextElementSibling, "the sentence is not the act's next").toBe(status);
+    expect(rowOf(view).contains(status), "the sentence is not at the row").toBe(true);
+
+    await user.click(control);
+    expect(refusal(view), "the sentence outlived the next opening").toBeNull();
+  } finally {
+    out.resolve();
+    view.unmount();
   }
 });
 

@@ -12,6 +12,7 @@ import { issueAddress } from "./issue-address";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { LensActContext } from "./lenses/LensMenu";
+import { useStandingAddress } from "./lenses/lens-reads";
 import { NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
@@ -94,9 +95,12 @@ export function TreeRows({
   const issueKey = route?.key;
   const outline =
     route !== undefined && issueAddress(route, search, "", undefined).preset === "conversation";
+  // Where the reader stands now, which a pick's answer reads as it lands, kept for as long as
+  // the rows are drawn: the menu that made the pick goes with its row's focus.
+  const standing = useStandingAddress();
   const lensAct = useMemo(
-    () => (issueKey === undefined ? undefined : { issueKey, outline }),
-    [issueKey, outline]
+    () => (issueKey === undefined ? undefined : { issueKey, outline, standing }),
+    [issueKey, outline, standing]
   );
   return (
     <>

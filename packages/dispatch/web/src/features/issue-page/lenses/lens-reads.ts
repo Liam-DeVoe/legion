@@ -1,10 +1,12 @@
 import type { LensInvoked } from "@legion/contracts";
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { queryOptions, useMutationState, useQueryClient } from "@tanstack/react-query";
+import { useLayoutEffect, useRef } from "react";
+import { type Location, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { api, writeRequest } from "../../../api/client";
+import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
+import { issueAddress } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
 import { issueTreeKey } from "../tree-read/tree-read";
 
@@ -52,47 +54,128 @@ export function lensReadId(invoked: LensInvoked): string {
   return invoked.id;
 }
 
+/** The address the reader stands at, and the router's way of moving it. */
+interface Standing {
+  readonly location: Location;
+  readonly navigate: NavigateFunction;
+}
+
+/** Where the reader stands now, as `useStandingAddress` keeps it: nothing once the component
+ *  that keeps it is gone. */
+export interface StandingAddress {
+  readonly current: Standing | undefined;
+}
+
 /**
- * Invokes a lens of kind `kind` on the node at the address `on`, on the issue `issueKey`.
- * Each pick is one write, under a key minted at the pick and in the reader's name
- * (`useKeyedWrite`), and sends `on` and `kind` and nothing more. It answers the lens made,
- * `null` where Dispatch made it and kept no answer, or throws the refusal (`ApiError`). The
- * menu says a refusal itself, so the shell's indicator shows the write only while it is out.
+ * Where the reader stands, kept current for as long as the component that calls this is drawn,
+ * and nothing from the moment it is gone. `TreeRows` calls it, since it is drawn for as long as
+ * the outline is and no longer. A pick's 201 can come long after the pick, since the write store
+ * tries the write again past its deadline, and by then the row may have lost the focus, which
+ * takes its menu away, and the reader may be on another page: what a render of the pick held of
+ * the address says nothing of where the reader is then, and neither does what a menu that is gone
+ * last kept. It is kept as the address is drawn (a layout effect), so no answer that comes after
+ * a move reads the address from before it.
+ */
+export function useStandingAddress(): StandingAddress {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const standing = useRef<Standing | undefined>(undefined);
+  useLayoutEffect(() => {
+    standing.current = { location, navigate };
+    return () => {
+      standing.current = undefined;
+    };
+  }, [location, navigate]);
+  return standing;
+}
+
+/** Whether `location` is the outline of the issue `issueKey`, read as `TreeRows` reads the
+ *  address to offer the act: the one address a landing moves. */
+function onOutlineOf(issueKey: string, { pathname, search }: Location): boolean {
+  const route = parseIssuePath(pathname, search);
+  return (
+    route?.key === issueKey && issueAddress(route, search, "", undefined).preset === "conversation"
+  );
+}
+
+/** What the menu of one node needs of the lenses invoked on it. */
+export interface LensInvocation {
+  /** Invokes a lens of kind `kind` on the node (`useInvokeLens`). */
+  readonly invoke: (kind: string) => Promise<LensInvoked | null>;
+  /** Why the newest invocation on the node was refused, until `forget`: Dispatch's answer
+   *  (`ApiError`), or the store's own error once the reader stopped trying. */
+  readonly refusal: Error | undefined;
+  /** Lets go of every invocation on the node that has its answer, and so of its refusal. */
+  readonly forget: () => void;
+}
+
+/**
+ * Invokes lenses on the node at the address `on`, on the issue `issueKey`. Each pick is one
+ * write, under a key minted at the pick and in the reader's name (`useKeyedWrite`), and sends
+ * `on` and `kind` and nothing more. It answers the lens made, `null` where Dispatch made it and
+ * kept no answer, or throws the refusal (`ApiError`). The menu says a refusal itself, so the
+ * shell's indicator shows the write only while it is out.
  *
- * A landing reads the tree read again, and that read alone, and waits for it; then, where
- * Dispatch answered the lens it made, it replaces the address with that lens's row
- * (`?node=`), keeping the reader's words filter (`?q=`) and dropping every other part of the
- * address, so the page lands on the new row and a reload lands there too. The address is the
- * one that stands when the read answers, not the one at the pick.
+ * The node's invocations are kept in the query client under a key of the node's own, and one
+ * that has its answer stays there until `forget` lets it go, so its refusal outlives the menu
+ * that made it: the menu is drawn only while its row has the focus, and a row that lost the focus
+ * while its pick was out says the refusal once it is focused again.
+ *
+ * A landing reads the tree read again, and that read alone, and waits for it. Then, where
+ * Dispatch answered the lens it made and the reader still stands on this issue's outline, it
+ * replaces the address with the outline's own at that lens's row (`?node=`), keeping the words
+ * filter (`?q=`) and dropping every other part of the address, so the page lands on the new row
+ * and a reload lands there too. The address is the one that stands as the read answers
+ * (`standing`), whichever row has the focus then. A reader who has left the outline, for another
+ * page, another issue or one of this issue's views, is left where they went, and so is one who
+ * has come back to it since: the outline drawn again keeps an address of its own.
  */
 export function useInvokeLens(
-  issueKey: string
-): (on: string, kind: string) => Promise<LensInvoked | null> {
+  issueKey: string,
+  on: string,
+  standing: StandingAddress
+): LensInvocation {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const { search } = useLocation();
-  const standing = useRef(search);
-  useEffect(() => {
-    standing.current = search;
-  }, [search]);
-  const invoke = useKeyedWrite({
+  const mutationKey = ["lens-invocation", issueKey, on];
+  const made = useKeyedWrite({
+    // An invocation that has its answer stays in the cache, though no menu observes it once its
+    // row has lost the focus, until `forget` lets it go.
+    gcTime: Number.POSITIVE_INFINITY,
     inline: true,
     label: () => LENS_WORDS.menu_title,
-    write: ({ kind, on }: { readonly kind: string; readonly on: string }, bounds) =>
+    mutationKey,
+    write: (kind: string, bounds) =>
       api.send(
         writeRequest("post", "/api/v1/issues/{key}/lenses", { key: issueKey }, { kind, on }),
         bounds
       ),
   });
-  return async (on, kind) => {
-    const invoked = await invoke.mutateAsync({ kind, on });
-    await queryClient.invalidateQueries({ queryKey: issueTreeKey(issueKey), exact: true });
-    if (invoked !== null) {
-      const filter = new URLSearchParams(standing.current).get("q");
-      const landing = new URLSearchParams(filter === null ? {} : { q: filter });
-      landing.set("node", lensReadId(invoked));
-      navigate({ search: `?${landing}` }, { replace: true });
-    }
-    return invoked;
+  // The cache lists the invocations in the order they were made, so the last is the newest.
+  const refusal =
+    useMutationState({
+      filters: { exact: true, mutationKey },
+      select: ({ state }) => (state.status === "error" ? state.error : null),
+    }).at(-1) ?? undefined;
+  return {
+    forget: () => {
+      const cache = queryClient.getMutationCache();
+      for (const answered of cache.findAll({ exact: true, mutationKey })) {
+        if (answered.state.status !== "pending") cache.remove(answered);
+      }
+    },
+    invoke: async (kind) => {
+      const invoked = await made.mutateAsync(kind);
+      await queryClient.invalidateQueries({ queryKey: issueTreeKey(issueKey), exact: true });
+      const now = standing.current;
+      if (invoked !== null && now !== undefined && onOutlineOf(issueKey, now.location)) {
+        const filter = new URLSearchParams(now.location.search).get("q");
+        const landing = new URLSearchParams(filter === null ? {} : { q: filter });
+        landing.set("node", lensReadId(invoked));
+        const outline = buildIssuePath({ key: issueKey, kind: "issue" });
+        now.navigate(`${outline}?${landing}`, { replace: true });
+      }
+      return invoked;
+    },
+    refusal,
   };
 }
