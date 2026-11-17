@@ -920,10 +920,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // and stands or falls on the listener's own answer. A listener that did want one answers 401
     // or 403, and that is reported as the failed trade it really is, below.
     let unminted: unknown;
-    // One deadline for the whole attempt, and the credential waits on its first half
-    // (`credentialDeadline`): a broker credential waiting on a pod's missing registration stops
-    // there, and one that hands over its live token when its wait ends leaves the request the
-    // other half to be sent and answered.
+    // One deadline for the whole attempt, `deadlineMs` (the listener's 5 s), and the credential
+    // waits on all of it but the request's reserve (`credentialDeadline`: 4 s of 5, the request
+    // 1 s). A broker credential that hands over its live token when its wait ends leaves the
+    // request that second to be sent and answered; one still waiting then (a pod's missing
+    // registration, a broker that does not answer) stops, and the request goes without it in that
+    // second, as a credential that could not mint at all does.
     const deadline = AbortSignal.timeout(deadlineMs);
     const waited = credentialDeadline(deadline, deadlineMs);
     try {
@@ -938,9 +940,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       } catch (error) {
         unminted = error;
       }
-      // A credential stopped at the end of its wait leaves nothing to send: the attempt is
-      // unanswered, in the credential's own words (a pending registration names its session).
-      if (unminted !== undefined && waited.aborted) return { unanswered: unminted };
+      // Only the attempt's own deadline leaves nothing to send: the attempt is unanswered, in the
+      // credential's own words (a pending registration names its session).
+      if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       response = await config.fetch(url, {
         ...init,

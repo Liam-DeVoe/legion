@@ -23,16 +23,23 @@ async function until(ready: () => boolean): Promise<void> {
   while (!ready()) await new Promise((resolve) => setImmediate(resolve));
 }
 
-test("an Envoy call presents its own deadline to the credential, and fails with what the credential said at it", async () => {
-  const fetched: string[] = [];
+test("an Envoy call gives its credential the attempt less the request's reserve, and goes without the credential that did not come", async () => {
+  // The credential waits the attempt less the request's reserve (`credentialDeadline`); one still
+  // waiting then stops, and the request goes without it in the reserve. A listener that wants a
+  // credential answers 401, and the call's error names both halves: that answer, and what the
+  // credential said when its wait ended.
+  const fetched: (string | null)[] = [];
   const given: (AbortSignal | undefined)[] = [];
   const client = createEnvoyClient({
     baseUrl: "http://listener.test",
     retry: false,
-    timeoutMs: 20,
-    fetch: async (url) => {
-      fetched.push(String(url));
-      return Response.json({});
+    timeoutMs: 200,
+    fetch: async (_url, init) => {
+      const authorization = new Headers(init?.headers).get("Authorization");
+      fetched.push(authorization);
+      return authorization === null
+        ? Response.json({ error: "this listener wants a credential" }, { status: 401 })
+        : Response.json({});
     },
     credential: {
       scheme: "DPoP",
@@ -52,12 +59,14 @@ test("an Envoy call presents its own deadline to the credential, and fails with 
   await until(() => given.length === 1);
   expect(given[0], "the call handed its credential no deadline").toBeInstanceOf(AbortSignal);
   // The transport's own deadline timer ends the signal; the transport takes no clock of a test's.
-  const deadline = given[0] as AbortSignal;
-  expect(deadline.aborted).toBe(false);
-  await expect(call).rejects.toThrow(`pending: ${POD_SESSION}`);
-  expect(deadline.aborted).toBe(true);
-  // The call asked the listener nothing: past its deadline there is nothing to send.
-  expect(fetched).toEqual([]);
+  const waited = given[0] as AbortSignal;
+  expect(waited.aborted).toBe(false);
+  await expect(call).rejects.toThrow(
+    `answered 401, and this machine's Envoy credential could not be minted: pending: ${POD_SESSION}`
+  );
+  expect(waited.aborted).toBe(true);
+  // The call asked the listener once, without the credential that did not come.
+  expect(fetched).toEqual([null]);
 });
 
 test.each([
@@ -102,6 +111,97 @@ test.each([
   expect(fetched).toHaveLength(1);
   expect(fetched[0]?.authorization).toBeNull();
 });
+
+/** A broker at a port of its own that answers each trade as `answer` does. */
+function brokerAt(answer: () => Promise<Response>): string {
+  const broker = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: answer });
+  servers.push(broker);
+  return `http://127.0.0.1:${broker.port}`;
+}
+
+/** A token the broker grants, good for ten minutes. */
+function granted(): Response {
+  return Response.json({
+    access_token: fixtureSecret("granted"),
+    issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+    token_type: "DPoP",
+    expires_in: 600,
+  });
+}
+
+test.each([
+  ["is silent", (): string => brokerAt(() => new Promise<Response>(() => {}))],
+  [
+    "holds no registration for the pod's session yet",
+    (): string =>
+      brokerAt(async () =>
+        Response.json(
+          {
+            error: "invalid_grant",
+            error_description: `pod_session_not_registered: No registration says this pod may write under the session name '${POD_SESSION}'. A pod writes under a session name its deployment registered for it.`,
+          },
+          { status: 400 }
+        )
+      ),
+  ],
+])(
+  "a listener that asks for no credential keeps its calls while the broker %s",
+  async (_, broker) => {
+    // The credential waits the attempt less the request's reserve (4 s of the listener's 5), then
+    // stops, and the call goes without it in that last second and stands on the listener's own
+    // answer.
+    const fetched: (string | null)[] = [];
+    const client = createEnvoyClient({
+      baseUrl: "http://listener.test",
+      retry: false,
+      fetch: async (_url, init) => {
+        if (init?.signal?.aborted) throw init.signal.reason;
+        fetched.push(new Headers(init?.headers).get("Authorization"));
+        return Response.json({
+          role: "implementer",
+          holder: "ses_holder",
+          last_seen: 1,
+          state: "live",
+        });
+      },
+      credential: brokerCredential(podEnvironment(broker(), "http://dispatch.test"), POD_SESSION),
+    });
+    const started = Date.now();
+    await client.getRole("implementer");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(fetched).toEqual([null]);
+  },
+  20_000
+);
+
+test.each([
+  6_000, 8_000,
+])("a fresh process's first trade that takes %i ms: the call is answered with the token, after one 401", async (tradeMs) => {
+  // Every hook and command line call is a fresh process, so its first listener call waits on
+  // its first trade. Each attempt's credential waits 4 s of the attempt's 5; the first ends
+  // without a token, goes without it, and a listener that wants one answers 401, which the
+  // call tries again; the next attempt's credential is waiting on the same trade when it lands.
+  const broker = brokerAt(async () => {
+    await Bun.sleep(tradeMs);
+    return granted();
+  });
+  const fetched: (string | null)[] = [];
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    fetch: async (_url, init) => {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      const authorization = new Headers(init?.headers).get("Authorization");
+      fetched.push(authorization);
+      return authorization === null
+        ? Response.json({ error: "this listener wants a credential" }, { status: 401 })
+        : Response.json({ role: "implementer", holder: "ses_holder", last_seen: 1, state: "live" });
+    },
+    credential: brokerCredential(podEnvironment(broker, "http://dispatch.test"), POD_SESSION),
+  });
+  await client.getRole("implementer");
+  expect(fetched.at(-1)).toStartWith("DPoP ");
+  expect(fetched.filter((one) => one === null)).toHaveLength(1);
+}, 40_000);
 
 test("inside the renewal window, a broker that hangs leaves the call its live token and the time to send it", async () => {
   // The token in hand is inside its renewal window, so the call waits for the renewal the

@@ -195,7 +195,8 @@ fast: a failure the loop trades again on fails it at once, naming that failure, 
 not registered yet is waited out for 20 s (`TRADE_DEADLINE_MS`, nats.js's own dial timeout).
 `ready({ waitForReady: true })`, an Oh My Pi session's start, waits for ready for those 20 s,
 through every failure the loop trades again on, and then fails naming the last one: 20 s is the
-pass's 30 s deadline less 10 s for the rest of the pass, and longer than the loop's longest first
+pass's deadline at its 30 s floor (`MIN_PASS_DEADLINE_MS`; it is longer where the heartbeat is)
+less 10 s for the rest of the pass, and longer than the loop's longest first
 wait, 15 s. `ready({ life })`, a Claude Code channel server's start, waits for ready until a token
 lands, a refusal no trade cures ends the loop, or `life` ends. `authenticator(nonce)` signs one
 snapshot of it per CONNECT and presents
@@ -773,7 +774,7 @@ An identity with one of its variables missing is an error that names the variabl
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
 beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
-in `@legion/broker-client/token-client`).
+in `@legion/broker-client/token-errors`).
 
 The client trades through one retry loop per session (`BrokerTokenClient.token`), and no caller
 starts a second one or cuts its wait short, so the broker sees one trade per slot of the loop's

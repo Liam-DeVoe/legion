@@ -107,13 +107,18 @@ export interface RequestCredential {
 }
 
 /**
- * The signal a request's credential waits on, `deadline` ended at `deadlineMs`: half of the
- * request's time. A broker credential whose wait ends with a live token in hand answers with that
- * token (`BrokerTokenClient.token`), so the request still has the other half to be sent and
- * answered, rather than going out on a deadline the credential has already spent.
+ * The signal a request's credential waits on: `deadline`, the request's own, which ends at
+ * `deadlineMs`, less a reserve for the request itself, `min(1 s, deadlineMs / 2)`. For the
+ * listener's 5 s attempt the credential waits 4 s and the request has 1 s; for a probe's shorter
+ * deadline the two halve it. A broker credential whose wait ends with a live token in hand
+ * answers with that token (`BrokerTokenClient.token`), so the request still has its reserve to be
+ * sent and answered, rather than going out on a deadline the credential has already spent; one
+ * whose wait ends with none leaves the request its reserve to go without it, which a listener that
+ * asks for no credential answers.
  */
 export function credentialDeadline(deadline: AbortSignal, deadlineMs: number): AbortSignal {
-  return AbortSignal.any([deadline, AbortSignal.timeout(Math.ceil(deadlineMs / 2))]);
+  const reserveMs = Math.min(1_000, deadlineMs / 2);
+  return AbortSignal.any([deadline, AbortSignal.timeout(Math.ceil(deadlineMs - reserveMs))]);
 }
 
 /** A plain bearer: the same `Authorization` header on every request, and no proof. The token is

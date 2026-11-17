@@ -17,6 +17,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "nod
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
+import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/broker-client/token-client";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
@@ -36,6 +37,7 @@ import {
   followNatsCredential,
   keepNatsCredential,
   type NatsCredential,
+  TRADE_DEADLINE_MS,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
 
@@ -594,6 +596,13 @@ describe.skipIf(!envoyStackEnabled)(
             ].join("\n")
           );
         expect(opened.isClosed()).toBe(false);
+        // The keeper warns once its renewal fails, and natsd refuses once the token lapses on the
+        // server's clock: two clocks, so no order between the two is promised. The keeper's first
+        // renewal comes halfway to the token's expiry (`renewDelay`), and waits for its trade at
+        // most TRADE_DEADLINE_MS before it warns (`keepNatsCredential`'s tick), so the warning is
+        // promised within that bound of the broker going away, not by natsd's second refusal.
+        const warnedBy = Date.now() + TRADE_DEADLINE_MS + 2_000;
+        while (warnings.length === 0 && Date.now() < warnedBy) await Bun.sleep(100);
         expect(warnings.length).toBeGreaterThan(0);
         for (const one of broker.state.minted) {
           expect(warnings.join("\n")).not.toContain(one.value);
@@ -604,10 +613,22 @@ describe.skipIf(!envoyStackEnabled)(
         // with 3-second tokens it renews about every 1.5 s and reconnects to present each new
         // token, and the round trip below raced that reconnect (NatsError DISCONNECT).
         const back = Date.now();
+        // How long the connection may take to come back, from the token client's schedule: only a
+        // token landing starts it over (`BrokerTokenClient.#run`), so the next trade is due at most
+        // RETRY_FIRST_WAIT_MS doubled once for each trade that failed while the broker was away,
+        // capped at RETRY_MAX_WAIT_MS, after the last of them. The connection then presents the
+        // token it took at its next reconnect but one (the authenticator's renewal lands it for the
+        // next CONNECT), each after `reconnectTimeWait` (2 s, nats-connection.ts), and 5 s more for
+        // the handshake on a loaded machine.
+        const failedTrades = Math.max(broker.state.trades - broker.state.minted.length, 1);
+        const nextTradeMs = Math.min(
+          RETRY_FIRST_WAIT_MS * 2 ** (failedTrades - 1),
+          RETRY_MAX_WAIT_MS
+        );
+        const backBy = back + nextTradeMs + 2 * 2_000 + 5_000;
         broker.state.seconds = 900;
         broker.state.down = false;
-        while (!reconnected.some((at) => at > back) && Date.now() < back + 20_000)
-          await Bun.sleep(100);
+        while (!reconnected.some((at) => at > back) && Date.now() < backBy) await Bun.sleep(100);
         expect(reconnected.some((at) => at > back)).toBe(true);
         expect(opened.isClosed()).toBe(false);
         expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
@@ -616,7 +637,7 @@ describe.skipIf(!envoyStackEnabled)(
         await connection?.close().catch(() => {});
         await hub.stop();
       }
-    }, 120_000);
+    }, 180_000);
 
     test("a session switch subscribes the new session only once the connection is admitted as it", async () => {
       const broker = stubBroker(600);

@@ -116,9 +116,10 @@ export function noAuthService(source: string): string {
  * How long {@link BrokerNatsCredential.ready} waits for a trade: nats.js's own dial timeout, so a
  * secrets broker that never answers fails a start as a hub that never answers does, named,
  * rather than holding it in silence. A startup that waits for ready (`ReadyOptions.waitForReady`)
- * waits this long: it is the pass's 30 s deadline (`MIN_PASS_DEADLINE_MS`) less 10 s for the rest
- * of the pass (the dial, its subscribes and the registration), so the start fails naming the
- * trade's cause before the pass is abandoned; and it is longer than the retry loop's longest first
+ * waits this long: it is the pass's deadline at its 30 s floor (`MIN_PASS_DEADLINE_MS`; longer
+ * where the heartbeat is) less 10 s for the rest of the pass (the dial, its subscribes and the
+ * registration), so the start fails naming the trade's cause before the pass is abandoned; and it
+ * is longer than the retry loop's longest first
  * wait (15 s, `RETRY_FIRST_WAIT_MS`, with its jitter at its longest) and that trade's answer, so
  * one transient failure is always ridden out.
  */
@@ -409,7 +410,7 @@ export function keepNatsCredential(
 
 /** How long a session switch waits for its connection to come back as the new session, once its
  *  token is in hand: with the trade's `TRADE_DEADLINE_MS` before it, the follow fits inside the
- *  pass's 30 s deadline (`MIN_PASS_DEADLINE_MS`) with 2 s to spare. */
+ *  pass's deadline at its 30 s floor (`MIN_PASS_DEADLINE_MS`) with 2 s to spare. */
 const FOLLOW_RECONNECT_MS = 8_000;
 
 /** nats.js's status of a connection that is back (`Events.Reconnect`), written out so this module

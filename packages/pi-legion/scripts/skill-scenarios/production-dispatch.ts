@@ -176,9 +176,10 @@ export class ProductionDispatch {
       let response: Response;
       let text: string;
       try {
-        // One deadline for the credential and the read, the credential waiting on its first half
-        // (`credentialDeadline`): a broker credential waiting on a pod's missing registration
-        // stops there, and one that hands over its live token leaves the read the other half.
+        // One deadline for the credential and the read, 60 s, the credential waiting on all of
+        // it but the read's 1 s reserve (`credentialDeadline`): a broker credential waiting on a
+        // pod's missing registration stops there, and one that hands over its live token leaves
+        // the read that reserve.
         const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
