@@ -113,7 +113,7 @@ func documentShapes() []documentShape {
 	for _, owner := range []string{"issue", "project", "conversation"} {
 		for _, kind := range []string{"doc", "image", "file"} {
 			for _, primary := range []bool{false, true} {
-				for _, role := range []string{"", "verification", "plan"} {
+				for _, role := range []string{"", "verification", "plan", "decisions"} {
 					shapes = append(shapes, documentShape{owner: owner, kind: kind, role: role, primary: primary})
 				}
 			}

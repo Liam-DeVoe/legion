@@ -112,10 +112,8 @@ func TestTheBackfillSkipsARowBetweenARefusedPartyAndWritesTheRest(t *testing.T) 
 	if err != nil {
 		t.Fatalf("the backfill answered %v, want it to skip the row between a refused party", err)
 	}
-	for _, done := range report.Kinds {
-		if done.Kind == graphstore.KindArtifact && (done.Skipped != 1 || done.Nodes != 1) {
-			t.Errorf("the backfill reports %+v for documents, want one node written and one row skipped", done)
-		}
+	if done := reportedKind(t, report, graphstore.KindArtifact); done.Skipped != 1 || done.Nodes != 1 {
+		t.Errorf("the backfill reports %+v for documents, want one node written and one row skipped", done)
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "IDEN-1/notes-md"); err != nil || !held || node.State != graphstore.StateLive {
 		t.Errorf("the issue's document's node is %+v (held %t, %v), want live: one bad row stops nothing else", node, held, err)

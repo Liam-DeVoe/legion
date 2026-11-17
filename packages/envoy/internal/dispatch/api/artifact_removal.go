@@ -50,13 +50,15 @@ import (
 // again: that document's create finds the node gone and states it live under its own event,
 // rather than finding a live node that states nothing and keeps this document's cause. A node
 // keeps its made_at and made_by over its life, as every node of the store does, so a document a
-// build before this one created, which has no node until the backfill writes one, first gets the
+// build before this one created, where the store holds no node at its address yet, first gets the
 // node its create would have written - live, made by its creator at its created_at, at the
 // sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
 // stated gone, by the person who removed it, at the time this transaction reads from the
 // database's clock under the owner row it holds (graphstore.StatementTime): later than every
-// statement about the address, so a document made there next is dated later still. A document
-// that has its node is written again with nothing moved, which states nothing.
+// statement about the address, so a document made there next is dated later still. Where the
+// store holds a node already, live or gone, no first node is written: a live one is stated gone,
+// and a gone one (an earlier document's, whose address a build before this one took again) is
+// left as it is, rather than moved live at a created_at that may predate its gone statement.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -114,10 +116,17 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// The document's node, stated gone before its row goes; its state tuple waits for the event.
 	var goneNode graphstore.Uncaused
 	if graphstore.AddressFits(artifact.RefKey) {
-		made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
-		if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
+		_, held, err := graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			s.writeHandlerError(w, err)
 			return
+		}
+		if !held {
+			made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
+			if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
+				s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
+				return
+			}
 		}
 		removedAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
 		if err != nil {

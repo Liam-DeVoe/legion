@@ -37,10 +37,13 @@ import (
 //     the first row's, by its create event, so the census names the second row gone, and the
 //     backfill states the node gone, then live, under the second row's own event.
 //
-// After each cure the census names no project row or node at all. Its control is this file run in
-// the tree at the branch's head before these classes and their cures: there this build's removal
-// states nothing gone and the census prints no gone or orphaned field, so the first order fails at
-// the node's state, and the second's census names no orphaned node.
+// After each cure the census names no project row or node at all. Each order has its control. The
+// first, second and fourth are this file run in the tree at the branch's head before these classes
+// and their cures: there this build's removal states nothing gone and the census prints no gone or
+// orphaned field, so the first order fails at the node's state and the second and fourth at their
+// first census. The third's is the gone step taken out of this build's create (api's
+// storeArtifact): the node then keeps the removed row's live statement, and the census names the
+// new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)

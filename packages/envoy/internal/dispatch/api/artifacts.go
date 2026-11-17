@@ -529,8 +529,10 @@ func (s *server) storeArtifact(
 		}
 		// The create's one time, read once now that this transaction holds the owner row the
 		// switch above took: its row's created_at and its node's statements are both dated with it
-		// (graphstore.StatementTime), which is what makes a live statement dated at the row's
-		// created_at this row's own.
+		// (graphstore.StatementTime), past every statement about the address, so a read as of a
+		// time reads them in the order the store appends them. Which row the node's live statement
+		// names is read from its cause, this upload's artifact.created (graphcensus's
+		// ownLiveStatement), not from this time.
 		refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug)
 		createdAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, refKey)
 		if err != nil {

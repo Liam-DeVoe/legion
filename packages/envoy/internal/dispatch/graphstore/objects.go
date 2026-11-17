@@ -105,9 +105,10 @@ func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
 // every writer of the address - the document's owner row (api's storeArtifact and removeArtifact)
 // - so two writers of one address read it one after the other, the second once the first has
 // committed, and the second's time is strictly later than every statement the first made, by the
-// clock and, should the clock step back, by the greatest(). A row's created_at is therefore later
-// than every statement about the rows its address held before it, which is what lets a live
-// statement dated at a row's created_at name that row (graphcensus's gone class).
+// clock and, should the clock step back, by the greatest(). So every statement about an address is
+// dated in the order the store appends it, and a read of a node as of a time reads what the store
+// held then. Which row a statement names is not read from its time but from its cause, the row's
+// own create event (graphcensus's ownLiveStatement).
 func StatementTime(ctx context.Context, q Queryer, kind, id string) (time.Time, error) {
 	var at time.Time
 	if err := q.QueryRow(ctx, `

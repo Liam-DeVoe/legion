@@ -219,13 +219,17 @@ var orphanKindList = func() string {
 // build's create and removal read their one time under the address's owner row, from the
 // database's clock and past every statement the store holds about the address
 // (graphstore.StatementTime), and the backfill dates a statement past every one before it too.
+//
+// ownerKey is the row's issue: a document a removal can take is an issue's, and its create event
+// is its issue's, read through the issue's own events by the index that keys them (the events
+// table's unique (issue_key, seq)).
 func ownLiveStatement(node, rowID, ownerKey string) string {
 	return `coalesce((
 		select case
 			when e.payload->'artifact'->>'id' is not null then e.payload->'artifact'->>'id' = ` + rowID + `
 			when s.source_event = ` + strconv.FormatInt(graphstore.NoEvent, 10) + ` then not exists (
 				select 1 from events o
-				where coalesce(o.issue_key, o.artifact_id::text, o.project_key) = ` + ownerKey + `
+				where o.issue_key = ` + ownerKey + `
 				  and o.type = 'artifact.created' and o.payload->'artifact'->>'id' = ` + rowID + `)
 			else false
 		end
@@ -414,15 +418,22 @@ func unmarkedDocument(a string) string {
 }
 
 // ownCreateEvent is the id of the artifacts row a's own create event, the artifact.created whose
-// payload names the row, read through the index of the events by their owner
-// (events_outbox_owner), or null for a row that has none: a document no create recorded an event
+// payload names the row, or null for a row that has none: a document no create recorded an event
 // of (an issue's spec, which issue.created records, a conversation's file, whose owner records no
-// event) and one made before Dispatch recorded artifact.created.
+// event) and one made before Dispatch recorded artifact.created. An issue's document's event is its
+// issue's, and a project's document's is its own (events.artifact_id), each read by the index that
+// keys that owner's events (the events table's unique (issue_key, seq) and (artifact_id, seq)),
+// whose rows hold every event, published or not.
 func ownCreateEvent(a string) string {
-	return `(select e.id from events e
-		where coalesce(e.issue_key, e.artifact_id::text, e.project_key) = coalesce(` + a + `.issue_key, ` + a + `.id::text)
-		  and e.type = 'artifact.created' and e.payload->'artifact'->>'id' = ` + a + `.id::text
-		order by e.id limit 1)`
+	return `(case when ` + a + `.issue_key is not null then (
+			select e.id from events e
+			where e.issue_key = ` + a + `.issue_key and e.type = 'artifact.created' and e.payload->'artifact'->>'id' = ` + a + `.id::text
+			order by e.id limit 1)
+		else (
+			select e.id from events e
+			where e.artifact_id = ` + a + `.id and e.type = 'artifact.created'
+			order by e.id limit 1)
+		end)`
 }
 
 // objectKinds are the kinds the backfill writes a node for from their rows.
@@ -511,10 +522,14 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // its kind's writer wrote one, and for every one a build before this one created at an address
 // whose node is gone or holds another row's live statement, under the backfill's contract: it
 // walks only the rows its marker does not mark - the marker is a live node (unmarked), and for a
-// document a live node whose live statement is the row's own (unmarkedDocument) - dates each node
-// at its row's own created_at, made by the row's own author, and writes the marker in the
-// transaction that writes the node, so a second run reads no row the first one wrote. It appends
-// no event, and every fact it states carries the sentinel.
+// document a removal can take a live node whose live statement is the row's own (unmarkedDocument)
+// - and writes the marker in the transaction that writes the node, so a second run reads no row the
+// first one wrote. Its input is the row's own content: a node it makes is made by the row's author
+// at the row's created_at, and a node the store holds keeps the made_at and made_by it has. What it
+// states is stated by the row's author, at the row's created_at or one microsecond past the newest
+// statement about the node where that is later, so a read as of a time reads the order the store
+// appended in; it is caused by the row's own create event where the row has one, which is what
+// names the row (ownLiveStatement), and at the sentinel otherwise. It appends no event.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
