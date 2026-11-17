@@ -99,9 +99,9 @@ export function IssueAddMenu({
   }, [open]);
 
   const fields = emptyFields(issue);
-  // The fields of the latest commit, which `read` reads: `emptyFields` closes over the issue, the
-  // drawer and `onOpenField`, and the observer that calls `read` is set up once, so `read` takes
-  // them from here rather than from the render it was made in.
+  // The fields of the latest commit, which `read` reads: which entries the issue lists and the
+  // names their controls have both follow the issue, and the observer that calls `read` is set
+  // up once, so `read` takes them from here rather than from the render it was made in.
   const committed = useRef(fields);
   const read = useCallback(() => {
     const found = committed.current
@@ -117,8 +117,8 @@ export function IssueAddMenu({
   // commit of the menu, since the issue's value and a control's name can change in the same one,
   // and on each change the observer reports, since a control drawn, renamed or removed by another
   // component's own commit draws the menu no further time. The header's assignee control is
-  // outside Details, so the whole body is watched; the observer is set up once and reads the
-  // latest commit's fields through `committed`.
+  // outside Details, so the whole body is watched. An entry is reached by its control's name
+  // alone (`pageControl`), so only the changes that draw, remove or rename an element are read.
   useLayoutEffect(() => {
     committed.current = fields;
     read();
@@ -126,7 +126,7 @@ export function IssueAddMenu({
   useEffect(() => {
     const watching = new MutationObserver(read);
     watching.observe(document.body, {
-      attributeFilter: ["aria-label", "disabled", "hidden"],
+      attributeFilter: ["aria-label"],
       attributes: true,
       childList: true,
       subtree: true,

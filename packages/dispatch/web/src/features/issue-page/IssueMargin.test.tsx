@@ -994,11 +994,9 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     route: "role:legion-controller-core",
   };
   getIssue.mockResolvedValue(full);
-  const patched: unknown[] = [];
-  patchIssue.mockImplementation(async (_key, update) => {
-    patched.push(update);
-    return narrowIssue({ ...full, labels: [...(update.labels ?? full.labels ?? [])] });
-  });
+  patchIssue.mockImplementation(async (_key, update) =>
+    narrowIssue({ ...full, labels: [...(update.labels ?? full.labels ?? [])] })
+  );
   const view = renderDetails();
   try {
     await screen.findByRole("link", { name: "CORE-3" });
@@ -1007,7 +1005,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     await user.click(screen.getByRole("button", { name: "Edit labels" }));
     await user.click(await screen.findByRole("option", { name: "bug" }));
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(patched.length).toBeGreaterThan(0));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(
       await screen.findByRole("button", {
         name: labelsControlName("CORE-1", {
@@ -1546,11 +1544,12 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
   }
 });
 
-// Decision 145 of the parts: while a save of the labels is out, the labels' control is named for
-// it ("Saving labels of CORE-1", `labelsControlName` given the page's `ANSWER_LINES`), and the
-// key `l` finds it by that name. While `l` looked for the name the issue's labels give the
-// control, it found none for the length of the save.
-test("while the labels are saving, the key l finds the labels control by the name it draws", async () => {
+// R4 and decision 145 of the parts: while a save of the labels is out, the labels' control is
+// named for it ("Saving labels of CORE-1", `labelsControlName` given the page's `ANSWER_LINES`),
+// and the key `l` finds it by that name; the control is then busy, `aria-disabled` and refusing
+// to open, so `l` is off until the save lands. While `l` read only `disabled`, the list of keys
+// named it enabled for the length of the save and the key pressed a control that opened nothing.
+test("while the labels are saving, the key l is off, and on again once the save lands", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   // The labels' popover reads the project's issues for the labels it offers.
@@ -1602,13 +1601,17 @@ test("while the labels are saving, the key l finds the labels control by the nam
     ).toBeInTheDocument();
     expect(
       appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
-      "l found no labels control while the labels were saving"
-    ).toBe(true);
+      "l is enabled while the labels control it presses is busy with the save"
+    ).toBe(false);
 
     saving.resolve(narrowIssue({ ...labelled, labels: [] }));
     await waitFor(() =>
       expect(within(row).queryByRole("button", { name: savingName })).not.toBeInTheDocument()
     );
+    expect(
+      appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
+      "l is not on again once the labels' save has landed"
+    ).toBe(true);
   } finally {
     view.unmount();
     listIssues.mockRestore();

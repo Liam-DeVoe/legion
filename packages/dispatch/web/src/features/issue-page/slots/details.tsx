@@ -83,8 +83,9 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // The control, by the name it has for the issue as it is now (`labelsControlName`):
         // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
-        // from these same writes (decision 145 of the parts). Without the save's words the key
-        // found no control for the length of the save.
+        // from these same writes (decision 145 of the parts). While that save is out the control
+        // is busy, `aria-disabled` and refusing to open, so the key refuses it as it refuses a
+        // disabled one: `l` acts only while the control is drawn and enabled (R4).
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,
@@ -93,7 +94,11 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         const control = document.querySelector(
           `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
         );
-        return control instanceof HTMLButtonElement && !control.disabled;
+        return (
+          control instanceof HTMLButtonElement &&
+          !control.disabled &&
+          control.getAttribute("aria-disabled") !== "true"
+        );
       },
     },
   ]);
