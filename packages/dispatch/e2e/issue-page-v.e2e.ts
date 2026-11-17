@@ -1319,6 +1319,36 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
       name: "Retry",
     });
     await expect(retry, "the refused blocks read draws no Retry").toHaveCount(1);
+
+    // The architect's decision 182 on dispatch://INFRA-1196, `t k` with a refused read: the focus
+    // goes to that read's Retry, on screen under the header's band, and not to the empty tree,
+    // which has nothing to act on and from which Tab never reaches Retry. The implementer added
+    // this reading to the tester's row because c-view (`verification.md` of dispatch://INFRA-3936,
+    // version 11) names it here. The view is on, so the first `t k` turns it off and the second
+    // turns it on with the blocks read still refused; the expect's 15 s covers the read's retries.
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("k");
+    await expect(page, "the first t k did not turn the Verification view off").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
+    );
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("k");
+    await expect(
+      retry,
+      "t k with the blocks read refused leaves the focus elsewhere than its Retry"
+    ).toBeFocused();
+    await expect(retry, "t k leaves the refused read's Retry off the screen").toBeInViewport();
+    // The header's band, as row 4 reads it: 0 where the page draws none or it does not stay. The
+    // Retry is brought on screen a frame after it takes the focus, so its top is polled.
+    const band = (await identityBlockBottom(page)) ?? 0;
+    await expect
+      .poll(() => retry.evaluate((element) => element.getBoundingClientRect().top), {
+        message: `t k left the refused read's Retry under the header's band, which ends at ${band} px`,
+      })
+      .toBeGreaterThanOrEqual(band);
+
     const onPageBody = () =>
       page.evaluate(
         () => document.activeElement === null || document.activeElement === document.body
@@ -1372,6 +1402,11 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
       await focusInside(body),
       "Enter on Retry leaves the focus outside the view once the read answered"
     ).toBe(true);
+    // Decision 182's second rule: once the read answers, the focus is on the view's first row.
+    await expect(
+      verificationIssueRow(page),
+      "once the read answered, Enter on Retry leaves the focus elsewhere than the view's first row"
+    ).toBeFocused();
     await page.keyboard.press("j");
     await nextFrames(page);
     expect(
