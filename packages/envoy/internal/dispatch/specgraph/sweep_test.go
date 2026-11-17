@@ -19,38 +19,75 @@ import (
 // forms write them ({"<repository path>":"<content label>"}, {"<commit>":{"<check id>":…}}), by its
 // place: the names of the path to it from the root of the file, "*" for any name or index. A member
 // of such an object is an entry of a map: a record of the scenario, which the sweep puts null in the
-// place of and TestTakingOutAWholeRecordMovesAStateOnlyByItsRight takes out.
+// place of and TestTakingOutAWholeRecordMovesAStateOnlyByItsRight takes out, and whose key the
+// sweep writes as a name that names nothing.
 var sweepMaps = map[string][][]string{
 	"history.json": {{"commits", "*", "files"}},
 	"ties.json":    {{}, {"*"}},
 	"uncited.json": {{}, {"*"}},
 }
 
+// sweepPaths is each place of a repository path in the JSON files of a scenario: the keys of a tree
+// of the history, and the entries of a tie. The sweep writes each such path in the forms that name
+// no repository path, which no tie entry covers.
+var sweepPaths = map[string]struct{ keysOf, values [][]string }{
+	"history.json": {keysOf: [][]string{{"commits", "*", "files"}}},
+	"ties.json":    {values: [][]string{{"*", "*", "*"}}},
+}
+
+// namesOfNothing are the texts that the sweep writes at each string place and as each key of a map:
+// no name, and a name of no letter and no digit.
+var namesOfNothing = []string{"", " "}
+
+// notRepoPaths are the forms of path that name no repository path, as the sweep writes them.
+func notRepoPaths(path string) []string {
+	forms := []string{"./" + path, "/" + path, path + "/"}
+	if strings.Contains(path, "/") {
+		forms = append(forms, strings.Replace(path, "/", "//", 1))
+	}
+	return forms
+}
+
 // An input that says nothing at one place reads as the zero value of that place, a real value, and
 // a rule that read it as one would turn a state toward true. So the sweep reads each JSON file of each
 // scenario of testdata/scenarios as a JSON tree, with no Go type, and derives the state of each input
 // that says nothing at one place: each member of each object of the format left out, null at each
-// place (a member, an entry of a map, an element of a list, the whole file), and each file of the
-// scenario taken out. No such input may move a check toward true, a statement or its own state toward
-// met, or a wait toward ends, against the state of the whole scenario: a member with a mark of zero is
-// no exception, and a mark whose reading moves a state toward true is wrong. The reader may refuse the
-// input. A record taken out whole, such as a result, is another input, not one that says nothing
-// (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight). The scenarios hold each shape that a rule
-// reads: a check of the code with a matrix and a silent leg, a wait on its statement, a failure of
-// production at the at of its pass, a refusal of CI, and, in production-and-graph, a program check
-// of production whose runs name the commit of their test (test_commit), a query of the graph at the
-// transaction of its subject (graph_tx), and a run of a job that has not ended. So each member that
-// a rule reads is in a record of some scenario, and each place of it is swept.
+// place (a member, an entry of a map, an element of a list, the whole file), each file of the
+// scenario taken out; each name that names nothing: "" and " " at each string place and as each
+// key of each map of the format (sweepMaps), and each repository path of a tree or a tie written as
+// "./<path>", "/<path>", "<path>/" and with a "/" doubled (sweepPaths). No such input may move a
+// check toward true, a statement or its own state toward met, or a wait toward ends, against the
+// state of the whole scenario: a member with a mark of zero is no exception, and a mark whose
+// reading moves a state toward true is wrong. The reader may refuse the input. A record taken out
+// whole, such as a result, is another input, not one that says nothing
+// (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and so is a named leg written where a
+// record has "": it states that the job had legs there, which an older result of that leg answers
+// by right (R8). The scenarios hold each shape that a rule reads: a check of the code with a matrix
+// and a silent leg, a wait on its statement, a failure of production at the at of its pass, a
+// refusal of CI, and, in production-and-graph, a program check of production whose runs name the
+// commit of their test (test_commit), a query of the graph at the transaction of its subject
+// (graph_tx), and a run of a job that has not ended. So each member that a rule reads is in a
+// record of some scenario, and each place of it is swept. The sweep also reads silent-leg with the
+// job's matrix dropped after c1, one run of no matrix at m2 that ended with no result, a shape that
+// no scenario holds: there a run result of the leg "" at c1, where the job had legs, would answer
+// that run, and the check would read true (legFault refuses it).
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
 	if err != nil || len(dirs) < 7 {
 		t.Fatalf("the scenarios: %q, %v", dirs, err)
 	}
+	bases := map[string]fstest.MapFS{}
 	for _, dir := range dirs {
-		t.Run(filepath.Base(dir), func(t *testing.T) {
+		bases[filepath.Base(dir)] = scenarioFS(t, dir)
+	}
+	dropped := maps.Clone(bases["silent-leg"])
+	dropped["jobs.json"] = &fstest.MapFile{Data: []byte(`[{"job":"go-checks","leg":"","commit":"m2","ended":true}]`)}
+	bases["silent-leg with its matrix dropped at m2"] = dropped
+	for _, name := range slices.Sorted(maps.Keys(bases)) {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			base := scenarioFS(t, dir)
+			base := bases[name]
 			whole, err := sweepStates(base)
 			if err != nil {
 				t.Fatalf("the scenario: %v", err)
@@ -74,7 +111,14 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			t.Logf("%d inputs: %d refused, %d read as the whole scenario, %d read another state", len(inputs), refused, same, moved)
+			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
+			for _, in := range inputs {
+				if strings.HasSuffix(in.what, `/leg as ""`) {
+					legs++
+				}
+			}
+			t.Logf(`%d inputs: %d refused, %d read as the whole scenario, %d read another state; %d of them a leg written as ""`,
+				len(inputs), refused, same, moved, legs)
 		})
 	}
 }
@@ -116,11 +160,24 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			switch v := v.(type) {
 			case map[string]any:
 				entries := slices.ContainsFunc(sweepMaps[name], func(p []string) bool { return placeMatches(p, at) })
+				paths := slices.ContainsFunc(sweepPaths[name].keysOf, func(p []string) bool { return placeMatches(p, at) })
 				for _, key := range slices.Sorted(maps.Keys(v)) {
 					place := append(slices.Clone(at), key)
 					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChanged(tree, place, false)))
 					if !entries {
 						with(name+" "+treePointer(place)+" left out", name, encodeTree(t, treeChanged(tree, place, true)))
+					}
+					var renames []string
+					if entries {
+						renames = namesOfNothing
+					}
+					if paths {
+						renames = append(slices.Clone(renames), notRepoPaths(key)...)
+					}
+					for _, renamed := range renames {
+						if _, taken := v[renamed]; !taken {
+							with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, encodeTree(t, treeRenamed(tree, place, renamed)))
+						}
 					}
 					walk(v[key], place)
 				}
@@ -129,6 +186,16 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					place := append(slices.Clone(at), strconv.Itoa(i))
 					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChanged(tree, place, false)))
 					walk(x, place)
+				}
+			case string:
+				forms := slices.Clone(namesOfNothing)
+				if slices.ContainsFunc(sweepPaths[name].values, func(p []string) bool { return placeMatches(p, at) }) {
+					forms = append(forms, notRepoPaths(v)...)
+				}
+				for _, form := range forms {
+					if form != v {
+						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, encodeTree(t, treeWith(tree, at, form)))
+					}
 				}
 			}
 		}
@@ -366,6 +433,44 @@ func treeChanged(v any, place []string, leftOut bool) any {
 		return c
 	}
 	panic(fmt.Sprintf("no value at %q", place))
+}
+
+// treeWith is a copy of the JSON tree v with x at place.
+func treeWith(v any, place []string, x any) any {
+	if len(place) == 0 {
+		return x
+	}
+	switch v := v.(type) {
+	case map[string]any:
+		c := maps.Clone(v)
+		c[place[0]] = treeWith(v[place[0]], place[1:], x)
+		return c
+	case []any:
+		i, _ := strconv.Atoi(place[0])
+		c := slices.Clone(v)
+		c[i] = treeWith(v[i], place[1:], x)
+		return c
+	}
+	panic(fmt.Sprintf("no value at %q", place))
+}
+
+// treeRenamed is a copy of the JSON tree v with the member at place, the last name of place, under
+// the name renamed in its object.
+func treeRenamed(v any, place []string, renamed string) any {
+	object := v
+	for _, name := range place[:len(place)-1] {
+		switch o := object.(type) {
+		case map[string]any:
+			object = o[name]
+		case []any:
+			i, _ := strconv.Atoi(name)
+			object = o[i]
+		}
+	}
+	c := maps.Clone(object.(map[string]any))
+	c[renamed] = c[place[len(place)-1]]
+	delete(c, place[len(place)-1])
+	return treeWith(v, place[:len(place)-1], c)
 }
 
 // treePointer is the JSON pointer of place.

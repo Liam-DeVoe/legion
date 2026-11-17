@@ -168,9 +168,10 @@ func TestEachMemberOfAnInputHasAMark(t *testing.T) {
 // two times; Q, a program check of production, and G, a query of the graph; at c1, whose history
 // holds c2 and c3 after it, a failing run of each check before its pass, a caught failing example of
 // each, and a failing example of C that missed its fault; the runs of C's job in two legs and of
-// Q's in one; CI's refusal of Q at c9, a commit that the history does not hold, so that it counts
-// nowhere; at the commit that production runs at deploy d1 and transaction tx1. subjects are the
-// subjects of its scenario, two at the head of a branch and two at a deploy, and units two units.
+// Q's in one; the tie of G at c1 not known (Tie{}), which no rule of a query reads; CI's refusal of Q
+// at c9, a commit that the history does not hold, so that it counts nowhere; at the commit that
+// production runs at deploy d1 and transaction tx1. subjects are the subjects of its scenario, two
+// at the head of a branch and two at a deploy, and units two units.
 func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubject, units []Unit) {
 	t.Helper()
 	s = newCheckCase(t)
@@ -184,29 +185,30 @@ func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubjec
 	s.commit("c3", "c2", "docs/x.md")
 	run := checkStateRun
 	fault := func(c Check, outcome Outcome, author string, after time.Duration) Result {
-		return Result{Check: c.ID, Kind: ResultFailingExample, Outcome: outcome, At: run.Add(after), FaultAuthor: author, TestAuthors: []string{"author-a"}}
+		return Result{Check: c.ID, Kind: ResultFailingExample, Outcome: outcome, Leg: new(""), At: run.Add(after), FaultAuthor: author, TestAuthors: []string{"author-a"}}
 	}
 	missed, caught := fault(checkStateCheck, OutcomePass, "author-c", 6*time.Minute), fault(checkStateCheck, OutcomeFail, "author-b", 5*time.Minute)
 	for _, r := range []*Result{&missed, &caught} {
-		r.Commit, r.Job, r.Leg, r.Attempt = "c1", "go-checks", "linux", 1
+		r.Commit, r.Job, r.Leg, r.Attempt = "c1", "go-checks", new("linux"), 1
 	}
 	qFault := fault(q, OutcomeFail, "author-b", 5*time.Minute)
 	qFault.TestCommit = "c1"
 	qRun := func(outcome Outcome, attempt int, after time.Duration) Result {
-		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d1", Job: q.Test.Job, Leg: "linux", Attempt: attempt, TestCommit: "c1", At: run.Add(after)}
+		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d1", Job: q.Test.Job, Leg: new("linux"), Attempt: attempt, TestCommit: "c1", At: run.Add(after)}
 	}
 	gRun := func(outcome Outcome, after time.Duration) Result {
-		return Result{Check: g.ID, Kind: ResultRun, Outcome: outcome, GraphTx: "tx1", At: run.Add(after)}
+		return Result{Check: g.ID, Kind: ResultRun, Outcome: outcome, GraphTx: "tx1", Leg: new(""), At: run.Add(after)}
 	}
 	s.Results = []Result{
 		legRun("c1", "linux", 2, OutcomeFail, run.Add(time.Minute)), legRun("c1", "linux", 1, OutcomePass, run), caught, missed,
 		qRun(OutcomeFail, 2, time.Minute), qRun(OutcomePass, 1, 0), qFault,
-		gRun(OutcomeFail, time.Minute), gRun(OutcomePass, 0), {Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: run.Add(5 * time.Minute)},
+		gRun(OutcomeFail, time.Minute), gRun(OutcomePass, 0), {Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Leg: new(""), At: run.Add(5 * time.Minute)},
 	}
-	s.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "arm", Commit: "c1", Ended: true},
-		{Job: q.Test.Job, Leg: "linux", Commit: "c1", Ended: true}}
+	s.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(true)},
+		{Job: q.Test.Job, Leg: new("linux"), Commit: "c1", Ended: new(true)}}
 	s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
 	s.Uncited = map[string]map[string]string{"c9": {q.ID: "test-not-in-code"}}
+	s.Ties["c1"][g.ID] = Tie{}
 	in = s.input()
 	subjects = []ScenarioSubject{
 		{Point: Point{Commit: "c1", Branch: "b"}, Now: in.Now}, {Point: Point{Commit: "c1", Branch: "main"}, Now: in.Now},
@@ -246,7 +248,9 @@ func memberScenario(t *testing.T) fstest.MapFS {
 	for commit, byCheck := range in.Ties {
 		ties[commit] = map[string][]string{}
 		for check, tie := range byCheck {
-			ties[commit][check] = tie.Paths
+			if tie.Known { // ties.json writes a tie that is not known as no key
+				ties[commit][check] = tie.Paths
+			}
 		}
 	}
 	put("ties.json", ties)
@@ -516,7 +520,8 @@ type step struct {
 	key          reflect.Value
 }
 
-// instancesOf is the path of each struct value of type typ in v.
+// instancesOf is the path of each struct value of type typ in v, a map's values in the order of
+// their keys, so that two values that hold the same keys give their instances in one order.
 func instancesOf(v reflect.Value, typ reflect.Type, path []step) [][]step {
 	var found [][]step
 	next := func(s step, w reflect.Value) {
@@ -532,10 +537,13 @@ func instancesOf(v reflect.Value, typ reflect.Type, path []step) [][]step {
 			next(step{field: -1, index: i}, v.Index(i))
 		}
 	case reflect.Map:
-		for _, key := range v.MapKeys() {
+		keys := v.MapKeys()
+		slices.SortFunc(keys, func(a, b reflect.Value) int {
+			return strings.Compare(fmt.Sprint(a.Interface()), fmt.Sprint(b.Interface()))
+		})
+		for _, key := range keys {
 			next(step{field: -1, index: -1, key: key}, v.MapIndex(key))
 		}
-		slices.SortFunc(found, func(a, b []step) int { return strings.Compare(fmt.Sprint(a), fmt.Sprint(b)) })
 	case reflect.Struct:
 		if v.Type() == typ {
 			found = append(found, path)
@@ -581,14 +589,23 @@ func edit(v reflect.Value, path []step, change func(reflect.Value)) {
 }
 
 // TestAMemberLeftZeroAtTheEntryIsReadByItsMark gives the library each input of memberBase with one
-// member of one value at its zero value, as a caller that does not set it gives it: for each member
-// marked nonzero, beside a value that sets it (for a result, the failing run of C beside its pass)
-// and alone in its list or map, Derive and CheckStates (WaitCycle for a unit) give an error, where
-// the same input with the member set gives none or another one; for a map marked nonzero, also with
-// one value of it at its zero value, at each depth of a map of maps, down to a value of a struct
-// type, which the marks of its own members read (memberMark); for a member of a one of mark, also
-// with both members set. To a caller of the library, a zero value of a member marked present or
-// zero is the value that its reason states, and no file is read.
+// member of one value at its zero value, as a caller that does not set it gives it, and reads the
+// mark in both directions:
+//
+//   - for each member marked nonzero or present, beside a value that sets it (for a result, the
+//     failing run of C beside its pass) and alone in its list or map, Derive and CheckStates
+//     (WaitCycle for a unit) give an error, where the same input with the member set gives none or
+//     another one: the zero value of a member marked present is "not set" (memberMark); for a map
+//     marked nonzero, also with one value of it at its zero value, at each depth of a map of maps,
+//     down to a value of a struct type, which the marks of its own members read;
+//   - for each member marked zero, its zero value is taken: at one value of its type in memberBase
+//     at least, the input with the member at its zero value gives a state and no error, and Derive
+//     and CheckStates agree, so a mark zero of a member that the entry refuses at its zero value
+//     fails the test; a rule of the type can refuse the zero at another value, as Result.fault
+//     refuses a run of a check of the code with no commit;
+//   - for a member of a one of mark, also with both members set.
+//
+// No file is read.
 func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	refusal := func(t *testing.T, in Input, units []Unit, root reflect.Type) string {
@@ -616,7 +633,8 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 					t.Errorf("%s: %v", typ, err)
 					continue
 				}
-				if mark.kind != "nonzero" && mark.kind != "one of" {
+				if mark.kind == "zero" {
+					checked += zeroTaken(t, root, typ, m, refusal)
 					continue
 				}
 				// variant is the refusal of memberBase with change made to the value at the path of the
@@ -684,7 +702,7 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 						if zeroed == "<nil>" || zeroed == kept {
 							t.Errorf("%s %s at %v (alone %t): with it zero the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, zeroed, kept)
 						}
-						if mark.kind == "nonzero" && m.field.Type.Kind() == reflect.Map {
+						if mark.kind != "one of" && m.field.Type.Kind() == reflect.Map {
 							for depth := 1; ; depth++ {
 								held := false
 								zeroed, at := variant(t, instance, alone, func(s reflect.Value) { held = zeroValueAt(s.FieldByIndex(m.index), depth) })
@@ -717,6 +735,37 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 		}
 	}
 	t.Logf("%d readings of a member at its zero value", checked)
+}
+
+// zeroTaken fails the test unless the entry takes the zero value of the member m, marked zero, of
+// typ at one value of typ in the inputs of memberBase under root at least, refusal being the error
+// of the entry for an input; it gives the number of inputs read.
+func zeroTaken(t *testing.T, root, typ reflect.Type, m inputMember, refusal func(*testing.T, Input, []Unit, reflect.Type) string) int {
+	t.Helper()
+	_, in, _, units := memberBase(t)
+	v := reflect.ValueOf(&in).Elem()
+	if root == reflect.TypeFor[[]Unit]() {
+		v = reflect.ValueOf(&units).Elem()
+	}
+	var refused []string
+	for i := range instancesOf(v, typ, nil) {
+		_, in, _, units := memberBase(t)
+		v := reflect.ValueOf(&in).Elem()
+		if root == reflect.TypeFor[[]Unit]() {
+			v = reflect.ValueOf(&units).Elem()
+		}
+		edit(v, instancesOf(v, typ, nil)[i], func(s reflect.Value) {
+			f := s.FieldByIndex(m.index)
+			f.Set(reflect.Zero(f.Type()))
+		})
+		got := refusal(t, in, units, root)
+		if got == "<nil>" {
+			return len(refused) + 1
+		}
+		refused = append(refused, got)
+	}
+	t.Errorf("%s %s is marked zero, and at each of the %d values of %s in memberBase the entry refuses its zero: %q", typ, m.field.Name, len(refused), typ, refused)
+	return len(refused)
 }
 
 // zeroValueAt sets the first value, by its key, of the map m to its zero value at depth 1, and at a

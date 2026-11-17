@@ -13,7 +13,8 @@ import (
 // the line "base <object name of base>", then the paths whose content differs between the trees of
 // the two commits of the git clone at root, specgraph.GitHistory's answer (both paths of a move),
 // sorted, one a line: the one form that citations --changed reads, and answers 0; 2 for a commit
-// that git cannot read, a path that holds a line break, a root it cannot read or that is not the
+// that git cannot read, a diff of the two that git cannot make (GitHistory's fault, which names the
+// clone and git's reason), a path that holds a line break, a root it cannot read or that is not the
 // top of its git clone (isCloneTop), or arguments it does not take, each with one line naming it.
 //
 // The base is the commit where each result that the head carries stands, which for a change's
@@ -48,9 +49,13 @@ func runChanged(args []string, stdout, stderr io.Writer) int {
 		say(stderr, "%s: git cannot read commit %s", repo, *head)
 		return 2
 	}
-	changed, ok := specgraph.GitHistory{Dir: repo}.Changed(baseName, headName)
-	if !ok {
-		say(stderr, "%s: git diff from %s to %s failed", repo, *base, *head)
+	changed, ok, err := specgraph.GitHistory{Dir: repo}.Changed(baseName, headName)
+	switch {
+	case err != nil:
+		say(stderr, "%s", err)
+		return 2
+	case !ok:
+		say(stderr, "%s: the clone no longer holds one of the commits %s and %s", repo, baseName, headName)
 		return 2
 	}
 	for _, path := range changed {

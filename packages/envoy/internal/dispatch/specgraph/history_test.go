@@ -38,9 +38,9 @@ func TestFixtureHistoryReadsTrees(t *testing.T) {
 		{"b1", "gone", nil, false},
 		{"gone", "b1", nil, false},
 	} {
-		got, ok := h.Changed(tc.from, tc.to)
-		if ok != tc.ok || !slices.Equal(got, tc.want) {
-			t.Errorf("Changed(%s, %s) = %q, %t; want %q, %t", tc.from, tc.to, got, ok, tc.want, tc.ok)
+		got, ok, err := h.Changed(tc.from, tc.to)
+		if err != nil || ok != tc.ok || !slices.Equal(got, tc.want) {
+			t.Errorf("Changed(%s, %s) = %q, %t, %v; want %q, %t and no error", tc.from, tc.to, got, ok, err, tc.want, tc.ok)
 		}
 	}
 }
@@ -53,7 +53,7 @@ func TestFixtureHistoryListsBothPathsOfAMove(t *testing.T) {
 		{ID: "c1", Files: map[string]string{"p/a.go": "1", "p/data.json": "1"}},
 		{ID: "c2", Parent: "c1", Files: map[string]string{"p/a.go": "1", "docs/data.json": "1"}},
 	}}
-	if got, ok := h.Changed("c1", "c2"); !ok || !slices.Equal(got, []string{"docs/data.json", "p/data.json"}) {
+	if got, ok, err := h.Changed("c1", "c2"); err != nil || !ok || !slices.Equal(got, []string{"docs/data.json", "p/data.json"}) {
 		t.Errorf("Changed(c1, c2) = %q, %t; want both paths of the move", got, ok)
 	}
 }
@@ -128,8 +128,11 @@ func runTestGit(t *testing.T, dir string, args ...string) string {
 
 // GitHistory lists both paths of a moved file: git detects the move in this repository as a
 // rename (the control: plain git diff --name-only names only the new path), and a history that
-// gave git's rename view would miss the path that left a tie. A commit that git cannot read gives
-// ok false, and so does a commit id that git would read as an option.
+// gave git's rename view would miss the path that left a tie. A commit that the clone does not
+// hold gives ok false and no error, and so does a commit id that git would read as an option, or
+// that holds a line feed, which names no object. A clone that holds both commits and cannot read
+// the tree of one gives an error that names the directory and git's own reason: it has not read
+// two trees.
 func TestGitHistoryListsBothPathsOfAMove(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -163,21 +166,63 @@ func TestGitHistoryListsBothPathsOfAMove(t *testing.T) {
 		t.Fatalf("control: git diff --name-only A B = %q, want only the new path, so git reads the move as a rename", got)
 	}
 	h := GitHistory{Dir: dir}
-	if got, ok := h.Changed(a, b); !ok || !slices.Equal(got, []string{"docs/data.json", "p/data.json"}) {
-		t.Errorf("Changed(A, B) = %q, %t; want both paths of the move", got, ok)
+	if got, ok, err := h.Changed(a, b); err != nil || !ok || !slices.Equal(got, []string{"docs/data.json", "p/data.json"}) {
+		t.Errorf("Changed(A, B) = %q, %t, %v; want both paths of the move", got, ok, err)
 	}
-	if got, ok := h.Changed(a, a); !ok || len(got) != 0 {
-		t.Errorf("Changed(A, A) = %q, %t; want no path, ok", got, ok)
+	if got, ok, err := h.Changed(a, a); err != nil || !ok || len(got) != 0 {
+		t.Errorf("Changed(A, A) = %q, %t, %v; want no path, ok", got, ok, err)
 	}
-	if got, ok := h.Changed(a, "0000000000000000000000000000000000000000"); ok {
-		t.Errorf("Changed(A, a commit git does not hold) = %q, ok", got)
+	if got, ok, err := h.Changed(a, "0000000000000000000000000000000000000000"); err != nil || ok {
+		t.Errorf("Changed(A, a commit git does not hold) = %q, %t, %v; want not ok and no error", got, ok, err)
 	}
 	leak := filepath.Join(dir, "leak")
-	if got, ok := h.Changed("--output="+leak, b); ok {
-		t.Errorf("Changed(an option, B) = %q, ok", got)
+	if got, ok, err := h.Changed("--output="+leak, b); err != nil || ok {
+		t.Errorf("Changed(an option, B) = %q, %t, %v; want not ok and no error", got, ok, err)
 	}
 	if _, err := os.Stat(leak); !os.IsNotExist(err) {
 		t.Errorf("git read a commit id as an option and wrote %s (%v)", leak, err)
+	}
+	if got, ok, err := h.Changed(a+"\n"+b, b); err != nil || ok {
+		t.Errorf("Changed(an id with a line feed, B) = %q, %t, %v; want not ok and no error", got, ok, err)
+	}
+	tree := git("rev-parse", b+"^{tree}")
+	if err := os.Remove(filepath.Join(dir, ".git", "objects", tree[:2], tree[2:])); err != nil {
+		t.Fatalf("the loose object of B's tree: %v", err)
+	}
+	if got, ok, err := h.Changed(a, b); err == nil || ok || !strings.Contains(err.Error(), quoted(dir)) || !strings.Contains(err.Error(), "fatal:") {
+		t.Errorf("Changed(A, B) with B's tree gone = %q, %t, %v; want an error that names the directory and git's own reason", got, ok, err)
+	}
+}
+
+// GitHistory names each commit to git as a revision, never as a path: a branch whose name is also a
+// path of the work tree reads as the branch, since Changed ends the two ids with "--". Without it
+// git refuses the name as both a revision and a file name, and a clone that holds both commits
+// would give an error, so the derivation would give no state.
+func TestGitHistoryReadsACommitWhoseNameIsAlsoAPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		return runTestGit(t, dir, args...)
+	}
+	write := func(path string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(path+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	write("a.go")
+	git("add", ".")
+	git("commit", "-q", "-m", "A")
+	a := git("rev-parse", "HEAD")
+	write("b")
+	git("add", ".")
+	git("commit", "-q", "-m", "B")
+	git("branch", "b")
+	h := GitHistory{Dir: dir}
+	if got, ok, err := h.Changed(a, "b"); err != nil || !ok || !slices.Equal(got, []string{"b"}) {
+		t.Errorf("Changed(A, the branch b, which is also a file of the work tree) = %q, %t, %v; want the path b, ok and no error", got, ok, err)
 	}
 }
 
@@ -359,10 +404,36 @@ func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
 			c := clone{dir: t.TempDir(), t: t}
 			git(c, "init", "-q")
 			a, b, h := row.make(c)
-			got, ok := h.Changed(a, b)
-			if ok != row.ok || !slices.Equal(got, row.want) {
-				t.Errorf("Changed(A, B) = %q, %t; want %q, %t", got, ok, row.want, row.ok)
+			got, ok, err := h.Changed(a, b)
+			if err != nil || ok != row.ok || !slices.Equal(got, row.want) {
+				t.Errorf("Changed(A, B) = %q, %t, %v; want %q, %t and no error", got, ok, err, row.want, row.ok)
 			}
 		})
+	}
+}
+
+// H2: a GitHistory whose Dir is no clone, or a directory that does not exist, lists no path, and
+// it has not read two equal trees: Changed gives an error that names Dir and git's own reason, and
+// the derivation gives no state, where the same input with a history that holds the two trees
+// reads its state. The case: TestCheckState's pass at c1, and the subject c2, whose tree differs
+// from c1's in docs/x.md alone, so the pass carries to c2 by the FixtureHistory (the control).
+func TestAGitHistoryThatCannotReadItsCloneGivesNoState(t *testing.T) {
+	t.Parallel()
+	s := newCheckCase(t)
+	s.commit("c2", "c1", "docs/x.md")
+	s.Subject.Commit = "c2"
+	if got := checkStates(t, s.input()); len(got) != 1 || got[0].State != "true" || got[0].From != "c1" {
+		t.Fatalf("control: with the FixtureHistory the check reads %+v, want true from c1", got)
+	}
+	notAClone := t.TempDir()
+	for _, dir := range []string{notAClone, filepath.Join(notAClone, "gone")} {
+		in := s.input()
+		in.History = GitHistory{Dir: dir}
+		_, err := Derive(in)
+		_, checksErr := CheckStates(in)
+		if err == nil || checksErr == nil || err.Error() != checksErr.Error() || !strings.Contains(err.Error(), quoted(dir)) ||
+			!strings.Contains(err.Error(), "fatal:") {
+			t.Errorf("GitHistory{Dir: %s}: Derive gives %v and CheckStates %v; want one error that names the directory and git's own reason", dir, err, checksErr)
+		}
 	}
 }

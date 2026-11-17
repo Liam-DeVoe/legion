@@ -13,25 +13,30 @@ import (
 
 // History is the paths whose content differs between the trees of two commits, both paths of a
 // move included, as `git diff --no-renames --name-only -z from to --` gives them with no setting of
-// the clone or of the machine (GitHistory); ok is false only when a commit cannot be read. It reads
-// trees, never ancestry: main's commits are squash commits, so the commit of a result on a branch is
-// no ancestor of the main commit that holds its change.
+// the clone or of the machine (GitHistory); ok is false only when the history does not hold one of
+// the two commits, which R8 reads as a tie that is not known, so no result carries. err is a fault
+// of the history itself, such as a directory that is no clone: a history that could list nothing
+// has not read two equal trees, and the derivation then gives no state. It reads trees, never
+// ancestry: main's commits are squash commits, so the commit of a result on a branch is no ancestor
+// of the main commit that holds its change.
 type History interface {
-	Changed(from, to string) ([]string, bool)
+	Changed(from, to string) (paths []string, ok bool, err error)
 }
 
 // FixtureHistory is the history of a scenario, in the form of its history.json:
 //
 //	{"commits":[{"id","parent","files":{"<repository path>":"<content label>"}}]}
 //
-// Files is the whole tree of each commit, as a label of each path's content: a path that the commit
-// does not hold is no key. It is set at each commit and has each label nonzero, as its mark says
-// for a map (memberMark): a label has at least one character, since one with none names no
-// content, and two commits with "" at a path would read as one content. By its own rule, a tree
-// also holds at least one path (FixtureHistory.check), since a test reads at least one file, and two
-// commits with no path would read as one tree. Parent is for the reader, and Changed never reads it.
+// Commits is nil when it is not set, which check refuses, and an empty list for a history of no
+// commit. Files is the whole tree of each commit, as a label of each path's content: a path that
+// the commit does not hold is no key. It is set at each commit and has each label nonzero, as its
+// mark says for a map (memberMark): a label has at least one character, since one with none names
+// no content, and two commits with "" at a path would read as one content. By its own rule, a tree
+// also holds at least one path, and each path is a repository path (FixtureHistory.check), since a
+// test reads at least one file, two commits with no path would read as one tree, and no tie covers
+// a path such as "./a". Parent is for the reader, and Changed never reads it.
 type FixtureHistory struct {
-	Commits []FixtureCommit `json:"commits" input:"present: no commit, so no result carries; a file sets [] for none"`
+	Commits []FixtureCommit `json:"commits" input:"present: [] is no commit, so no result carries"`
 }
 
 // FixtureCommit is one commit of a FixtureHistory: its id, its parent and its tree.
@@ -46,18 +51,11 @@ type FixtureCommit struct {
 const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
 
 // ReadFixtureHistory reads a history.json. It refuses what decodeJSON refuses, a value of another
-// type than historyForm needs named by its place among them, a file that does not set commits
-// (unsetFault), and what FixtureHistory.check refuses.
+// type than historyForm needs named by its place among them, and what FixtureHistory.check
+// refuses, a file that does not set commits among them.
 func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
-	}
 	var h FixtureHistory
-	if err := decodeJSON(data, &h, historyForm); err != nil {
-		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
-	}
-	if err := unsetFault(data, &h, historyForm); err != nil {
+	if err := decodeJSONFrom(r, &h, historyForm); err != nil {
 		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
 	}
 	if err := h.check(); err != nil {
@@ -67,18 +65,29 @@ func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 }
 
 // check is the first fault of h that ReadFixtureHistory and the entry of the derivation refuse,
-// or nil: a commit with no id, an id on two commits, and then a commit that sets no files, whose
-// tree holds no path, or whose tree has a content label with no character, by the order of its
-// paths. Each would read as a tree or a content that another such commit shares, so a result would
-// carry between them (R8).
+// or nil: no list of commits, a commit with no id, or with an id or a parent of no letter and no
+// digit (hasWord), which names no commit, an id on two commits, and then a commit that sets no
+// files, whose tree holds no path, or whose tree has a path that is no repository path
+// (isRepoPath) or a content label with no character, the least such path by its order being the
+// one named. Each would read as a tree or a content that another such commit shares, or as a
+// change that no tie covers, so a result would carry between them (R8); and a history that does
+// not set its commits is not one that knows that it has none.
 func (h FixtureHistory) check() error {
+	if h.Commits == nil {
+		return errors.New("specgraph: history: it sets no commits; a history of no commit sets an empty list")
+	}
 	seen := map[string]bool{}
 	for _, c := range h.Commits {
-		if c.ID == "" {
+		switch {
+		case c.ID == "":
 			return errors.New("specgraph: history: a commit has no id")
-		}
-		if seen[c.ID] {
+		case !hasWord(c.ID):
+			return fmt.Errorf("specgraph: history: commit %s: its id has no letter and no digit, so it names no commit", quoted(c.ID))
+		case seen[c.ID]:
 			return fmt.Errorf("specgraph: history: commit %s is in the history two times", quoted(c.ID))
+		}
+		if fault := nameFault(namedMember{"parent", "commit", c.Parent}); fault != "" {
+			return fmt.Errorf("specgraph: history: commit %s: %s", quoted(c.ID), fault)
 		}
 		seen[c.ID] = true
 	}
@@ -89,14 +98,18 @@ func (h FixtureHistory) check() error {
 		case len(c.Files) == 0:
 			return fmt.Errorf("specgraph: history: commit %s: its files hold no path, and the tree of a commit holds at least one file", quoted(c.ID))
 		}
-		empty, found := "", false
+		least, found := "", false
 		for path, label := range c.Files {
-			if label == "" && (!found || path < empty) {
-				empty, found = path, true
+			if (label == "" || !isRepoPath(path)) && (!found || path < least) {
+				least, found = path, true
 			}
 		}
-		if found {
-			return fmt.Errorf("specgraph: history: commit %s: the content label of %s is empty, and a label has at least one character", quoted(c.ID), quoted(empty))
+		switch {
+		case !found:
+		case !isRepoPath(least):
+			return fmt.Errorf(`specgraph: history: commit %s: the path %s is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`, quoted(c.ID), quoted(least))
+		default:
+			return fmt.Errorf("specgraph: history: commit %s: the content label of %s is empty, and a label has at least one character", quoted(c.ID), quoted(least))
 		}
 	}
 	return nil
@@ -107,10 +120,10 @@ func (h FixtureHistory) check() error {
 // implements History, whose Changed could panic where a result carries, checked once for the value
 // whatever its type; a FixtureHistory that FixtureHistory.check refuses; and a GitHistory with no
 // Dir, with which git would read the clone of the working directory of the process. A caller with no
-// history gives a FixtureHistory of no commit, which holds neither commit of a carry, so no result
-// carries.
+// history gives FixtureHistory{Commits: []FixtureCommit{}}, which holds neither commit of a carry,
+// so no result carries.
 func historyFault(h History) error {
-	const none = "an Input with no history sets a FixtureHistory of no commit"
+	const none = "an Input with no history sets FixtureHistory{Commits: []FixtureCommit{}}"
 	if h == nil {
 		return errors.New("specgraph: it sets no History; " + none)
 	}
@@ -135,12 +148,12 @@ func historyFault(h History) error {
 
 // Changed is the sorted paths whose label differs between the trees of from and to, or that one
 // of the trees does not hold, so a move gives both of its paths; ok is false when the history
-// holds no commit with one of the two ids.
-func (h FixtureHistory) Changed(from, to string) ([]string, bool) {
+// holds no commit with one of the two ids. A FixtureHistory gives no error.
+func (h FixtureHistory) Changed(from, to string) ([]string, bool, error) {
 	a, okFrom := h.tree(from)
 	b, okTo := h.tree(to)
 	if !okFrom || !okTo {
-		return nil, false
+		return nil, false, nil
 	}
 	var changed []string
 	for path, label := range a {
@@ -154,7 +167,7 @@ func (h FixtureHistory) Changed(from, to string) ([]string, bool) {
 		}
 	}
 	slices.Sort(changed)
-	return changed, true
+	return changed, true, nil
 }
 
 // tree is the files of the commit id, and whether the history holds it.
@@ -199,20 +212,81 @@ func (g GitHistory) dirFault() error {
 var gitDiffArgs = []string{"--no-replace-objects", "diff", "--no-renames", "--ignore-submodules=none", "--no-relative",
 	"--name-only", "-z", "--end-of-options"}
 
-// Changed runs `git -C <Dir> <gitDiffArgs> <from> <to> --` and gives its paths, sorted; ok is false
-// when git exits with an error, as for a commit that the clone does not hold, such as a commit
-// beyond the depth of a shallow clone.
-func (g GitHistory) Changed(from, to string) ([]string, bool) {
-	cmd := exec.Command("git", append(append([]string{"-C", g.Dir}, gitDiffArgs...), from, to, "--")...)
-	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
-	out, err := cmd.Output()
+// Changed gives the paths that `git -C <Dir> <gitDiffArgs> <from> <to> --` lists, sorted, once the
+// clone holds a commit of each of the two ids (holds). ok is false, and err nil, when it does not,
+// as for a commit beyond the depth of a shallow clone. err names Dir and git's own reason when git
+// cannot answer, as for a directory that is no clone: such a history has not read two equal trees.
+// The check comes first because git diff outside a clone runs in its no-index mode, which reads
+// two paths of the directory and not two commits, so only a clone is asked for a diff.
+func (g GitHistory) Changed(from, to string) ([]string, bool, error) {
+	fault := func(err error) error {
+		return fmt.Errorf("specgraph: history: git cannot read the commits %s and %s of the clone at %s: %s",
+			quoted(from), quoted(to), quoted(g.Dir), gitReason(err))
+	}
+	switch held, err := g.holds(from, to); {
+	case err != nil:
+		return nil, false, fault(err)
+	case !held:
+		return nil, false, nil
+	}
+	out, err := g.git("", slices.Concat(gitDiffArgs, []string{from, to, "--"})...)
 	if err != nil {
-		return nil, false
+		return nil, false, fault(err)
 	}
 	changed := strings.Split(string(bytes.TrimSuffix(out, []byte{0})), "\x00")
 	if len(out) == 0 {
 		changed = nil
 	}
 	slices.Sort(changed)
-	return changed, true
+	return changed, true, nil
+}
+
+// holds is whether the clone at Dir holds a commit of each of ids, as `git cat-file --batch-check`
+// answers for each "<id>^{commit}" on its input: "<object> <type> <size>" for one that it holds,
+// and "<id>^{commit} missing" for one that it does not. An id with a line feed is the name of no
+// object. git's own error, such as for a directory that is no clone, is err.
+func (g GitHistory) holds(ids ...string) (bool, error) {
+	var input strings.Builder
+	for _, id := range ids {
+		if strings.Contains(id, "\n") {
+			return false, nil
+		}
+		input.WriteString(id)
+		input.WriteString("^{commit}\n")
+	}
+	out, err := g.git(input.String(), "--no-replace-objects", "cat-file", "--batch-check")
+	if err != nil {
+		return false, err
+	}
+	answers := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(answers) != len(ids) {
+		return false, fmt.Errorf("git cat-file --batch-check gave %d answers for %d commits", len(answers), len(ids))
+	}
+	for _, answer := range answers {
+		if fields := strings.Fields(answer); len(fields) != 3 || fields[1] != "commit" {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// git runs `git -C <Dir> <args>` with stdin as its input and no variable GIT_* of the environment
+// that it would inherit (exec.Cmd.Environ), and gives its output.
+func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", append([]string{"-C", g.Dir}, args...)...)
+	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	cmd.Stdin = strings.NewReader(stdin)
+	return cmd.Output()
+}
+
+// gitReason is the reason of err, an error of a run of git: the first line that git wrote on its
+// stderr, as quoted prints it, or err itself when git wrote none or did not run.
+func gitReason(err error) string {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		if line, _, _ := strings.Cut(strings.TrimSpace(string(exit.Stderr)), "\n"); line != "" {
+			return quoted(line)
+		}
+	}
+	return quoted(err.Error())
 }

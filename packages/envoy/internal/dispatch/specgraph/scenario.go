@@ -92,10 +92,13 @@ const (
 // its own letters, a member that one object gives two times, text after the value, and a value of
 // another type than the file's form needs, which it names with the form and the place of the value.
 // It refuses each member that the derivation reads and that a file does not set, by the type that it
-// reads the file into (memberMark): a member marked nonzero by the functions that the entry of the
-// derivation refuses its zero value with (Input.check), and one marked present by unsetFault, since
-// the zero value of such a member would read as a real one and turn a state toward true or hide a
-// failure; a member marked zero that a file leaves out reads as its zero value:
+// reads the file into (memberMark), with the functions that the entry of the derivation refuses the
+// same member with (Input.check): one marked nonzero at its zero value, and one marked present that
+// the file leaves out, since the zero value of such a member would read as a real one and turn a
+// state toward true or hide a failure; a member marked zero that a file leaves out reads as its
+// zero value. Each commit, check, job, leg, deploy, transaction, branch and unit that a file names,
+// as a value or as a key, has a letter or a digit (nameFault), and each path of the repository is a
+// repository path (isRepoPath):
 //
 //   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
 //     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
@@ -103,17 +106,16 @@ const (
 //     statements exist, so an approved leaf can have no check, and the files then do not hold it;
 //   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
 //     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
-//     graph that the subject reads, only with a deploy (subjectFault). Each of commit, branch,
-//     deploy and graph_tx that a subject sets has a letter or a digit (hasWord), since one with none
-//     names nothing. A check of production or of the graph is judged only at a deploy, and a check
-//     of the graph reads unknown there when graph_tx is absent or names a transaction that no result
-//     read;
+//     graph that the subject reads, only with a deploy; and each of commit, branch, deploy and
+//     graph_tx that it sets has a letter or a digit (subjectFault). A check of production or of
+//     the graph is judged only at a deploy, and a check of the graph reads unknown there when
+//     graph_tx is absent or names a transaction that no result read;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
-//     sets its files, a tree of one path or more, each with a content label of one character or
-//     more;
+//     sets its files, a tree of one path or more, each a repository path with a content label of
+//     one character or more;
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
 //     and so has each check at a commit that the file does not name. A result at one commit counts
@@ -184,6 +186,13 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.JobRuns, err = readJobRuns(fsys); err != nil {
 		return s, err
 	}
+	if fault, ofRun := legFault(s.JobRuns, s.Results); fault != "" {
+		file := "results.json"
+		if ofRun {
+			file = "jobs.json"
+		}
+		return s, scenarioFault(file, "%s", fault)
+	}
 	if err := readJSON(fsys, "uncited.json", &s.Uncited, uncitedForm); err != nil {
 		return s, err
 	}
@@ -215,19 +224,7 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 		return nil, scenarioFault("subjects.json", "it holds no subject")
 	}
 	for i, sub := range subjects {
-		fault := subjectFault(sub.Point, sub.Now)
-		switch {
-		case fault != "":
-		case !hasWord(sub.Commit):
-			fault = "it sets a commit of no letter and no digit, which names no commit"
-		case sub.Branch != "" && !hasWord(sub.Branch):
-			fault = "it sets a branch of no letter and no digit, which names no branch"
-		case sub.Deploy != "" && !hasWord(sub.Deploy):
-			fault = "it sets a deploy of no letter and no digit, which names no deploy"
-		case sub.GraphTx != "" && !hasWord(sub.GraphTx):
-			fault = "it sets a graph_tx of no letter and no digit, which names no transaction of the graph"
-		}
-		if fault != "" {
+		if fault := subjectFault(sub.Point, sub.Now); fault != "" {
 			return nil, scenarioFault("subjects.json", "subject %d: %s", i+1, fault)
 		}
 	}
@@ -376,9 +373,9 @@ func readJobRuns(fsys fs.FS) ([]JobRun, error) {
 	return runs, nil
 }
 
-// readUnits reads units.json, and refuses a unit that unitsFault refuses, and one id on two units.
-// readEach refuses a unit that does not set serves, needs or waits_on, since one that does not
-// would read as one with none, which hides a cycle of waits (R29); [] is none.
+// readUnits reads units.json, and refuses units that unitsFault refuses, among them a unit that
+// does not set serves, needs or waits_on, since one that does not would read as one with none,
+// which hides a cycle of waits (R29), [] being none; and one id on two units.
 func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	units, err := readEach[Unit](fsys, "units.json", "unit", unitForm)
 	if err != nil {
@@ -420,9 +417,8 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 }
 
 // readEach reads the JSON array of the file name, each element a T in the form form as decodeJSON
-// reads it, so the file is in the form "[<form>, …]", and refuses an element that does not set a
-// member that T marks present (unsetFault); a fault of an element names it as "<noun> <n>", from 1,
-// and a place in it from the element.
+// reads it, so the file is in the form "[<form>, …]"; a fault of an element names it as
+// "<noun> <n>", from 1, and a place in it from the element.
 func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 	var raw []jsontext.Value
 	if err := readJSON(fsys, name, &raw, "["+form+", …]"); err != nil {
@@ -430,11 +426,7 @@ func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 	}
 	all := make([]T, len(raw))
 	for i, element := range raw {
-		err := decodeJSON(element, &all[i], form)
-		if err == nil {
-			err = unsetFault(element, &all[i], form)
-		}
-		if err != nil {
+		if err := decodeJSON(element, &all[i], form); err != nil {
 			return nil, scenarioFault(name, "%s %d: %w", noun, i+1, err)
 		}
 	}

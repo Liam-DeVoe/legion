@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 	"time"
@@ -46,10 +47,10 @@ type Result struct {
 	Deploy  string `json:"deploy" input:"zero: it read no deploy; fault refuses that for a run of a check of production"`
 	GraphTx string `json:"graph_tx" input:"zero: it read no transaction; fault refuses that for a run of a check of the graph"`
 	// Job and Leg are the job that reported the result and its matrix values, "" for none (R12), and
-	// Attempt the attempt of the job's run.
-	Job     string `json:"job" input:"zero: no job reported it; fault refuses that for a run of a program check that names a job"`
-	Leg     string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give, so a file sets it"`
-	Attempt int    `json:"attempt" input:"zero: no rule reads it"`
+	// Attempt the attempt of the job's run. Leg is nil when it is not set, since "" is a leg too.
+	Job     string  `json:"job" input:"zero: no job reported it; fault refuses that for a run of a program check that names a job"`
+	Leg     *string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give"`
+	Attempt int     `json:"attempt" input:"zero: no rule reads it"`
 	// At is Dispatch's record time and Seq its order of record, from 1: (At, Seq) orders results.
 	At  time.Time `json:"at" input:"nonzero"`
 	Seq int64     `json:"seq" input:"nonzero"`
@@ -72,16 +73,18 @@ type Result struct {
 // since the zero value of such a member would read as a real one and hide a failure (R7: "A pass
 // and a failure on one such subject and one procedure make the state unknown"; "a later failure
 // cancels an earlier pass"): a result with no at would be older than every approval, one with no
-// seq the first record of its at, and one with no subject, no job or no test commit would count
-// nowhere. Every result sets its check, the digest of the text that ran, a kind and an outcome of
-// the format, at most one subject, at, and seq from 1. procedure is the text of the check that ran,
-// when the caller holds it, and nil when not; with it, r also sets what that text makes the judge
-// read: a run, and a failing example of a check of the code, the subject of the check's kind
-// (commit, deploy or graph_tx), also a run of a check of the graph that could not run, which names
-// the transaction that it tried to read (R13: a query "reads the graph at one transaction"); a run
-// of a program check that names a job, the job; and a result of a program check of production or
-// of the graph, test_commit. A failing example of a query or an agent of production or of the graph
-// names no subject, since each one counts (CheckStates, step 7).
+// seq the first record of its at, one with no leg a result of no matrix, and one with no subject, no
+// job or no test commit would count nowhere, as would one whose check, commit, deploy, graph_tx,
+// job, leg or test_commit names nothing (nameFault). Every result sets its check, the digest of
+// the text that ran, a kind and an outcome of the format, at most one subject, its leg, at, and seq
+// from 1. procedure is the text of the check that ran, when the caller holds it, and nil when not;
+// with it, r also sets what that text makes the judge read: a run, and a failing example of a check
+// of the code, the subject of the check's kind (commit, deploy or graph_tx), also a run of a check
+// of the graph that could not run, which names the transaction that it tried to read (R13: a query
+// "reads the graph at one transaction"); a run of a program check that names a job, the job; and a
+// result of a program check of production or of the graph, test_commit. A failing example of a
+// query or an agent of production or of the graph names no subject, since each one counts
+// (CheckStates, step 7).
 func (r Result) fault(procedure *Check) string {
 	switch named := namedSubjects(r); {
 	case r.Check == "":
@@ -94,12 +97,17 @@ func (r Result) fault(procedure *Check) string {
 		return fmt.Sprintf("outcome %s is not pass, fail or could_not_run", quoted(string(r.Outcome)))
 	case len(named) > 1:
 		return fmt.Sprintf("it names the subjects %s; a result reads one subject", strings.Join(named, " and "))
+	case r.Leg == nil:
+		return `it sets no leg; a result of no matrix sets ""`
 	case r.At.IsZero():
 		return "it sets no at"
 	case r.Seq < 1:
 		return "it sets no seq"
-	case procedure == nil:
-		return ""
+	}
+	if fault := nameFault(namedMember{"check", "check", r.Check}, namedMember{"commit", "commit", r.Commit},
+		namedMember{"deploy", "deploy", r.Deploy}, namedMember{"graph_tx", "transaction of the graph", r.GraphTx},
+		namedMember{"job", "job", r.Job}, namedMember{"leg", "leg", *r.Leg}, namedMember{"test_commit", "commit", r.TestCommit}); fault != "" || procedure == nil {
+		return fault
 	}
 	c, run := *procedure, r.Kind == ResultRun
 	switch {
@@ -149,26 +157,78 @@ func sameRecordFault(results []Result) string {
 
 // JobRun is one run of a CI job at a commit, in one leg of its matrix ("" for none, the form of
 // Result.Leg), and whether it ended (R9: "after a run of its job ends"). A run that has not ended is
-// no silent leg and no pass: the check reads unknown until its leg reports. Its JSON names are the
-// form of jobs.json.
+// no silent leg and no pass: the check reads unknown until its leg reports. Leg and Ended are nil
+// when they are not set, since "" and false are values too. Its JSON names are the form of
+// jobs.json.
 type JobRun struct {
-	Job    string `json:"job" input:"nonzero"`
-	Leg    string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give, so a file sets it"`
-	Commit string `json:"commit" input:"nonzero"`
-	Ended  bool   `json:"ended" input:"present: false is a run that has not ended, so a file sets it"`
+	Job    string  `json:"job" input:"nonzero"`
+	Leg    *string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give"`
+	Commit string  `json:"commit" input:"nonzero"`
+	Ended  *bool   `json:"ended" input:"present: false is a run that has not ended"`
 }
 
 // fault is the first member of r that the derivation reads and that r does not set, as a refusal
-// names it, and "" when r sets each: the job and the commit, since a run of no job or at no commit
-// would hide a leg of the check's job that ended with no result (R9: "When a check has no result
-// that counts after a run of its job ends, it reads unknown"). Leg "" is the leg of no matrix. The
-// reader of jobs.json and the entry of the derivation both refuse a job run by it.
+// names it, and "" when r sets each: the job, the leg, the commit and whether it ended, since a run
+// of no job or at no commit would hide a leg of the check's job that ended with no result (R9:
+// "When a check has no result that counts after a run of its job ends, it reads unknown"), one with
+// no leg would read as the leg of no matrix, and one with no ended as a run that has not ended;
+// and a job, a leg or a commit that names nothing (nameFault), which would hide that leg too. Leg
+// "" is the leg of no matrix. The reader of jobs.json and the entry of the derivation both refuse a
+// job run by it.
 func (r JobRun) fault() string {
 	switch {
 	case r.Job == "":
 		return "it sets no job"
+	case r.Leg == nil:
+		return `it sets no leg; a run of no matrix sets ""`
 	case r.Commit == "":
 		return "it sets no commit"
+	case r.Ended == nil:
+		return "it sets no ended; a run that has not ended sets false"
 	}
-	return ""
+	return nameFault(namedMember{"job", "job", r.Job}, namedMember{"leg", "leg", *r.Leg}, namedMember{"commit", "commit", r.Commit})
+}
+
+// legFault is the refusal of the first record that says that one job at one commit has legs and
+// has none, and "" when there is none, with whether that record is a job run. The records of a job
+// at a commit are its runs there, in their order, and then its run results, in their order, at the
+// commit where the job ran, the result's TestCommit when it sets one, else its Commit; the record
+// refused is the first whose leg is "" where the first record of its job at its commit names a
+// leg, or that names a leg where that record's is "". "" is the leg of no matrix, and one job at one
+// commit has legs or it has none (R12: "Each leg of a matrix reports its own result, and no leg
+// replaces the result of another"), so such records say two things that cannot both be true: a run
+// result of the leg "" at a commit where the job had legs would answer a run of no matrix wherever
+// the results of that commit count, and hide that the run ended with no result (R9: "When a check
+// has no result that counts after a run of its job ends, it reads unknown"). A state reads no leg
+// of a failing example, so its leg is no part of the rule. Each run and each result is
+// whole (JobRun.fault, Result.fault). The reader of a scenario and the entry of the derivation both
+// refuse by it.
+func legFault(runs []JobRun, results []Result) (fault string, ofRun bool) {
+	type at struct{ job, commit string }
+	type record struct{ name, leg string }
+	first := map[at]record{} // the first record of each job at each commit
+	differs := func(name, job, commit, leg string) string {
+		f, seen := first[at{job, commit}]
+		switch {
+		case !seen:
+			first[at{job, commit}] = record{name, leg}
+		case (leg == "") != (f.leg == ""):
+			return fmt.Sprintf(`%s: it sets the leg %s, and %s of its job %s at the commit %s sets the leg %s; one job at one commit has legs or it has none, and "" is the leg of no matrix`,
+				name, quoted(leg), f.name, quoted(job), quoted(commit), quoted(f.leg))
+		}
+		return ""
+	}
+	for i, r := range runs {
+		if fault := differs(fmt.Sprintf("job run %d", i+1), r.Job, r.Commit, *r.Leg); fault != "" {
+			return fault, true
+		}
+	}
+	for i, r := range results {
+		if commit := cmp.Or(r.TestCommit, r.Commit); r.Kind == ResultRun && r.Job != "" && commit != "" {
+			if fault := differs(fmt.Sprintf("result %d", i+1), r.Job, commit, *r.Leg); fault != "" {
+				return fault, false
+			}
+		}
+	}
+	return "", false
 }

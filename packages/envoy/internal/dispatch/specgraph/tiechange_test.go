@@ -11,9 +11,9 @@ type historyStub struct {
 	asks  int
 }
 
-func (h *historyStub) Changed(_, _ string) ([]string, bool) {
+func (h *historyStub) Changed(_, _ string) ([]string, bool, error) {
 	h.asks++
-	return h.paths, true
+	return h.paths, true, nil
 }
 
 // R8: a result at one commit counts at another only when the check's tie is known at both and no
