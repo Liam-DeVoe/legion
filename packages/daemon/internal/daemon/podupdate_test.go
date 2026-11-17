@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -841,6 +842,66 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	}
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("at %s, an hour past the bound, ReplacePod was called %d times under an operator's suspension", rig.clock.Now(), len(calls))
+	}
+}
+
+// A round the controller's suspension of one claim and an architect's suspension of another hold
+// past the bound is told once, at the bound, and the notice names each holder and who resumes
+// each claim: the controller reads it, and the hold of its own and the architect's are resumes
+// it makes itself, where a notice that called both the operator's would send it to the operator
+// with a finding ask. Nothing in it says "operator", since no operator holds either claim. The
+// walk's line names each holder the same way.
+//
+// The negative control is the notice's old text, "An operator suspended … until the operator
+// resumes each of them" for every hold, which this test refuses.
+func TestPodUpdateNamesTheControllersAndAnArchitectsHoldInTheNotice(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
+			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByController},
+		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateSuspended, session: true,
+			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByArchitect},
+		readyWorker(claim.RoleTester),
+	)
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleReviewer, podUpdateRound)
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.clockAt(podUpdateBound)
+	rig.tick()
+
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("at the bound %s ReplacePod was called %d times under the controller's and an architect's holds", podUpdateBound, len(calls))
+	}
+	notices := rig.notices()
+	if len(notices) != 1 {
+		t.Fatalf("at the bound %s the controller was told %d times, want once", podUpdateBound, len(notices))
+	}
+	reason := notices[0].Reason
+	for _, want := range []string{
+		"The controller suspended implementer (suspended). The controller can resume it.",
+		"An architect suspended reviewer (suspended). An architect that owns the issue, or the controller, can resume it.",
+		"The daemon does not replace the pod until a resume lifts each of these suspensions.",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the notice says %q, want it to say %q", reason, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(reason), "operator") {
+		t.Errorf("the notice says %q, which names the operator for holds the controller and an architect placed", reason)
+	}
+	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleReviewer: false, claim.RoleTester: true})
+	wantNoRefusedNotice(t, rig)
+
+	lines := loggedLines(t, rig.logs.String(), "a suspension that only a resume lifts holds this update round")
+	if len(lines) == 0 {
+		t.Fatalf("the walk logged no line of the hold, want one naming each holder")
+	}
+	held, _ := lines[0]["held"].([]any)
+	if want := []any{"the controller's suspension holds implementer", "an architect's suspension holds reviewer"}; !slices.Equal(held, want) {
+		t.Errorf("the walk's line names the holds %v, want %v", held, want)
 	}
 }
 

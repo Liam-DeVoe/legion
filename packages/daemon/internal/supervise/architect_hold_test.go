@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// The ranks run released, daemon, architect, controller, operator, weakest first: an architect's
-// suspension outranks the daemon's and a release's, and ranks under the controller's, whose
-// suspension is project-wide work a tree's architect must not undo, and under the operator's.
-func TestSuspensionRankPutsTheArchitectUnderTheController(t *testing.T) {
-	ordered := []SuspendSource{SuspendedByReleased, SuspendedByDaemon, SuspendedByArchitect, SuspendedByController, SuspendedByOperator}
+// The ranks run released, architect, daemon, controller, operator, weakest first: an architect's
+// suspension outranks a release's and ranks under the daemon's, which is a park, a linger, a close
+// or a carry of the claim's issue, under the controller's, whose suspension is project-wide work a
+// tree's architect must not undo, and under the operator's.
+func TestSuspensionRankPutsTheArchitectUnderTheDaemonAndTheController(t *testing.T) {
+	ordered := []SuspendSource{SuspendedByReleased, SuspendedByArchitect, SuspendedByDaemon, SuspendedByController, SuspendedByOperator}
 	for i, source := range ordered {
 		if got, want := suspensionRank(source), i+1; got != want {
 			t.Errorf("suspensionRank(%q) = %d, want %d", source, got, want)
@@ -97,8 +98,9 @@ func TestAnArchitectsResumeLiftsOnlyAnArchitectsSuspension(t *testing.T) {
 // The controller's suspension outranks an architect's: an architect's suspend of a claim the
 // controller holds, landed or held for the agent's turn, is refused (ErrControllerHolds) and one
 // the operator holds is refused too (ErrOperatorHolds); the controller's suspend of a claim an
-// architect holds takes it over, landed or held, so an architect's resume lifts it no more. An
-// architect's suspend takes over a release's, which ranks under it, and its resume then lifts it.
+// architect holds takes it over, landed or held, so an architect's resume lifts it no more, and so
+// does the daemon's suspend of an architect's held suspension. An architect's suspend takes over a
+// release's, which ranks under it, and its resume then lifts it.
 func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 	for _, tc := range []struct {
 		holder SuspendSource
@@ -171,8 +173,8 @@ func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the tree lingers", By: SuspendedByDaemon}); !errors.Is(err, ErrSuspendHeld) {
 			t.Fatalf("the daemon's suspend of a claim in a turn returned %v, want it held", err)
 		}
-		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByArchitect {
-			t.Fatalf("the claim holds a suspension %t by %q, want the architect's still", c.SuspensionHeld, c.SuspensionHeldBy)
+		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByDaemon {
+			t.Fatalf("the claim holds a suspension %t by %q, want the daemon's, which took the architect's over", c.SuspensionHeld, c.SuspensionHeldBy)
 		}
 	})
 
@@ -188,13 +190,15 @@ func TestTheControllersSuspensionOutranksAnArchitects(t *testing.T) {
 	})
 }
 
-// An architect does not take over the daemon's own suspension, though it outranks it, nor end the
+// An architect does not take over the daemon's own suspension, which outranks it, nor end the
 // claim under it: its suspend or stop of a claim the daemon parked, lingers or closed, a root's
 // exit suspended, or one suspended before sources existed is refused
 // (ErrNotTheArchitectsSuspension) with nothing of the claim changed, and so is either over the
 // daemon's suspension held for the agent's turn. Taken over, the claim would be the architect's,
 // whose resume would restart a worker on a parked or closed issue, and a stop would retire it for
-// a retry to relaunch. The refused suspend cancels no start in flight either (Handle).
+// a retry to relaunch. The refused suspend cancels no start in flight either (Handle). The other
+// order, an architect's suspension the daemon's then reaches, is
+// TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt.
 func TestAnArchitectDoesNotTakeOverTheDaemonsSuspension(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -266,6 +270,89 @@ func TestAnArchitectDoesNotTakeOverTheDaemonsSuspension(t *testing.T) {
 			t.Fatalf("the claim is %s holding a suspension %t by %q, want it working under the daemon's", c.State, c.SuspensionHeld, c.SuspensionHeldBy)
 		}
 	})
+}
+
+// The daemon's own suspension takes over an architect's placed before it, landed or held for the
+// agent's turn: an architect suspends a worker of a child, and then the child is parked, its tree
+// lingers or closes, or it is carried to another tree. The claim is the daemon's from then on, so
+// every rule that keeps an architect off the daemon's suspension applies, on each path that would
+// start the worker on the parked issue: the architect's resume is refused, and so is its stop,
+// which its retry would follow; the retry then finds the claim still suspended, or still in its
+// turn, and is refused as the retry of any claim that has not failed or retired is. The claim is
+// left suspended by the daemon with no session resumed, and the daemon's own rules start it
+// again, as they start any worker the workflow stopped (RequestRuleResume).
+//
+// The negative control is suspensionRank with the architect above the daemon, as it stood, and
+// holdSuspension's takeover with the daemon left out: the claim then stays the architect's, whose
+// resume starts the worker on the parked issue, and whose stop retires it for the retry to start.
+func TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt(t *testing.T) {
+	resumeIsRefused := func(h *harness) {
+		h.t.Helper()
+		var refused *RefusedError
+		if err := h.handle(RequestResume{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) || !errors.Is(err, ErrNotTheArchitectsSuspension) {
+			h.t.Errorf("the architect's resume after the park returned %v, want a refusal naming ErrNotTheArchitectsSuspension", err)
+		}
+	}
+	stopThenRetryIsRefused := func(h *harness) {
+		h.t.Helper()
+		var refused *RefusedError
+		if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) || !errors.Is(err, ErrNotTheArchitectsSuspension) {
+			h.t.Errorf("the architect's stop after the park returned %v, want a refusal naming ErrNotTheArchitectsSuspension", err)
+		}
+		if err := h.handle(RequestOperatorRetry{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) {
+			h.t.Errorf("the architect's retry after its stop returned %v, want the refusal of a retry of a claim that has not failed or retired", err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		inATurn bool
+		ask     func(h *harness)
+	}{
+		{"landed: the architect's resume", false, resumeIsRefused},
+		{"landed: the architect's stop, then its retry", false, stopThenRetryIsRefused},
+		{"held for the agent's turn: the architect's stop, then its retry", true, stopThenRetryIsRefused},
+		{"held for the agent's turn: the architect's resume once the turn ends", true, func(h *harness) {
+			h.must(StreamTurnEnd{Claim: testToken})
+			resumeIsRefused(h)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			if tc.inATurn {
+				h.reach(StateWorking)
+				if err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect}); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("the architect's suspend of a claim in a turn returned %v, want it held", err)
+				}
+				if err := h.handle(RequestSuspend{Claim: testToken, Reason: "LEGION-209 is parked", By: SuspendedByDaemon}); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("the park's suspend of a claim in a turn returned %v, want it held", err)
+				}
+				if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByDaemon {
+					t.Errorf("after the park the claim holds a suspension %t by %q, want the daemon's", c.SuspensionHeld, c.SuspensionHeldBy)
+				}
+			} else {
+				suspendedBy(h, SuspendedByArchitect)
+				h.must(RequestSuspend{Claim: testToken, Reason: "LEGION-209 is parked", By: SuspendedByDaemon})
+				if got := h.store.load(testToken).SuspendedBy; got != SuspendedByDaemon {
+					t.Errorf("after the park the store records the claim suspended by %q, want the daemon", got)
+				}
+			}
+			resumes := len(h.calls("Resume"))
+
+			tc.ask(h)
+			if h.state() == StateWorking {
+				h.must(StreamTurnEnd{Claim: testToken})
+			}
+
+			if got := h.store.load(testToken); got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon {
+				t.Fatalf("after the architect's requests the store records %s by %q, want suspended by the daemon", got.State, got.SuspendedBy)
+			}
+			if got := len(h.calls("Resume")); got != resumes {
+				t.Fatalf("the architect's requests resumed the session %d times, want none", got-resumes)
+			}
+			h.must(RequestRuleResume{Claim: testToken, Reason: "LEGION-209 is back in its phase"})
+			h.wantState(StateLaunching)
+		})
+	}
 }
 
 // An architect's stop of a claim a suspension outranking it holds, landed or held for the agent's

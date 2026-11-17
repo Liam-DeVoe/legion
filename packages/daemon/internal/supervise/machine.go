@@ -112,11 +112,13 @@ const (
 	// holds (suspensionRank, ErrControllerHolds, ErrOperatorHolds). A controller's suspension is
 	// project-wide work — a deploy, a merge hold, a stuck pod — which a tree's architect must not
 	// undo. Nor does an architect take over or lift the daemon's own suspension — a park, a linger,
-	// a close, a root's exit — though it outranks it (ErrNotTheArchitectsSuspension); a released
-	// claim, which any wake brings back, its suspension takes over.
+	// a close, a carry, a root's exit — which outranks it and takes an architect's suspension over
+	// where it reaches one (ErrNotTheArchitectsSuspension, suspendedAgain); a released claim, which
+	// any wake brings back, its suspension takes over.
 	SuspendedByArchitect SuspendSource = "architect"
 	// SuspendedByDaemon: the workflow's own suspend — the issue left the workflow, or its tree
-	// lingers.
+	// lingers. It takes over an architect's suspension of the claim, held or landed, so the claim
+	// is the daemon's own rules' to start again rather than the architect's (suspensionRank).
 	SuspendedByDaemon SuspendSource = "daemon"
 	// SuspendedByExit: the tree root's agent reported its own exit, which suspends a root.
 	SuspendedByExit SuspendSource = "exit"
@@ -705,8 +707,9 @@ func (c Claim) Released() bool {
 
 // RuleHolds is whether a suspension that holds blocks a daemon rule: the claim is suspended by the
 // operator, the controller or an architect, or such a suspension is held for its agent's turn.
+// Holder says which of the three.
 func (c Claim) RuleHolds() bool {
-	return c.holder().Holds()
+	return c.Holder().Holds()
 }
 
 // HeldAgainst is the refusal of a request the project's controller or an architect asks (by) that
@@ -721,7 +724,7 @@ func (c Claim) HeldAgainst(by SuspendSource) error {
 	if by != SuspendedByController && by != SuspendedByArchitect {
 		return nil
 	}
-	switch holder := c.holder(); {
+	switch holder := c.Holder(); {
 	case !holder.Holds() || suspensionRank(holder) <= suspensionRank(by):
 		return nil
 	case holder == SuspendedByOperator:
@@ -752,11 +755,11 @@ func (c Claim) ResumeRefusal(by SuspendSource) error {
 // it may be asked. A suspension outranking the asker refuses it as it refuses every request of that
 // asker (HeldAgainst). An architect's suspension or stop of a claim the daemon's own suspension
 // holds, landed or held for the agent's turn, is refused too (ErrNotTheArchitectsSuspension,
-// daemonSuspended): a suspension taken over would record the claim as the architect's, which the
-// architect's resume would then lift, and a stop would retire the claim for a retry to relaunch.
-// Either restarts a worker on an issue the daemon parked, lingers or closed. A released claim is
-// no such claim: any wake brings it back, so an architect's suspension takes it over and holds
-// it, and an architect's stop retires it.
+// daemonSuspended): that suspension outranks the architect's (suspensionRank), so a suspension
+// reaches nothing of it, and a stop would retire the claim for a retry to relaunch, which
+// restarts a worker on an issue the daemon parked, lingers or closed. A released claim is no such
+// claim: any wake brings it back, so an architect's suspension takes it over and holds it, and an
+// architect's stop retires it.
 func (c Claim) StopOrSuspendRefusal(by SuspendSource) error {
 	if err := c.HeldAgainst(by); err != nil {
 		return err
@@ -770,12 +773,14 @@ func (c Claim) StopOrSuspendRefusal(by SuspendSource) error {
 // daemonSuspended is whether the suspension over the claim is one the daemon's own rules placed
 // and lift (SuspendSource.daemonsOwn), landed or held for the agent's turn.
 func (c Claim) daemonSuspended() bool {
-	return (c.SuspensionHeld || c.State == StateSuspended) && c.holder().daemonsOwn()
+	return (c.SuspensionHeld || c.State == StateSuspended) && c.Holder().daemonsOwn()
 }
 
-// holder is who the suspension over the claim is for: the held one's asker while one is held, the
-// recorded source while the claim is suspended, and "" otherwise.
-func (c Claim) holder() SuspendSource {
+// Holder is who the suspension over the claim is for: the held one's asker while one is held, the
+// recorded source while the claim is suspended, and "" otherwise. It is exported for the readers
+// that name a hold to whoever must lift it (the daemon's pod-update notice, a production check's
+// look), so each names the holder this machine decides by.
+func (c Claim) Holder() SuspendSource {
 	if c.SuspensionHeld {
 		return c.SuspensionHeldBy
 	}
@@ -790,7 +795,7 @@ func (c Claim) holder() SuspendSource {
 // operator's for the controller's, and an architect's, the controller's or the operator's for an
 // architect's.
 func (c Claim) RuleHoldError() error {
-	switch c.holder() {
+	switch c.Holder() {
 	case SuspendedByArchitect:
 		return fmt.Errorf("the claim is suspended by %s; it waits for an architect's, the controller's or the operator's resume: %w", SuspendedByArchitect, ErrHeldByArchitect)
 	case SuspendedByController:

@@ -413,7 +413,9 @@ type RequestSuspend struct {
 // SuspendedByArchitect for an architect that owns the claim's issue, through the same tool, whose
 // resume lifts an architect's suspension alone. Each is refused what it may not lift
 // (Claim.ResumeRefusal: ErrOperatorHolds, ErrControllerHolds, ErrNotTheArchitectsSuspension),
-// since no agent undoes a decision of one that outranks it.
+// since no agent undoes a decision of one that outranks it. The wake pacing reads it too: the
+// operator's resume is one a person waits on and is let through unpaced, and the controller's and
+// an architect's take their turn in it (exemptWake).
 type RequestResume struct {
 	Claim claim.Token
 	By    SuspendSource
@@ -494,6 +496,13 @@ type RequestRetry struct {
 // retry its own way. FreshSession is `legion claims retry --fresh-session`, as RequestRetry takes
 // it.
 //
+// By is who asks, and every retry names it (askedBy): SuspendedByOperator for the operator's own
+// retry and its fresh session's (api's retryClaim), and SuspendedByController or
+// SuspendedByArchitect for the retry and the fresh session of the controller or an architect
+// through the claim door (api's claimRetry, claimFreshSession). The wake pacing reads it: the
+// operator's retry is one a person waits on and is let through unpaced, and every other caller's
+// takes its turn (exemptWake).
+//
 // It reaches a retired claim as well as a failed one. `legion claims stop` retires a claim, and
 // while the operator's retry refused that state an operator who stopped a worker could start it
 // again only by editing the claims store with the daemon stopped; that is the recovery
@@ -503,6 +512,7 @@ type RequestRetry struct {
 type RequestOperatorRetry struct {
 	Claim        claim.Token
 	FreshSession bool
+	By           SuspendSource
 }
 
 // RequestForgetSession drops the named recorded session of a claim that runs nothing — queued,
@@ -2504,13 +2514,17 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // whose issue works no phase of its role, which the route has already established before it
 // reaches the machine (api's retryStart starts the phase itself for every other one). The
 // daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's role
-// never changes, so the refusal cannot race the decision it guards.
+// never changes, so the refusal cannot race the decision it guards. The retry names who asks
+// (RequestOperatorRetry.By, askedBy), which is what the wake pacing reads (exemptWake).
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
 // (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
 // launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
 // because resuming a session whose turns the provider refused would be refused again.
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
+	if err := askedBy(m, "retry", ev.(RequestOperatorRetry).By); err != nil {
+		return err
+	}
 	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",
 			Err: fmt.Errorf("%w; the daemon's controller keeper retries the controller", ErrRetryNotTheController)}
@@ -2610,12 +2624,14 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	return m.persist(ctx)
 }
 
-// askedBy refuses a resume, a stop or a forget of the session (RequestResume.By, RequestStop.By,
-// RequestForgetSession.By) that names a source other than the three that ask one: the operator,
-// the controller and an architect. The source decides which suspensions refuse the request
-// (Claim.ResumeRefusal, Claim.StopOrSuspendRefusal), so a request naming none, or one of the
-// daemon's own, is a wiring error: it is refused before anything is asked, rather than read as the
-// operator's, whom nothing refuses, as suspendRequest refuses a suspension that names no source.
+// askedBy refuses a resume, a stop, a forget of the session or an operator's retry
+// (RequestResume.By, RequestStop.By, RequestForgetSession.By, RequestOperatorRetry.By) that names a
+// source other than the three that ask one: the operator, the controller and an architect. The
+// source decides which suspensions refuse the request (Claim.ResumeRefusal,
+// Claim.StopOrSuspendRefusal) and whether the wake pacing lets its launch through (exemptWake), so
+// a request naming none, or one of the daemon's own, is a wiring error: it is refused before
+// anything is asked, rather than read as the operator's, whom nothing refuses, as suspendRequest
+// refuses a suspension that names no source.
 func askedBy(m *Machine, request string, by SuspendSource) error {
 	switch by {
 	case SuspendedByOperator, SuspendedByController, SuspendedByArchitect:

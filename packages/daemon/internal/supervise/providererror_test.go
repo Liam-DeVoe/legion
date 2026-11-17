@@ -408,7 +408,7 @@ func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 
 	h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 	h.wantState(StateRetired)
-	h.must(RequestOperatorRetry{Claim: testToken})
+	h.must(RequestOperatorRetry{Claim: testToken, By: SuspendedByOperator})
 
 	err := h.handle(RequestDeliver{Claim: testToken, Task: "Continue the issue whose provider is overloaded.",
 		Phase: phase.Implementing, Generation: 8, Entry: 2})
@@ -607,7 +607,7 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 	}
 	h.wantPrompts(1)
 
-	h.must(RequestOperatorRetry{Claim: h.token})
+	h.must(RequestOperatorRetry{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 
 	again := h.wantPrompts(2)[1]

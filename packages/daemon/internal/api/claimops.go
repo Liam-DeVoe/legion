@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -182,8 +185,10 @@ func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
 // here as one the controller stopped is. A claim a suspension above the caller holds, landed or
 // held for its turn, is refused by the door before anything is asked, as every operation of the
 // door is (claimDoor). A claim stored working is refused as a claim in a turn
-// (refuseClaimInATurn); every other refusal is the effect's own, in the words the operator's door
-// gives it.
+// (refuseClaimInATurn), and an architect's retry of a claim whose issue is out of the workflow
+// or whose tree lingers is refused as work the daemon stopped (ISSUE_OUT_OF_WORKFLOW,
+// refuseStartOfStoppedWork); every other refusal is the effect's own, in the words the
+// operator's door gives it.
 func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.claimDoor(w, r, retryOp)
 	if !ok {
@@ -193,11 +198,107 @@ func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 		refuseClaimInATurn(w, target.token, retryOp)
 		return
 	}
-	status, ok := s.retryStart(w, r, target.machine, target.token, false)
+	if s.refuseStartOfStoppedWork(w, r, target, retryOp) {
+		return
+	}
+	status, ok := s.retryStart(w, r, target.machine, target.token, false, target.by)
 	if !ok {
 		return
 	}
 	s.answerClaimOperation(w, target, retryOp.did, status)
+}
+
+// issueOutOfWorkflow is the refusal of an architect's start of a claim whose issue's work the
+// daemon has stopped (refuseStartOfStoppedWork), 409. It is no sibling of SUSPENDED_BY_DAEMON's,
+// since no suspension stands over the claim it answers: the claim failed or a stop retired it,
+// and what stands in the way is the issue's own record, which the sentence names.
+const issueOutOfWorkflow = "ISSUE_OUT_OF_WORKFLOW"
+
+// refuseStartOfStoppedWork refuses an architect's retry or fresh session (op) of a claim that
+// failed or that a stop retired while the claim's issue is out of the workflow or its tree
+// lingers — the issue parked or closed, or its tree's root parked, closed or signed off — and
+// reports whether it answered. It closes the one order the daemon's own suspension does not
+// reach: an architect stops a worker, which retires the claim, and the issue is parked after. A
+// park suspends no retired claim (the outbox's suspend row), so nothing of the claim records
+// that the work stopped, and the architect's retry would start the worker on the parked issue.
+// The rule is the one every path that would bring an issue's pod back reads
+// (pods.InWorkflowNotLingering, over the issue and its tree's root, as the outbox's wake of a
+// released pod reads it): an issue whose tree has stopped being the workflow's is the daemon's
+// own rules' to start again, never an architect's. The controller's start and the operator's
+// are not refused, as neither is refused the daemon's own suspension.
+//
+// The records are read at the request, and no lock holds a park off between this read and the
+// start. None is needed: a park that lands after the read sends its suspension to the claim the
+// retry started, and the daemon's suspension takes over whatever suspension of an architect's it
+// meets there (supervise's suspensionRank), so that claim is the daemon's from then on and only
+// the daemon's own rules start it again.
+//
+// A claim in any other state is left to the operation's own refusals: a suspended claim's is its
+// suspension's (SUSPENDED_BY_DAEMON for the daemon's own), and a live one is the park's
+// suspension's to reach.
+func (s *server) refuseStartOfStoppedWork(w http.ResponseWriter, r *http.Request, target claimTarget, op claimOp) bool {
+	state := target.machine.View().State
+	if target.by != supervise.SuspendedByArchitect || !failedOrRetired(state) {
+		return false
+	}
+	issue, root := target.recorded, &target.recorded
+	if issue.Key != issue.Tree {
+		read, err := s.recordedIssue(r.Context(), issue.Tree)
+		if err != nil {
+			s.logRequestFailure(r, err, "api: read the root of the tree of a claim an architect would start", "claim", target.token, "tree", issue.Tree)
+			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the root of "+issue.Key+"'s tree")
+			return true
+		}
+		root = read
+	}
+	if root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+		return false
+	}
+	writeFailure(w, http.StatusConflict, issueOutOfWorkflow, fmt.Sprintf(
+		"%s is %s, and the daemon has stopped its issue's work: %s. %s by %s would start the claim on that stopped work, so it %s. The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and %s by the controller or the operator reaches the claim meanwhile",
+		target.token, state, stoppedWork(issue, root), capitalized(op.name), callerName(target.by), nothingChanged, op.name))
+	return true
+}
+
+// stoppedWork names what of issue and of its tree's root (nil where the daemon records none)
+// holds the issue's work stopped, in the two halves pods.InWorkflowNotLingering reads of each:
+// out of the workflow by status or phase, and lingering after a close.
+func stoppedWork(issue record.Issue, root *record.Issue) string {
+	var why []string
+	standings := []record.Issue{issue}
+	switch {
+	case root == nil:
+		why = append(why, "the root "+issue.Tree+" of its tree is not recorded")
+	case root.Key != issue.Key:
+		standings = append(standings, *root)
+	}
+	for _, of := range standings {
+		var parts []string
+		if !record.InWorkflow(of) {
+			parts = append(parts, fmt.Sprintf("stands at status %s and phase %s, out of the workflow", of.Status, of.Phase))
+		}
+		if of.Lingers() {
+			parts = append(parts, "lingers after it left the workflow")
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		name := of.Key
+		if of.Key != issue.Key {
+			name = "its tree's root " + of.Key
+		}
+		why = append(why, name+" "+strings.Join(parts, " and "))
+	}
+	return strings.Join(why, ", and ")
+}
+
+// capitalized is sentence with its first letter upper-case, for an operation's name (claimOp.name)
+// that opens a sentence.
+func capitalized(sentence string) string {
+	if sentence == "" {
+		return ""
+	}
+	return strings.ToUpper(sentence[:1]) + sentence[1:]
 }
 
 // claimEventOperation is the claim door's one operator request a single event to the claim's

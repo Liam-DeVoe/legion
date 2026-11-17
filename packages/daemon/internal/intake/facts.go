@@ -1228,11 +1228,13 @@ type CheckWakeDue struct {
 func (CheckWakeDue) isFact() {}
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
-// `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
-// outbox met an operator's suspension on) or `claim failed` (the implementer's claim failed in
-// the look). Look names the look, so a row of a look already ended changes nothing, and OpenedAt
-// the check instance (its OpenedAt), so a row of a check a later merge of the same issue replaced
-// — whose looks count from one again — changes nothing either; a zero OpenedAt names none.
+// `look bound` (the check_look row due at the look's bound), `operator hold`, `controller hold`
+// or `architect hold` (a check start the outbox met a suspension of the check's role on, which
+// holds against every rule, named by whose it is) or `claim failed` (the implementer's claim
+// failed in the look). Look names the look, so a row of a look already ended changes nothing,
+// and OpenedAt the check instance (its OpenedAt), so a row of a check a later merge of the same
+// issue replaced — whose looks count from one again — changes nothing either; a zero OpenedAt
+// names none.
 type CheckLookEnded struct {
 	Issue    string
 	Look     int

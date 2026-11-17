@@ -346,7 +346,7 @@ func fenced(ev Event, c Claim) Event {
 	case RequestRetry:
 		return RequestRetry{Claim: c.Token}
 	case RequestOperatorRetry:
-		return RequestOperatorRetry{Claim: c.Token}
+		return RequestOperatorRetry{Claim: c.Token, By: SuspendedByOperator}
 	case RequestForgetSession:
 		return RequestForgetSession{Claim: c.Token, Session: c.Session, By: SuspendedByOperator}
 	case RequestDeliver:

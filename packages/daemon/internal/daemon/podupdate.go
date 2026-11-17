@@ -22,9 +22,10 @@ import (
 // or at the round's bound (pod_update_grace_minutes after the round opened, roundBound) whatever
 // the roles said (replacementDue). A role's own push is what keeps its work: what it has not
 // pushed when the pod goes is lost with the pod. An answer from every role ends the round early;
-// no answer holds it past the bound. An operator's suspension of a claim is the one wait that
-// outlasts the bound, and only over a pod that is there: a gone pod ends its round whatever the
-// hold (readReplacement).
+// no answer holds it past the bound. A suspension that holds — the operator's, the controller's
+// or an architect's (supervise.SuspendSource.Holds) — is the one wait that outlasts the bound,
+// and only over a pod that is there: a gone pod ends its round whatever the hold
+// (readReplacement).
 //
 // The round is the issue's, not the locator's: a suspended claim's locator is nil (supervise's
 // letGo), and before the bound no pod disk may be deleted before every worker in it, suspended
@@ -291,19 +292,19 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // A round no live claim records a process in the pod of replaces nothing, and ends on nothing
 // the claims say: the runtime is asked about the pod itself, and only a pod it answers gone ends
 // the round (roundWithNoProcessInItsPod). Once opened, a round ends by replacing its pod or
-// because that pod is gone, and no locator is no evidence either way. That is asked before an
-// operator's suspension is weighed: a gone pod ends its round whatever the hold, and the hold
+// because that pod is gone, and no locator is no evidence either way. That is asked before a
+// suspension that holds is weighed: a gone pod ends its round whatever the hold, and the hold
 // keeps its place wherever the pod is there.
 //
 // Three readings hold a round past its bound, and each is told to the operator's side once, at
-// the bound, naming the reading (tellLateRound): an operator's suspension, no process in the
-// round's pod, and two pods at once. A round that waits for an answer or a turn before its bound
-// tells nobody: the bound ends that wait by itself.
+// the bound, naming the reading (tellLateRound): a suspension that holds, named with its holder,
+// no process in the round's pod, and two pods at once. A round that waits for an answer or a
+// turn before its bound tells nobody: the bound ends that wait by itself.
 func (s *supervision) completePodUpdate(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, now time.Time) (*podReplacement, bool) {
 	reading := readReplacement(live, round, roundBound(live, round, s.cfg.PodUpdateGrace), now)
 	switch reading.wait {
-	case waitsForOperator:
-		s.waitForOperator(ctx, issue, live, round, pod, reasons, now, reading.held)
+	case waitsForResume:
+		s.waitForResume(ctx, issue, live, round, pod, reasons, now, reading.held)
 		// The round is not decided: the post below keeps it recorded on every claim, and asks
 		// a claim it has not asked yet, as it does for a round that waits for an answer.
 		return nil, false
@@ -350,14 +351,12 @@ const (
 	// waitsForAnswer is a claim the round asks that has not answered it (waitingClaims), read
 	// only before the round's bound.
 	waitsForAnswer replacementWait = iota
-	// waitsForOperator is a claim the round asks that an operator's suspension holds
-	// (heldByOperator), with a live claim recording a process in the round's own pod, read
-	// whatever the clock says.
-	waitsForOperator
+	// waitsForResume is a claim the round asks that a hold is over (heldClaims), with a live
+	// claim recording a process in the round's own pod, read whatever the clock says.
+	waitsForResume
 	// waitsForProcessInItsPod is no live claim recording a process in the round's own pod
-	// (podProcess), read whatever the clock says. It carries the claims an operator's suspension
-	// holds, if any: that hold is read only once the pod is known to be there
-	// (roundWithNoProcessInItsPod).
+	// (podProcess), read whatever the clock says. It carries the claims a hold is over, if any:
+	// that hold is read only once the pod is known to be there (roundWithNoProcessInItsPod).
 	waitsForProcessInItsPod
 	// waitsForTurn is a worker of the issue running a turn (workingClaims), read only before the
 	// round's bound.
@@ -372,9 +371,9 @@ const (
 
 // replacementReading is what the five readings answered over one live group: the process the
 // round's pod is replaced through, or the first reading that holds the replacement back with
-// what its caller has to name of it — the claims that have not answered, the claims an operator
-// holds (for waitsForOperator, and for waitsForProcessInItsPod where a hold was read), or the
-// roles whose turns run. Nothing but the fields the wait names is set, and process is set for
+// what its caller has to name of it — the claims that have not answered, the claims a hold is
+// over (for waitsForResume, and for waitsForProcessInItsPod where a hold was read), or the roles
+// whose turns run. Nothing but the fields the wait names is set, and process is set for
 // replacementReady alone.
 type replacementReading struct {
 	wait    replacementWait
@@ -450,16 +449,17 @@ func pastBound(bound *time.Time, now time.Time) bool {
 // it reports the round decided — is its own. It reads the claims and nothing else, so neither
 // reading costs a call to the runtime or the store.
 //
-// The order the readings are taken in is the rule. An operator's suspension comes first, because
-// it is the one wait that is a person's and the one the bound never steps over
-// (dispatch://INFRA-2981 R5): a person's hold does not yield to a clock. It holds a pod that is
-// there, and only that: a hold over a round no live claim records a process in the pod of is
-// read as no process in the round's pod, carrying the claims the operator holds, so that its
-// caller asks first whether the pod is there at all. A round whose pod is gone ends whatever
-// the operator's suspension says (endRoundOverAGonePod): there is no pod left to replace, and a
-// wait for the resume of a claim on a pod that no longer exists is a wait for nothing. A claim
-// that has not answered and a turn that runs hold the replacement only before the bound
-// (roundEnd.holding), which is what makes the bound the end of every round nobody answers (R2).
+// The order the readings are taken in is the rule. A hold comes first, because it is the one
+// wait the bound never steps over: R5 of dispatch://INFRA-2981 holds the pod for a person's
+// hold, which does not yield to a clock, and the controller's and an architect's hold as the
+// operator's does (heldClaims). It holds a pod that is there, and only that: a hold over a round
+// no live claim records a process in the pod of is read as no process in the round's pod,
+// carrying the claims the hold is over, so that its caller asks first whether the pod is there
+// at all. A round whose pod is gone ends whatever the hold says (endRoundOverAGonePod): there is
+// no pod left to replace, and a wait for the resume of a claim on a pod that no longer exists is
+// a wait for nothing. A claim that has not answered and a turn that runs hold the replacement
+// only before the bound (roundEnd.holding), which is what makes the bound the end of every round
+// nobody answers (R2).
 // No process in the round's pod and two pods at once are facts about the pod, not about any
 // answer, so they hold the replacement whatever the clock says: there is nothing in such a pod
 // to replace it through, or a replacement is already in flight.
@@ -474,11 +474,11 @@ func pastBound(bound *time.Time, now time.Time) bool {
 // the round's own record of its members (roundWithNoProcessInItsPod, lostClaims).
 func readReplacement(live []supervise.Claim, round string, bound *time.Time, now time.Time) replacementReading {
 	process, running := podProcess(live, round)
-	if held := heldByOperator(live, round); len(held) > 0 {
+	if held := heldClaims(live, round); len(held) > 0 {
 		if !running {
 			return replacementReading{wait: waitsForProcessInItsPod, held: held}
 		}
-		return replacementReading{wait: waitsForOperator, held: held}
+		return replacementReading{wait: waitsForResume, held: held}
 	}
 	unanswered, working := readRoundEnd(live, round, bound, now).holding()
 	if len(unanswered) > 0 {
@@ -520,28 +520,29 @@ type podReplacement struct {
 // same sweep decided before this one has run since, each of them a pod boot long. The five
 // readings that hold a replacement back are taken again over that read and at the clock as it
 // stands now, by the one predicate the walk itself asked (readReplacement), and each of them
-// gives this replacement up: an operator's suspension, a claim of the round that has not
+// gives this replacement up: a suspension that holds, a claim of the round that has not
 // answered before the bound, no live claim recording a process in the round's own pod, a turn
 // running in the issue before the bound, and claims recording two pods. None of them ends
 // anything: the round stays open, and the next sweep decides it afresh from claims it reads
-// then. An operator's suspension and two pods at once are not stepped over by the bound, so each
+// then. A suspension that holds and two pods at once are not stepped over by the bound, so each
 // is told to the operator's side once the bound has come (tellLateRound), as the walk tells
 // them. No process in the round's pod is told by the walk alone, which asks the runtime first
-// whether the pod is there at all (roundWithNoProcessInItsPod), and that includes a round an
-// operator's suspension holds with no live process in its pod: the hold is weighed only once
+// whether the pod is there at all (roundWithNoProcessInItsPod), and that includes a round a
+// suspension that holds holds with no live process in its pod: the hold is weighed only once
 // that read finds the pod there, and a pod it finds gone ends the round whatever the hold.
 //
 // That read is no replacement for the daemon's last word inside the runtime (replacementDue),
 // which it stands in front of rather than in place of: ReplacePod takes the pod's launch turn
 // and waits it out, so a round complete at this read is still a round a worker can start a turn
-// in, or an operator can suspend a claim of, while the call waits. The runtime asks that last
-// word one statement before the write that ends every process in the pod, and a replacement no
-// longer due is refused there, ends nothing and leaves the round open for the next sweep.
+// in, or the operator, the controller or an architect can suspend a claim of, while the call
+// waits. The runtime asks that last word one statement before the write that ends every process
+// in the pod, and a replacement no longer due is refused there, ends nothing and leaves the round
+// open for the next sweep.
 //
 // The last word is asked only of a pod that is there. The Sandbox runtime asks it after it has
 // found the pod the locator records still the Sandbox's own, and answers a pod that is gone by
 // replacing nothing and returning nil, which ends the round here as a replacement made does: no
-// operator's hold is read over a pod that is not there.
+// hold is read over a pod that is not there.
 //
 // ReplacePod is called once, with the process of a claim that records this round's own pod. A
 // failed ReplacePod is logged and retried at the next sweep: nothing is ended, so the round
@@ -578,10 +579,10 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	now := s.plan.clock.Now()
 	reading := readReplacement(live, round, roundBound(live, round, s.cfg.PodUpdateGrace), now)
 	switch reading.wait {
-	case waitsForOperator:
-		s.log.Info("supervise: an operator's suspension holds this update round now the sweep has reached its replacement; nothing was replaced and the round stays open",
-			"issue", issue, "round", round, "pod", pod, "held", namesOf(reading.held))
-		s.tellLateRound(ctx, issue, live, round, pod, reasons, now, operatorHoldReason(reading.held))
+	case waitsForResume:
+		s.log.Info("supervise: a suspension that only a resume lifts holds this update round now the sweep has reached its replacement; nothing was replaced and the round stays open",
+			"issue", issue, "round", round, "pod", pod, "held", holdsOf(reading.held))
+		s.tellLateRound(ctx, issue, live, round, pod, reasons, now, holdReason(reading.held))
 		return
 	case waitsForAnswer:
 		s.log.Info("supervise: a worker of this update round has not answered now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open",
@@ -589,9 +590,9 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		return
 	case waitsForProcessInItsPod:
 		s.log.Info("supervise: no claim of this issue records a process in this update round's pod now the sweep has reached its replacement; nothing was replaced and the round stays open",
-			"issue", issue, "round", round, "pod", pod, "held", namesOf(reading.held))
+			"issue", issue, "round", round, "pod", pod, "held", holdsOf(reading.held))
 		// The walk asks the runtime whether this pod is there before it tells anyone of it or
-		// weighs an operator's hold, and the next sweep's walk decides this round
+		// weighs a hold, and the next sweep's walk decides this round
 		// (roundWithNoProcessInItsPod).
 		return
 	case waitsForTurn:
@@ -658,11 +659,61 @@ const (
 	twoPodsReason   = boundPastReason + "The claims of the issue record two pods. A replacement is in flight, and the round waits for it."
 )
 
-// operatorHoldReason is the reason the late-round notice gives for a round an operator's
-// suspension holds past its bound, naming each claim the suspension holds.
-func operatorHoldReason(held []supervise.Claim) string {
-	return fmt.Sprintf(boundPastReason+"An operator suspended %s. The daemon does not replace the pod until the operator resumes each of them.",
-		roleStates(held))
+// holdReason is the reason the late-round notice gives for a round a hold keeps past its bound,
+// naming each claim held, who holds it and who may resume it (holdSentences).
+func holdReason(held []supervise.Claim) string {
+	return boundPastReason + holdSentences(held) + " The daemon does not replace the pod until a resume lifts each of these suspensions."
+}
+
+// holdWords is each source whose suspension is a hold (heldClaims), in the words the late-round
+// notice and the log name it by, with who resumes a claim it holds
+// (supervise.Claim.ResumeRefusal). The notice goes to the controller, which answers a hold of the
+// operator's with a finding ask for the operator, and which can lift its own hold and an
+// architect's itself. So each sentence names the holder, and names the operator only for the
+// operator's own hold, which only the operator lifts: the operator's resume lifts the other two
+// as well, but a notice that named it there would send the controller to the operator for a
+// resume it makes itself.
+var holdWords = []struct {
+	by                               supervise.SuspendSource
+	suspended, resumes, suspensionOf string
+}{
+	{supervise.SuspendedByOperator, "An operator suspended", "Only the operator can resume", "an operator's suspension"},
+	{supervise.SuspendedByController, "The controller suspended", "The controller can resume", "the controller's suspension"},
+	{supervise.SuspendedByArchitect, "An architect suspended", "An architect that owns the issue, or the controller, can resume", "an architect's suspension"},
+}
+
+// holdSentences names, for each holder of a claim of held, the claims it holds and who may
+// resume them, in the order holdWords runs. The controller reads it in the late-round notice, so
+// it follows ASD-STE100.
+func holdSentences(held []supervise.Claim) string {
+	var sentences []string
+	for _, holder := range holdWords {
+		of := slices.DeleteFunc(slices.Clone(held), func(c supervise.Claim) bool { return c.Holder() != holder.by })
+		if len(of) == 0 {
+			continue
+		}
+		them := "it"
+		if len(of) > 1 {
+			them = "them"
+		}
+		sentences = append(sentences, fmt.Sprintf("%s %s. %s %s.", holder.suspended, roleStates(of), holder.resumes, them))
+	}
+	return strings.Join(sentences, " ")
+}
+
+// holdsOf names the suspension over each claim of held by its holder, for a log line or an
+// error — "an operator's suspension holds tester", "the controller's suspension holds
+// implementer" — in the order holdWords runs.
+func holdsOf(held []supervise.Claim) []string {
+	var named []string
+	for _, holder := range holdWords {
+		for _, c := range held {
+			if c.Holder() == holder.by {
+				named = append(named, fmt.Sprintf("%s holds %s", holder.suspensionOf, c.Role))
+			}
+		}
+	}
+	return named
 }
 
 // roundWithNoProcessInItsPod decides a round, before or past its bound, whose live claims record
@@ -686,14 +737,14 @@ func operatorHoldReason(held []supervise.Claim) string {
 // replaced. A pod that is there with no claim recording a process in it holds the round past its
 // bound, so the operator's side is told of it once the bound has come (tellLateRound).
 //
-// held is the claims of the round an operator's suspension holds (readReplacement), and it is
-// weighed here, after the pod is read, never before. A gone pod ends its round whatever the
-// hold: the operator's suspension holds a pod that is there, and there is no pod left to wait
-// for the resume of. A pod that is there keeps the hold in its place: the round waits for the
-// operator as waitsForOperator's does (waitForOperator), the notice names the suspension rather
-// than the missing process, and the round is not decided, so the post keeps it recorded and asks
-// a claim it has not asked yet. A read that could not be made leaves such a round undecided too,
-// and tells nobody of a hold over a pod it could not read.
+// held is the claims of the round a hold is over (readReplacement), and it is weighed here,
+// after the pod is read, never before. A gone pod ends its round whatever the hold: the hold is
+// over a pod that is there, and there is no pod left to wait for the resume of. A pod that is
+// there keeps the hold in its place: the round waits for the resume as waitsForResume's does
+// (waitForResume), the notice names each suspension and its holder rather than the missing
+// process, and the round is not decided, so the post keeps it recorded and asks a claim it has
+// not asked yet. A read that could not be made leaves such a round undecided too, and tells
+// nobody of a hold over a pod it could not read.
 //
 // The snapshot always records a process in that pod, and that process's claim is the one this
 // asks through: the sweep decides a round here only over the pod its claims record, and ends a
@@ -712,7 +763,7 @@ func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue stri
 				"issue", issue, "round", round, "pod", pod, "error", err)
 		}
 	case len(held) > 0:
-		s.waitForOperator(ctx, issue, live, round, pod, reasons, now, held)
+		s.waitForResume(ctx, issue, live, round, pod, reasons, now, held)
 	default:
 		s.log.Info("supervise: no claim of this update round records a process in its pod now; the pod is there, and the round waits for a claim to record it again",
 			"issue", issue, "round", round, "pod", pod)
@@ -721,14 +772,14 @@ func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue stri
 	return len(held) == 0
 }
 
-// waitForOperator is the walk's part of a round an operator's suspension holds over a pod that
-// is there (completePodUpdate's waitsForOperator, and roundWithNoProcessInItsPod once it has read
-// the pod there): the line, and the notice naming the suspension once the bound has come. The
-// replacement waits for the operator's resume, whatever the round's bound.
-func (s *supervision) waitForOperator(ctx context.Context, issue string, live []supervise.Claim, round, pod, reasons string, now time.Time, held []supervise.Claim) {
-	s.log.Info("supervise: an operator's suspension holds this update round; the replacement waits for the operator's resume, whatever the round's bound",
-		"issue", issue, "round", round, "pod", pod, "held", namesOf(held))
-	s.tellLateRound(ctx, issue, live, round, pod, reasons, now, operatorHoldReason(held))
+// waitForResume is the walk's part of a round a hold keeps over a pod that is there
+// (completePodUpdate's waitsForResume, and roundWithNoProcessInItsPod once it has read the pod
+// there): the line, and the notice naming each suspension and its holder once the bound has come.
+// The replacement waits for the resume that lifts each, whatever the round's bound.
+func (s *supervision) waitForResume(ctx context.Context, issue string, live []supervise.Claim, round, pod, reasons string, now time.Time, held []supervise.Claim) {
+	s.log.Info("supervise: a suspension that only a resume lifts holds this update round; the replacement waits for that resume, whatever the round's bound",
+		"issue", issue, "round", round, "pod", pod, "held", holdsOf(held))
+	s.tellLateRound(ctx, issue, live, round, pod, reasons, now, holdReason(held))
 }
 
 // errReplacementNotDue is every answer replacementDue gives that is not "go on": the round the
@@ -742,14 +793,14 @@ var errReplacementNotDue = errors.New("the pod replacement is no longer due")
 // replacementDue is the daemon's last word on a replacement, which the runtime asks under the
 // pod's launch turn and one statement before the write that ends every process in that pod. It
 // reads the issue's claims as they are at that instant, at the clock as it stands then, and
-// refuses the replacement when one of three readings holds it: an operator's suspension of a
-// claim the round asks (heldByOperator), whatever the clock says; and, only before the round's
+// refuses the replacement when one of three readings holds it: a suspension that holds over a
+// claim the round asks (heldClaims), whatever the clock says; and, only before the round's
 // bound, a claim the round asks that has not answered or a claim of the issue that runs a turn
 // (roundEnd.holding). It does not call readReplacement: it takes the three of that predicate's
 // readings that are about the claims, through the same helpers, because the runtime asks it only
 // of a pod it found there. What it read of the round's end is left in ended, which the
 // replacement's log lines name. The Sandbox runtime asks this only of a pod that is there
-// (replacePodForRound), so the operator's hold it reads first is a hold over a pod there is to
+// (replacePodForRound), so the hold it reads first is a hold over a pod there is to
 // replace.
 //
 // Which claims exist is read from the store, not from the group this sweep carries: a claim
@@ -771,8 +822,8 @@ func (s *supervision) replacementDue(issue, round string, ended *roundEnd) func(
 			return fmt.Errorf("%w: the claims of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
 		group := s.viewedGroup(claims, issue)
-		if held := heldByOperator(group, round); len(held) > 0 {
-			return fmt.Errorf("%w: an operator's suspension holds %s", errReplacementNotDue, strings.Join(namesOf(held), ", "))
+		if held := heldClaims(group, round); len(held) > 0 {
+			return fmt.Errorf("%w: %s", errReplacementNotDue, strings.Join(holdsOf(held), ", "))
 		}
 		*ended = readRoundEnd(group, round, roundBound(group, round, s.cfg.PodUpdateGrace), s.plan.clock.Now())
 		unanswered, working := ended.holding()
@@ -820,7 +871,7 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 // It is the one read the sweep's decision, the replacement's last word and the operator's notice
 // are all built from, so no two of them can disagree about what a claim holds. The round asks
 // each role, and replaces the pod once every asked role has answered and no turn runs, or at the
-// round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's suspension
+// round's bound (pod_update_grace_minutes) whatever the roles answered, a suspension that holds
 // excepted.
 //
 // What it reads is each machine's published view (Machine.View), never Machine.Claim: Claim
@@ -858,8 +909,8 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // tellLateRound tells the operator's side of a round that has outlived its bound (roundBound)
 // and still has not replaced its pod. It is the one writer of the late-round notice, and it tells
 // nothing before the bound: a round waiting on its roles is no stall, because the bound ends that
-// wait by itself. Its callers are the readings that hold a round past its bound — an operator's
-// suspension, no process in the round's pod, two pods at once — and the act of the replacement
+// wait by itself. Its callers are the readings that hold a round past its bound — a suspension
+// that holds, no process in the round's pod, two pods at once — and the act of the replacement
 // itself that holds it, a replacement the runtime refused. why is the reason the controller
 // reads, naming that reading. The issue is written nothing: there is no instruction for its roles
 // here, and the operator reads the round through the controller's notice.
@@ -929,14 +980,14 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 // bound has come (roundBound), the same clock as every other late-round notice (tellLateRound).
 // Nothing of such a round can move: no drift can be read, no pod can be replaced, and it waits
 // for one of the issue's workers to run again. That is the reading of a claim that records no
-// process in the round's pod, and the notice names it so. Where an operator's suspension holds a
-// claim of the round (heldByOperator) — a lone worker an operator suspended is the common shape,
-// since a suspension lets the process go (letGo clears the locator) — only that operator can end
-// the wait, and the notice names the suspension instead. No other path here would ever tell
-// them: this round reaches no replacement decision.
+// process in the round's pod, and the notice names it so. Where a hold is over a claim of the
+// round (heldClaims) — a lone worker the operator, the controller or an architect suspended is
+// the common shape, since a suspension lets the process go (letGo clears the locator) — only a
+// resume can end the wait, and the notice names each suspension and who may lift it instead. No
+// other path here would ever tell them: this round reaches no replacement decision.
 //
-// A round every claim of which has answered, with no claim an operator holds, is told nothing,
-// and that is the ordinary end of a phase rather than a hold: the workers answered, the daemon
+// A round every claim of which has answered, with no claim a hold is over, is told nothing, and
+// that is the ordinary end of a phase rather than a hold: the workers answered, the daemon
 // suspended each of them, and letGo took the last locator with the last process. Nobody has to
 // do anything about such a round — it ends once a role of the issue runs in a pod again — so
 // telling the controller only opens a finding ask over a round that needs no one.
@@ -949,14 +1000,14 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 		return
 	}
 	told := s.noticeGroup(group)
-	held := heldByOperator(told, round)
+	held := heldClaims(told, round)
 	if len(held) == 0 && len(waitingClaims(told, round)) == 0 {
 		return
 	}
 	why := boundPastReason + "No claim of this issue records a process in a pod. The round waits for a claim of the issue to run again."
 	if len(held) > 0 {
-		why = fmt.Sprintf(boundPastReason+"No claim of this issue records a process in a pod. An operator suspended %s. The round waits for the operator to resume a claim.",
-			roleStates(held))
+		why = boundPastReason + "No claim of this issue records a process in a pod. " + holdSentences(held) +
+			" The round waits for a resume of one of these claims."
 	}
 	s.tellLateRound(ctx, issue, group, round, "", roundReasons(group, round), now, why)
 }
@@ -1047,13 +1098,13 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // sweeps of a round whose bound runs all the while.
 //
 // A claim that blocks the round has a session — an agent has run for it, and may hold unpushed
-// work. A claim with no session has never had a worker and blocks nothing. An operator-suspended
-// claim holds the round until the operator acts, whatever the round's bound, which is this
-// issue's own rule (readReplacement's waitsForOperator), as long as the round's pod is there: a
+// work. A claim with no session has never had a worker and blocks nothing. A claim a hold is over
+// holds the round until a resume lifts the hold, whatever the round's bound, which is this
+// issue's own rule (readReplacement's waitsForResume), as long as the round's pod is there: a
 // gone pod ends its round whatever the hold (roundWithNoProcessInItsPod). The late-round notice
-// is what tells the operator (tellLateRound, tellPodlessRound). A failed claim runs no turn on
-// the pod and is asked nothing, so the round does not wait for it (askedClaims). A worker whose
-// plugin has no ready_for_update op is asked like any other.
+// is what tells the controller of it, naming each holder (tellLateRound, tellPodlessRound). A
+// failed claim runs no turn on the pod and is asked nothing, so the round does not wait for it
+// (askedClaims). A worker whose plugin has no ready_for_update op is asked like any other.
 //
 // It tells nobody. A round that waits on its roles is no stall: its bound ends the wait whatever
 // they say, and the readings that hold a round past its bound are told where they are read.
@@ -1431,16 +1482,18 @@ func answeredClaims(group []supervise.Claim, round string) []supervise.Claim {
 	return of
 }
 
-// heldByOperator is every claim the round asks (askedClaims) that an operator's suspension holds
-// (supervise's Claim.RuleHolds): one the operator suspended, or one whose operator suspension
-// waits for its agent's turn to end. It is the one wait of a round that outlasts the round's
-// bound, because it is a person's (dispatch://INFRA-2981 R5): where a suspended claim is the
-// pod's only role its process is gone and nothing else would hold the pod, and where another
-// role still runs, nothing but this reading would hold it once the bound steps over the answers.
+// heldClaims is every claim the round asks (askedClaims) that a hold is over: a suspension of the
+// operator's, the controller's or an architect's, each of which holds against every rule
+// (supervise's Claim.RuleHolds, SuspendSource.Holds), landed or held for the agent's turn to end;
+// supervise's Claim.Holder says whose. It is the one wait of a round that outlasts the round's
+// bound, because it is a decision a person or an agent made about the claim (dispatch://INFRA-2981
+// R5 for the operator's): where a suspended claim is the pod's only role its process is gone and
+// nothing else would hold the pod, and where another role still runs, nothing but this reading
+// would hold it once the bound steps over the answers.
 //
 // A claim that left the round's pod (supervise's Claim.LeftPodRound) holds nothing of it: its
 // process and its work are in another pod, and the round asks it nothing.
-func heldByOperator(group []supervise.Claim, round string) []supervise.Claim {
+func heldClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var held []supervise.Claim
 	for _, c := range askedClaims(group) {
 		if c.RuleHolds() && !c.LeftPodRound(round) {

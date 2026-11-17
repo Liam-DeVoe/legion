@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -808,6 +809,89 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAClaimTheDaemonS
 			}
 		})
 	}
+}
+
+// An architect's stop retires its worker, and then the daemon stops the issue's work: the child is
+// parked or closed, or its tree's root is closed and its tree lingers. A park suspends no retired
+// claim, so no suspension of the daemon's stands over the worker, and the claim door reads the
+// issue's record and its root's itself: the architect's retry and its fresh session, either of
+// which would start the worker on that stopped work, are refused ISSUE_OUT_OF_WORKFLOW with
+// nothing of the claim changed — it stays retired on its session, no session is resumed or
+// spawned, and no phase restarts. The controller's retry still reaches the claim.
+//
+// The negative control is the door without refuseStartOfStoppedWork: the retry then starts the
+// worker, through its machine or its issue's phase, and so does the fresh session.
+func TestAnArchitectsStartOfAStoppedWorkerIsRefusedOnceItsIssuesWorkStopped(t *testing.T) {
+	until := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	stops := []struct {
+		name string
+		stop func(t *testing.T, h *harness)
+		why  string
+	}{
+		{"the child is parked", func(t *testing.T, h *harness) {
+			setIssue(t, h, "LEGION-209", func(issue *record.Issue) { issue.Phase, issue.Status = phase.Done, "backlog" })
+		}, "LEGION-209 stands at status backlog and phase done, out of the workflow"},
+		{"the child closed as done", func(t *testing.T, h *harness) {
+			setIssue(t, h, "LEGION-209", func(issue *record.Issue) { issue.Phase, issue.Status = phase.Done, "done" })
+		}, "LEGION-209 stands at status done and phase done, out of the workflow"},
+		{"its tree lingers", func(t *testing.T, h *harness) {
+			setIssue(t, h, "LEGION-208", func(issue *record.Issue) {
+				issue.Phase, issue.Status, issue.LingerUntil = phase.Done, "done", &until
+			})
+		}, "its tree's root LEGION-208 stands at status done and phase done, out of the workflow and lingers after it left the workflow"},
+	}
+	// stoppedThenStopsWork is LEGION-209's implementer stopped by its architect and then the
+	// issue's work stopped by stop, with the starts the runtime had been asked for by then.
+	stoppedThenStopsWork := func(t *testing.T, h *harness, architect liveClaim, stop func(t *testing.T, h *harness)) (claim.Token, int) {
+		t.Helper()
+		token := readyImplementer(t, h)
+		wantClaimOperationAnswer(t, askAsArchitect(t, h, architect, "/legion/v1/claims/stop", "LEGION-209", claim.RoleImplementer),
+			http.StatusOK, ClaimOperationResponse{State: "retired"})
+		stop(t, h)
+		return token, len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+	}
+	for _, stopped := range stops {
+		for _, op := range []struct {
+			route string
+			as    claimOp
+		}{
+			{"/legion/v1/claims/retry", retryOp},
+			{"/legion/v1/claims/fresh-session", freshSessionOp},
+		} {
+			t.Run(stopped.name+": "+op.as.name, func(t *testing.T) {
+				facts := &phaseRestarter{}
+				h := freshSessionHarness(t, facts)
+				architect := treeArchitect(t, h)
+				token, starts := stoppedThenStopsWork(t, h, architect, stopped.stop)
+
+				recorder := askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer)
+
+				wantFreshSessionRefusal(t, recorder, http.StatusConflict, issueOutOfWorkflow,
+					string(token)+" is retired, and the daemon has stopped its issue's work: "+stopped.why+". "+
+						capitalized(op.as.name)+" by the architect would start the claim on that stopped work, so it is refused and nothing of the claim changed. "+
+						"The daemon's own rules start the issue's roles again once the issue and its tree are back in the workflow, and "+
+						op.as.name+" by the controller or the operator reaches the claim meanwhile")
+				if got := h.stored(token); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
+					t.Fatalf("the refused claim is %s on session %q, want it retired on ses_implementer", got.State, got.Session)
+				}
+				if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != starts {
+					t.Fatalf("the refused request started the worker %d times, want none", got-starts)
+				}
+				if applied := facts.recorded(); len(applied) != 0 {
+					t.Fatalf("the refused request applied %#v, want no phase restarted", applied)
+				}
+			})
+		}
+	}
+
+	t.Run("the controller's retry", func(t *testing.T) {
+		h := freshSessionHarness(t, &phaseRestarter{})
+		architect := treeArchitect(t, h)
+		stoppedThenStopsWork(t, h, architect, stops[0].stop)
+
+		wantClaimOperationAnswer(t, askClaimOperation(t, h, "/legion/v1/claims/retry", "LEGION-209", claim.RoleImplementer),
+			http.StatusOK, ClaimOperationResponse{State: "launching"})
+	})
 }
 
 // A released claim is no claim the daemon's own rules hold, since any wake brings it back: an

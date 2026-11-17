@@ -280,7 +280,7 @@ func resumedByTheOperator(h *harness) {
 // (operatorRetry, retry, revive).
 func retriedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestOperatorRetry{Claim: h.token})
+	h.must(RequestOperatorRetry{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 

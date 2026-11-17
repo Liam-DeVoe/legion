@@ -262,7 +262,7 @@ func TestPodUpdateBoundIsReadByTheLastWordBeforeTheReplacement(t *testing.T) {
 
 // Two claims; the operator suspends one, and the other answered and still runs a process in the
 // pod. Past the bound nothing but the operator's suspension holds the pod (readReplacement's
-// waitsForOperator), and it does: no ReplacePod is called however long the clock runs. Once the
+// waitsForResume), and it does: no ReplacePod is called however long the clock runs. Once the
 // operator resumes the suspended claim, after the bound, the bound ends the round.
 func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))

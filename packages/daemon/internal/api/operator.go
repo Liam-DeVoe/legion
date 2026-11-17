@@ -661,7 +661,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		// its own Warn where it stopped the claim and did not start it.
 		status, notRestarted, _, ok = s.freshSession(w, r, m, token, supervise.SuspendedByOperator)
 	} else {
-		status, ok = s.retryStart(w, r, m, token, false)
+		status, ok = s.retryStart(w, r, m, token, false, supervise.SuspendedByOperator)
 	}
 	if !ok {
 		return
@@ -685,8 +685,10 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 //
 // The session is the claim's own either way: this start resumes the recorded one. A caller that
 // wants a new session forgets it before calling here (freshSession), which is also what reaches
-// a claim this start refuses.
-func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
+// a claim this start refuses. by is who asks — the operator, the controller or an architect —
+// which the machine's retry names (machineRetry).
+func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
+	by supervise.SuspendSource) (int, bool) {
 	c := m.Claim()
 	if failedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
@@ -697,7 +699,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 			return status, true
 		}
 	}
-	return s.machineRetry(w, r, m, token, fresh)
+	return s.machineRetry(w, r, m, token, fresh, by)
 }
 
 // restartWorkedPhase starts again the phase the claim's role works, which is what hands a
@@ -769,9 +771,11 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 // who retries it (supervise's operatorRetry). A caller that asked for a new session has
 // forgotten the recorded one before it gets here (freshSession), so the relaunch spawns rather
 // than resumes. A relaunch the machine holds for the agent's turn answers 202, as every
-// operator request on a claim answers one (claimRequest).
-func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
-	held, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh})
+// operator request on a claim answers one (claimRequest). The retry names by, its caller, and the
+// wake pacing lets the operator's alone through unpaced (supervise.RequestOperatorRetry.By).
+func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
+	by supervise.SuspendSource) (int, bool) {
+	held, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh, By: by})
 	if !ok {
 		return 0, false
 	}

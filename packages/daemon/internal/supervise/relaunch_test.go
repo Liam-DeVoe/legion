@@ -152,7 +152,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 				if p := h.claim().Pending; p != nil {
 					h.t.Fatalf("the stopped claim holds %+v, want the task its turn confirmed retired", p)
 				}
-				h.must(RequestOperatorRetry{Claim: h.token})
+				h.must(RequestOperatorRetry{Claim: h.token, By: SuspendedByOperator})
 				h.must(RequestDeliver{Claim: h.token, Task: next, Generation: 5})
 				h.relaunched()
 				return next

@@ -47,10 +47,11 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     as done. No close reaches a carried child's role still running in its old
 //     tree, since the child has left that tree, so the daemon names that suspension the deadline the
 //     old tree's close would have had, the old root's linger expiry. Asked again meanwhile, it is the
-//     same hold, under one rule: a request can only move the deadline earlier, and one that holds
-//     (an operator's, the controller's or an architect's) also takes over a hold it outranks,
-//     from then on its own (suspensionRank). Until the deadline the agent keeps its process and
-//     its capability.
+//     same hold, under one rule: a request can only move the deadline earlier, and one that
+//     outranks the hold also takes it over, from then on its own, where either of the two is one
+//     that holds (suspensionRank, SuspendSource.Holds): an operator's, the controller's or an
+//     architect's over a hold it outranks, and the daemon's own over an architect's, which it
+//     outranks. Until the deadline the agent keeps its process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
 //     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
@@ -113,8 +114,8 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	case m.held == nil:
 		m.held = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By}
 		m.log.Info("supervise: the suspension is held for the agent's turn to end", "reason", request.Reason, "by", request.By)
-	case request.By.Holds() && suspensionRank(request.By) > suspensionRank(m.held.By):
-		m.log.Info("supervise: a suspension that holds takes the held suspension over", "reason", request.Reason,
+	case suspensionRank(request.By) > suspensionRank(m.held.By) && (request.By.Holds() || m.held.By.Holds()):
+		m.log.Info("supervise: a suspension that outranks the held suspension takes it over", "reason", request.Reason,
 			"by", request.By, "held", m.held.Reason, "heldBy", m.held.By)
 		m.held.By, m.held.Reason = request.By, request.Reason
 	}
@@ -197,15 +198,17 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // source changes under it (Claim.SuspendedBy). A source takes the claim over only when it
 // outranks the one that holds it (suspensionRank): an operator's or the controller's suspend of a
 // claim the daemon suspended, so the rule resumes it no more until a resume lifts it, the
-// controller's or an operator's suspend of a claim an architect suspended, so an architect's
-// resume lifts it no more, an operator's suspend of a claim the controller suspended, so the
-// controller's resume lifts it no more, and a daemon's, an architect's, the controller's or an
-// operator's suspend of a claim whose idle pod was released, so the linger, park, close,
+// daemon's own suspend — a park, a linger, a close or a carry — of a claim an architect suspended,
+// so the architect's resume lifts it no more and the claim is the daemon's own rules' to start
+// again, the controller's or an operator's suspend of a claim an architect suspended, so an
+// architect's resume lifts it no more, an operator's suspend of a claim the controller suspended,
+// so the controller's resume lifts it no more, and a daemon's, an architect's, the controller's or
+// an operator's suspend of a claim whose idle pod was released, so the linger, park, close,
 // hand-over or hold that asked for it owns the claim and no later wake acts on it. Anything else
 // changes nothing, and some suspends are refused before they get here (suspendRequest): no source
-// takes over a suspension that outranks it — an architect's suspend of a claim the controller or
-// the operator holds, and the controller's of one the operator holds — and an architect's suspend
-// of a claim the daemon suspended, which it outranks, is refused too (Claim.StopOrSuspendRefusal).
+// takes over a suspension that outranks it — an architect's suspend of a claim the daemon, the
+// controller or the operator holds, and the controller's of one the operator holds
+// (Claim.StopOrSuspendRefusal).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -222,25 +225,29 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
 // claim's suspension is the weakest, because the release ended no phase and every wake may
-// resume it; the daemon's is stronger, since it is a linger, a park or a close; an architect's is
-// stronger again, since it holds against every rule (SuspendSource.Holds); the controller's is
-// stronger than an architect's, since it is project-wide work a tree's architect must not undo;
-// the operator's is strongest and nothing takes it over. An exit's is the root's own and is left
-// where it is.
+// resume it; an architect's is stronger, since it holds against every rule (SuspendSource.Holds);
+// the daemon's is stronger again, though it holds against no rule, since it is a park, a linger,
+// a close or a carry — the issue left the workflow, or left the tree it ran in, or that tree
+// lingers — and a worker an architect suspended before it is no longer the architect's to start:
+// its resume, or its stop and a retry, would start the worker on the issue the daemon stopped.
+// The controller's is stronger than both, since it is project-wide work a tree's architect must
+// not undo and no rule lifts; the operator's is strongest and nothing takes it over. An exit's,
+// and one recorded before sources existed, are the daemon's own and rank with its suspension, so
+// that suspension leaves them where they are.
 func suspensionRank(source SuspendSource) int {
 	switch source {
 	case SuspendedByReleased:
 		return 1
-	case SuspendedByDaemon:
-		return 2
 	case SuspendedByArchitect:
+		return 2
+	case SuspendedByDaemon:
 		return 3
 	case SuspendedByController:
 		return 4
 	case SuspendedByOperator:
 		return 5
 	default:
-		return 2
+		return 3
 	}
 }
 
@@ -281,8 +288,8 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 // for an architect's (ErrOperatorHolds, ErrControllerHolds): it would change nothing of the claim,
 // and the refusal says so where an answer of success would not. And so is an architect's
 // suspension of a claim the daemon's own suspension holds, held or landed
-// (ErrNotTheArchitectsSuspension): taking it over would let that architect's resume undo a park, a
-// linger or a close. Each is Claim.StopOrSuspendRefusal.
+// (ErrNotTheArchitectsSuspension): that suspension outranks it too, and no request of an
+// architect's reaches a park, a linger or a close. Each is Claim.StopOrSuspendRefusal.
 func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	request, ok := ev.(RequestSuspend)
 	if !ok {
@@ -298,8 +305,10 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	}
 	// A held suspension that holds — an operator's, the controller's or an architect's — wins
 	// everywhere — launching, registered, ready while its stop retries, and working — over every
-	// request it outranks, until it completes. A later daemon linger/leave request must use that
-	// same source rather than changing a deliberate hold into a rule-resumable daemon suspension.
+	// request it outranks, until it completes. A later daemon linger or leave must use the source
+	// of an operator's or the controller's hold rather than change a deliberate hold into a
+	// rule-resumable daemon suspension; the daemon's own suspension outranks an architect's, and
+	// takes it over instead (holdSuspension).
 	if m.held != nil && m.held.By.Holds() && suspensionRank(request.By) < suspensionRank(m.held.By) {
 		return *m.held, nil
 	}

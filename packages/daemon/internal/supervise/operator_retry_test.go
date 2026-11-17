@@ -35,7 +35,7 @@ func TestTheOperatorsRetryRelaunchesAStoppedClaim(t *testing.T) {
 			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 
-			h.must(RequestOperatorRetry{Claim: h.token})
+			h.must(RequestOperatorRetry{Claim: h.token, By: SuspendedByOperator})
 
 			h.wantState(StateLaunching)
 			h.wantBudgets(Budgets{})
@@ -74,7 +74,7 @@ func TestTheOperatorsRetryStartsTheSessionTheClaimRecords(t *testing.T) {
 				h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
 			}
 
-			h.must(RequestOperatorRetry{Claim: h.token})
+			h.must(RequestOperatorRetry{Claim: h.token, By: SuspendedByOperator})
 
 			h.wantState(StateLaunching)
 			if !tc.fresh {

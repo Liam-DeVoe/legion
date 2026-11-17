@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -169,13 +170,17 @@ var freshSessionOp = claimOp{
 // the caller named them, and by, who the caller is — supervise.SuspendedByController for the
 // project's controller and supervise.SuspendedByArchitect for an architect — which is the source
 // its suspension records and what decides which suspensions refuse it (supervise.Claim.HeldAgainst,
-// supervise.Claim.ResumeRefusal).
+// supervise.Claim.ResumeRefusal). recorded is the issue's record as the door read it for an
+// architect's ownership (issueOfTree), which the two operations that start a stopped claim weigh
+// with its tree's root for whether the issue still runs (refuseStartOfStoppedWork); the
+// controller's door reads none, and leaves it the zero record.
 type claimTarget struct {
-	machine *supervise.Machine
-	token   claim.Token
-	issue   string
-	role    claim.Role
-	by      supervise.SuspendSource
+	machine  *supervise.Machine
+	token    claim.Token
+	issue    string
+	role     claim.Role
+	by       supervise.SuspendSource
+	recorded record.Issue
 }
 
 // ownClaim is the refusal of an architect's operation on its own claim: stopping, suspending,
@@ -240,12 +245,15 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (
 	if !ok {
 		return claimTarget{}, false
 	}
-	var by supervise.SuspendSource
+	var (
+		by       supervise.SuspendSource
+		recorded record.Issue
+	)
 	switch {
 	case grant.Controller:
 		by = supervise.SuspendedByController
 	case grant.Role == claim.RoleArchitect:
-		recorded, ok := s.issueOfTree(w, r, grant, req.Issue)
+		recorded, ok = s.issueOfTree(w, r, grant, req.Issue)
 		if !ok || !s.architectOwns(w, r, grant, recorded, op.name) {
 			return claimTarget{}, false
 		}
@@ -272,7 +280,7 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (
 			return claimTarget{}, false
 		}
 	}
-	return claimTarget{machine: m, token: token, issue: req.Issue, role: role, by: by}, true
+	return claimTarget{machine: m, token: token, issue: req.Issue, role: role, by: by, recorded: recorded}, true
 }
 
 // claimFreshSession is the claim door's fresh session (freshSession). The effect is the
@@ -280,12 +288,14 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (
 // suspension and the resume it runs are the caller's, so it is refused a claim a suspension it may
 // not lift holds: the operator's own for either caller (SUSPENDED_BY_OPERATOR), and for an
 // architect the controller's (SUSPENDED_BY_CONTROLLER) and one the daemon placed
-// (SUSPENDED_BY_DAEMON). Its log line says which of the two successes the effect reported: the
-// claim started again, or stopped by this request and not started, whose sentence rides the
-// answer (notStartedAgain).
+// (SUSPENDED_BY_DAEMON). An architect's fresh session of a claim that failed or that a stop
+// retired starts it as its retry does, so it too is refused while the claim's issue is out of the
+// workflow or its tree lingers (ISSUE_OUT_OF_WORKFLOW, refuseStartOfStoppedWork). Its log line
+// says which of the two successes the effect reported: the claim started again, or stopped by
+// this request and not started, whose sentence rides the answer (notStartedAgain).
 func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.claimDoor(w, r, freshSessionOp)
-	if !ok {
+	if !ok || s.refuseStartOfStoppedWork(w, r, target, freshSessionOp) {
 		return
 	}
 	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token, target.by)
@@ -535,7 +545,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		}
 	}
 	if m.Claim().State != supervise.StateSuspended {
-		status, ok := s.retryStart(w, r, m, token, true)
+		status, ok := s.retryStart(w, r, m, token, true, by)
 		return status, "", ok, ok
 	}
 	resume := supervise.RequestResume{Claim: token, By: by}
