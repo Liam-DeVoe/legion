@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -23,10 +24,10 @@ import (
 )
 
 // goingInternals is what a reason the bar shows a person may not name, since the person at the bar
-// holds none of it: a tool's id (dispatch_doc_edit), the dispatch command line - one of its
-// commands or flags (dispatch artifact, --force) - and the members of a write the bar fills in
+// holds none of it: a tool's id (dispatch_doc_edit), the dispatch command line - the CLI, one of
+// its commands or flags (dispatch artifact, --force) - and the members of a write the bar fills in
 // itself (force, approved person). A reason naming one tells that person of nothing they can do.
-var goingInternals = regexp.MustCompile(`dispatch_[a-z_]+|--[a-z]|\bdispatch (command|artifact|[a-z]+-[a-z]+)\b|\bforce\b|\bapproved (auto|person|confirmed)\b`)
+var goingInternals = regexp.MustCompile(`dispatch_[a-z_]+|--[a-z]|\bCLI\b|\bdispatch (command|artifact|[a-z]+-[a-z]+)\b|\bforce\b|\bapproved (auto|person|confirmed)\b`)
 
 // goingAutomaticOf is whether the one invocation the answer wrote for action, as the proposal of a
 // run typed as words marks it: about the page's DEMO-12 where onPage, about the items the words
@@ -402,7 +403,7 @@ func TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar(t *testing.T) {
 	answered := func(err error) (int, string, string) {
 		var argument GoingArgumentError
 		if errors.As(err, &argument) {
-			return http.StatusBadRequest, codeGoingArguments, argument.Error()
+			return http.StatusBadRequest, codeGoingArguments, argument.Reason
 		}
 		var refused *apiError
 		if errors.As(err, &refused) {
@@ -461,6 +462,148 @@ func TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar(t *testing.T) {
 
 // goingPickOrConfirm is a reason telling the person to pick or to confirm a write.
 var goingPickOrConfirm = regexp.MustCompile(`(?i)\b(pick|confirm)`)
+
+// goingUnsendableCalls is a call of each action the bar can never send as its answer wrote it,
+// by the argument that makes it so: a picture file or a file to read the text from, which only
+// the machine the answer was written for can open, a dispatch:// link naming where the call goes,
+// an upload with no text, a closing note on an update that does not close, and a source
+// repository not written as owner/name. Each is a call the same arguments without that one make,
+// and the bar sends, except that an upload without its file needs its text instead.
+var goingUnsendableCalls = []struct {
+	name, action, argument string
+	arguments, sendable    map[string]any
+}{
+	{"a comment's pictures", "dispatch_comment", "images",
+		map[string]any{"issue": "DEMO-12", "body": "See the screenshot.", "images": []any{"shot.png"}},
+		map[string]any{"issue": "DEMO-12", "body": "See the screenshot."}},
+	{"a comment's dispatch:// link", "dispatch_comment", "ref",
+		map[string]any{"issue": "DEMO-12", "body": "On the spec.", "ref": "dispatch://DEMO-12/spec"},
+		map[string]any{"issue": "DEMO-12", "body": "On the spec."}},
+	{"a question's pictures", "dispatch_ask", "images",
+		map[string]any{"issue": "DEMO-12", "question": "Ship it as shown?", "images": []any{"shot.png"}},
+		map[string]any{"issue": "DEMO-12", "question": "Ship it as shown?"}},
+	{"a message's pictures", "dispatch_message", "images",
+		map[string]any{"issue": "DEMO-12", "body": "See the screenshot.", "images": []any{"shot.png"}},
+		map[string]any{"issue": "DEMO-12", "body": "See the screenshot."}},
+	{"a suggestion's dispatch:// link", "dispatch_suggest", "ref",
+		map[string]any{"issue": "DEMO-12", "quote": "first line", "replace_with": "opening line", "ref": "dispatch://DEMO-12/spec"},
+		map[string]any{"issue": "DEMO-12", "quote": "first line", "replace_with": "opening line"}},
+	{"a document edit's dispatch:// link", "dispatch_doc_edit", "ref",
+		map[string]any{"issue": "DEMO-12", "artifact": "notes", "ops": []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}}, "ref": "dispatch://DEMO-12/notes"},
+		map[string]any{"issue": "DEMO-12", "artifact": "notes", "ops": []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}}}},
+	{"an upload's file", "dispatch_artifact", "path",
+		map[string]any{"issue": "DEMO-12", "name": "notes.md", "path": "./notes.md"},
+		map[string]any{"issue": "DEMO-12", "name": "notes.md", "content": "# Notes\n"}},
+	{"an upload with no text", "dispatch_artifact", "content",
+		map[string]any{"issue": "DEMO-12", "name": "notes.md"},
+		map[string]any{"issue": "DEMO-12", "name": "notes.md", "content": "# Notes\n"}},
+	{"a closing note on an update that does not close", "dispatch_issue_update", "reason",
+		map[string]any{"issue": "DEMO-12", "status": "in_progress", "reason": "Started on it."},
+		map[string]any{"issue": "DEMO-12", "status": "in_progress"}},
+	{"a source repository not written as owner/name", "dispatch_architecture_sync", "repo",
+		map[string]any{"project": "DEMO", "repo": "widgets"},
+		map[string]any{"project": "DEMO", "repo": "acme/widgets"}},
+}
+
+// TestGoingProposalWithholdsACallTheBarCanNeverSend (deep review, Minor finding): the answer
+// wrote a call the bar can never send (goingUnsendableCalls) - a comment with a picture file, one
+// naming its place by a dispatch:// link, and the rest - and the person's words name its issue, so
+// it would have been offered and marked automatic, a submit then running a write that can only be
+// refused. The proposal withholds it instead, as it withholds an upload over a held document:
+// no invocation of it is offered, none is automatic, and the offer's withheld says why in words
+// for the person at the bar, naming neither the argument nor anything else of goingInternals. The
+// same call without that argument is offered.
+func TestGoingProposalWithholdsACallTheBarCanNeverSend(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := goingRunStart{actions: catalogue.Actions(), words: "post this on DEMO-12 and sync DEMO"}
+	propose := func(action string, arguments map[string]any) goingOffer {
+		t.Helper()
+		written, err := json.Marshal(map[string][]map[string]any{action: {arguments}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		proposal := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{action}},
+			&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{})
+		if len(proposal.Offers) != 1 {
+			t.Fatalf("%s proposed %+v, want the one offer", action, proposal)
+		}
+		return proposal.Offers[0]
+	}
+	for _, tc := range goingUnsendableCalls {
+		if sendable := propose(tc.action, tc.sendable); !sendable.Offered || len(sendable.Invocations) != 1 || len(sendable.Withheld) != 0 {
+			t.Errorf("%s: the call without %s proposed %+v, want it offered", tc.name, tc.argument, sendable)
+			continue
+		}
+		offer := propose(tc.action, tc.arguments)
+		if offer.Offered || len(offer.Invocations) != 0 || len(offer.Withheld) != 1 {
+			t.Errorf("%s: the call proposed %+v, want it withheld, saying why, and no invocation of it offered", tc.name, offer)
+			continue
+		}
+		why := offer.Withheld[0]
+		if internals := goingInternals.FindAllString(why, -1); len(internals) > 0 {
+			t.Errorf("%s: the call is withheld %q, which names %q, none of which the person at the bar holds", tc.name, why, internals)
+		}
+		if regexp.MustCompile(`\b` + tc.argument + `\b`).MatchString(why) {
+			t.Errorf("%s: the call is withheld %q, which names the argument %s, a word the person at the bar never sees", tc.name, why, tc.argument)
+		}
+	}
+}
+
+// TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords (deep review, Minor finding): a run
+// recorded by a build that offered a call the bar can never send - a comment with a picture file,
+// and one naming its place by a dispatch:// link, each marked automatic - is refused when the
+// person picks it, 400 GOING_ARGUMENTS, with nothing written, and the refusal is the words the
+// proposal now withholds it with: no tool id before it, no argument named, nothing of
+// goingInternals.
+func TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Commented on", "The spec.\n").Key
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := func() int {
+		t.Helper()
+		return len(decodeBody[[]model.Comment](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+issue+"/comments", nil)))
+	}
+	for _, tc := range goingUnsendableCalls {
+		if tc.action != "dispatch_comment" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			arguments := maps.Clone(tc.arguments)
+			arguments["issue"] = issue
+			proposal := goingProposal{Offers: []goingOffer{{Action: tc.action, Offered: true, Invocations: []goingInvocation{
+				{Arguments: arguments, Automatic: true, TargetArgument: "issue"},
+			}}}}
+			run := rig.recorded(t, "alice", true, tc.action, "post this on "+issue, proposal)
+			refused := rig.write(t, "alice", run, map[string]any{"offer": tc.action, "invocation": 0, "approved": goingApprovedPerson})
+			refusal := decodeBody[errorBody](t, refused)
+			if refused.Code != http.StatusBadRequest || refusal.Code != codeGoingArguments {
+				t.Fatalf("the pick answered %d %s, want 400 %s", refused.Code, refused.Body.String(), codeGoingArguments)
+			}
+			if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
+				t.Errorf("the pick is refused %q, which names %q, none of which the person at the bar holds", refusal.Error, internals)
+			}
+			if regexp.MustCompile(`\b` + tc.argument + `\b`).MatchString(refusal.Error) {
+				t.Errorf("the pick is refused %q, which names the argument %s, a word the person at the bar never sees", refusal.Error, tc.argument)
+			}
+			start := goingRunStart{actions: catalogue.Actions(), words: "post this on " + issue}
+			written, _ := json.Marshal(map[string][]map[string]any{tc.action: {arguments}})
+			withheld := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{tc.action}},
+				&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{}).Offers[0].Withheld
+			if len(withheld) != 1 || withheld[0] != refusal.Error {
+				t.Errorf("the pick is refused %q, and a proposal made now withholds the call with %q, want the same words", refusal.Error, withheld)
+			}
+			if count := comments(); count != 0 {
+				t.Fatalf("%s holds %d comments after the refused pick, want none", issue, count)
+			}
+		})
+	}
+}
 
 // TestGoingUploadOfferedForWordsNamingTheDocumentRunsWhenThePersonPicksIt (deep review round 5,
 // finding D): an upload with force the proposal offers because the answer wrote the held

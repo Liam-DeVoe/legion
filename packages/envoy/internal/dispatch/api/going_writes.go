@@ -932,8 +932,10 @@ func (c goingWriteClaim) record(issue string) bool {
 // refuse answers a claimed write that was refused or failed before all of it landed: by the route
 // a request of it ran through or by a read it needed, each answered as that route answered it -
 // naming each request of the write that landed before it (goingRefusal.after) - and recorded as
-// the write's outcome, with how each request went; by its own schema or translation, 400
-// GOING_ARGUMENTS, which no route saw and the run does not record; or by the server's own failure.
+// the write's outcome, with how each request went; by its own schema or translation, or as a call
+// the bar can never send (goingUnsendable), 400 GOING_ARGUMENTS, its reason alone - the line the
+// bar prints it on names the action already - which no route saw and the run does not record; or
+// by the server's own failure.
 // The claim is the write's own: a fresh one, or one taken over that the call compared itself with
 // and found its own (createGoingWrite; a refusal before that comparison is giveBack's). A failure
 // of either of the last two kinds after a request of the write landed - an adopted write, or a
@@ -974,7 +976,7 @@ func (c goingWriteClaim) refuse(before goingObservation, err error) {
 	}
 	var argument GoingArgumentError
 	if errors.As(err, &argument) {
-		writeError(c.w, codeGoingArguments, http.StatusBadRequest, argument.Error())
+		writeError(c.w, codeGoingArguments, http.StatusBadRequest, argument.Reason)
 		return
 	}
 	c.s.writeHandlerError(c.w, err)
@@ -985,10 +987,10 @@ func (c goingWriteClaim) refuse(before goingObservation, err error) {
 // translation's or its encode's. Whether taken's record is this call's is not known yet, so nothing
 // is written onto it: the refusal is answered as it stands - a route's or a read's in that route's
 // words, naming only the landings proved to be the call's own requests, by method, path and body
-// digest (goingResumeAfter), the call's own schema or translation 400
-// GOING_ARGUMENTS, anything else the server's own failure - and taken's claim is given back, moved
-// back to the moment it held (restoreGoingRunWrite), so taken stands byte for byte as it was, for
-// the press that does reach the comparison to resume or to settle.
+// digest (goingResumeAfter), the call's own schema or translation 400 GOING_ARGUMENTS with its
+// reason alone, as refuse answers it, anything else the server's own failure - and taken's claim
+// is given back, moved back to the moment it held (restoreGoingRunWrite), so taken stands byte for
+// byte as it was, for the press that does reach the comparison to resume or to settle.
 func (c goingWriteClaim) giveBack(taken goingRunWrite, err error) {
 	ctx, cancel := goingBookkeeping(c.ctx)
 	defer cancel()
@@ -1001,7 +1003,7 @@ func (c goingWriteClaim) giveBack(taken goingRunWrite, err error) {
 	case errors.As(err, &refusal):
 		refusal.write(c.w)
 	case errors.As(err, &argument):
-		writeError(c.w, codeGoingArguments, http.StatusBadRequest, argument.Error())
+		writeError(c.w, codeGoingArguments, http.StatusBadRequest, argument.Reason)
 	default:
 		c.s.writeHandlerError(c.w, err)
 	}
@@ -1069,25 +1071,32 @@ func goingProposedInvocation(run goingRun, input goingWriteInput) (goingInvocati
 // threshold (the decision's act), an invocation the proposal did not mark automatic - one that
 // acts on an item neither the page nor the person's words named (goingAutomatic) - or one sent
 // with arguments replacing its own, since the proposal marked automatic only the arguments it
-// holds, and a caller who asked to confirm every write.
+// holds, and a caller who asked to confirm every write. The bar sends none of these at once unless
+// what it holds disagrees with the server - a page that read the setting before the person turned
+// it on elsewhere, a build of the bar older than the record - so each reason is worded for the
+// person reading it in the bar's panel, on the line naming the write: what happened, and what that
+// person does in the bar - ask again and pick the write, ask again with the change in the words,
+// or submit again, which asks them first once the page has read the setting again
+// (going-turns.ts, goingWrite) - naming no tool, no argument and no value of approved, none of
+// which that person holds.
 func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input goingWriteInput, invocation goingInvocation, login string) error {
 	action := input.Offer
 	if goingAlwaysAsk[action] {
 		return errorf(http.StatusConflict, codeGoingApprovalRequired,
-			"%s always asks before it runs: send it as approved person or confirmed", action)
+			"this write runs only when you pick it, and it was sent to run at once, so nothing was written: %s", goingPickToRunAdvice)
 	}
 	decision := run.Decision
 	if decision == nil || !decision.Act || len(decision.Actions) == 0 || decision.Actions[0].Action != action {
 		return errorf(http.StatusConflict, codeGoingApprovalRequired,
-			"the decision did not choose %s at or above the action threshold, so it runs only when the person picks it: send it as approved person or confirmed", action)
+			"the bar runs a write at once only where it is sure your words ask for it, and it was not sure of this one, so nothing was written: %s", goingPickToRunAdvice)
 	}
 	if !invocation.Automatic {
 		return errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"this invocation of %s names an item, or hands the work to a session or a person, that neither the page nor the person's own words named, so it runs only when the person picks it: send it as approved person or confirmed", action)
+			"this write acts on an item, or hands the work to a session or a person, that neither the page nor your words named, so it runs only when you pick it, and nothing was written: %s", goingPickToRunAdvice)
 	}
 	if len(input.Arguments) > 0 {
 		return errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"this write of %s replaces arguments the proposal marked automatic, so it runs only when the person picks it: send it as approved person or confirmed, or send no arguments", action)
+			"this write changes what the answer wrote, and the bar runs at once only what the answer wrote, so nothing was written: ask again with the change written in your question")
 	}
 	settings, err := s.readGoingSettings(ctx, login)
 	if err != nil {
@@ -1095,10 +1104,15 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input going
 	}
 	if settings.ConfirmWrites {
 		return errorf(http.StatusConflict, codeGoingConfirmationRequired,
-			"this person asked to confirm every write of the command bar: send it as approved confirmed once they have")
+			"your setting asks you to confirm every write the bar makes, and this one was sent without asking you, so nothing was written: submit again, and the bar asks you to confirm it first")
 	}
 	return nil
 }
+
+// goingPickToRunAdvice is what a person does with a write the bar sent at once that runs only when
+// they pick it: a new run of their words offers it as a row they pick (OperationRows.tsx), since
+// the bar offers no pick of a write it sent at once in the run that sent it.
+const goingPickToRunAdvice = "ask again and pick it in the bar to run it"
 
 // goingPerson is what of a write came from the person at the bar rather than from the answer,
 // which an upload's refusal is worded from: the words they typed (goingRun.Words), and the

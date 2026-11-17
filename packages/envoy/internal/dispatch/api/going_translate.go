@@ -10,9 +10,12 @@ package api
 // route as it stands, and every read it makes goes through the caller's own Doer, so it reads
 // only what the caller may read.
 //
-// What a translator cannot send it refuses by name (goingUntranslatable), before anything is
-// written: a picture or a file the CLI reads off the machine it runs on, which the bar has no
-// way to reach, and a `ref` the bar names by issue, project and document instead.
+// What the bar can never send - a picture or a file the CLI reads off the machine it runs on, which
+// the bar has no way to reach, a `ref` where the bar places a write by issue, project and document
+// instead, and the rest goingUnsendable names - is decided by goingUnsendable, which needs no read:
+// GoingCaller refuses such a call before its row's translation, and the proposal withholds it. What
+// a translator cannot send for a reason of its own it refuses by name (goingUntranslatable),
+// before anything is written.
 
 import (
 	"bytes"
@@ -127,12 +130,89 @@ type goingUntranslatable string
 
 func (e goingUntranslatable) Error() string { return string(e) }
 
-// The calls the bar can never send, each in one wording.
-const (
-	goingNoPictures = "images names picture files on the machine the dispatch CLI runs on, which the bar cannot read: post the words without them"
-	goingNoFilePath = "path names a file on the machine the dispatch CLI runs on, which the bar cannot read: give the content itself"
-	goingNoRef      = "ref is a dispatch:// reference the CLI reads its target from; the bar names the issue, project and document instead"
-)
+// goingUnsendable is why the bar can never send a call of action with these arguments, "" where
+// it may: a picture file or a file to upload, which the `dispatch` command reads off the machine
+// it runs on and the bar has no way to open; a `ref`, the dispatch:// reference the command finds
+// a comment's, a suggestion's or an edit's place by, where the bar places a write by the issue,
+// project and document the call names; an upload with no text; a closing `reason` on an update
+// that does not close the issue, which the update posts only before a close; and a sync's source
+// repository not written as owner/name, the two segments its route's path takes. An ask's `ref`
+// is none of these: the question carries it as a line of its own (goingAskBody). None needs a
+// read, so the proposal withholds such a call, saying why (goingPropose), and GoingCaller refuses
+// one before its row's translation (prepare), with the same words, which no translator repeats.
+// Each is worded for the person reading the bar's panel - what the bar cannot send, and what that
+// person can do there - and names no tool, no argument, no command line and no flag, none of
+// which that person holds.
+func goingUnsendable(action string, arguments map[string]any) string {
+	named := func(argument string) bool {
+		_, given := arguments[argument]
+		return given
+	}
+	switch action {
+	case "dispatch_comment":
+		if named("images") {
+			return goingNoPictures("a comment")
+		}
+		if named("ref") {
+			return goingNoLink("a comment")
+		}
+	case "dispatch_ask":
+		if named("images") {
+			return goingNoPictures("a question")
+		}
+	case "dispatch_message":
+		if named("images") {
+			return goingNoPictures("a message")
+		}
+	case "dispatch_suggest":
+		if named("ref") {
+			return goingNoLink("a suggested change")
+		}
+	case "dispatch_doc_edit":
+		if named("ref") {
+			return goingNoLink("an edit of a document")
+		}
+	case "dispatch_artifact":
+		if named("path") {
+			return "the bar cannot upload a file, since the file is one the answer named and the bar has no way to open it. Ask again with the text to upload written in your question."
+		}
+		if _, text := arguments["content"].(string); !text {
+			return "the bar cannot send an upload with no text, since it uploads only the text the answer writes. Ask again with the text to upload written in your question."
+		}
+	case "dispatch_issue_update":
+		if _, noted := arguments["reason"].(string); noted && arguments["status"] != "done" {
+			return "the bar cannot send an update with a closing note that does not close the issue, since the note is posted only as the issue is marked done. Ask again to close the issue, or for the update without the note."
+		}
+	case "dispatch_architecture_sync":
+		// A sync naming no repository syncs every source of the project (goingTranslateNoBody).
+		if repository := goingText(arguments, "repo"); repository != "" {
+			if _, _, whole := goingSourceRepository(repository); !whole {
+				return "the bar cannot sync an architecture source whose repository is not written whole as owner/name. Ask again naming the repository that way, as in acme/widgets."
+			}
+		}
+	}
+	return ""
+}
+
+// goingNoPictures is why the bar cannot post write - a comment, a question, a message - with the
+// picture files the call names (goingUnsendable).
+func goingNoPictures(write string) string {
+	return fmt.Sprintf("the bar cannot post %s with a picture, since the picture is a file the answer named and the bar has no way to open it. Ask again for the words alone.", write)
+}
+
+// goingNoLink is why the bar cannot send write where the call names its place by a dispatch://
+// reference (goingUnsendable).
+func goingNoLink(write string) string {
+	return fmt.Sprintf("the bar cannot send %s whose place is given by a link, since the bar finds where a write goes only by the issue, project or document the answer names. Ask again naming the issue or the document it is for.", write)
+}
+
+// goingSourceRepository splits a source repository written as owner/name on its slash, the way
+// the server reads a repository elsewhere (strings.Cut), into the two segments the one-source
+// sync route's path takes; whole is false for any other value.
+func goingSourceRepository(repository string) (owner, name string, whole bool) {
+	owner, name, found := strings.Cut(repository, "/")
+	return owner, name, found && owner != "" && name != "" && !strings.Contains(name, "/")
+}
 
 // goingIssuePath is an issue's own route, and goingIssuePath(key, "claim") one under it.
 func goingIssuePath(key string, below ...string) string {
@@ -417,16 +497,6 @@ func goingText(arguments map[string]any, name string) string {
 	return value
 }
 
-// goingRefuseNamed refuses the call where it carries any of the arguments named, with why.
-func goingRefuseNamed(arguments map[string]any, why string, names ...string) error {
-	for _, name := range names {
-		if _, named := arguments[name]; named {
-			return goingUntranslatable(why)
-		}
-	}
-	return nil
-}
-
 // goingReplyTarget is the item and the block a reply argument names: a reference to a block of a
 // comment, an ask or a message splits into the item's id and the block's, a reference to the
 // item names it, and any other value is the item's id as written, which the route checks.
@@ -483,15 +553,12 @@ func goingTranslateNoBody(_ context.Context, _ goingReader, call goingCallInput)
 }
 
 // goingTranslateArchitectureSyncRepo imports one architecture source, named by its owner/name
-// repository as the sync route's path takes it (one {owner} and one {repo} segment). It splits the
-// `repo` argument on the first slash, the way the server reads a repository elsewhere
-// (strings.Cut), and refuses a value that is not owner/name before any request; the project fills
-// {key}. The row that chose it bound both path segments to `repo`, so the split is read here.
+// repository as the sync route's path takes it (one {owner} and one {repo} segment), split by
+// goingSourceRepository; goingUnsendable refused a value not written so before the translation.
+// The project fills {key}. The row that chose it bound both path segments to `repo`, so the split
+// is read here.
 func goingTranslateArchitectureSyncRepo(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	owner, name, found := strings.Cut(goingText(call.arguments, "repo"), "/")
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
-		return goingCall{}, goingUntranslatable("repo names one source repository as owner/name")
-	}
+	owner, name, _ := goingSourceRepository(goingText(call.arguments, "repo"))
 	return goingCall{path: map[string]string{"key": call.path["key"], "owner": owner, "repo": name}}, nil
 }
 
@@ -505,8 +572,8 @@ func goingTranslateClaim(_ context.Context, _ goingReader, call goingCallInput) 
 // empty are cleared, `before` and `after` are the rank's neighbours, `advances` is the priority
 // ids the issue states and `advances_revision` the revision the read it answers returned (the
 // route's own compare-and-set), `external_links` adds the links named to the set the issue holds
-// (the route replaces the set; an empty list clears it), and a `reason`, which the schema takes
-// only beside a close, is posted on the issue as a message
+// (the route replaces the set; an empty list clears it), and a `reason`, which goingUnsendable
+// takes only beside a close, is posted on the issue as a message
 // before the close, as `dispatch issue-update --reason` posts it (updateIssueInput has no reason
 // field). An issue already closed is refused before its reason is posted, so no reason lands as
 // a stray message; a write that resumes after its own reason, landed by an earlier write of the
@@ -530,9 +597,6 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 	translated := goingCall{path: call.path, body: body}
 	links, linking := arguments["external_links"].([]any)
 	reason, reasoned := arguments["reason"].(string)
-	if reasoned && arguments["status"] != "done" {
-		return goingCall{}, goingUntranslatable("reason is the note a close carries, so it is taken only beside status done")
-	}
 	if linking && len(links) == 0 {
 		body["external_links"] = []model.ExternalLink{}
 	}
@@ -584,26 +648,20 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 // goingAskBody is what both ask rows take of a call: the question, with a `ref` the question
 // does not already hold written under it as `dispatch ask` writes it, its options, multiple and
 // urgency.
-func goingAskBody(arguments map[string]any) (map[string]any, error) {
-	if err := goingRefuseNamed(arguments, goingNoPictures, "images"); err != nil {
-		return nil, err
-	}
+func goingAskBody(arguments map[string]any) map[string]any {
 	body := goingPick(arguments, "options", "multiple", "urgency")
 	question := goingText(arguments, "question")
 	if ref := goingText(arguments, "ref"); ref != "" && !strings.Contains(question, ref) {
 		question += "\n\nRef: " + ref
 	}
 	body["question"] = question
-	return body, nil
+	return body
 }
 
 // goingTranslateIssueAsk opens the ask on the issue, anchored to the passage of the issue's
 // document the anchor names, that document resolved from its slug.
 func goingTranslateIssueAsk(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	body, err := goingAskBody(call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
+	body := goingAskBody(call.arguments)
 	if anchor, anchored := call.arguments["anchor"].(map[string]any); anchored {
 		id, err := read.issueDocument(ctx, call.path["key"], goingText(anchor, "artifact"))
 		if err != nil {
@@ -617,10 +675,7 @@ func goingTranslateIssueAsk(ctx context.Context, read goingReader, call goingCal
 // goingTranslateDocumentAsk opens the ask on a document named by id, or by slug on the project
 // the call names, its anchor on that same document.
 func goingTranslateDocumentAsk(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	body, err := goingAskBody(call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
+	body := goingAskBody(call.arguments)
 	id, err := goingDocument(ctx, read, call.arguments, call.path["id"])
 	if err != nil {
 		return goingCall{}, err
@@ -644,13 +699,7 @@ func goingTranslateResolveAsk(_ context.Context, _ goingReader, call goingCallIn
 // goingCommentBody is what both comment rows take of a call besides an anchor: the body, the
 // comment or block it replies to, the ask (`reply_to_ask`, the route's `ask_id`) or ask part it
 // replies under, and the turn.
-func goingCommentBody(arguments map[string]any) (map[string]any, error) {
-	if err := goingRefuseNamed(arguments, goingNoPictures, "images"); err != nil {
-		return nil, err
-	}
-	if err := goingRefuseNamed(arguments, goingNoRef, "ref"); err != nil {
-		return nil, err
-	}
+func goingCommentBody(arguments map[string]any) map[string]any {
 	body := goingPick(arguments, "body", "turn")
 	if replyTo := goingText(arguments, "reply_to"); replyTo != "" {
 		id, block := goingReplyTarget(replyTo)
@@ -666,16 +715,13 @@ func goingCommentBody(arguments map[string]any) (map[string]any, error) {
 			body["reply_to_block"] = block
 		}
 	}
-	return body, nil
+	return body
 }
 
 // goingTranslateIssueComment posts on the issue, on a quote of one of its documents where the
 // call names the document and the quote.
 func goingTranslateIssueComment(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	body, err := goingCommentBody(call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
+	body := goingCommentBody(call.arguments)
 	if document := goingText(call.arguments, "artifact"); document != "" && goingText(call.arguments, "quote") != "" {
 		id, err := read.issueDocument(ctx, call.path["key"], document)
 		if err != nil {
@@ -689,10 +735,7 @@ func goingTranslateIssueComment(ctx context.Context, read goingReader, call goin
 // goingTranslateDocumentComment posts on a document named by id, or by slug on the project the
 // call names, on the quote the call names.
 func goingTranslateDocumentComment(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
-	body, err := goingCommentBody(call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
+	body := goingCommentBody(call.arguments)
 	id, err := goingDocument(ctx, read, call.arguments, call.path["id"])
 	if err != nil {
 		return goingCall{}, err
@@ -705,14 +748,11 @@ func goingTranslateDocumentComment(ctx context.Context, read goingReader, call g
 
 // goingSuggestion is a suggestion on the document id: its anchor, its replacement under the
 // route's `suggestion`, and its optional words.
-func goingSuggestion(id string, arguments map[string]any) (map[string]any, error) {
-	if err := goingRefuseNamed(arguments, goingNoRef, "ref"); err != nil {
-		return nil, err
-	}
+func goingSuggestion(id string, arguments map[string]any) map[string]any {
 	body := goingPick(arguments, "body")
 	body["anchor"] = goingAnchor(id, arguments)
 	body["suggestion"] = map[string]any{"replace_with": arguments["replace_with"]}
-	return body, nil
+	return body
 }
 
 // goingTranslateIssueSuggest suggests on the issue's document the call names, the spec where it
@@ -722,11 +762,7 @@ func goingTranslateIssueSuggest(ctx context.Context, read goingReader, call goin
 	if err != nil {
 		return goingCall{}, err
 	}
-	body, err := goingSuggestion(id, call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
-	return goingCall{path: call.path, body: body}, nil
+	return goingCall{path: call.path, body: goingSuggestion(id, call.arguments)}, nil
 }
 
 // goingTranslateDocumentSuggest suggests on a document named by id, or by slug on the project the
@@ -736,19 +772,12 @@ func goingTranslateDocumentSuggest(ctx context.Context, read goingReader, call g
 	if err != nil {
 		return goingCall{}, err
 	}
-	body, err := goingSuggestion(id, call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
-	return goingCall{path: map[string]string{"id": id}, body: body}, nil
+	return goingCall{path: map[string]string{"id": id}, body: goingSuggestion(id, call.arguments)}, nil
 }
 
 // goingTranslateIssueMessage posts on the issue's conversation, as a reply to the message or the
 // block of one `in_reply_to` names.
 func goingTranslateIssueMessage(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	if err := goingRefuseNamed(call.arguments, goingNoPictures, "images"); err != nil {
-		return goingCall{}, err
-	}
 	body := goingPick(call.arguments, "body")
 	if replyTo := goingText(call.arguments, "in_reply_to"); replyTo != "" {
 		id, block := goingReplyTarget(replyTo)
@@ -764,9 +793,6 @@ func goingTranslateIssueMessage(_ context.Context, _ goingReader, call goingCall
 // sends it: to the message's first delivery attempt, which is the one it was handed, naming the
 // session as its actor, and asking to post a follow-up where that attempt is already answered.
 func goingTranslateMessageReply(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	if err := goingRefuseNamed(call.arguments, goingNoPictures, "images"); err != nil {
-		return goingCall{}, err
-	}
 	if call.session == "" {
 		return goingCall{}, goingUntranslatable("a reply to a direct message is the session's own, and this caller acts as no session")
 	}
@@ -793,9 +819,6 @@ func goingTranslateSendToAgent(ctx context.Context, read goingReader, call going
 // goingTranslateDocEdit sends the edit's operations, its precondition and its summary; the issue
 // and project rows take the document's slug in their path as the call names it.
 func goingTranslateDocEdit(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	if err := goingRefuseNamed(call.arguments, goingNoRef, "ref"); err != nil {
-		return goingCall{}, err
-	}
 	return goingCall{path: call.path, body: goingPick(call.arguments, "ops", "precondition", "summary")}, nil
 }
 
@@ -840,34 +863,18 @@ func goingTranslateResultRecord(_ context.Context, _ goingReader, call goingCall
 		"failed", "skipped", "excluded", "screenshots")}, nil
 }
 
-// goingUploadContent is the text an upload stores: the call's own content, since a path names a
-// file the bar cannot read.
-func goingUploadContent(arguments map[string]any) (string, error) {
-	if err := goingRefuseNamed(arguments, goingNoFilePath, "path"); err != nil {
-		return "", err
-	}
-	content, given := arguments["content"].(string)
-	if !given {
-		return "", goingUntranslatable("content is required: the bar uploads the text it was given")
-	}
-	return content, nil
-}
-
-// goingTranslateUpload uploads the content as a document of the issue or the project, as the
-// JSON form of the route takes it. `force` is no field of the route's: every upload is sent as a
-// create alone (goingUploadCondition), so a document of its name the owner holds by the time the
-// upload takes the owner's lock - one another writer made after the write's read before - is the
-// route's to refuse, 409 DOCUMENT_EXISTS. Where that read before found one, the writes route
-// refuses an upload without force before it is sent, however the write came to run
+// goingTranslateUpload uploads the call's own content as a document of the issue or the project,
+// as the JSON form of the route takes it (goingUnsendable refused a call naming a file to read it
+// from, or no content, before the translation). `force` is no field of the route's: every upload
+// is sent as a create alone (goingUploadCondition), so a document of its name the owner holds by
+// the time the upload takes the owner's lock - one another writer made after the write's read
+// before - is the route's to refuse, 409 DOCUMENT_EXISTS. Where that read before found one, the
+// writes route refuses an upload without force before it is sent, however the write came to run
 // (goingUploadForceRefusal), as the dispatch command does, and sends one with force, which asks
 // for that document's next version, with no condition (goingUploadWritesOver).
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	content, err := goingUploadContent(call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
 	body := goingPick(call.arguments, "name", "summary")
-	body["content"] = content
+	body["content"] = goingText(call.arguments, "content")
 	return goingCall{path: call.path, body: body, condition: goingUploadCondition()}, nil
 }
 
@@ -879,15 +886,12 @@ func goingUploadCondition() *goingCondition {
 	return &goingCondition{ExpectNew: true}
 }
 
-// goingTranslateAgentUpload uploads the content as a file of the session's conversation, which
-// takes a multipart upload alone: the file part named as the call names it, typed by its
-// extension, and plain text where the extension says nothing. It is sent as a create alone, as
-// goingTranslateUpload sends one (goingUploadCondition).
+// goingTranslateAgentUpload uploads the call's own content as a file of the session's
+// conversation, which takes a multipart upload alone: the file part named as the call names it,
+// typed by its extension, and plain text where the extension says nothing. It is sent as a create
+// alone, as goingTranslateUpload sends one (goingUploadCondition).
 func goingTranslateAgentUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
-	content, err := goingUploadContent(call.arguments)
-	if err != nil {
-		return goingCall{}, err
-	}
+	content := goingText(call.arguments, "content")
 	name := goingText(call.arguments, "name")
 	contentType := mime.TypeByExtension(path.Ext(name))
 	if contentType == "" {

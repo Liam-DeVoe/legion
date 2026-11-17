@@ -665,10 +665,11 @@ type GoingDoer interface {
 
 // GoingCaller performs an action an agent already chose. It holds the catalogue to the proposal
 // before it builds anything: an action the catalogue does not hold, a call the action's schema
-// refuses, and a call no row of the action takes, each answer an error of their own with no
-// request made. What the chosen row's route takes is that row's translation's to say
-// (goingToolRoute.Translate), and every read the translation makes to say it - a document's id
-// from its slug, a session's id from its title - goes through the same Doer as the write.
+// refuses, a call no row of the action takes, and a call the bar can never send as written
+// (goingUnsendable), each answer an error of their own with no request made. What the chosen
+// row's route takes is that row's translation's to say (goingToolRoute.Translate), and every read
+// the translation makes to say it - a document's id from its slug, a session's id from its title -
+// goes through the same Doer as the write.
 type GoingCaller struct {
 	Catalogue GoingCatalogue
 	// BaseURL is the Dispatch server the action is performed against, without a trailing slash;
@@ -706,8 +707,11 @@ func (e GoingUnknownActionError) Error() string {
 	return fmt.Sprintf("%q is no action of the catalogue: GET %s lists every action", e.Action, goingCataloguePath)
 }
 
-// GoingArgumentError is the refusal of a call the action's own schema does not accept, raised
-// before any request for the same reason.
+// GoingArgumentError is the refusal of a call the action's own schema does not accept, that no row
+// of the action takes, or that the bar can never send as written (goingUnsendable, a translation's
+// goingUntranslatable), raised before any request for the same reason. Reason is the refusal
+// alone, which the writes route answers as it stands, in the bar's panel; Error names the action
+// before it, for a caller that holds no line naming the action.
 type GoingArgumentError struct {
 	Action string
 	Reason string
@@ -740,8 +744,9 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	return response, err
 }
 
-// prepare holds a call to the catalogue and the action's schema, chooses its row and translates
-// it, reading what the translation needs through the Doer, and sends no write.
+// prepare holds a call to the catalogue and the action's schema, chooses its row, refuses a call
+// the bar can never send (goingUnsendable) and translates it, reading what the translation needs
+// through the Doer, and sends no write.
 func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[string]any) (goingPrepared, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
@@ -753,6 +758,9 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	route, values, chosen := chooseGoingRoute(entry, arguments, c.Session)
 	if !chosen {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
+	}
+	if why := goingUnsendable(action, arguments); why != "" {
+		return goingPrepared{}, GoingArgumentError{Action: action, Reason: why}
 	}
 	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session, resumed: c.resumeAfter})
 	if err != nil {

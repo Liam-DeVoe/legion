@@ -31,6 +31,13 @@ body: |-
   written over. Each write is
   claimed on the run once, so a second request while it runs answers
   `429 GOING_WRITE_IN_PROGRESS`.
+  A call the bar can never send as written - picture files, a `dispatch://` reference placing a
+  comment, a suggestion or a document edit, an upload of a file or with no text, an update's
+  closing `reason` that does not close the issue, a sync of a repository not written as
+  `owner/name` - is withheld too, its `withheld` the very words a write of it is refused with,
+  `400 GOING_ARGUMENTS`, which answers its reason alone, with no action's name before it. That
+  refusal and each refusal of `auto` say, in words for the person at the bar, what happened and
+  what to do there, and name no tool, argument or value of `approved`.
   A write that sends a request before its own (a close with a reason posts the reason first)
   records how each request went; the next write of that invocation, a retry under its
   `Idempotency-Key` after a `5xx`, `408` or `429` or a new press under another key, resumes

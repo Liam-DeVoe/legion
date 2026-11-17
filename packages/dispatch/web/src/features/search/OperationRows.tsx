@@ -111,9 +111,10 @@ function offerOf(proposal: Proposal | undefined, action: string): GoingOffer | u
   return proposal?.offers.find((offer) => offer.action === action && offer.offered);
 }
 
-/** Why the proposal withheld every invocation of `action` it would otherwise have offered - an
- *  upload under the name of a document its owner holds, which would replace that document's text
- *  - in Dispatch's own words, one sentence each; undefined where it withheld none. */
+/** Why the proposal withheld every invocation of `action` it would otherwise have offered - one
+ *  the bar can never send as written, such as a comment with a picture file, or an upload under the
+ *  name of a document its owner holds, which would replace that document's text - in Dispatch's
+ *  own words, each saying what the person can do instead; undefined where it withheld none. */
 function withheldOf(proposal: Proposal | undefined, action: string): string | undefined {
   const withheld = proposal?.offers.find((offer) => offer.action === action)?.withheld ?? [];
   return withheld.length === 0 ? undefined : `Nothing to run: ${withheld.join(" ")}`;
@@ -261,16 +262,18 @@ export interface GoingOperations {
  * rest, which only text someone stored asked for, are a row the person picks. Below the threshold
  * the two best actions are rows of their own, and neither runs until the person picks it. A new
  * issue and a send to the agent on the issue go through the bar's own two offers, which always
- * ask. An invocation the proposal withheld beside others of its action it offered - an upload
- * over a document its owner holds - is in no row and no line, so the panel says why, in
- * Dispatch's words, for as long as the proposal stands.
+ * ask. An invocation the proposal withheld beside others of its action it offered - one the bar
+ * can never send as written, or an upload over a document its owner holds - is in no row and no
+ * line, so the panel says why, in Dispatch's words, for as long as the proposal stands.
  *
  * A submit before the proposal arrives says it is preparing and runs when the proposal lands; one
  * with no run yet asks at once. An invocation missing one argument asks for it first, and with
  * the person's setting on (`GET /api/v1/me/going/settings`) every write asks first and is sent
- * confirmed. Each invocation is one write (`runGoingWrite`), and each write one line; a submit
- * pressed again, while the turn's writes are out or once they landed, writes none of them again,
- * and makes again only one Dispatch refused.
+ * confirmed; a write Dispatch refused because that setting is on, which this page read before the
+ * person turned it on, has the page read it again (`goingWrite`), so the next press asks first.
+ * Each invocation is one write (`runGoingWrite`), and each write one line; a submit pressed again,
+ * while the turn's writes are out or once they landed, writes none of them again, and makes again
+ * only one Dispatch refused.
  */
 export function useGoingOperations({
   answer,

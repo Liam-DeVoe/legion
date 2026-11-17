@@ -582,15 +582,25 @@ func TestEveryGoingRowWithAnUnfillableArgumentIsNotOfferedUntilTheWordsSupplyIt(
 // TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConfirmOn: a write the
 // bar sends to run at once is refused for the two that always ask, for an action the decision did
 // not choose at or above the threshold, and while the person asked to confirm every write; the
-// same write the person runs, or confirms, goes through.
+// same write the person runs, or confirms, goes through. The bar sends none of these at once
+// unless what it read disagrees with the server - the setting turned on in another tab - so each
+// refusal says, in words for the person at the bar (goingInternals names what they may not),
+// what they do there: pick the write, or submit again, and the bar asks you to confirm it first.
 func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConfirmOn(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Auto", "The spec.\n").Key
-	refusedAuto := func(t *testing.T, run, action, code string) {
+	refusedAuto := func(t *testing.T, run, action, code, does string) {
 		t.Helper()
 		response := rig.write(t, "alice", run, map[string]any{"offer": action, "invocation": 0, "approved": goingApprovedAuto})
 		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
 			t.Fatalf("auto %s: status=%d body=%s, want 409 %s", action, response.Code, response.Body.String(), code)
+		}
+		refusal := decodeBody[errorBody](t, response)
+		if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
+			t.Errorf("auto %s is refused %q, which names %q, none of which the person at the bar holds", action, refusal.Error, internals)
+		}
+		if !strings.Contains(refusal.Error, does) {
+			t.Errorf("auto %s is refused %q, want it to tell the person to %s", action, refusal.Error, does)
 		}
 		if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
 			t.Fatalf("a refused auto write was recorded as %+v", writes)
@@ -599,7 +609,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 
 	t.Run("a new issue always asks", func(t *testing.T) {
 		run := rig.proposed(t, "alice", true, "dispatch_issue", map[string]any{"project": "DEMO", "title": "A husk", "force": true})
-		refusedAuto(t, run, "dispatch_issue", codeGoingApprovalRequired)
+		refusedAuto(t, run, "dispatch_issue", codeGoingApprovalRequired, goingPickToRun)
 		line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue", "invocation": 0, "approved": goingApprovedPerson})
 		if !line.Outcome.OK || !strings.HasPrefix(line.Item, "DEMO-") {
 			t.Fatalf("the person's own run of it answered %+v", line)
@@ -610,7 +620,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 			"session": goingPlannerTitle, "body": "Look at this.", "delivery": "btw",
 		})
 		sends := len(*rig.sent)
-		refusedAuto(t, run, "dispatch_send_to_agent", codeGoingApprovalRequired)
+		refusedAuto(t, run, "dispatch_send_to_agent", codeGoingApprovalRequired, goingPickToRun)
 		if len(*rig.sent) != sends {
 			t.Fatal("a refused auto send reached the listener")
 		}
@@ -625,7 +635,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 	})
 	t.Run("below the action threshold", func(t *testing.T) {
 		run := rig.proposed(t, "alice", false, "dispatch_claim", map[string]any{"issue": issue})
-		refusedAuto(t, run, "dispatch_claim", codeGoingApprovalRequired)
+		refusedAuto(t, run, "dispatch_claim", codeGoingApprovalRequired, goingPickToRun)
 		rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_claim", "invocation": 0, "approved": goingApprovedPerson})
 	})
 	t.Run("with the person's confirm_writes on", func(t *testing.T) {
@@ -636,7 +646,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 			t.Fatalf("turn confirm_writes on: status=%d body=%s", response.Code, response.Body.String())
 		}
 		confirming := labels("confirming")
-		refusedAuto(t, confirming, "dispatch_issue_update", codeGoingConfirmationRequired)
+		refusedAuto(t, confirming, "dispatch_issue_update", codeGoingConfirmationRequired, "submit again, and the bar asks you to confirm it first")
 		rig.wrote(t, "alice", confirming, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedConfirmed})
 		// Another person's setting is their own: bob never set his, so his auto write runs.
 		bobs := rig.proposed(t, "bob", true, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"bobs"}})
@@ -715,7 +725,10 @@ func TestGoingWriteAnItemsTextAskedForIsOfferedAndNeverRunAtOnce(t *testing.T) {
 }
 
 // goingWriteRefusedNotAutomatic sends one write of the run's first invocation of action at once
-// and holds it to 409 GOING_NOT_AUTOMATIC, with nothing written or recorded.
+// and holds it to 409 GOING_NOT_AUTOMATIC, with nothing written or recorded, its reason telling
+// the person at the bar what they do there, in words naming nothing of goingInternals: pick it
+// once they ask again, or, for a write whose arguments replace the invocation's own, which no
+// pick runs, ask again with the change in their words.
 func (rig goingWritesRig) goingWriteRefusedNotAutomatic(t *testing.T, run, action string, arguments map[string]any) {
 	t.Helper()
 	body := map[string]any{"offer": action, "invocation": 0, "approved": goingApprovedAuto}
@@ -726,10 +739,30 @@ func (rig goingWritesRig) goingWriteRefusedNotAutomatic(t *testing.T, run, actio
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"`+codeGoingNotAutomatic+`"`) {
 		t.Fatalf("auto %s: status=%d body=%s, want 409 %s", action, response.Code, response.Body.String(), codeGoingNotAutomatic)
 	}
+	refusal := decodeBody[errorBody](t, response)
+	if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
+		t.Errorf("auto %s is refused %q, which names %q, none of which the person at the bar holds", action, refusal.Error, internals)
+	}
+	does := goingPickToRun
+	if arguments != nil {
+		does = goingAskWithTheChange
+	}
+	if !strings.Contains(refusal.Error, does) {
+		t.Errorf("auto %s is refused %q, want it to tell the person to %s", action, refusal.Error, does)
+	}
 	if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
 		t.Fatalf("a refused auto write was recorded as %+v", writes)
 	}
 }
+
+// goingPickToRun is what a write the bar sent at once and the server runs only once the person
+// picks it tells that person to do.
+const goingPickToRun = "ask again and pick it in the bar to run it"
+
+// goingAskWithTheChange is what a write sent at once with arguments replacing those the answer
+// wrote tells the person at the bar to do: a new run offers only what its answer writes, so the
+// change has to be in their words.
+const goingAskWithTheChange = "ask again with the change written in your question"
 
 // TestGoingWriteOnAProjectOnlyAnEnglishWordNamesIsOfferedAndNeverRunAtOnce (review finding 1):
 // projects AS and THE exist, and the words spell both keys as ordinary words in lower case. An

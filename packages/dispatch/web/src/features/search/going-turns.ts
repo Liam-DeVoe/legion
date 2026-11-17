@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 import { ApiError, api, goingUndoRequest, goingWriteRequest } from "../../api/client";
+import { goingSettingsQuery } from "../../api/queries";
 import type { GoingUndoLine, GoingWriteInput, GoingWriteLine } from "../../api/types";
 import { WriteDiscardedError } from "../writes/keyed-write";
 import { defineWriteKind, type Write, type Writes, writeUnsettled } from "../writes/write-store";
@@ -78,7 +79,10 @@ const TARGET_PREFIX = "going-run:";
  * has the bar read its hits again (`["search", …]`, `useTieredSearch`), since a hit shows the
  * status and title of the item the write changed or put back, read afresh from Dispatch rather
  * than patched here. A landing no surface awaits, or one without an answer, reads every query
- * again, as a plain write's does.
+ * again, as a plain write's does. A write Dispatch refused `GOING_CONFIRMATION_REQUIRED` was sent
+ * at once on a copy of the person's setting that no longer holds - they turned it on since this
+ * page read it, in Settings or another tab - so the page reads the setting again, and the bar's
+ * next press asks first (`goingSettingsQuery`, `useGoingOperations`).
  */
 const goingWrite = defineWriteKind<null>({
   kept: (value): value is null => value === null,
@@ -90,6 +94,15 @@ const goingWrite = defineWriteKind<null>({
     void client.invalidateQueries({ queryKey: ["search"] });
   },
   name: "going-write",
+  undone: (client, write) => {
+    if (
+      write.status === "refused" &&
+      write.refusal instanceof ApiError &&
+      write.refusal.code === "GOING_CONFIRMATION_REQUIRED"
+    ) {
+      void client.invalidateQueries({ queryKey: goingSettingsQuery().queryKey });
+    }
+  },
 });
 
 /** The line every write of one run goes out on, in press order. */

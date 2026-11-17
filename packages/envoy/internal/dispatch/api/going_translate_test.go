@@ -183,8 +183,12 @@ func goingGuardHeld(action string, args map[string]any) goingObservation {
 // boundary-independent form for a multipart upload) and the condition it carries on its context
 // (goingSend.condition) - and the refusal the write meets before it sends them (goingSendRefusal),
 // against the read before goingGuardHeld makes, so two calls make the same write exactly where
-// they build the same requests and meet the same refusal.
+// they build the same requests and meet the same refusal. A call the bar can never send as written
+// is refused before its translation, as GoingCaller.prepare refuses it (goingUnsendable).
 func goingGuardWrite(action string, route GoingRoute, args map[string]any, values map[string]string, session, approved string) (string, error) {
+	if why := goingUnsendable(action, args); why != "" {
+		return "", GoingArgumentError{Action: action, Reason: why}
+	}
 	reader := goingReader{doer: goingResolvingDoer{}, base: ""}
 	call, err := route.translate(context.Background(), reader, goingCallInput{arguments: args, path: values, session: session})
 	if err != nil {
@@ -239,8 +243,9 @@ func goingGuardWrite(action string, route GoingRoute, args map[string]any, value
 // Actions are read from BuildGoingCatalogue, so a tool spec's new argument is held to this at
 // once. An argument is tested against each row it routes to in turn, and passes as soon as one
 // forwards it (a result's `check` is the record row's, not the retract row's); an argument whose
-// presence refuses a translation (a picture, a file path, a ref a comment cannot take) is visibly
-// consumed, not silently dropped, and passes.
+// presence refuses the write before its translation (a picture, a file path, a ref a comment
+// cannot take: goingUnsendable) or refuses the translation is visibly consumed, not silently
+// dropped, and passes.
 func TestEveryTranslatorForwardsOrConsumesEveryArgument(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {

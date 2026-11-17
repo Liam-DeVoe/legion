@@ -245,10 +245,13 @@ export interface GoingInvocation {
 /** One action the decision offered: one invocation per item it changes, and `offered` false
  *  where no invocation survived the checks, which leaves `invocations` empty. `withheld`, where
  *  present, says why each invocation the answer wrote that the person would otherwise have been
- *  offered was not: an upload under the name of a document its owner already holds, which would
- *  write that document's next version, and which the bar offers only where it carries `force`,
- *  its name is the one the document is stored under, never its slug, and the person's own words
- *  write that name. */
+ *  offered was not, in words for the person at the bar: one the bar can never send as written - a
+ *  picture file, a `dispatch://` reference giving its place, an upload of a file or with no text,
+ *  a closing note on an update that does not close, a repository not written as `owner/name` -
+ *  in the very words a write of it is refused with; and an upload under the name of a document
+ *  its owner already holds, which would write that document's next version, and which the bar
+ *  offers only where it carries `force`, its name is the one the document is stored under, never
+ *  its slug, and the person's own words write that name. */
 export interface GoingOffer {
   readonly action: string;
   readonly invocations: readonly GoingInvocation[];
