@@ -64,6 +64,19 @@ var blockIndexBacklogQuery = `
 	select count(*), min(owed.owed_at) from (` + refs.OwedBlockIndexDebts + `
 	) owed`
 
+// blockIndexBacklogBeforeTheMarkQuery is the same backlog on a database migration
+// 20261116221539 has not reached, where a null version is the only debt
+// (refs.OwedBlockIndexDebtsBeforeTheMark). The sizing takes its readings on such a database too.
+var blockIndexBacklogBeforeTheMarkQuery = `
+	select count(*), min(owed.owed_at) from (` + refs.OwedBlockIndexDebtsBeforeTheMark + `
+	) owed`
+
+// backfillMarkHeldQuery says whether document_block_versions holds the backfill's mark column,
+// which migration 20261116221539 adds.
+const backfillMarkHeldQuery = `select exists (
+	select 1 from pg_attribute
+	where attrelid = to_regclass('document_block_versions') and attname = 'store_owed_at' and not attisdropped)`
+
 // backlogClockQuery is the newest write the database recorded: the created_at of its highest
 // event id, read through events_pkey. It is the clock the oldest debt's age is measured
 // against, in place of now(), because this report must print the same bytes twice over an
@@ -674,7 +687,15 @@ func placementOf(identities []blockIdentity, parent int) blockPlacement {
 func readBlockIndexBacklog(ctx context.Context, tx pgx.Tx) (BlockIndexBacklog, error) {
 	var backlog BlockIndexBacklog
 	var oldest *time.Time
-	if err := tx.QueryRow(ctx, blockIndexBacklogQuery).Scan(&backlog.Documents, &oldest); err != nil {
+	var markHeld bool
+	if err := tx.QueryRow(ctx, backfillMarkHeldQuery).Scan(&markHeld); err != nil {
+		return BlockIndexBacklog{}, fmt.Errorf("read whether the backfill's mark exists: %w", err)
+	}
+	query := blockIndexBacklogQuery
+	if !markHeld {
+		query = blockIndexBacklogBeforeTheMarkQuery
+	}
+	if err := tx.QueryRow(ctx, query).Scan(&backlog.Documents, &oldest); err != nil {
 		return BlockIndexBacklog{}, fmt.Errorf("read the documents owed a block index: %w", err)
 	}
 	if oldest != nil {
