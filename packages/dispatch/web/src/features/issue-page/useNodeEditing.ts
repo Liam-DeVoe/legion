@@ -7,9 +7,14 @@ import type { TreeNode } from "./issue-tree";
 import {
   caretInBlock,
   caretOutOfBlock,
+  confineDrag,
+  confineInput,
+  confineKey,
+  confinePaste,
   EDITOR_BOX_ATTRIBUTE,
   holdEditorAtBlock,
   selectInEditor,
+  selectionIntoBlock,
 } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 import { PRESS_ENDS } from "./press-focus";
@@ -71,8 +76,11 @@ export function abortOnReaderAct(then?: () => void): AbortController {
  * The editor's own redrawing can drop that caret before the reader has done anything, and this
  * puts it back until they have. From then on, a focus the editor drops while the reader writes
  * goes back to the caret they had, or to the node's block where the editor has redrawn the text
- * that caret was in, and stays where it fell where that block is gone too. A node whose text no
- * document of this issue holds has nothing to put a caret in, and the key says so.
+ * that caret was in, and stays where it fell where that block is gone too. The caret, and every
+ * key, stays inside the node's block while the row holds the editor (`node-caret.ts`'s
+ * `confineKey`): the editor is the document's whole editor, and free editing of the whole
+ * document stays on the document page. A node whose text no document of this issue holds has
+ * nothing to put a caret in, and the key says so.
  *
  * Escape leaves the caret for the row it came from. The editor calls `preventDefault` on the
  * key before it reaches the page's keyboard registry, which drops every binding of the press
@@ -174,7 +182,9 @@ export function useNodeEditing({
     // stood. So while the reader has not acted, a focus fallen to nothing and a caret moved out
     // of the node's block go back to the block, while the editor still draws it, which the
     // editor takes as its own in the same task (`caretInBlock`); from their first act the focus
-    // and the caret are theirs.
+    // and the caret are theirs, inside the node's block: an end of the selection moved out of
+    // it - a press on another block of the editor, a drag, a key's move the guard below does
+    // not name - goes back to the block's nearer end (`selectionIntoBlock`).
     const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
     let settled: (() => void) | undefined;
     // The row is looked at apart from the editor's drawing as well, until the caret is placed:
@@ -222,6 +232,11 @@ export function useNodeEditing({
       if (settled !== undefined) watch.disconnect();
       else lookSoon();
     });
+    const confining = new AbortController();
+    const confine = () => {
+      const row = box.querySelector<HTMLElement>(rowSelector);
+      if (acts.signal.aborted && row !== null) selectionIntoBlock(row, editingBlock);
+    };
     // Places the caret, or places it again where the focus has fallen to nothing or the caret
     // has left the block, and answers whether the row is done with: the caret placed and the
     // reader acted since, or the reader took the focus out of the row before it was placed,
@@ -242,6 +257,7 @@ export function useNodeEditing({
         looking.abort();
         // Only a selection moved after the caret was placed is the editor's doing.
         document.addEventListener("selectionchange", changed, { signal: acts.signal });
+        document.addEventListener("selectionchange", confine, { signal: confining.signal });
       } else if (focusOnDocument() || caretOutOfBlock(row, editingBlock)) {
         caretInBlock(row, editingBlock);
       }
@@ -265,6 +281,7 @@ export function useNodeEditing({
       window.clearTimeout(look);
       looking.abort();
       acts.abort();
+      confining.abort();
       watch.disconnect();
       settled?.();
     };
@@ -341,6 +358,50 @@ export function useNodeEditing({
       window.clearTimeout(pressEnding);
       if (frame !== undefined) cancelAnimationFrame(frame);
     };
+  }, [container, editingBlock, editingRow]);
+
+  useEffect(() => {
+    const box = container.current;
+    if (editingRow === undefined || box === null) return;
+    // The row's editor is the document's whole editor, and the keys it answers for a whole
+    // document - Ctrl+Home, Up from the block's first line, Ctrl+A, Backspace at its start - took
+    // the caret, and the letters typed next, out of the node's block to text the reader cannot
+    // see. Each key in the editor is read before the editor's own listener (the capture phase)
+    // and kept inside the node's block (`confineKey`), and each edit the browser is about to make
+    // with it (`confineInput`), from the moment the row holds the editor: while the node's block
+    // is not the selection - before the caret is placed, or a Tab into the editable before the
+    // block is drawn - no key edits the document at all. A paste that would make blocks past the
+    // node's is refused too (`confinePaste`), and so are a drag out of the editor and a drop into
+    // it (`confineDrag`). The editor's history in the row holds the row's own edits alone, each
+    // inside the block, so undo and redo are the editor's; a composition is not the page's to
+    // refuse, since a browser takes no `preventDefault` of one.
+    const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
+    const listening = new AbortController();
+    const options = { capture: true, signal: listening.signal };
+    const onRow =
+      <E extends Event>(confine: (row: HTMLElement, event: E) => void) =>
+      (event: E) => {
+        const row = box.querySelector<HTMLElement>(rowSelector);
+        if (row !== null) confine(row, event);
+      };
+    box.addEventListener(
+      "keydown",
+      onRow<KeyboardEvent>((row, event) => confineKey(row, editingBlock, event)),
+      options
+    );
+    box.addEventListener(
+      "beforeinput",
+      onRow<InputEvent>((row, event) => confineInput(row, editingBlock, event)),
+      options
+    );
+    box.addEventListener(
+      "paste",
+      onRow<ClipboardEvent>((row, event) => confinePaste(row, editingBlock, event)),
+      options
+    );
+    box.addEventListener("dragstart", onRow(confineDrag), options);
+    box.addEventListener("drop", onRow(confineDrag), options);
+    return () => listening.abort();
   }, [container, editingBlock, editingRow]);
 
   useEffect(() => {

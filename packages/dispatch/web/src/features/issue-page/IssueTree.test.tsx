@@ -1382,12 +1382,19 @@ function wrapAgain(editable: HTMLElement): Promise<void> {
 
 /** An editor that reads its own selection as ProseMirror does: from the document's
  *  `selectionchange`, while it holds the focus, and from nothing else. `own.block` is the block
- *  of that selection, which is what a key the editor handles itself acts on. */
-function ReportReadingEditor({ own }: { own: { block?: string | null } }): ReactNode {
+ *  of that selection, which is what a key the editor handles itself acts on, and `own.offset`
+ *  its anchor's offset. */
+function ReportReadingEditor({
+  own,
+}: {
+  own: { block?: string | null; offset?: number };
+}): ReactNode {
   const editable = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const read = () => {
-      if (document.activeElement === editable.current) own.block = caretBlock();
+      if (document.activeElement !== editable.current) return;
+      own.block = caretBlock();
+      own.offset = window.getSelection()?.anchorOffset;
     };
     document.addEventListener("selectionchange", read);
     return () => document.removeEventListener("selectionchange", read);
@@ -1806,9 +1813,10 @@ test("a focus a script moves out of the row before its editor has drawn the docu
 // selection back over a caret it had not read yet: measured in Chromium, the caret was in the
 // spec's summary 60 ms after it was put in a statement, and the words typed went there. It reads
 // the caret in the task that puts it there now (the test above), and a caret moved out of the
-// block all the same goes back: until the reader acts the row puts the caret back in the node's
-// block; from their first act the caret is where the editor left it, and a focus the editor
-// drops comes back at that caret, not at the node's block (the next row).
+// block all the same goes back: until the reader acts the row puts the caret back at the start
+// of the node's block; from their first act the caret is where the editor leaves it inside that
+// block - a move out of it stops at the block's nearer end (below) - and a focus the editor
+// drops comes back at that caret, not at the block's start (the next row).
 test("a caret the editor drops or moves goes back to the node's block until the reader acts", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1829,15 +1837,25 @@ test("a caret the editor drops or moves goes back to the node's block until the 
   await selectAbove();
   expect(caretInStatement(), "the caret the editor moved was not put back").toBe(true);
 
-  // The reader presses a key: the caret is where the editor leaves it from then on.
+  // The reader presses a key: the caret is where the editor leaves it inside the node's block
+  // from then on, five characters into the statement, and not put back at the block's start.
   await user.keyboard("{Shift}");
-  await selectAbove();
-  expect(caretBlock(), "the caret was moved back after the reader acted").toBe("r0");
+  const statement = editable.querySelector('[data-block-id="r1"]')?.firstChild;
+  if (statement === null || statement === undefined) throw new Error("the editor draws no r1");
+  await act(async () => {
+    window.getSelection()?.collapse(statement, 5);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  expect(
+    window.getSelection()?.anchorOffset,
+    "the caret was moved back after the reader acted"
+  ).toBe(5);
   await wrapAgain(editable);
   await waitFor(() => expect(document.activeElement).toBe(editable));
-  expect(caretBlock(), "the caret was put back in the node's block after the reader acted").toBe(
-    "r0"
-  );
+  expect(
+    window.getSelection()?.anchorOffset,
+    "the caret was put back at the block's start after the reader acted"
+  ).toBe(5);
 });
 
 // The editor goes on changing its plugins after the reader's first act - its collaborators'
@@ -1892,35 +1910,42 @@ test("a focus the editor drops after it redrew the words of the reader's caret c
   setViewport(1440);
   const user = userEvent.setup();
   const restore = dropSelectionReports();
-  const own: { block?: string | null } = {};
+  const own: { block?: string | null; offset?: number } = {};
   try {
     const editable = await editStatement(user, <ReportReadingEditor own={own} />);
-    const above = editable.querySelector<HTMLElement>('[data-block-id="r0"]');
-    const words = above?.firstChild;
-    if (above === null || words === null || words === undefined) {
-      throw new Error("the editor draws no r0");
+    const statement = editable.querySelector<HTMLElement>('[data-block-id="r1"]');
+    const words = statement?.firstChild;
+    if (statement === null || words === null || words === undefined) {
+      throw new Error("the editor draws no r1");
     }
-    // The reader presses a key and moves the caret into the words above, which the editor reads.
+    // The reader presses a key and moves the caret five characters into the statement, which
+    // the editor reads.
     await user.keyboard("{Shift}");
     await act(async () => {
       window.getSelection()?.collapse(words, 5);
       document.dispatchEvent(new Event("selectionchange"));
     });
-    expect(own.block, "the editor did not read the reader's move").toBe("r0");
+    expect(own.offset, "the editor did not read the reader's move").toBe(5);
     const frames = framesByHand();
     try {
       await wrapAgain(editable);
-      // The editor draws the words above anew while it has no focus.
+      // The editor draws the statement's words anew while it has no focus.
       await act(async () => {
-        above.textContent = "The words above the statement.";
+        statement.textContent = "A statement of the spec.";
       });
       await frames.run();
     } finally {
       frames.restore();
     }
     expect(document.activeElement, "the focus the editor dropped did not come back").toBe(editable);
-    expect(caretBlock(), "the caret came back outside the node's block").toBe("r1");
-    expect(own.block, "the editor's own selection is not in the node's block").toBe("r1");
+    expect(selected(), "the caret did not come back at the start of the node's block").toEqual([
+      "r1:0",
+      "r1:0",
+    ]);
+    expect(
+      [own.block, own.offset],
+      "the editor's own selection is not at the start of the node's block"
+    ).toEqual(["r1", 0]);
   } finally {
     restore();
   }
@@ -1935,12 +1960,9 @@ test("a focus the editor drops after it redrew the reader's caret and took the n
   setViewport(1440);
   const user = userEvent.setup();
   const editable = await editStatement(user);
-  const above = editable.querySelector<HTMLElement>('[data-block-id="r0"]');
-  const words = above?.firstChild;
-  if (above === null || words === null || words === undefined) {
-    throw new Error("the editor draws no r0");
-  }
-  // The reader presses a key and moves the caret into the words above.
+  const words = editable.querySelector('[data-block-id="r1"]')?.firstChild;
+  if (words === null || words === undefined) throw new Error("the editor draws no r1");
+  // The reader presses a key and moves the caret five characters into the statement.
   await user.keyboard("{Shift}");
   await act(async () => {
     window.getSelection()?.collapse(words, 5);
@@ -1949,10 +1971,8 @@ test("a focus the editor drops after it redrew the reader's caret and took the n
   const frames = framesByHand();
   try {
     await wrapAgain(editable);
-    // The editor draws the words above anew, and the statement's block no more, while it has no
-    // focus.
+    // The editor draws the statement's block no more while it has no focus.
     await act(async () => {
-      above.textContent = "The words above the statement.";
       editable.querySelector('[data-block-id="r1"]')?.remove();
     });
     await frames.run();
@@ -1973,37 +1993,441 @@ test("a focus the editor drops after it redrew the reader's caret and took the n
 // Enter's is (above): the editor writes its own selection back over a caret it has not read.
 // Here the reader's last move is one the editor never read - the editable dropped the focus
 // before the browser reported it - so a caret put back and not reported would leave the editor's
-// own selection in the statement, under the reader's caret in the words above.
+// own selection at the statement's start, under the reader's caret five characters into it.
 test("the caret a dropped focus comes back at is the editor's own in the task that puts it there", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const restore = dropSelectionReports();
-  const own: { block?: string | null } = {};
+  const own: { block?: string | null; offset?: number } = {};
   try {
     const editable = await editStatement(user, <ReportReadingEditor own={own} />);
-    const words = editable.querySelector('[data-block-id="r0"]')?.firstChild;
-    if (words === null || words === undefined) throw new Error("the editor draws no r0");
-    // The reader presses a key and moves the caret into the words above, and the focus drops
-    // before the browser reports the move.
+    const words = editable.querySelector('[data-block-id="r1"]')?.firstChild;
+    if (words === null || words === undefined) throw new Error("the editor draws no r1");
+    // The reader presses a key and moves the caret five characters into the statement, and the
+    // focus drops before the browser reports the move.
     await user.keyboard("{Shift}");
     await act(async () => {
       window.getSelection()?.collapse(words, 5);
     });
-    expect(own.block, "the editor read a move the browser had not reported").toBe("r1");
+    expect(own.offset, "the editor read a move the browser had not reported").toBe(0);
     await wrapAgain(editable);
     await waitFor(() =>
       expect(document.activeElement, "the focus the editor dropped did not come back").toBe(
         editable
       )
     );
-    expect(window.getSelection()?.anchorNode, "the caret came back elsewhere").toBe(words);
-    expect(window.getSelection()?.anchorOffset, "the caret came back elsewhere").toBe(5);
-    expect(own.block, "the editor's own selection is not the caret the focus came back at").toBe(
-      "r0"
+    expect(selected(), "the caret came back elsewhere").toEqual(["r1:5", "r1:5"]);
+    expect(own.offset, "the editor's own selection is not the caret the focus came back at").toBe(
+      5
     );
   } finally {
     restore();
   }
+});
+
+/** The statement's document with words above the statement and words below it. */
+const BLOCKS_AROUND: StatementBlocks = [
+  ["r0", "The words above the statement."],
+  ["r1", "A statement of the spec."],
+  ["r2", "The words below the statement."],
+];
+
+/** The words of block `id` the row's `editable` draws. */
+function wordsOf(editable: HTMLElement, id: string): Text {
+  const words = editable.querySelector(`[data-block-id="${id}"]`)?.firstChild;
+  if (!(words instanceof Text)) throw new Error(`the editor draws no ${id}`);
+  return words;
+}
+
+/** A move of the selection from `anchor` to `focus`, the browser reporting it. */
+function select(
+  anchor: Node,
+  anchorOffset: number,
+  focus: Node = anchor,
+  focusOffset: number = anchorOffset
+): Promise<void> {
+  return act(async () => {
+    window.getSelection()?.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+}
+
+/** Where the selection's anchor and its focus stand, each as its block's id and its offset:
+ *  `r1:5` is five characters into r1's words, and an end on an element rather than in words reads
+ *  `r1(element):0`. A comparison that fails prints what it compared, and a happy-dom node printed
+ *  is the whole page it is in, which ran the test process out of memory: so no node is compared,
+ *  only where it stands. */
+function selected(): [anchor: string, focus: string] {
+  const selection = window.getSelection();
+  const placeOf = (node: Node | null | undefined, offset: number | undefined) => {
+    const element = node instanceof Element ? node : node?.parentElement;
+    const block = element?.closest("[data-block-id]")?.getAttribute("data-block-id") ?? "-";
+    return `${block}${node instanceof Text ? "" : "(element)"}:${offset}`;
+  };
+  return [
+    placeOf(selection?.anchorNode, selection?.anchorOffset),
+    placeOf(selection?.focusNode, selection?.focusOffset),
+  ];
+}
+
+/** Presses `key` in the row's `editable`, and answers whether it is left to the editor and the
+ *  browser: false where the row refused it, or made the move it names itself. */
+function pressIn(editable: HTMLElement, key: string, modifiers: KeyboardEventInit = {}): boolean {
+  return editable.dispatchEvent(
+    new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, ...modifiers })
+  );
+}
+
+/** Sends the row's `editable` the `beforeinput` a browser sends before it edits the page, with
+ *  `ranges` as the ranges the edit replaces, and answers whether the edit is left to happen.
+ *  happy-dom's input events carry no target ranges. */
+function inputIn(editable: HTMLElement, inputType: string, ranges: readonly Range[] = []): boolean {
+  const event = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType });
+  Object.defineProperty(event, "getTargetRanges", { value: () => ranges });
+  return editable.dispatchEvent(event);
+}
+
+/** A range from `start` at `startOffset` to `end` at `endOffset`. */
+function rangeOf(start: Node, startOffset: number, end: Node, endOffset: number): Range {
+  const range = document.createRange();
+  range.setStart(start, startOffset);
+  range.setEnd(end, endOffset);
+  return range;
+}
+
+// The row's editor is the document's whole editor, and Ctrl+Home and Ctrl+End moved its caret to
+// the top and the foot of the whole document: measured on a preview, Ctrl+Home put it before the
+// spec's `## Summary`, and a `Y` typed then made it `## YSummary`, out of the box above the row.
+// They move the caret to the start and the end of the node's own block, and so do Meta's and a
+// Mac's Meta+Up and Meta+Down, as the editor's own in the same task; with Shift held they extend
+// the selection there. happy-dom reports a move inside the call that makes it, and that report is
+// dropped, as no listener hears a browser's in that task.
+test("Ctrl+Home and Ctrl+End in a row's editor stop at the node's block's start and end, as the editor's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null; offset?: number } = {};
+  try {
+    const editable = await editStatement(user, <ReportReadingEditor own={own} />, BLOCKS_AROUND);
+    const statement = wordsOf(editable, "r1");
+    const end = statement.length;
+    await select(statement, 5);
+    for (const [key, modifiers, offset] of [
+      ["End", { ctrlKey: true }, end],
+      ["Home", { ctrlKey: true }, 0],
+      ["End", { metaKey: true }, end],
+      ["Home", { metaKey: true }, 0],
+      ["ArrowDown", { metaKey: true }, end],
+      ["ArrowUp", { metaKey: true }, 0],
+    ] as const) {
+      const name = `${Object.keys(modifiers)[0]}+${key}`;
+      expect(pressIn(editable, key, modifiers), `${name} was left to the editor`).toBe(false);
+      expect(selected(), `${name} put the caret elsewhere`).toEqual([
+        `r1:${offset}`,
+        `r1:${offset}`,
+      ]);
+      expect([own.block, own.offset], `the editor's own selection is not ${name}'s`).toEqual([
+        "r1",
+        offset,
+      ]);
+    }
+    await select(statement, 5);
+    expect(pressIn(editable, "End", { ctrlKey: true, shiftKey: true })).toBe(false);
+    expect(selected(), "Shift+Ctrl+End did not extend the selection to the block's end").toEqual([
+      "r1:5",
+      `r1:${end}`,
+    ]);
+    expect(pressIn(editable, "Home", { ctrlKey: true, shiftKey: true })).toBe(false);
+    expect(selected(), "Shift+Ctrl+Home did not extend the selection to the block's start").toEqual(
+      ["r1:5", "r1:0"]
+    );
+  } finally {
+    restore();
+  }
+});
+
+// Ctrl+A selected the whole document, and a letter typed then replaced it. It selects the node's
+// block's text alone, and so does Meta+A, a Mac's.
+test("Ctrl+A in a row's editor selects the node's block alone", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  const statement = wordsOf(editable, "r1");
+  for (const modifiers of [{ ctrlKey: true }, { metaKey: true }]) {
+    await select(statement, 5);
+    expect(pressIn(editable, "a", modifiers), "select-all was left to the editor").toBe(false);
+    expect(selected(), "select-all selected other than the block's text").toEqual([
+      "r1:0",
+      `r1:${statement.length}`,
+    ]);
+  }
+});
+
+/** The statement's words laid out on two lines, as a browser draws a caret's box at each place
+ *  in them: the first ten characters on the line from 100 to 120 px down, the rest on the line
+ *  from 120 to 140 px. happy-dom lays nothing out. Answers what restores happy-dom's own. */
+function statementOnTwoLines(statement: Text): () => void {
+  const boxes = spyOn(Range.prototype, "getClientRects").mockImplementation(function (this: Range) {
+    const top = this.startContainer === statement && this.startOffset > 10 ? 120 : 100;
+    return [new DOMRect(0, top, 0, 20)] as unknown as DOMRectList;
+  });
+  return () => boxes.mockRestore();
+}
+
+// Up from the first line of the node's block and Down from its last, Left at its start and Right
+// at its end took the row's caret into the blocks beside it - measured on a preview, Up after Left
+// put it before a heading above the statement - and PageUp and PageDown a page away; Backspace at
+// the block's start and Delete at its end join it to the block beside it. Each is refused there,
+// and the caret stays where it was; inside the block each is the editor's. With Shift held, Up on
+// the first line and Down on the last extend the selection to the block's end they stop at.
+test("the keys that move past the node's block's edges, or join it to the block beside it, stop at those edges", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  const statement = wordsOf(editable, "r1");
+  const end = statement.length;
+  const lines = statementOnTwoLines(statement);
+  try {
+    for (const [at, key, modifiers, refused] of [
+      [0, "ArrowUp", {}, true],
+      [5, "ArrowUp", {}, true],
+      [15, "ArrowUp", {}, false],
+      [15, "ArrowDown", {}, true],
+      [5, "ArrowDown", {}, false],
+      [0, "ArrowLeft", {}, true],
+      [0, "ArrowLeft", { ctrlKey: true }, true],
+      [5, "ArrowLeft", {}, false],
+      [end, "ArrowRight", {}, true],
+      [5, "ArrowRight", {}, false],
+      [5, "PageUp", {}, true],
+      [5, "PageDown", {}, true],
+      [0, "Backspace", {}, true],
+      [0, "Backspace", { ctrlKey: true }, true],
+      [5, "Backspace", {}, false],
+      [end, "Delete", {}, true],
+      [5, "Delete", {}, false],
+    ] as const) {
+      await select(statement, at);
+      const name = `${Object.keys(modifiers).join("+")} ${key} at ${at}`;
+      expect(!pressIn(editable, key, modifiers), `${name} refused: ${!refused}`).toBe(refused);
+      expect(selected(), `${name} moved the caret`).toEqual([`r1:${at}`, `r1:${at}`]);
+    }
+    await select(statement, 5);
+    expect(pressIn(editable, "ArrowUp", { shiftKey: true })).toBe(false);
+    expect(selected(), "Shift+Up on the first line did not extend to the block's start").toEqual([
+      "r1:5",
+      "r1:0",
+    ]);
+    await select(statement, 15);
+    expect(pressIn(editable, "ArrowDown", { shiftKey: true })).toBe(false);
+    expect(selected(), "Shift+Down on the last line did not extend to the block's end").toEqual([
+      "r1:15",
+      `r1:${end}`,
+    ]);
+  } finally {
+    lines();
+  }
+});
+
+// Enter splits the block the caret is in, and in a block that is its own paragraph - a
+// decision's heading - the second half is a new block after the node's, with the caret in it. It
+// is refused there. In a typed block, which holds its paragraphs and whose sides no split
+// crosses, it is the editor's, and so is Shift+Enter, a line break inside the block.
+test("Enter in a row's editor is refused where it would split the node's block in two", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  await select(wordsOf(editable, "r1"), 5);
+  expect(pressIn(editable, "Enter"), "Enter splitting the block was left to the editor").toBe(
+    false
+  );
+  expect(pressIn(editable, "Enter", { shiftKey: true }), "Shift+Enter was refused").toBe(true);
+  editable
+    .querySelector('[data-block-id="r1"]')
+    ?.setAttribute("data-proof-block-type", "requirement");
+  expect(pressIn(editable, "Enter"), "Enter in a typed block was refused").toBe(true);
+});
+
+// A selection moved out of the node's block once the reader has acted - a press on another block
+// of the editor, a drag across blocks, a platform's own key for a move - comes back to the
+// block's nearer end, as the editor's own in the same task: an end above the block to its start,
+// an end below it to its end, and an end inside it stays.
+test("a selection moved out of the node's block comes back to the block's nearer end, as the editor's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null; offset?: number } = {};
+  try {
+    const editable = await editStatement(user, <ReportReadingEditor own={own} />, BLOCKS_AROUND);
+    const above = wordsOf(editable, "r0");
+    const statement = wordsOf(editable, "r1");
+    const below = wordsOf(editable, "r2");
+    const end = statement.length;
+    await user.keyboard("{Shift}");
+    await select(above, 5);
+    expect(selected(), "a caret above the block did not come to its start").toEqual([
+      "r1:0",
+      "r1:0",
+    ]);
+    expect([own.block, own.offset], "the editor's own caret is not at the block's start").toEqual([
+      "r1",
+      0,
+    ]);
+    await select(below, 5);
+    expect(selected(), "a caret below the block did not come to its end").toEqual([
+      `r1:${end}`,
+      `r1:${end}`,
+    ]);
+    expect([own.block, own.offset], "the editor's own caret is not at the block's end").toEqual([
+      "r1",
+      end,
+    ]);
+    await select(above, 3, below, 4);
+    expect(selected(), "a selection across the block is not the block's text").toEqual([
+      "r1:0",
+      `r1:${end}`,
+    ]);
+    await select(statement, 5, below, 4);
+    expect(selected(), "a selection from inside the block did not stop at its end").toEqual([
+      "r1:5",
+      `r1:${end}`,
+    ]);
+  } finally {
+    restore();
+  }
+});
+
+// Until the node's block is the selection - before the caret is placed in it, with the focus
+// Tabbed into the editable before the editor has drawn that block - the editor's own selection is
+// wherever it was, and a key the editor answers, or an edit the browser makes, lands there. No key
+// edits the document then: every key but those that move the focus is refused, and every edit.
+test("no key edits the document while the node's block of the row's editor is not the selection", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await enterBeforeDrawn(user);
+  // The editor draws the words above the statement, and not the statement.
+  await drawStatementBlocks(editable, [["r0", "The words above the statement."]]);
+  await user.tab();
+  expect(document.activeElement, "Tab from the row did not stop in its editor").toBe(editable);
+  const above = wordsOf(editable, "r0");
+  await select(above, 5);
+  for (const key of ["x", " ", "Backspace", "Delete", "Enter", "ArrowUp", "Home"]) {
+    expect(pressIn(editable, key), `${key} was left to the editor`).toBe(false);
+  }
+  expect(pressIn(editable, "a", { ctrlKey: true }), "Ctrl+A was left to the editor").toBe(false);
+  expect(
+    inputIn(editable, "insertText", [rangeOf(above, 5, above, 5)]),
+    "a letter typed was left to the browser"
+  ).toBe(false);
+  expect(pressIn(editable, "Shift"), "Shift was refused").toBe(true);
+  expect(pressIn(editable, "Tab"), "Tab was refused").toBe(true);
+});
+
+// The editor leaves typed text, and a key its keymap does not answer, to the browser, which edits
+// the page and has the editor read the change after. An edit whose target ranges reach past the
+// node's block - a platform's own delete at the block's edge - is refused before it is made, and
+// one inside the block is left to the browser.
+test("an edit the browser is about to make in the row's editor past the node's block is refused", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  const above = wordsOf(editable, "r0");
+  const statement = wordsOf(editable, "r1");
+  await select(statement, 5);
+  expect(
+    inputIn(editable, "insertText", [rangeOf(statement, 5, statement, 5)]),
+    "a letter typed in the statement was refused"
+  ).toBe(true);
+  expect(
+    inputIn(editable, "deleteContentBackward", [rangeOf(above, above.length, statement, 0)]),
+    "a delete reaching into the words above was left to the browser"
+  ).toBe(false);
+});
+
+/** Pastes `text` into the row's `editable` as a browser sends a paste, and answers whether the
+ *  paste is left to the editor. */
+function pasteIn(editable: HTMLElement, text: string): boolean {
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", text);
+  return editable.dispatchEvent(
+    new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData })
+  );
+}
+
+// The editor reads each line of a pasted text as a paragraph of its own, and in a block that
+// holds no paragraphs - a paragraph, a decision's heading - those after the first go after the
+// node's block, or into a heading as a line break: measured in Chromium, two lines pasted at a
+// `## ` heading's start stored it as a heading of two lines. Such a paste is refused there. In a
+// typed block, which holds the paragraphs a paste makes in it, it is the editor's, and so is a
+// paste of one line anywhere in the block.
+test("a paste of more than one line into the row's editor is refused where it would change more than the block's words", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  await select(wordsOf(editable, "r1"), 5);
+  expect(pasteIn(editable, "Two\nlines"), "a paste of two lines was left to the editor").toBe(
+    false
+  );
+  expect(pasteIn(editable, "Two\r\nlines"), "a paste of two lines was left to the editor").toBe(
+    false
+  );
+  expect(pasteIn(editable, "One line"), "a paste of one line was refused").toBe(true);
+  editable
+    .querySelector('[data-block-id="r1"]')
+    ?.setAttribute("data-proof-block-type", "requirement");
+  expect(pasteIn(editable, "Two\nlines"), "a paste into a typed block was refused").toBe(true);
+});
+
+// A drop edits the document where it lands, in whichever block that is, and text dragged out of
+// the node's block is moved wherever the editor takes it. While a row is edited, a drag that
+// starts in its editor and a drop into it are refused; a drag elsewhere on the page is no
+// business of the row's.
+test("a drag out of the row's editor and a drop into it are refused", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { control } = controlOutside();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  const dragged = (target: Element, type: string) =>
+    target.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+  const statement = editable.querySelector('[data-block-id="r1"]');
+  const above = editable.querySelector('[data-block-id="r0"]');
+  if (statement === null || above === null) throw new Error("the editor draws no r0 or r1");
+  expect(dragged(statement, "dragstart"), "a drag out of the editor was left to it").toBe(false);
+  expect(dragged(above, "drop"), "a drop into the editor was left to it").toBe(false);
+  expect(dragged(control, "dragstart"), "a drag outside the outline was refused").toBe(true);
+});
+
+// On a Mac the editor takes Ctrl+H for Backspace, and Ctrl+D and Alt+D for Delete
+// (`prosemirror-commands`' `macBaseKeymap`), so each joined the node's block to the block beside
+// it at the block's start and its end. On a Mac they keep Backspace's and Delete's rules; elsewhere they are no edit of
+// the editor's, and the row leaves them alone.
+test("on a Mac, Ctrl+H, Ctrl+D and Alt+D in a row's editor stop at the node's block's start and end", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user, undefined, BLOCKS_AROUND);
+  const statement = wordsOf(editable, "r1");
+  const end = statement.length;
+  const pressAt = async (at: number, key: string) => {
+    await select(statement, at);
+    return !pressIn(editable, key, { ctrlKey: true });
+  };
+  Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+  try {
+    expect(await pressAt(0, "h"), "Ctrl+H at the block's start was left to the editor").toBe(true);
+    expect(await pressAt(5, "h"), "Ctrl+H inside the block was refused").toBe(false);
+    expect(await pressAt(end, "d"), "Ctrl+D at the block's end was left to the editor").toBe(true);
+    expect(await pressAt(5, "d"), "Ctrl+D inside the block was refused").toBe(false);
+    // Alt+D types a letter of its own on a Mac, and the editor reads it by its code.
+    await select(statement, end);
+    expect(
+      !pressIn(editable, "∂", { altKey: true, code: "KeyD" }),
+      "Alt+D at the block's end was left to the editor"
+    ).toBe(true);
+  } finally {
+    Reflect.deleteProperty(navigator, "platform");
+  }
+  expect(await pressAt(0, "h"), "Ctrl+H off a Mac was refused").toBe(false);
+  expect(await pressAt(end, "d"), "Ctrl+D off a Mac was refused").toBe(false);
 });
 
 // Escape gives the row the focus at once, and again in the next frame, once the editor has left
