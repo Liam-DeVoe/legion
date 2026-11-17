@@ -505,7 +505,7 @@ test("a later review round reads from the commit its task names, and the pair re
     "The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other"
   );
   expect(mergeGate).toContain(
-    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;"
+    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit; the commit is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0); or a forward merge of the base changed the fingerprint, as the end of the item above decides."
   );
   const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
   expect(prBody).not.toContain(
