@@ -145,8 +145,12 @@ type releaseStopped struct {
 // start of a phase owner behind the entry its phases row names that admission's first pass
 // wrote, the cutover's repair of a merger, a start the release held in the outbox. Whichever
 // start a claim has, it still starts the claim once the issue has left the phase or the entry
-// that start names: the outbox's phase and entry fences start a claim stored suspended by
-// `project_release` with no task rather than finish its start (the outbox's releaseStoppedStart).
+// that start names, wherever that start would otherwise end unrun: the outbox's phase and entry
+// fences start a claim stored suspended by `project_release` with no task rather than finish its
+// start (the outbox's releaseStoppedStart), and the two writes that take out a queued start
+// before a lane runs it write that same start in its place — a later start of another role
+// (record.Store.EnqueueStart) and admission's repair of a start whose phase the issue has left
+// (admit's finishFencedStarts).
 // What a start carries is the work the record owes the role, and nothing else:
 //
 //   - A phase owner behind that entry is sent the work of that entry at that entry

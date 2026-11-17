@@ -2557,6 +2557,18 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // and the error it last recorded — so a row backing off keeps its backoff and carries the later
 // task into it.
 //
+// A row taken out of another role than row's may be the one start of a claim the project
+// release stopped: the daemon's boot writes none for a phase owner a queued start already covers
+// (workflow's startReleaseStopped), and the outbox's phase fence would start that claim with no
+// task rather than finish the row (the daemon's releaseStoppedStart). So where the row taken out
+// is of row's generation and the role it names holds a claim stored suspended by the project
+// release (claims.state `suspended`, claims.suspended_by `project_release`), the same statement
+// writes that role the start the outbox's fence makes in its place: the taken row's tree, role
+// and generation, resumed by rule (SuperviseRequest.RuleResume), and no phase, task, entry or
+// slot mark, so it is due at once and no phase or entry fence holds it. A row taken out of row's
+// own role leaves no such start, since row starts that claim itself, and neither does a row of
+// an earlier generation, which the outbox's generation fence would finish without acting.
+//
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
@@ -2567,7 +2579,8 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 	// The row taken out is one that waits for what row waits for, read from the payload the
 	// caller hands over rather than asked of the caller again: a payload that names no mark
 	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
-	// waits for no slot.
+	// waits for no slot. The insert named stopped writes the start of a claim the project
+	// release stopped in place of the row taken out (the doc above).
 	if _, err := tx.Exec(ctx, `with owed as (
 			delete from outbox where id = (select id from outbox
 				where `+pendingPhaseStart+`
@@ -2575,12 +2588,22 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 					and (lease_until is null or lease_until <= $3)
 				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
-			returning attempts, next_at, last_error, created_at)
+			returning attempts, next_at, last_error, created_at, payload),
+		stopped as (
+			insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+			select 'supervise', $1, jsonb_build_object('op', 'start', 'tree', owed.payload->'tree', 'role', owed.payload->'role',
+					'generation', owed.payload->'generation', 'ruleResume', true), 0, $3, '', '', null
+			from owed
+			where owed.payload->>'role' <> ($2::jsonb)->>'role'
+				and owed.payload->'generation' = ($2::jsonb)->'generation'
+				and exists (select 1 from claims where claims.issue = $1 and claims.role = owed.payload->>'role'
+					and claims.state = $6 and claims.suspended_by = $7))
 		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
 		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
 			coalesce(owed.created_at, now()), '', null
 		from (values (1)) as caller(one) left join owed on true`,
-		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError,
+		string(supervise.StateSuspended), string(supervise.SuspendedByProjectRelease)); err != nil {
 		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
 	}
 	return nil

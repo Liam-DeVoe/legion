@@ -642,11 +642,14 @@ const (
 // role because the row's creation time is the issue's place in the waiting line: an issue that
 // already owes a start and has not had its slot keeps that place — what is written is a row of
 // its own carrying that creation time — and carries the later transition's task instead, so two
-// transitions before the slot start the worker once. The superseded role never starts, which is
-// right — the issue has left that phase, so that role never had work to do, while the role the
-// later transition names has it. Where there is no such row — the first start, or one the lane
-// has already leased because the slot came — the same statement writes the caller's own row,
-// which is what the daemon has always done for back-to-back transitions.
+// transitions before the slot start the worker once. The superseded role is given no work, which
+// is right — the issue has left that phase, so that role never had work to do, while the role the
+// later transition names has it. A superseded role whose claim the project release stopped is
+// still started, with no task, by a row the same statement writes in its place, as the outbox's
+// phase fence would have started it: the row taken out may be that claim's one start
+// (startReleaseStopped). Where there is no such row — the first start, or one the lane has already
+// leased because the slot came — the same statement writes the caller's own row, which is what
+// the daemon has always done for back-to-back transitions.
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row

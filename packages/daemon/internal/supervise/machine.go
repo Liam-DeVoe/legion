@@ -3611,6 +3611,17 @@ func SaidReady(state ClaimState) bool {
 	return state == StateReady || state == StateWorking || state == StateIdle
 }
 
+// StartedWithoutTurn is whether a claim in state has been started and its session may not hold
+// its role yet: the claim is coming up (unready: queued, launch_uncertain, launching,
+// shim_connected or registered), or it stands ready or idle (prompted), which its agent reports
+// before its session takes the role at its first turn or at the first-turn bound (SaidReady). A
+// working claim's session holds its role, and a suspended, failed or retired claim is not started.
+// The daemon reads it of a claim the project release stopped, whose deliveries wait until its
+// session holds its role again (internal/daemon's releaseStoppedClaims).
+func StartedWithoutTurn(state ClaimState) bool {
+	return slices.Contains(unready, state) || slices.Contains(prompted, state)
+}
+
 func claimOf(ev Event) claim.Token {
 	switch ev := ev.(type) {
 	case RuntimeObservation:

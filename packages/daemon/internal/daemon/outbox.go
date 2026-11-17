@@ -1819,14 +1819,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A start the phase or entry fence below would finish still starts a claim the project
 		// release stopped, with no task (releaseStoppedStart): nothing else starts that claim.
 		if payload.Phase != "" && payload.Phase != issue.Phase {
-			started, ok := r.releaseStoppedStart(row, payload)
-			if !ok {
-				r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
-					"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
+			started, run := r.releaseStoppedStart(row, payload, "serves a phase the issue has left",
+				"row", row.ID, "issue", issue.Key, "phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
+			if !run {
 				return nil
 			}
-			r.log.Info("outbox start serves a phase the issue has left; it starts the claim the project release stopped with no task",
-				"row", row.ID, "issue", issue.Key, "phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
 			payload = started
 		}
 		// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the
@@ -1851,14 +1848,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			if payload.Entry < entry {
-				started, ok := r.releaseStoppedStart(row, payload)
-				if !ok {
-					r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-						"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+				started, run := r.releaseStoppedStart(row, payload, "serves an entry its role has left",
+					"row", row.ID, "issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+				if !run {
 					return nil
 				}
-				r.log.Info("outbox start serves an entry its role has left; it starts the claim the project release stopped with no task",
-					"row", row.ID, "issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
 				payload = started
 			}
 		}
@@ -2843,27 +2837,33 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 	return closed, nil
 }
 
-// releaseStoppedStart is the start a row the phase or entry fence would finish (supervise) makes
-// of a claim stored suspended by the project release (supervise.Claim.ProjectReleased), and
-// whether the row's claim is one. The daemon's boot gives each such claim one start, and none to a
-// claim a queued start already covers (workflow's startReleaseStopped), so the fenced start of a
-// phase owner may be the one start that claim has: finished, it would leave the claim suspended,
-// and every delivery for it waiting (awaitsBootStart). The row starts it instead as the boot
-// starts a role of an earlier phase: resumed by rule, with no task, and naming no phase or entry,
-// so neither fence holds it. A row of another claim, of a claim this daemon does not supervise or
-// of no start answers false, and the fence finishes it.
-func (r *outbox) releaseStoppedStart(row record.OutboxRow, payload record.SuperviseRequest) (record.SuperviseRequest, bool) {
-	if payload.Op != "start" {
+// releaseStoppedStart is what the phase or entry fence (supervise) does with a row it would
+// finish, a row that serves what serves names ("serves a phase the issue has left", "serves an
+// entry its role has left"): it answers the start the row runs instead and true for a start of a
+// claim stored suspended by the project release (supervise.Claim.ProjectReleased), and the row's
+// own payload and false for every other row, which the fence finishes without acting. It logs
+// which of the two it answered at Info, with fields.
+//
+// The daemon's boot gives each such claim one start, and none to a claim a queued start already
+// covers (workflow's startReleaseStopped), so the fenced start of a phase owner may be the one
+// start that claim has: finished, it would leave the claim suspended, and every delivery for it
+// waiting (awaitsBootStart). The row starts it instead as the boot starts a role of an earlier
+// phase: resumed by rule, with no task, and naming no phase or entry, so neither fence holds it.
+// A row of another claim, of a claim this daemon does not supervise or of no start is finished.
+// record.Store.EnqueueStart, for a start of another role it takes out, and admission's
+// finishFencedStarts, for a start whose phase alone the issue has left, write this same start for
+// such a claim in place of the row they take out before a lane runs it.
+func (r *outbox) releaseStoppedStart(row record.OutboxRow, payload record.SuperviseRequest, serves string, fields ...any) (record.SuperviseRequest, bool) {
+	stopped := false
+	if token, err := claim.NewToken(r.project, row.Issue, payload.Role); err == nil && payload.Op == "start" {
+		machine, found := r.supervisor.Machine(token)
+		stopped = found && machine.Claim().ProjectReleased()
+	}
+	if !stopped {
+		r.log.Info("outbox start "+serves+"; finished without acting", fields...)
 		return payload, false
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
-	if err != nil {
-		return payload, false
-	}
-	machine, found := r.supervisor.Machine(token)
-	if !found || !machine.Claim().ProjectReleased() {
-		return payload, false
-	}
+	r.log.Info("outbox start "+serves+"; it starts the claim the project release stopped with no task", fields...)
 	return record.SuperviseRequest{Op: payload.Op, Tree: payload.Tree, Role: payload.Role, Generation: payload.Generation, RuleResume: true}, true
 }
 

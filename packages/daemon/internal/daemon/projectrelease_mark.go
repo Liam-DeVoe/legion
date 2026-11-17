@@ -201,27 +201,15 @@ func readReleaseStoppedClaims(ctx context.Context, st *store.Store, project stri
 //   - or it is in stopSet, the claims the newest release stopped (api.ReleasedClaim), and reads
 //     started with no turn begun since that release ended at endedAt (Claim.LastTurnStart): a
 //     claim an earlier boot started after the release, whose session this boot finds still coming
-//     up or standing ready (startedWithoutTurn).
+//     up or standing ready (supervise.StartedWithoutTurn).
 func newReleaseStoppedClaims(claims []supervise.Claim, stopSet map[claim.Token]bool, endedAt time.Time) *releaseStoppedClaims {
 	stopped := &releaseStoppedClaims{tokens: map[claim.Token]struct{}{}}
 	for _, c := range claims {
-		if c.ProjectReleased() || stopSet[c.Token] && startedWithoutTurn(c.State) && !c.LastTurnStart.After(endedAt) {
+		if c.ProjectReleased() || stopSet[c.Token] && supervise.StartedWithoutTurn(c.State) && !c.LastTurnStart.After(endedAt) {
 			stopped.tokens[c.Token] = struct{}{}
 		}
 	}
 	return stopped
-}
-
-// startedWithoutTurn is whether a claim in state has been started and may not hold its role yet:
-// it is coming up (queued, launch_uncertain, launching, shim_connected or registered), or it
-// stands ready or idle, which a session reads before it takes its role (supervise.SaidReady).
-func startedWithoutTurn(state supervise.ClaimState) bool {
-	switch state {
-	case supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateIdle:
-		return true
-	}
-	return false
 }
 
 // comingBack is whether a delivery for held's claim waits for its session to hold its role: the
@@ -254,7 +242,7 @@ func (s *releaseStoppedClaims) comingBack(held supervise.ClaimView, now func() t
 			return until, true
 		}
 	default:
-		if startedWithoutTurn(held.State) {
+		if supervise.StartedWithoutTurn(held.State) {
 			return time.Time{}, true
 		}
 	}

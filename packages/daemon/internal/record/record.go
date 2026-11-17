@@ -1911,7 +1911,9 @@ type Store interface {
 	// is what a claim's record of the rows it has taken a task from rests on. A row a lane holds
 	// now is not touched, including one it takes while the call waits on its row lock, and the
 	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
-	// other.
+	// other. A row taken out of another role, of row's generation, whose role holds a claim stored
+	// suspended by the project release leaves that role a start in its place, resumed by rule with
+	// no phase, task, entry or slot mark, as the outbox's phase fence would start that claim.
 	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among

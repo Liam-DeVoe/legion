@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // releaseDeliveries is the three rows that publish to a role's own topic and that the outbox ends
@@ -500,6 +501,59 @@ func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *test
 				t.Fatalf("the started claim holds the task %q, want none: the start of a phase or entry the issue has left carries no task", held.Pending.Task)
 			}
 		})
+	}
+}
+
+// The boot writes no start for a phase owner a queued start already covers, and that start can be
+// taken out before a lane runs it, by a later start of another role written in its place: a head
+// that starts conflicting moves a tester's issue back to implementing, and the implementer's start
+// takes out the tester's start the release held (workflow.StartOrOwe, record.Store.EnqueueStart).
+// That start was the stopped tester's one start, so the same write leaves the tester a start of
+// its own, and the claim launches, resumed by rule and with no task, as the outbox's phase fence
+// would have started it, while the implementer's start waits for the issue's slot.
+func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseStopped(t *testing.T) {
+	ctx := context.Background()
+	stored := stoppedByRelease(t, claim.RoleTester)
+	rig := newReleaseDeliveryRig(t, stored)
+	machine := rig.supervise(t, stored)
+	rig.sup.deps.Conns.(*fake.Conns).Register(stored.Token, fake.NewConn())
+	if err := rig.st.PutClaim(ctx, stored); err != nil {
+		t.Fatalf("store the tester's claim as the release left it: %v", err)
+	}
+	// The record stands in implementing, where the conflict moved it. The tester's start was
+	// written when the issue entered testing and held through the release; the implementer's is
+	// the move back.
+	for _, start := range []record.SuperviseRequest{
+		{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+			Task: "Test the change at its head.", Entry: 1},
+		{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
+			Task: "Merge main into the branch and resolve the conflict.", Entry: 2},
+	} {
+		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+			return workflow.StartOrOwe(ctx, tx, rig.records, "LEGION-208", start, rig.clock.Now())
+		}); err != nil {
+			t.Fatalf("write the %s's start: %v", start.Role, err)
+		}
+	}
+
+	rig.run(t)
+	held := machine.Claim()
+	if held.State != supervise.StateLaunching {
+		t.Fatalf("the tester's claim is %s by %q, want it started and launching: the start the implementer's took out was its one start", held.State, held.SuspendedBy)
+	}
+	if held.Pending != nil {
+		t.Fatalf("the started tester holds the task %q, want none: the issue has left testing", held.Pending.Task)
+	}
+	rows, err := rig.pool.Query(ctx, `select payload->>'role' || ': ' || coalesce(payload->>'task', '') from outbox where issue = 'LEGION-208' order by id`)
+	if err != nil {
+		t.Fatalf("list the rows left: %v", err)
+	}
+	left, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the rows left: %v", err)
+	}
+	if want := []string{"implementer: Merge main into the branch and resolve the conflict."}; !slices.Equal(left, want) {
+		t.Fatalf("the rows left = %q, want %q: the implementer's start waits for the issue's slot", left, want)
 	}
 }
 

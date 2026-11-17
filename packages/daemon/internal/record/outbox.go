@@ -839,9 +839,11 @@ type SuperviseRequest struct {
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
 	// finishes without acting, unless its claim is stored suspended by `project_release`, which
-	// the start then resumes by rule with no task (the daemon's outbox, releaseStoppedStart). It
-	// is empty for the architect, which serves every phase, and for a suspend or a tree's close,
-	// which must still act after the issue moves on.
+	// the start then resumes by rule with no task (the daemon's outbox, releaseStoppedStart); the
+	// two writes that take out such a start before a lane runs it start that claim in its place
+	// the same way (Store.EnqueueStart, admit's finishFencedStarts). It is empty for the
+	// architect, which serves every phase, and for a suspend or a tree's close, which must still
+	// act after the issue moves on.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -870,7 +872,9 @@ type SuperviseRequest struct {
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
 	// check's look (workflow's startLook, and the boot's start of the open look again), the pod
-	// wake (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's outbox).
+	// wake (workflow's wakeRow), the resume of a cancelled idle release (the daemon's outbox), and
+	// the start of a claim the project release stopped written in place of a start of its role
+	// that is taken out before a lane runs it (Store.EnqueueStart, admit's finishFencedStarts).
 	// Each hands its role work it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
@@ -889,9 +893,11 @@ type SuperviseRequest struct {
 	ResumeTask bool `json:"resumeTask,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, the boot's one-time start of a merger the
 	// `awaiting_merge` cutover left released (workflow's cutoverMergerRepair), and the boot's start
-	// of each claim the project release stopped (workflow's startReleaseStopped); the outbox sets
-	// it too on the start it makes of such a claim in place of a start its phase or entry fence
-	// would finish (the daemon's releaseStoppedStart). If its resumed claim spends its launch
+	// of each claim the project release stopped (workflow's startReleaseStopped). It marks too the
+	// start of such a claim made in place of a start of its role that would otherwise end unrun:
+	// the outbox's, in place of a start its phase or entry fence would finish (the daemon's
+	// releaseStoppedStart), and the row written in place of one taken out before a lane runs it
+	// (Store.EnqueueStart, admit's finishFencedStarts). If its resumed claim spends its launch
 	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
 	// budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
