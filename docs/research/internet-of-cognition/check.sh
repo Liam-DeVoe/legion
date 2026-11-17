@@ -36,46 +36,75 @@
 # A run cannot run only when something outside the evidence it judges is missing or does
 # not answer, and the reason it names is of one of four kinds, which its ending record
 # (below) carries: prerequisite, a prerequisite its table declares (a tool, a variable, an
-# install, the history, the clone root); gate, env.sh or the install reader when it cannot
-# load because env.sh is missing or python3 cannot start it; environment, the environment
-# env.sh builds from the package index and the clones, or the run's own scratch; and
+# install, the history, the clone root) or a tool its ending is written with; gate, env.sh
+# or the install reader when it cannot load because env.sh is missing or python3 cannot
+# start it, or a mode that does not exist; environment, the environment env.sh builds from
+# the package index and the clones, or the run's own scratch and record (below); and
 # source, the GitHub budget or a live source the gate reads itself (the live-read rule
 # below). What the evidence holds is never such a reason: a line of claims.jsonl the one
 # parse cannot read is a FAIL (below), and a reader that loaded and then stopped is a
 # failure of the gate. A run that cannot run ends exit 2 with the reason as its last line,
 # which names what is missing, and for a missing prerequisite ends with what provides it;
 # for --self-test it names the run of the gate it made that could not run, ends with that
-# run's own last line, and carries that run's kind.
+# run's own last line, and carries that run's kind. One more kind marks an assertion that
+# was not judged without ending a run exit 2: evidence, each assertion --replay leaves
+# after it failed claim-form on a row env.sh reads a value from, since env.sh builds what
+# every recorded command reads from those rows (evidence_stops; "The one parse of
+# claims.jsonl" below); that run ends exit 1 by its FAIL.
 #
 # The ending record. Every run of a mode writes how it ended as one record beside its
 # text, a file of lines of tab-separated fields: status and its exit status; line and its
 # last line; declared and a name, one line per assertion the mode declares; and one line
 # per assertion it reported, passed or failed and the name, or unrun, the name, the kind of
 # the reason and the reason. One function, run_ending, derives the exit status from those
-# lines by the precedence below, writes the record whole and prints the last line, and
-# check.test.sh's summary writes its own record by the same function, counting cases. The
-# record goes to the file IOC_ENDING names, which the caller of one run sets on that run's
-# command alone, so that no two runs share one, and otherwise under the run's scratch,
-# removed with it; this script unsets IOC_ENDING when it starts, so no run it makes writes
-# into its caller's record. --help and --coverage judge nothing and write no record. How a
-# run ended is read from its record alone, never from its exit status alone or from its
-# text, by one function, ending_read, which --self-test reads each run it makes by and
-# check.test.sh each run its cases make; the text says what each FAIL found. Each such run
-# is made by fixture_run or gate_run, which print the directory they made for it, holding
-# its text, its record and the status it exited with. A run that wrote no record, or that
-# exited with a status its record does not hold, crashed or was killed, and a crash is a
-# failure, a bash syntax error among them. check.test.sh reads the run of each case by one
-# rule, case_read: a run that crashed fails its case; a run an assertion or a case of which
-# could not run for a reason the case does not plant makes the case one that could not run
-# when the reason's kind is from outside the tree, prerequisite, environment or source,
-# whatever its exit status, and a failed case when it is gate, the tree's own files; and a
-# case that plants one failure asks that exactly that assertion failed. A reader who keeps
-# a run's record sets IOC_ENDING on its command and reads it in the same way.
+# lines, which the run gathers in its own shell, by the precedence below, writes the record
+# whole in one write and prints the last line, and check.test.sh's summary writes its own
+# record by the same function, counting cases. The record goes to the file IOC_ENDING
+# names, which the caller of one run sets on that run's command alone, so that no two runs
+# share one, and otherwise under the run's scratch, removed with it; this script unsets
+# IOC_ENDING when it starts, so no run it makes writes into its caller's record. --help and
+# --coverage judge nothing and write no record. How a run ended is read from its record
+# alone, never from its exit status alone or from its text, by one function, ending_read,
+# which --self-test reads each run it makes by and check.test.sh each run its cases make;
+# the text says what each FAIL found. Each such run is made by fixture_run or gate_run,
+# which print the directory they made for it, holding its text, its record and the status
+# it exited with. A run that wrote no record, or that exited with a status its record does
+# not hold, crashed or was killed, and a crash is a failure, a bash syntax error among
+# them; but a run whose directory takes no write, or that was never made because its
+# directory could not be made under a scratch that takes no write, could not run, of the
+# kind environment, since the place its record goes is its reader's own scratch.
+# check.test.sh reads the run of each case by one rule, case_read: a run that crashed
+# fails its case; a run an assertion or a case of which could not run for a reason the
+# case does not plant makes the case one that could not run when the reason's kind is from
+# outside the tree, prerequisite, environment or source, whatever its exit status, and a
+# failed case when it is gate or evidence, the tree's own files; and a case that plants one
+# failure asks that exactly that assertion failed. A reader who keeps a run's record sets
+# IOC_ENDING on its command and reads it in the same way.
+#
+# The run's own scratch and record. Every run that judges, a mode or a script that sources
+# this one as check.test.sh does, checks what its ending needs before anything else runs:
+# the tools it is written and read with (ENDING_TOOLS, which --help prints); its scratch,
+# made under TMPDIR and written once, so that a TMPDIR that is missing, cannot be written
+# or is full is found there; and the record IOC_ENDING names, written once. A run that
+# lacks one ends at once by early_end, which needs none of them: it prints the cannot-run
+# line naming what failed, writes the record, when IOC_ENDING names one that takes a
+# write, holding status 2 and the run itself, the mode or the script, declared and unrun
+# with the kind prerequisite or environment, since nothing of it was declared yet, and
+# exits 2 before anything writes under the scratch. A scratch that fills, or is removed,
+# while the run goes on is found at the end: when it takes no write as the run ends, what
+# the run wrote there may be lost, so nothing the run judged is read, every declared
+# assertion or case could not run, of the kind environment, and the run ends exit 2, its
+# last line naming the scratch. A record that cannot be written ends the run exit 2
+# whatever it judged, its last line naming the record and then quoting the line the record
+# would have held; its reader finds no record and reads it by the rule above. A scratch that
+# fails part-way and takes writes again before the run ends is outside this rule: a FAIL a
+# lost write caused then stands.
 #
 # Precedence. A run that reported any FAIL ends exit 1, and when part of it then could not
 # run, its last line names after the failures each assertion, or each case, that could not
 # run and why. Only a run with no FAIL and something that could not run ends exit 2. A run
-# whose every assertion, or every case, passed ends exit 0.
+# whose every assertion, or every case, passed ends exit 0. A run whose own scratch or
+# record takes no write as it ends is no reading at all and ends exit 2 (above).
 #
 # Two rules hold what every mode reads, and this is the one place they are stated.
 #
@@ -120,7 +149,10 @@
 # mode exit 2, naming it and, at the end of the line, what provides it. --help prints the
 # same table after this header, from the same function, so the list a reader reads is the
 # list the mode checks. --self-test needs its own lines and every line of --replay, --shape,
-# --citations and --landed, since it runs each of them.
+# --citations and --landed, since it runs each of them; check.test.sh checks the lines of
+# --self-test alone before its first case, since each run a case makes checks its own
+# mode's. Before any of them, every run checks the tools its ending is written with ("The
+# run's own scratch and record" above), which --help prints first.
 #
 # --landed's committed proof runs bun test in packages/pi-legion, which needs what
 # `bun install --frozen-lockfile` writes at the root of the repository. The check tells
@@ -266,12 +298,16 @@
 # jq over the rows and env.sh's reads of claims.jsonl when --replay sources it, reads only
 # the rows the parse read (claims), so none of them meets a line it cannot read. env.sh
 # reads a value of a row only as a named field of its evidence, which this parse holds to
-# its type, and never from its predicate, so a row recorded again with another predicate
-# changes nothing env.sh reads: the sha256 of s-model-checksum and the corpus_floor of
-# tc-corpus-1, which env.sh's ioc_env_row_fields lists. Before it sources env.sh, --replay
-# fails claim-form, naming the row and the field, when no row carries one of them
-# (env_rows_judge). --shape, --landed and --published read no row of claims.jsonl;
-# --published asks only that the default branch holds the file.
+# its type, and never from its predicate: the sha256 of s-model-checksum and the
+# corpus_floor of tc-corpus-1, which env.sh's ioc_env_row_fields lists. The field and the
+# predicate write one fact twice, so before it sources env.sh, --replay fails claim-form,
+# naming the row and the field, when no row carries one of them or when the field is not a
+# whole line of the value of its row's one predicate (env_rows_judge); a pin that differs
+# from the value its row records is the evidence being wrong, never a refusal of env.sh.
+# --replay then stops there, before env.sh builds anything, and every assertion after
+# claim-form could not run, of the kind evidence; the run ends exit 1. --shape, --landed
+# and --published read no row of claims.jsonl; --published asks only that the default
+# branch holds the file.
 #
 # The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
 # into a file under its own scratch, readable by its owner alone, exports that file's path
@@ -330,21 +366,111 @@ fi
 ROOT="${IOC_ROOT:-$(cd "$HERE/../../.." && pwd)}"
 CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
 EVIDENCE="${IOC_EVIDENCE:-$HERE}"
+# The run's own scratch and record (the header's "The run's own scratch and record"): what
+# the ending of a run needs is checked here, before anything else runs, and a run that
+# lacks it ends at early_end, which needs none of it. ENDING_GIVEN is the record the
+# caller named. RUN_WHAT names this run in a cannot-run line that no mode prints: the
+# mode, as --admitted, when this script runs one, and else the script that sourced it, as
+# check.test.sh. ENDING_TOOLS are the programs the ending is written and read with: cat
+# and awk read the tables, grep, cut and sort read what each assertion reported, mktemp,
+# mv and rm make the scratch and write the record, and tail and head quote a run's line.
+ENDING_GIVEN="${IOC_ENDING:-}"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    RUN_WHAT="${1:-}"
+else
+    RUN_WHAT="${0##*/}"
+fi
+ENDING_TOOLS="mktemp rm mv cat awk grep cut sort tail head"
+ENDING_TOOLS_FROM="apt-get install coreutils grep gawk"
+# write_probe <directory>; writes one line into a new file of the directory and removes it,
+# so that a directory that is missing, cannot be written or is full fails here. It prints
+# why when it fails.
+write_probe() {
+    local why
+    why="$({ printf 'probe\n' >"$1/.write-probe"; } 2>&1)" || {
+        why="${why##*: }"
+        printf '%s' "${why:-the write failed}"
+        return 1
+    }
+    rm -f -- "$1/.write-probe"
+}
+# scratch_lost; the one probe of the run's own scratch as the run ends, made by finish, or
+# by run_ending when no finish ran, as for check.test.sh: it sets SCRATCH_LOST to why the
+# scratch takes no write, or to nothing when it takes one, and probes once per run, so the
+# two read one answer.
+scratch_lost() {
+    [ -n "${SCRATCH_LOST+set}" ] && return 0
+    SCRATCH_LOST="$(write_probe "$RUN_SCRATCH")" || :
+}
+# early_end <kind> <reason>; the ending of a run that stops before it has a scratch, a
+# record or the tools to write them, made by bash's printf alone: it writes the record, in
+# one write, to the file IOC_ENDING names when the caller named one, holding status 2, the
+# line, and the run itself, RUN_WHAT, as declared and as one unrun of <kind> with that
+# line, since the run stopped before it declared what it judges; it prints the cannot-run
+# line and exits 2. A record it cannot write is named at the end of the line.
+early_end() {
+    local line="check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: ${2//[$'\t\n']/ }" why
+    if [ -n "$ENDING_GIVEN" ]; then
+        why="$({ printf 'status\t2\nline\t%s\ndeclared\t%s\nunrun\t%s\t%s\t%s\n' "$line" "$RUN_WHAT" "$RUN_WHAT" "$1" "$line" >"$ENDING_GIVEN"; } 2>&1)" ||
+            line="$line; and its ending record, $ENDING_GIVEN, which IOC_ENDING names, cannot be written: ${why##*: }"
+    fi
+    printf '%s\n' "$line"
+    exit 2
+}
+# scratch_make; the one check of what the ending needs, made by every run that judges, a
+# mode or a script that sources this one, before anything else writes: each tool of
+# ENDING_TOOLS on PATH, a prerequisite; the scratch, made under TMPDIR and written once, so
+# that a scratch that is missing, cannot be written or is full ends here, naming it; and
+# the record IOC_ENDING names, written once and removed; the last two of the kind
+# environment.
+scratch_make() {
+    local tool missing="" why
+    for tool in $ENDING_TOOLS; do
+        command -v "$tool" >/dev/null 2>&1 || missing="$missing, $tool"
+    done
+    [ -z "$missing" ] ||
+        early_end prerequisite "the tools its ending record is written and read with are not on PATH: ${missing#, }; provided by: $ENDING_TOOLS_FROM"
+    RUN_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ioc-run.XXXXXX" 2>&1)" ||
+        early_end environment "its own scratch cannot be made under TMPDIR, ${TMPDIR:-/tmp}: ${RUN_SCRATCH##*: }"
+    trap 'rm -rf "$RUN_SCRATCH"' EXIT
+    why="$(write_probe "$RUN_SCRATCH")" ||
+        early_end environment "its own scratch $RUN_SCRATCH, made under TMPDIR, takes no write: $why"
+    if [ -n "$ENDING_GIVEN" ]; then
+        why="$({ printf 'probe\n' >"$ENDING_GIVEN.new"; } 2>&1)" || {
+            ENDING_GIVEN=""
+            early_end environment "its ending record, $IOC_ENDING, which IOC_ENDING names, cannot be written: ${why##*: }"
+        }
+        rm -f -- "$ENDING_GIVEN.new"
+    fi
+}
 # This run's scratch, made fresh here and removed when the run ends, so that what one
-# run reads from Dispatch is never read by the next.
-RUN_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ioc-run.XXXXXX")"
-trap 'rm -rf "$RUN_SCRATCH"' EXIT
+# run reads from Dispatch is never read by the next. --help and --coverage judge nothing,
+# write nothing and make none; every other run, a mode or a script that sources this one,
+# makes it before anything else runs.
+RUN_SCRATCH=""
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    scratch_make
+else
+    case "${1:---help}" in
+    --help | -h | --coverage) ;;
+    *) scratch_make ;;
+    esac
+fi
 # This run's ending record (the header's "The ending record"): the file IOC_ENDING names,
 # which the caller of this one run sets on its command, and otherwise one under this run's
 # scratch. IOC_ENDING is unset here, so that no run this one makes writes into it, and
 # what an earlier run left at that path is removed, so it is never read as this run's.
-ENDING="${IOC_ENDING:-$RUN_SCRATCH/ending}"
-unset IOC_ENDING
-rm -f -- "$ENDING" "$ENDING.part" "$ENDING.new"
+# ENDING_LINES gathers the record's lines in this shell until run_ending writes it whole,
+# and SCRATCH_LOST, unset until scratch_lost probes the scratch as the run ends, holds
+# that probe's answer.
+ENDING="${ENDING_GIVEN:-${RUN_SCRATCH:+$RUN_SCRATCH/ending}}"
+ENDING_LINES=""
+unset IOC_ENDING SCRATCH_LOST
+[ -z "$ENDING" ] || rm -f -- "$ENDING" "$ENDING.new"
 # Every PASS and FAIL a mode reports is also written here, one line each, so its verdict
 # reads them after the mode's subshell ends, however it ended.
 REPORTED="$RUN_SCRATCH/reported"
-: >"$REPORTED"
+[ -z "$RUN_SCRATCH" ] || : >"$REPORTED"
 MODE=""  # the mode run_mode runs, which live_read names when a source does not answer
 
 # family | mode | what it asserts | the fault --self-test plants, or - for none. A mode
@@ -473,10 +599,13 @@ TABLE
 }
 
 # prerequisite_rows <mode>; the lines of prerequisite_table the mode needs, without the
-# mode, as kind|name|what needs it|what provides it, each kind and name once.
+# mode, as kind|name|what needs it|what provides it, each kind and name once. cases names
+# what check.test.sh checks before its first case, the lines of --self-test alone, which
+# its fixture builder needs; each run a case makes checks the lines of its own mode.
 prerequisite_rows() {
     local modes=" $1 " mode kind name why provides seen=" "
     [ "$1" = self-test ] && modes=" self-test replay shape citations landed "
+    [ "$1" = cases ] && modes=" self-test "
     while IFS='|' read -r mode kind name why provides; do
         case "$modes" in *" $mode "*) ;; *) continue ;; esac
         case "$seen" in *" $kind:$name "*) continue ;; esac
@@ -538,25 +667,39 @@ prerequisite_missing() {
     esac
 }
 
-# prerequisites <mode>; the one step that checks what the mode needs, run by run_mode
-# before the mode's first live read and first assertion. A mode that lacks one cannot run:
-# its last line names each missing prerequisite, each followed by what provides it.
-prerequisites() {
+# prerequisites_missing <mode>; prints each prerequisite of the mode that is missing, each
+# followed by what provides it, and returns 0 when one is missing and 1 when none is.
+prerequisites_missing() {
     local kind name _why provides detail missing=""
     while IFS='|' read -r kind name _why provides; do
         detail="$(prerequisite_missing "$kind" "$name")" || continue
         missing="$missing; $detail; provided by: $provides"
     done < <(prerequisite_rows "$1")
-    [ -z "$missing" ] || cannot_run prerequisite " --$1: ${missing#; }"
+    [ -n "$missing" ] || return 1
+    printf '%s' "${missing#; }"
 }
 
-# prerequisites_report; prerequisite_table as --help prints it, one block per mode.
+# prerequisites <mode>; the one step that checks what the mode needs, run by run_mode
+# before the mode's first live read and first assertion, and by check.test.sh before its
+# first case. A mode that lacks one cannot run: its last line names each missing
+# prerequisite, each followed by what provides it.
+prerequisites() {
+    local missing
+    missing="$(prerequisites_missing "$1")" || return 0
+    cannot_run prerequisite " --$1: $missing"
+}
+
+# prerequisites_report; prerequisite_table as --help prints it, one block per mode, after
+# the tools every mode needs to make its scratch and write its record (ENDING_TOOLS).
 prerequisites_report() {
     local mode kind name why provides
     printf '\nWhat each mode needs (prerequisite_table). A mode checks its own before it reads or\n'
     printf 'judges anything, and one that is missing ends the mode exit 2, naming it and, last,\n'
     printf 'what provides it. --self-test needs its own and those of --replay, --shape,\n'
     printf -- '--citations and --landed, which it runs. --coverage and --help need nothing.\n'
+    printf '\nevery mode, before anything else (ENDING_TOOLS)\n'
+    printf '  %-9s %-20s %s\n' tool "${ENDING_TOOLS// /, }" "make the run's own scratch and write and read its ending record"
+    printf '  %-9s %-20s provided by: %s\n' '' '' "$ENDING_TOOLS_FROM"
     for mode in replay shape citations landed published admitted self-test; do
         printf '\n--%s\n' "$mode"
         while IFS='|' read -r kind name why provides; do
@@ -594,17 +737,28 @@ fail() {
 # finish <mode>; the verdict of the mode over the assertions it declares, by the three
 # endings of the header and their precedence. One that reported a FAIL failed; one that
 # reported only PASS passed; one that reported nothing could not run when the mode
-# stopped at cannot_run, with the kind and the reason it stopped for, and otherwise failed
-# and is named in a FAIL line here. An assertion the mode reported but does not declare
-# fails too. Each verdict is a line of the run's ending record, which run_ending writes,
-# ending the run with its last line and exit 0, 1 or 2. It relies on one verdict per
-# assertion, printed after all of that assertion's parts have run: a PASS printed before
-# a later part would stand however that part ended, so every assertion of more than one
-# part prints its PASS last.
+# stopped at cannot_run or evidence_stops, with the kind and the reason it stopped for,
+# and otherwise failed and is named in a FAIL line here. An assertion the mode reported
+# but does not declare fails too. When the run's own scratch takes no write as the mode
+# ends, what each assertion reported there may be lost, so finish reads none of it, and
+# run_ending reads every declared assertion as one that could not run for that. Each
+# verdict is a line of the run's ending record, which run_ending writes, ending the run
+# with its last line and exit 0, 1 or 2. It relies on one verdict per assertion, printed
+# after all of that assertion's parts have run: a PASS printed before a later part would
+# stand however that part ended, so every assertion of more than one part prints its PASS
+# last.
 finish() {
     local family declared kind="" stopped=""
-    [ -s "$RUN_SCRATCH/cannot-run" ] && IFS=$'\t' read -r kind stopped <"$RUN_SCRATCH/cannot-run"
     declared="$(declared_assertions "$1")"
+    scratch_lost
+    if [ -n "$SCRATCH_LOST" ]; then
+        while IFS= read -r family; do
+            [ -z "$family" ] || ending_add declared "$family"
+        done <<<"$declared"
+        run_ending assertions
+        return
+    fi
+    [ -s "$RUN_SCRATCH/stopped" ] && IFS=$'\t' read -r kind stopped <"$RUN_SCRATCH/stopped"
     while IFS= read -r family; do
         [ -n "$family" ] || continue
         ending_add declared "$family"
@@ -636,7 +790,19 @@ finish() {
 cannot_run() {
     local line="check.sh cannot run${2//[$'\t\n']/ }"
     printf '%s\n' "$line"
-    printf '%s\t%s\n' "$1" "$line" >"$RUN_SCRATCH/cannot-run"
+    printf '%s\t%s\n' "$1" "$line" >"$RUN_SCRATCH/stopped"
+    exit 2
+}
+
+# evidence_stops <reason>; the end of a mode at evidence it has just failed, by name, where
+# every assertion still to come reads what that evidence feeds: it prints the reason,
+# records it for finish with the kind evidence, so that each assertion not yet judged is
+# one that could not run for it, and ends the mode's subshell. It is called only after a
+# FAIL, so the run ends exit 1 by the precedence of the header, never exit 2.
+evidence_stops() {
+    local line="${1//[$'\t\n']/ }"
+    printf '%s\n' "$line"
+    printf 'evidence\t%s\n' "$line" >"$RUN_SCRATCH/stopped"
     exit 2
 }
 
@@ -650,16 +816,16 @@ run_mode() {
 }
 
 # ending_add <field> <name> [<kind> <reason>]; one line of this run's ending record (the
-# header's "The ending record"), gathered in $ENDING.part until run_ending writes the
-# record whole: declared and a name; passed or failed and a name; or unrun, a name, the
-# kind of its reason and the reason. A tab or a line break inside a field is written as a
-# space, so each line holds its fields alone.
+# header's "The ending record"), gathered in ENDING_LINES, in this shell, until run_ending
+# writes the record whole: declared and a name; passed or failed and a name; or unrun, a
+# name, the kind of its reason and the reason. A tab or a line break inside a field is
+# written as a space, so each line holds its fields alone.
 ending_add() {
     local field line=""
     for field in "$@"; do
         line="$line${line:+$'\t'}${field//[$'\t\n']/ }"
     done
-    printf '%s\n' "$line" >>"$ENDING.part"
+    ENDING_LINES="$ENDING_LINES$line"$'\n'
 }
 
 # run_ending <assertions|cases>; the one writer of how a run ended, a mode's or, counting
@@ -668,11 +834,24 @@ ending_add() {
 # run, else 0, and the last line of the three endings: for a mode, the failed assertions
 # named and then each that could not run with the one reason the mode stopped for, or that
 # reason alone, which cannot_run printed when the mode stopped; for check.test.sh, each
-# case that could not run with its own run's reason. It writes the record whole, under a
-# temporary name renamed into place, prints the last line, and returns the status.
+# case that could not run with its own run's reason. When the run's own scratch takes no
+# write as it ends, what the run wrote there may be lost, so every unit it declared could
+# not run, of the kind environment, the run ends exit 2 whatever it judged, and the last
+# line names the scratch. It writes the record whole, in one write under a temporary name
+# renamed into place, prints the last line, and returns the status. A record it cannot
+# write ends the run exit 2, whatever it judged, with a last line that names the record
+# and then quotes the line the record would have held.
 run_ending() {
-    local unit="$1" field name kind reason total=0 failed=0 unrun=0 failed_names="" unrun_names="" unrun_cases="" first="" status line
-    touch "$ENDING.part"
+    local unit="$1" lines="$ENDING_LINES" field name kind reason total=0 failed=0 unrun=0 failed_names="" unrun_names="" unrun_cases="" first="" status line lost="" why
+    scratch_lost
+    if [ -n "$SCRATCH_LOST" ]; then
+        lost="check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: its own scratch $RUN_SCRATCH takes no write as it ends: $SCRATCH_LOST, so nothing it judged is read, since what it wrote there may be lost"
+        lines=""
+        while IFS=$'\t' read -r field name kind reason; do
+            [ "$field" = declared ] || continue
+            lines="$lines$field"$'\t'"$name"$'\n'"unrun"$'\t'"$name"$'\t'"environment"$'\t'"$lost"$'\n'
+        done <<<"$ENDING_LINES"
+    fi
     while IFS=$'\t' read -r field name kind reason; do
         case "$field" in
         passed) total=$((total + 1)) ;;
@@ -687,8 +866,11 @@ run_ending() {
             [ -n "$first" ] || first="$reason"
             ;;
         esac
-    done <"$ENDING.part"
-    if [ "$failed" -gt 0 ]; then
+    done <<<"$lines"
+    if [ -n "$lost" ]; then
+        status=2
+        line="$lost"
+    elif [ "$failed" -gt 0 ]; then
         status=1
         if [ "$unit" = cases ]; then
             line="$failed of $total cases failed${unrun_cases:+; $unrun could not run: ${unrun_cases#; }}"
@@ -706,13 +888,13 @@ run_ending() {
         status=0
         line="all $total $unit passed"
     fi
-    {
-        printf 'status\t%s\n' "$status"
-        printf 'line\t%s\n' "${line//[$'\t\n']/ }"
-        cat "$ENDING.part"
-    } >"$ENDING.new" && mv -f "$ENDING.new" "$ENDING"
-    rm -f "$ENDING.part"
-    { [ "$status" = 2 ] && [ "$unit" = assertions ]; } || printf '%s\n' "$line"
+    line="${line//[$'\t\n']/ }"
+    if ! why="$({ printf 'status\t%s\nline\t%s\n%s' "$status" "$line" "$lines" >"$ENDING.new"; } 2>&1 && mv -f -- "$ENDING.new" "$ENDING" 2>&1)"; then
+        rm -f -- "$ENDING.new" 2>/dev/null
+        printf '%s\n' "check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: its ending record, $ENDING, cannot be written: ${why##*: }, so no reader reads this run, which ended: $line"
+        return 2
+    fi
+    { [ "$status" = 2 ] && [ "$unit" = assertions ] && [ -z "$lost" ]; } || printf '%s\n' "$line"
     return "$status"
 }
 
@@ -724,11 +906,26 @@ run_ending() {
 # line; and RUN_UNRUN to one line <name><TAB><kind><TAB><reason> per name that could not
 # run. A run that wrote no record, or that exited with a status its record does not hold,
 # crashed or was killed: it reads as failed, with RUN_CRASH=1, RUN_STATUS the status it
-# exited with and a RUN_LINE that says so and quotes the last line of its text.
+# exited with and a RUN_LINE that says so and quotes the last line of its text. Two runs
+# with no record are read otherwise, since the place the record goes is this run's own
+# scratch: a run whose directory takes no write, and a run never made because its
+# directory could not be made (<run> empty) while this run's scratch takes no write, each
+# could not run, of the kind environment, naming the directory.
 ending_read() {
-    local run="$1" field a b c exited=""
+    local run="$1" field a b c exited="" lost
     RUN_STATUS="" RUN_LINE="" RUN_FAILED="" RUN_UNRUN="" RUN_CRASH=0 RUN_ENDING=failed
-    [ -s "$run/status" ] && exited="$(cat "$run/status")"
+    if [ -z "$run" ] || [ ! -d "$run" ]; then
+        if lost="$(write_probe "$RUN_SCRATCH")"; then
+            RUN_CRASH=1 RUN_STATUS=none
+            RUN_LINE="no run was made: its directory '$run' could not be made, and the scratch of this run takes writes, so its caller named a place it cannot make"
+        else
+            RUN_ENDING=cannot-run RUN_STATUS=2
+            RUN_LINE="check.sh cannot run: no run was made, since its directory could not be made under the scratch of this run, $RUN_SCRATCH, which takes no write: $lost"
+            RUN_UNRUN="run"$'\t'"environment"$'\t'"$RUN_LINE"$'\n'
+        fi
+        return 0
+    fi
+    [ -s "$run/status" ] && read -r exited <"$run/status"
     if [ -f "$run/ending" ]; then
         while IFS=$'\t' read -r field a b c; do
             case "$field" in
@@ -738,6 +935,11 @@ ending_read() {
             unrun) RUN_UNRUN="$RUN_UNRUN$a"$'\t'"$b"$'\t'"$c"$'\n' ;;
             esac
         done <"$run/ending"
+    elif ! lost="$(write_probe "$run")"; then
+        RUN_ENDING=cannot-run RUN_STATUS=2
+        RUN_LINE="check.sh cannot run: the directory of the run, $run, takes no write: $lost, so the run could write no ending record there"
+        RUN_UNRUN="run"$'\t'"environment"$'\t'"$RUN_LINE"$'\n'
+        return 0
     fi
     case "$RUN_STATUS" in
     0) RUN_ENDING=passed ;;
@@ -874,14 +1076,23 @@ claims() {
 # env_rows_judge <family>; the rows env.sh reads a value from, by env.sh's own table and
 # reader of them (ioc_env_row_fields, ioc_env_row_field), over the rows the one parse read,
 # which --replay judges before it sources env.sh, once env_functions has loaded env.sh's
-# functions: a row that is not there, or whose evidence names no such field, fails
-# <family>, naming the row and the field. It returns non-zero when it reported a FAIL.
+# functions. A row that is not there, or whose evidence names no such field, fails
+# <family>, naming the row and the field, and so does a row whose field is not a whole line
+# of the value of its own one predicate, as s-model-checksum's sha256 is the first line of
+# its equals and tc-corpus-1's corpus_floor is its equals: the pin env.sh holds its input
+# to and the value the row is held to are one fact, written twice. It returns non-zero
+# when it reported a FAIL.
 env_rows_judge() {
-    local id field what bad=0
+    local id field what value bad=0
     while IFS='|' read -r id field what; do
-        [ -n "$(IOC_ENV_CLAIMS="$CLAIMS_ROWS" ioc_env_row_field "$id" "$field")" ] && continue
-        bad=1
-        fail "$1" "claims.jsonl holds no row $id whose evidence names $field, which env.sh reads as $what"
+        value="$(IOC_ENV_CLAIMS="$CLAIMS_ROWS" ioc_env_row_field "$id" "$field")"
+        if [ -z "$value" ]; then
+            bad=1
+            fail "$1" "claims.jsonl holds no row $id whose evidence names $field, which env.sh reads as $what"
+        elif ! jq -e --arg id "$id" --arg value "$value" 'select(.id == $id) | .expect | type == "object" and any(to_entries[] | select(.key != "exit") | .value | tostring | split("\n")[]; . == $value)' "$CLAIMS_ROWS" >/dev/null; then
+            bad=1
+            fail "$1" "the row $id names $field $value in its evidence, which env.sh reads as $what, and its predicate holds no line $value, so the pin and the value the row is held to differ: $(jq -c --arg id "$id" 'select(.id == $id) | .expect' "$CLAIMS_ROWS" | head -c 200)"
+        fi
     done < <(ioc_env_row_fields)
     return "$bad"
 }
@@ -3358,12 +3569,16 @@ mode_replay() {
     # only the rows it read, env.sh's reads of claims.jsonl among them (IOC_ENV_CLAIMS).
     claims_judge claim-form || unread_rows=1
     local IOC_ENV_CLAIMS="$CLAIMS_ROWS"
-    # The rows env.sh reads a value from are read here too when --replay sources env.sh
-    # (the header's "The one parse of claims.jsonl"): a row env.sh could not read fails
-    # claim-form by name, so what the evidence holds never stops env.sh.
+    # The rows env.sh reads a value from are judged here too, before env.sh builds anything
+    # (the header's "The one parse of claims.jsonl"): a row env.sh would read wrong, or
+    # whose pin is not the value its predicate records, fails claim-form by name, and the
+    # mode stops there (evidence_stops), so no assertion after it is judged against an
+    # environment built from evidence that is wrong, and none is put down to the
+    # environment. The run then ends exit 1 by that FAIL.
     if [ "${IOC_NO_ENV:-0}" != 1 ]; then
         env_functions || cannot_run gate " --replay: env.sh, which names the values it reads from claims.jsonl, did not load."
-        env_rows_judge claim-form || unread_rows=1
+        env_rows_judge claim-form ||
+            evidence_stops "the evidence stops --replay at claim-form: env.sh builds what the recorded commands read from the rows it reads a value from, and claim-form failed on one of them, so env.sh builds nothing and no recorded command runs"
     fi
     # The scratch of the rows, each row's output and its own empty TMPDIR, is under the
     # run's scratch, which the EXIT trap removes however the run ends, and this function
@@ -3551,8 +3766,8 @@ replay_citation_rows() {
     # check, <label>-<number>. Each citation the record carries has such a row, each such
     # row is a citation the record carries, and a label with no such row is a failure, so
     # a record read as nothing, or a set of rows taken out, is no pass.
-    local ids="$1" work label missing=0 total=0 cid
-    work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-cit.XXXXXX")"
+    local ids="$1" work="$RUN_SCRATCH/citation-rows" label missing=0 total=0 cid
+    mkdir -p "$work"
     if [ "$(jq '.records_under_check | length' "$EVIDENCE/sources.json")" -eq 0 ]; then
         missing=$((missing + 1))
         fail citation-row "sources.json names no record under check, so no citation is checked"
@@ -5199,7 +5414,7 @@ main() {
     --self-test) run_mode self-test ;;
     *)
         usage
-        exit 2
+        early_end gate "it has no mode $mode; its modes are the ones the header above names"
         ;;
     esac
 }

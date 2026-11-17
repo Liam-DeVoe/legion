@@ -58,7 +58,7 @@
 #   names one program, and they are the only variables a recorded command may run.
 #   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with gh. A review a reader
 #                   may not see is not in it: a PENDING review is visible to its author
-#                   alone, so the row this count serves is a lower bound.
+#                   alone, and the row counts only the bodies submitted by its instant.
 #   IOC_OUR_TREE    our repository's go.work and its packages/daemon and packages/envoy
 #                   as they stand at the commit sources.json pins, which every row that
 #                   counts or tests our code reads; the working tree carries whatever the
@@ -222,8 +222,10 @@ ioc_env_claims() { cat "${IOC_ENV_CLAIMS:-$IOC_ENV_HERE/claims.jsonl}"; }
 # <row id>|<field of the row's evidence>|<what env.sh reads it as>. Each is a named field
 # of the row's evidence, and none is read from the row's predicate, so a row recorded again
 # with another predicate changes nothing env.sh reads. check.sh's one parse holds each field
-# to its type, and --replay fails claim-form, naming the row and the field, before it sources
-# env.sh, when no row carries one (check.sh's header, "The one parse of claims.jsonl").
+# to its type, and --replay, before it sources env.sh, fails claim-form, naming the row and
+# the field, when no row carries one or when the field is not a whole line of the value its
+# row's predicate records, and then stops, so env.sh never builds from such a row
+# (check.sh's header, "The one parse of claims.jsonl").
 ioc_env_row_fields() {
     cat <<'FIELDS'
 s-model-checksum|sha256|the checksum of the model.safetensors it downloads

@@ -61,7 +61,8 @@ case_unrun() {
 # when the run crashed, which fails the case, or when an assertion or a case of the run
 # could not run for a reason that does not match <planted>: the case could not run when
 # that reason is from outside the tree, of the kind prerequisite, environment or source,
-# whatever the run's exit status, and failed when it is of the kind gate, the tree's own.
+# whatever the run's exit status, and failed when it is of the kind gate or evidence, the
+# tree's own.
 case_read() {
     local name kind reason
     ending_read "$2"
@@ -81,25 +82,39 @@ case_read() {
     return 0
 }
 
+# Each helper below decides pass, fail or could not run from the run's record alone, by
+# case_read and RUN_*, and reads the run's text only for the detail of a FAIL, which the
+# record does not hold: the FAIL lines it quotes in its own failure, the detail a case
+# names after a family and a colon, and the number of FAIL lines one_failure_result asks
+# for.
+#
+# case_result <name> <family the gate should name> <run>; a planted fault, which passes
+# when the run's record names that family among the assertions that failed (RUN_FAILED).
+# <family> is an extended regular expression over the names, as 'replay-command|
+# predicate-form'; a case that also asks what the FAIL said writes that after the name and
+# a colon, as "replay-command: f-behaviour-1 ran ...", and that detail is read from the
+# run's text alone, as a FAIL line of the family that matches it.
 case_result() {
-    # case_result <name> <family the gate should name> <run>
-    local name="$1" family="$2" run="$3"
+    local name="$1" family="${2%%:*}" detail="$2" run="$3"
     case_read "$name" "$run" || return 0
     if [ "$RUN_ENDING" = passed ]; then
         case_failed "$name" "the gate passed it: $RUN_LINE"
-    elif ! grep -qE "^FAIL ($family)" "$run/text"; then
-        case_failed "$name" "the gate failed but named no $family: $(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
+    elif ! printf '%s' "$RUN_FAILED" | grep -qxE -- "$family"; then
+        case_failed "$name" "the gate failed but named no $family, only $(printf '%s' "$RUN_FAILED" | tr '\n' ' ')$(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
+    elif [ "$detail" != "$family" ] && ! grep -qE -- "^FAIL ($detail)" "$run/text"; then
+        case_failed "$name" "the gate failed $family, and no FAIL line of it reads $detail: $(grep -E "^FAIL ($family)" "$run/text" | head -2 | tr '\n' ' ')$RUN_LINE"
     else
         case_passed "$name"
     fi
 }
 
 # honest_result <name> <family> <run>; the honest form beside a planted fault, which passes
-# when the gate ran and names no failure of that family.
+# when the gate ran and its record names no failure of that family (RUN_FAILED); the text
+# gives the FAIL line its failure quotes.
 honest_result() {
     local name="$1" family="$2" run="$3"
     case_read "$name" "$run" || return 0
-    if grep -qE "^FAIL ($family)" "$run/text"; then
+    if printf '%s' "$RUN_FAILED" | grep -qxE -- "$family"; then
         case_failed "$name" "$(grep -E "^FAIL ($family)" "$run/text" | head -1)"
     else
         case_passed "$name"
@@ -107,7 +122,8 @@ honest_result() {
 }
 
 # passed_result <name> <run>; an honest form that passes only when the gate ends with its
-# all-passed line, with no failure of any family.
+# all-passed line, with no failure of any family; the text gives the FAIL lines its
+# failure quotes.
 passed_result() {
     local name="$1" run="$2"
     case_read "$name" "$run" || return 0
@@ -138,7 +154,9 @@ ending_result() {
 # one_failure_result <name> <family> <the run's last line> <its one FAIL> <run>; the third
 # and fourth are extended regular expressions. It asks whether exactly the planted
 # assertion failed: it passes when the run's record holds exit 1, <family> alone among
-# the assertions that failed and that last line, and its text one FAIL line, that one.
+# the assertions that failed and that last line, and its text one FAIL line, that one. The
+# number of FAIL lines and what the one says are read from the text alone, since the record
+# names a failed assertion once, however many times it failed, and holds no detail.
 one_failure_result() {
     local name="$1" family="$2" summary="$3" failure="$4" run="$5"
     case_read "$name" "$run" || return 0
@@ -150,8 +168,28 @@ one_failure_result() {
     fi
 }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ioc-check-test.XXXXXX")"
-trap 'rm -rf "$WORK" "$RUN_SCRATCH"' EXIT
+# The run's own ending (check.sh's header, "The run's own scratch and record"). check.sh,
+# when this file sourced it, made and checked this run's scratch, and this file checks what
+# its fixture builder needs before its first case, the lines of --self-test alone
+# (prerequisite_rows cases): one that is missing ends it at once, exit 2, by early_end;
+# each run a case makes checks the lines of its own mode. The cases' scratch, WORK, is
+# under the run's own. A run that ends before its summary, at a case that stops it (a plant
+# that could not be made exits 1) or at a crash, writes no record, which its reader reads
+# as the failure it is; but when the run's scratch takes no write as it ends, that stop is
+# the environment's, and cases_exit, the EXIT trap, ends the run by early_end, exit 2,
+# naming the scratch. The summary sets CASES_SUMMARY, and run_ending reads the scratch
+# there.
+CASES_MISSING="$(prerequisites_missing cases)" && early_end prerequisite "$CASES_MISSING"
+WORK="$RUN_SCRATCH/cases"
+CASES_WHY="$({ mkdir -- "$WORK"; } 2>&1)" || early_end environment "the scratch of its cases, $WORK, cannot be made: ${CASES_WHY##*: }"
+cases_exit() {
+    local status=$? lost=""
+    [ -n "${CASES_SUMMARY:-}" ] || lost="$(write_probe "$RUN_SCRATCH")" || :
+    rm -rf "$RUN_SCRATCH"
+    [ -z "$lost" ] || early_end environment "its own scratch $RUN_SCRATCH takes no write as it stops before its summary: $lost, so the case it stopped at stopped for that"
+    exit "$status"
+}
+trap cases_exit EXIT
 fixture_build "$WORK/base" >/dev/null 2>&1
 
 fresh() {
@@ -1265,7 +1303,7 @@ fi
 # for the outage; the empty judgement above is what --landed read with no Dispatch.
 dir="$(fresh citations-no-dispatch)"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
-ending_result "--citations with no Dispatch to resolve against cannot run: exit 2, the reason last" 2 '^check\.sh cannot run' "$out"
+ending_result "--citations with no Dispatch to resolve against cannot run: exit 2, the reason last" 2 '^check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer' "$out"
 
 # 73-75 come from test round 24 and the architect's decision on it: no check passes on no
 # input, and a live source that does not answer is a mode that cannot run (the header of
@@ -2049,8 +2087,8 @@ fi
 # the package index, are taken as built. The honest form is the same copy with both
 # predicates as committed. A field of the wrong type is no row of the one parse: a row the
 # case appends to the fixture's claims.jsonl fails --replay's claim-form alone, naming the
-# line. A row env.sh reads that is gone fails claim-form before --replay sources env.sh
-# (env_rows_judge).
+# line. A row env.sh reads that is gone, or whose field differs from its predicate, is
+# case 95.
 MODEL_BYTES='the weights of the snapshot case 91 plants'
 MODEL_SHA="$(printf '%s\n' "$MODEL_BYTES" | sha256sum | cut -d' ' -f1)"
 # env_copy <name> <committed|matches>; a copy of claims.jsonl whose s-model-checksum pins
@@ -2087,8 +2125,8 @@ env_reads() {
         export IOC_CACHE="$cache" IOC_EVID="$HERE/evidence" IOC_ENV_HERE="$HERE" IOC_ENV_CLAIMS="$2" IOC_PY=/nonexistent-ioc/python PATH="$cache/bin:$PATH"
         ioc_env_caches
         ioc_env_model && ioc_env_reviews || exit 1
-        [ "$(wc -l <"$IOC_REVIEWS")" -ge 5000 ] || {
-            printf 'env.sh kept a corpus of %s review bodies, fewer than the 5000 of tc-corpus-1\n' "$(wc -l <"$IOC_REVIEWS")"
+        [ "$(wc -l <"$IOC_REVIEWS")" -ge "$(ioc_env_row_field tc-corpus-1 corpus_floor)" ] || {
+            printf 'env.sh kept a corpus of %s review bodies, fewer than the %s of tc-corpus-1\n' "$(wc -l <"$IOC_REVIEWS")" "$(ioc_env_row_field tc-corpus-1 corpus_floor)"
             exit 1
         }
     ) 2>&1
@@ -2112,14 +2150,6 @@ for form in 'sha256:"sha256:53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cac
         '^1 of 16 assertions failed: claim-form$' "^FAIL claim-form: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row, so nothing of it is read: its evidence's $field is " \
         "$(fixture_run "$dir" --replay)"
 done
-copy="$(admitted_copy env-row-gone)"
-jq -c 'select(.id != "s-model-checksum")' "$HERE/claims.jsonl" >"$copy/claims.jsonl"
-out="$(IOC_EVIDENCE="$copy" bash -c '. "$1" && claims_parsed && env_functions && env_rows_judge claim-form' _ "$HERE/check.sh" 2>&1)"
-if printf '%s\n' "$out" | grep -qx 'FAIL claim-form: claims.jsonl holds no row s-model-checksum whose evidence names sha256, which env.sh reads as .*'; then
-    case_passed "a row env.sh reads that is gone fails claim-form by name before --replay sources env.sh"
-else
-    case_failed "a row env.sh reads that is gone fails claim-form by name before --replay sources env.sh" "$(printf '%s\n' "$out" | tail -1)"
-fi
 
 # 92. An id names one row (the architect's note of 2026-11-16T06:35Z). At beda0a6c32 the one
 # parse read a second row of an id it had read as a row of its own, so a row recorded twice
@@ -2263,9 +2293,247 @@ case_result "tm-validate as claims.jsonl holds it fails over a mas-ctl that answ
 schema_run old missing 'cd "$IOC_EVID" && "$IOC_MASLAB_CTL" validate legion-workflow.yaml legion-workflow-kind.yaml' '{"exit":0}'
 honest_result "the old form of tm-validate, the exit status alone, passes a mas-ctl that answers OK with no schema found" replay-command "$SCHEMA_OUT"
 
+# 95. A pin env.sh reads and the value its row records are one fact (the fourteenth
+# review, the Minor at check.sh:3366). At f63516e5db a row env.sh reads that was gone only
+# failed claim-form, and --replay went on to read GitHub and Dispatch and to source env.sh,
+# which cloned and built the python environment before it refused, so the 15 other
+# assertions could not run for the environment when the cause was the evidence; and
+# nothing held s-model-checksum's sha256 equal to its predicate, or tc-corpus-1's
+# corpus_floor to its, so a pin with one digit wrong ended exit 2 at env.sh with no FAIL.
+# Each form runs --replay over a copy of this directory's claims.jsonl and env.sh with
+# GitHub and Dispatch cut, as case 90 cuts GitHub: s-model-checksum gone, its sha256 one
+# digit off the line its predicate records, and tc-corpus-1's corpus_floor one below its
+# predicate's count. Each fails claim-form alone, naming the row, and stops there, before
+# it reads a live source or builds anything, exit 1, each of the other 15 assertions one
+# that could not run for the evidence. The honest form is env_rows_judge over claims.jsonl
+# as it stands, which reports nothing.
+# evidence_stop_result <name> <the FAIL's detail, an extended regular expression> <run>;
+# passes when the record holds exit 1, claim-form alone among the assertions that failed,
+# and the 15 others as ones that could not run, of the kind evidence, for the reason
+# evidence_stops gives, and the text a FAIL of claim-form with that detail. A run that
+# stops there reads no live source and builds nothing, so the only reasons from outside
+# the tree that can end it first, a missing prerequisite or its own scratch and record
+# (case 96), make the case one that could not run; any other ending fails it.
+EVIDENCE_STOP='the evidence stops --replay at claim-form: '
+evidence_stop_result() {
+    local name="$1" detail="$2" run="$3" first
+    ending_read "$run"
+    first="$(printf '%s' "$RUN_UNRUN" | head -1)"
+    if [ "$RUN_CRASH" != 1 ] && { [ "$(printf '%s' "$first" | cut -f2)" = prerequisite ] || [ "$(printf '%s' "$first" | cut -f1)" = --replay ]; }; then
+        case_unrun "$name" "$(printf '%s' "$first" | cut -f2)" "$(printf '%s' "$first" | cut -f3)"
+    elif [ "$RUN_STATUS" = 1 ] && [ "$RUN_FAILED" = claim-form$'\n' ] && [ "$(printf '%s' "$RUN_UNRUN" | wc -l)" = 15 ] &&
+        [ "$(printf '%s' "$RUN_UNRUN" | STOP="$EVIDENCE_STOP" awk -F'\t' '$2 == "evidence" && index($3, ENVIRON["STOP"]) == 1' | wc -l)" = 15 ] &&
+        grep -qE -- "^FAIL claim-form: $detail" "$run/text"; then
+        case_passed "$name"
+    else
+        case_failed "$name" "exit $RUN_STATUS, $(grep '^FAIL' "$run/text" | head -2 | tr '\n' ' ')last line: $RUN_LINE"
+    fi
+}
+for form in 'gone|select(.id != "s-model-checksum")|claims\.jsonl holds no row s-model-checksum whose evidence names sha256, which env\.sh reads as ' \
+    'sha256|if .id == "s-model-checksum" then .evidence.sha256 |= .[0:63] + (if .[63:] == "0" then "1" else "0" end) else . end|the row s-model-checksum names sha256 [0-9a-f]{64} in its evidence, which env\.sh reads as .*, and its predicate holds no line [0-9a-f]{64}, so the pin and the value the row is held to differ' \
+    'corpus_floor|if .id == "tc-corpus-1" then .evidence.corpus_floor -= 1 else . end|the row tc-corpus-1 names corpus_floor [0-9]+ in its evidence, which env\.sh reads as .*, and its predicate holds no line [0-9]+, so the pin and the value the row is held to differ'; do
+    planted="${form%%|*}"
+    detail="${form##*|}"
+    program="${form#*|}"
+    program="${program%|*}"
+    copy="$(admitted_copy "env-row-$planted")"
+    jq -c "$program" "$HERE/claims.jsonl" >"$copy/claims.jsonl"
+    cmp -s "$copy/claims.jsonl" "$HERE/claims.jsonl" && {
+        printf 'FAIL the row env.sh reads could not be planted %s in a copy of claims.jsonl\n' "$planted"
+        exit 1
+    }
+    out="$(IOC_EVIDENCE="$copy" DISPATCH_URL=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 no_proxy= NO_PROXY= gate_run "$HERE/check.sh" --replay)"
+    evidence_stop_result "--replay whose row env.sh reads is $planted fails claim-form alone, naming the row, and stops before it reads a source or builds anything, exit 1" "$detail" "$out"
+done
+out="$(bash -c '. "$1" && claims_parsed && env_functions && env_rows_judge claim-form && printf "it reported nothing\n"' _ "$HERE/check.sh" 2>&1)"
+if [ "$out" = 'it reported nothing' ]; then
+    case_passed "env_rows_judge over claims.jsonl as it stands reports nothing: each row env.sh reads names its field, and the field is a line of its predicate"
+else
+    case_failed "env_rows_judge over claims.jsonl as it stands reports nothing: each row env.sh reads names its field, and the field is a line of its predicate" "$(printf '%s\n' "$out" | head -2 | tr '\n' ' ')"
+fi
+
+# 96. A run's ending needs its own scratch, its record and the tools it is written with,
+# and each is checked before anything else runs (the fourteenth review, item 2, and the
+# endings audit of round 31). At f63516e5db a TMPDIR that is missing, unwritable or full
+# left the run no scratch, so cannot_run could not record its reason and every assertion
+# was counted as failed: `TMPDIR=/nonexistent-rv bash check.sh --admitted` ended "4 of 4
+# assertions failed", exit 1, its record holding status 1. The same held for a scratch that
+# stops taking writes while the run goes on, for a record that cannot be written, which
+# ended exit 0 with no record, for a missing tool the ending is written with, for a mode the
+# gate does not have, which printed its help and exited 2 with no record, for a run of
+# check.test.sh that stopped before its summary with its scratch shut, and for a missing
+# prerequisite of check.test.sh, which built no fixture and passed 0 cases. Each form now
+# ends exit 2 naming what failed, its record holding the run, or each unit it declared, as
+# one that could not run, of the kind environment, prerequisite or gate. A record that
+# cannot be written is read by its reader as a run that could not run when the directory
+# it goes to takes no write, and as a crash when it does, since then the caller named a
+# place it cannot make, and so is a run that was never made. A full TMPDIR is a tmpfs of
+# 16 KiB mounted in a user namespace of its own, and the form prints SKIP where the pod
+# allows none; an unwritable one prints SKIP for a user who writes it anyway, as root does.
+# The honest forms are --admitted with all of them whole, which passes, and a run of
+# check.test.sh that stops before its summary with its scratch whole, which wrote no record
+# and reads as a crash.
+# unrun_result <name> <kind> <count> <last line, an extended regular expression> <run>; a
+# run the case stops for a reason it plants, from outside the tree: it passes when the
+# run's record holds exit 2 and that last line, no failure, and <count> units that could
+# not run, each of <kind> and for that last line. The reason is the one the case plants,
+# so case_read's rule for a reason from outside the tree is not read here.
+unrun_result() {
+    local name="$1" kind="$2" count="$3" last="$4" run="$5"
+    ending_read "$run"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] && printf '%s\n' "$RUN_LINE" | grep -qE -- "$last" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | wc -l)" = "$count" ] &&
+        [ "$(printf '%s' "$RUN_UNRUN" | KIND="$kind" LINE="$RUN_LINE" awk -F'\t' '$2 == ENVIRON["KIND"] && $3 == ENVIRON["LINE"]' | wc -l)" = "$count" ]; then
+        case_passed "$name"
+    else
+        case_failed "$name" "exit $RUN_STATUS, last line: $RUN_LINE; could not run: $(printf '%s' "$RUN_UNRUN" | cut -f1,2 | tr '\t\n' ': ')"
+    fi
+}
+out="$(TMPDIR=/nonexistent-rv gate_run "$HERE/check.sh" --admitted)"
+unrun_result "TMPDIR=/nonexistent-rv bash check.sh --admitted cannot run, exit 2, naming the scratch, and its record holds the run as one that could not run for the environment" environment 1 \
+    '^check\.sh cannot run --admitted: its own scratch cannot be made under TMPDIR, /nonexistent-rv: No such file or directory$' "$out"
+mkdir -p "$WORK/tmp-unwritable"
+chmod a-w "$WORK/tmp-unwritable"
+if (: >"$WORK/tmp-unwritable/probe") 2>/dev/null; then
+    printf 'SKIP the run whose TMPDIR cannot be written: this user writes a directory whose mode forbids it, as root does\n'
+else
+    out="$(TMPDIR="$WORK/tmp-unwritable" gate_run "$HERE/check.sh" --admitted)"
+    unrun_result "--admitted whose TMPDIR cannot be written cannot run, exit 2, naming the scratch" environment 1 \
+        "^check\\.sh cannot run --admitted: its own scratch cannot be made under TMPDIR, .*/tmp-unwritable: Permission denied\$" "$out"
+fi
+chmod u+w "$WORK/tmp-unwritable"
+mkdir -p "$WORK/tmp-full"
+if command -v unshare >/dev/null 2>&1 && unshare -rm sh -c 'mount -t tmpfs -o size=16k tmpfs "$1"' _ "$WORK/tmp-full" 2>/dev/null; then
+    cat >"$WORK/in-full-tmp.sh" <<'SH'
+# in-full-tmp.sh <mode>; runs the gate IOC_CASE_GATE names in that mode with TMPDIR on a
+# tmpfs of 16 KiB, IOC_CASE_MOUNT, that is full, in a user namespace of its own.
+exec unshare -rm sh -c 'mount -t tmpfs -o size=16k tmpfs "$1" && { head -c 40000 /dev/zero >"$1/fill" 2>/dev/null; TMPDIR="$1" exec bash "$2" "$3"; }' _ "$IOC_CASE_MOUNT" "$IOC_CASE_GATE" "$1"
+SH
+    out="$(IOC_CASE_MOUNT="$WORK/tmp-full" IOC_CASE_GATE="$HERE/check.sh" gate_run "$WORK/in-full-tmp.sh" --admitted)"
+    unrun_result "--admitted whose TMPDIR is full cannot run, exit 2, naming the scratch" environment 1 \
+        "^check\\.sh cannot run --admitted: its own scratch .*/tmp-full/ioc-run\\.[^ ]*, made under TMPDIR, takes no write: No space left on device\$" "$out"
+else
+    printf 'SKIP the run whose TMPDIR is full: this pod mounts no tmpfs in a user namespace of its own\n'
+fi
+cat >"$WORK/record-elsewhere.sh" <<'SH'
+# record-elsewhere.sh <mode>; runs the gate IOC_CASE_GATE names in that mode with its
+# record at IOC_CASE_RECORD, in place of the one gate_run names.
+IOC_ENDING="$IOC_CASE_RECORD" exec bash "$IOC_CASE_GATE" "$1"
+SH
+out="$(IOC_CASE_RECORD="$WORK/no-such-directory/ending" IOC_CASE_GATE="$HERE/check.sh" gate_run "$WORK/record-elsewhere.sh" --admitted)"
+ending_read "$out"
+if [ "$RUN_CRASH" = 1 ] && [ "$(cat "$out/status")" = 2 ] && [ ! -e "$WORK/no-such-directory" ] &&
+    tail -1 "$out/text" | grep -qE '^check\.sh cannot run --admitted: its ending record, .*/no-such-directory/ending, which IOC_ENDING names, cannot be written: No such file or directory$'; then
+    case_passed "--admitted whose record IOC_ENDING names cannot be written ends exit 2 naming it, and its reader, whose directory takes writes, reads a crash"
+else
+    case_failed "--admitted whose record IOC_ENDING names cannot be written ends exit 2 naming it, and its reader, whose directory takes writes, reads a crash" "exit $(cat "$out/status"), it reads as $RUN_ENDING, last line: $(tail -1 "$out/text")"
+fi
+path_without awk
+out="$(PATH="$WORK/path-without-awk" gate_run "$HERE/check.sh" --admitted)"
+unrun_result "--admitted with no awk, a tool its ending is written with, cannot run, exit 2, naming it and what provides it" prerequisite 1 \
+    '^check\.sh cannot run --admitted: the tools its ending record is written and read with are not on PATH: awk; provided by: apt-get install coreutils grep gawk$' "$out"
+plant_gate scratch-shut 's/^mode_admitted() {$/&\n    chmod a-w "$RUN_SCRATCH" # planted by check.test.sh/' 'chmod a-w "$RUN_SCRATCH" # planted by check.test.sh' holds
+mkdir -p "$WORK/tmp-shut"
+out="$(TMPDIR="$WORK/tmp-shut" gate_run "$GATE" --admitted)"
+unrun_result "--admitted whose scratch stops taking writes while it runs could not run, exit 2, naming the scratch, whatever it judged" environment 4 \
+    '^check\.sh cannot run --admitted: its own scratch .*/tmp-shut/ioc-run\.[^ ]* takes no write as it ends: Permission denied, so nothing it judged is read' "$out"
+chmod -R u+w "$WORK/tmp-shut"
+plant_gate record-shut 's/^mode_admitted() {$/&\n    chmod a-w "${ENDING%\/*}" # planted by check.test.sh/' 'chmod a-w "${ENDING%/*}" # planted by check.test.sh' holds
+# gate_run's own write of the run's status fails there too, as the case plants.
+out="$(gate_run "$GATE" --admitted 2>/dev/null)"
+unrun_result "--admitted whose record's directory stops taking writes is read as a run that could not run, naming the directory" environment 1 \
+    '^check\.sh cannot run: the directory of the run, .*, takes no write: Permission denied, so the run could write no ending record there$' "$out"
+chmod u+w "$out"
+if tail -1 "$out/text" | grep -qE '^check\.sh cannot run --admitted: its ending record, .*, cannot be written: Permission denied, so no reader reads this run, which ended: all 4 assertions passed$'; then
+    case_passed "--admitted whose record cannot be written as it ends ends naming the record, then the line the record would have held"
+else
+    case_failed "--admitted whose record cannot be written as it ends ends naming the record, then the line the record would have held" "last line: $(tail -1 "$out/text")"
+fi
+# read_unmade <scratch>; how ending_read reads a run that was never made, its directory
+# empty, by a reader whose scratch is <scratch>: the ending, the crash and the kinds.
+read_unmade() { (RUN_SCRATCH="$1" && ending_read "" && printf '%s|%s|%s' "$RUN_ENDING" "$RUN_CRASH" "$(printf '%s' "$RUN_UNRUN" | cut -f2)"); }
+if [ "$(read_unmade "$WORK/no-such-scratch")" = 'cannot-run|0|environment' ]; then
+    case_passed "a run never made, read by a reader whose scratch takes no write, could not run, of the kind environment"
+else
+    case_failed "a run never made, read by a reader whose scratch takes no write, could not run, of the kind environment" "it reads as $(read_unmade "$WORK/no-such-scratch")"
+fi
+if [ "$(read_unmade "$RUN_SCRATCH")" = 'failed|1|' ]; then
+    case_passed "a run never made, read by a reader whose scratch takes writes, is a crash"
+else
+    case_failed "a run never made, read by a reader whose scratch takes writes, is a crash" "it reads as $(read_unmade "$RUN_SCRATCH")"
+fi
+out="$(gate_run "$HERE/check.sh" --no-such-mode)"
+unrun_result "check.sh in a mode it does not have cannot run, exit 2, naming the mode, of the kind gate" gate 1 \
+    '^check\.sh cannot run --no-such-mode: it has no mode --no-such-mode; its modes are the ones the header above names$' "$out"
+STOP_CASE="$(cat <<'CASE'
+printf 'FAIL a plant of this case could not be made\n'
+exit 1
+CASE
+)"
+copy="$(cases_copy stop-scratch-shut "chmod a-w \"\$RUN_SCRATCH\"
+$STOP_CASE")"
+mkdir -p "$WORK/tmp-stop"
+out="$(TMPDIR="$WORK/tmp-stop" gate_run "$copy/check.test.sh")"
+unrun_result "a check.test.sh that stops before its summary while its scratch takes no write could not run, exit 2, naming the scratch" environment 1 \
+    '^check\.sh cannot run check\.test\.sh: its own scratch .*/tmp-stop/ioc-run\.[^ ]* takes no write as it stops before its summary: Permission denied, so the case it stopped at stopped for that$' "$out"
+chmod -R u+w "$WORK/tmp-stop"
+copy="$(cases_copy stop-scratch-whole "$STOP_CASE")"
+out="$(gate_run "$copy/check.test.sh")"
+ending_read "$out"
+if [ "$RUN_CRASH" = 1 ] && [ "$RUN_STATUS" = 1 ]; then
+    case_passed "a check.test.sh that stops before its summary with its scratch whole wrote no record and reads as a crash"
+else
+    case_failed "a check.test.sh that stops before its summary with its scratch whole wrote no record and reads as a crash" "it reads as $RUN_ENDING, exit $RUN_STATUS: $RUN_LINE"
+fi
+path_without jq
+copy="$(cases_copy cases-without-jq '')"
+out="$(PATH="$WORK/path-without-jq" gate_run "$copy/check.test.sh")"
+unrun_result "check.test.sh with no jq on PATH cannot run before its first case, naming jq and what provides it" prerequisite 1 \
+    '^check\.sh cannot run check\.test\.sh: the tool jq is not on PATH; provided by: apt-get install jq$' "$out"
+mkdir -p "$WORK/tmp-whole"
+out="$(TMPDIR="$WORK/tmp-whole" gate_run "$HERE/check.sh" --admitted)"
+ending_result "--admitted with its scratch, its record and every tool whole passes" 0 '^all 4 assertions passed$' "$out"
+
+# 97. A case reads whether an assertion failed from the run's record, never from its text
+# (the fourteenth review, the Minor at check.test.sh:102). At f63516e5db case_result and
+# honest_result searched the run's text for a FAIL line of the family, so a line the gate
+# printed that no assertion reported was read as that assertion failing: honest_result
+# failed a run whose every assertion passed, and case_result passed a run that failed
+# another family. The fixture's gate is planted to print a FAIL line of
+# absence-still-empty that no assertion reports. Over it as built, every assertion passes,
+# and honest_result passes; over it with the planted fault of predicate-form, the run fails
+# predicate-form alone, and case_result, asked for absence-still-empty, fails, which the
+# case reads from case_result's own line, made in a subshell so that it is no case of this
+# file.
+PRINTED_FAIL="    printf 'FAIL absence-still-empty: a line the gate printed and no assertion reported, planted by check.test.sh\\\\n'"
+printed_fixture() {
+    # printed_fixture <name>; a fresh fixture whose gate prints that line as --replay starts.
+    local dir
+    dir="$(fresh "$1")"
+    sed -i "s/^mode_replay() {\$/&\n$PRINTED_FAIL/" "$dir/repo/docs/research/internet-of-cognition/check.sh"
+    grep -qF 'a line the gate printed and no assertion reported, planted by check.test.sh' "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
+        printf 'FAIL the printed FAIL line could not be planted in the fixture copy of check.sh\n'
+        exit 1
+    }
+    printf '%s' "$dir"
+}
+out="$(fixture_run "$(printed_fixture printed-fail-passes)" --replay)"
+honest_result "a run that printed a FAIL line of absence-still-empty no assertion reported, and passed, passes honest_result" absence-still-empty "$out"
+dir="$(printed_fixture printed-fail-other)"
+fixture_plant "$dir" predicate-form
+out="$(fixture_run "$dir" --replay)"
+verdict="$(case_result "probe" absence-still-empty "$out")"
+if [ "${verdict%%:*}" = 'FAIL probe' ]; then
+    case_passed "case_result asked for absence-still-empty fails a run whose record names only predicate-form, though its text prints a FAIL line of absence-still-empty"
+else
+    case_failed "case_result asked for absence-still-empty fails a run whose record names only predicate-form, though its text prints a FAIL line of absence-still-empty" "case_result printed: $verdict"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
-# reads every case this file counted, the ones that could not run among them, prints the
-# last line, writes the ending record and returns the status this file ends with.
+# reads every case this file counted, the ones that could not run among them, and this
+# run's scratch, prints the last line, writes the ending record and returns the status
+# this file ends with.
+CASES_SUMMARY=1
 run_ending cases
 exit "$?"
