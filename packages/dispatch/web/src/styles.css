@@ -303,6 +303,61 @@ html:has([data-issue-page]) {
   font-family: var(--font-sans);
 }
 
+/* What a scroll brings into view on the new issue page stands below everything that stays at the
+   top of the screen above its rows (decision 113 of
+   dispatch://INFRA-1196/artifact/part-decisions-md). The page scrolls the document, so the
+   padding is on `html`. `--issue-identity-height` is the band the header publishes
+   (`identity-block.ts`): its identity block from 761 px up, and at 760 px and below the view row,
+   where the header scrolls away. `--issue-view-row-height` is the view row's own height while it
+   stays, at 760 px and below, and 0 px above (`slots/view-row.tsx`), so the row is counted on a
+   page that draws no header too. At 760 px and below, on a page with a header, both name the
+   same row, so the padding is the larger of the two rather than their sum: at every width, it is
+   the height of what stays. */
+html:has([data-issue-page]) {
+  scroll-padding-top: max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px));
+}
+
+/* A control inside the view row takes a top scroll margin of minus the row's height while the row
+   stays, so a focus that enters the row never scrolls the page (decision 113). The row stands
+   in the band the padding above keeps clear, so without it a focus there - Escape or a choice in
+   the view menu, the Outline sheet giving the focus back, Tab - scrolls the page up to bring
+   the control below the band, and the row, which stays, does not move. `[data-filter-row]` is
+   the row's own box (`identity-block.ts`'s `FILTER_ROW_ATTRIBUTE`); the Outline sheet is drawn
+   in the body, outside it. Where the row scrolls away, above 760 px, the height is 0 px and so
+   is the margin. */
+html:has([data-issue-page]) [data-filter-row] * {
+  scroll-margin-top: calc(-1 * var(--issue-view-row-height, 0px));
+}
+
+/* Each control inside the header's identity block takes a top scroll margin of minus the whole
+   padding above, at every width, and at 760 px and below so does each control of the header, so a
+   focus that enters one while it is on the screen never scrolls the page (decision 113). From
+   761 px up the block stays at the top of the screen and is the band the padding keeps clear, so
+   without the margin a focus there - Shift+Tab from the properties line under it, or Tab from one
+   control of the block to the next - scrolls the page up to bring the control below the band, and
+   the block, which stays, does not move. At 760 px and below (`identity-block.ts`'s
+   `HEADER_SCROLLS_QUERY`) the whole header scrolls away, and the view row sticks only once the
+   header is above the screen, so nothing that stays ever covers a header control: one lying in
+   the band at the top would scroll the page for nothing. From 761 px up the properties line,
+   outside the block, keeps no margin, so a focus on one of its controls that lies under the stuck
+   block still scrolls it out from under the block. `[data-identity-block]` and
+   `[data-issue-header]` are `IssueHeader.tsx`'s. */
+html:has([data-issue-page]) [data-identity-block] * {
+  scroll-margin-top: calc(
+    -1 *
+    max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
+  );
+}
+
+@media (max-width: 760px) {
+  html:has([data-issue-page]) [data-issue-header] * {
+    scroll-margin-top: calc(
+      -1 *
+      max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
+    );
+  }
+}
+
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. */
 @media (max-width: 1279px) {
@@ -310,6 +365,19 @@ html:has([data-issue-page]) {
   select,
   textarea {
     font-size: 1rem;
+  }
+  /* The new issue page's header draws its status and its title's editor in its own type at
+     every width, as the prototype does: the status at 12 px, sized to its value, so the header
+     at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
+     waits (ruling 8 of dispatch://INFRA-1196/artifact/build-rulings-md), and the title's editor
+     at the heading's own size, which it must match so ending an edit moves nothing
+     (dispatch://INFRA-1196 R13). This file's rules are in no cascade layer and Tailwind's are, so
+     `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
+     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields. */
+  html:has([data-issue-page]) [data-issue-page]
+    [data-issue-header]
+    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    font-size: revert-layer;
   }
 }
 
@@ -341,6 +409,20 @@ html:has([data-issue-page]) {
     :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
     min-width: 24px;
     min-height: 24px;
+  }
+
+  /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
+     size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
+     target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
+     nine lines and 280 px while an approval request waits (ruling 8 of
+     dispatch://INFRA-1196/artifact/build-rulings-md). `revert-layer` takes the floor above off
+     and gives back the size the control's own classes set. A menu or a dialog a header control
+     opens keeps the 44 px floor. */
+  html:has([data-issue-page]) [data-issue-page]
+    [data-issue-header]
+    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: revert-layer;
+    min-height: revert-layer;
   }
 
   button,

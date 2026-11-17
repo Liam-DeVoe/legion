@@ -816,11 +816,14 @@ export const pageIssueBg = "bg-page-issue";
 export const pageWaitingBg = "bg-page-waiting";
 
 /** The header's small bordered control (the prototype's `.hbtn`): Details, the overflow menu and
- *  the phone's `☰`, and the filter row's node menu, words filter, version control and Keys, 22 px
- *  tall from the phone's width up and 24 px below it, the least a touch target may be (WCAG
- *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
- *  an approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
- *  R13, ruling 8 of its build-rulings-md). */
+ *  the phone's `☰`. From `md` up its 20 px line, `md:py-px` and its border make it 24 px tall,
+ *  and below `md`, `min-h-6` lifts it to 24 px; but below 1280 px the 44 px floor that
+ *  `styles.css` gives every control outranks those classes, so the control is 24 px tall from
+ *  1280 px up and 44 px below, until the header's own rule lowers that floor. 24 px is the least
+ *  a touch target may be (WCAG 2.5.8), and ruling 3 gives the header's controls that size at
+ *  390 px because the header there is held to eight lines and 250 px, nine and 280 px while an
+ *  approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
+ *  R13, rulings 3 and 8 of its build-rulings-md). */
 export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
 /** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
  *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */
@@ -905,13 +908,16 @@ export const pageKindTag = {
   statement: "text-page-statement",
   step: "text-page-step",
 } as const;
-/** A node's state in the margin's second line (`.ms`): what waits on the reader in the waiting
- *  orange, a decision waiting for review in the decisions' violet, a check that passed in the
- *  passed green and one that failed in the failed red, every other state quiet. Each is a word
- *  and a shape as well (R6, R17). */
+/** A node's state and a check's result, each in its own colour. In the margin's second line
+ *  (`.ms`), what waits on the reader is in the waiting orange, a decision waiting for review in
+ *  the decisions' violet, and every other state quiet. In a check's result (`.res`), one that
+ *  passed is in the passed green, one that failed in the failed red, and one not run or out of
+ *  date in the not-run grey (`.res.not_run, .res.stale`). Each is a word and a shape as well
+ *  (R6, R17). */
 export const pageStateText = {
   decision: "text-page-decision",
   failed: "text-page-failed",
+  notRun: "text-page-not-run",
   passed: "text-page-passed",
   quiet: "text-page-quiet",
   waiting: "text-page-waiting-text",
@@ -925,7 +931,9 @@ export const pageStateText = {
  * The line is one row of text that grows to 150 px; the kinds it writes are chips in their
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
- * (R6).
+ * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md).
  */
 export const pageComposer = {
   answering:
@@ -1096,6 +1104,16 @@ for (const ground of ["page-paper", "page-pane"] as const) {
     registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
   }
 }
+
+// The page colour pairs of the `ON_PAGE` tables of `MultiSelect.tsx`, `ApprovalChip.tsx` and
+// `AskCard.tsx` that no registration above holds, so `palette.test.ts` measures each
+// (dispatch://INFRA-3935 R9, decision 99(c) of dispatch://INFRA-1196/artifact/part-decisions-md;
+// `shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
+// option's detail, muted words on the mark grey of its active row and of the row under the
+// pointer; and a refused filled action's words, Approve's or Answer's, muted on the hairline
+// grey it turns.
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
+registerText("page-muted text on page-hair", pageColor("page-muted"), pageColor("page-hair"));
 
 /** The icon rail the issue page draws in place of the navigation column (R14): the prototype's
  *  `#rail`, dark in both schemes, its current entry white on a lighter ground with an accent

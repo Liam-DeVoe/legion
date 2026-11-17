@@ -5,12 +5,14 @@ import { type ReactNode, useState } from "react";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { artifact as specDocument } from "../../__tests__/proof-document";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
   ArchitectureSource,
   ArtifactApproval,
   ClaimHolderLiveness,
+  Issue,
   IssueClaim,
   IssueComponents,
   IssueDetails,
@@ -22,6 +24,7 @@ import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../compon
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { pageHeaderControl, pageInkText } from "../../theme/classes";
+import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
@@ -48,7 +51,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { PROPERTY_LABELS } from "./page-structure";
-import { AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 import {
   architecture,
   CLAIMED_AT,
@@ -72,6 +75,7 @@ import {
   threadOf,
   tokens,
   undraw,
+  VERIFICATION_ID,
 } from "./shared-controls-fixture";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
@@ -82,8 +86,6 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
  * draws the controls through `draw` (`shared-controls-fixture.tsx`), every read answered by a
  * stub on `api` below.
  */
-
-const VERIFICATION_ID = "artifact-verification";
 
 function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
@@ -389,6 +391,9 @@ test("an approval entry links its document at the version the request asks about
 // dispatch://INFRA-3935 R1: outside `NoTooltips` the options of the new issue page's surface draw
 // exactly what `main` draws. Each pair draws a control without the option and with it; inside
 // `NoTooltips` the same pair differs, so a pass outside is no pair that draws nothing either way.
+// The exception is `author` on a session: inside, every form of `AgentName` names a session as
+// an author is named (decision 107 of dispatch://INFRA-1196/artifact/part-decisions-md), so
+// `author` changes nothing there either, and the case names those pairs as the same inside.
 test("outside NoTooltips inRow, author, versions and exact change nothing", async () => {
   const waiting = waitingLiveness();
   const throughAgent: Actor = { act: { session: LIVE_SESSION }, id: "alice", kind: "user" };
@@ -400,9 +405,14 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
       () => <ClaimChip claim={sessionClaim(LIVE_SESSION)} inRow />,
     ],
     [
-      "ClaimChip author",
+      "ClaimChip author, a session nothing names",
       () => <ClaimChip claim={sessionClaim(NAMELESS_SESSION)} />,
       () => <ClaimChip author claim={sessionClaim(NAMELESS_SESSION)} />,
+    ],
+    [
+      "ClaimChip author, an act made through an agent",
+      () => <ClaimChip claim={{ actor: throughAgent, at: CLAIMED_AT }} />,
+      () => <ClaimChip author claim={{ actor: throughAgent, at: CLAIMED_AT }} />,
     ],
     [
       "ClaimChip inRow and author, waiting to come free",
@@ -519,7 +529,11 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
     }
   }
   expect(changedOutside).toEqual([]);
-  expect(sameInside).toEqual([]);
+  expect(sameInside).toEqual([
+    "ClaimChip author, a session nothing names",
+    "AgentName author, a session's actor",
+    "AgentName author, a session's id",
+  ]);
 });
 
 // dispatch://INFRA-3935 R3: the header variant of the assignee and the priority is the
@@ -628,6 +642,231 @@ test("the compact size draws the chip and both actions at the header's size, wit
       const chip = classOf(scope.getByRole("button", { name: "Awaiting approval" }));
       expect(chip).toContain("min-h-6");
       expect(chip).toContain("leading-[18px]");
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+/** A gate's three steps as the layout cases draw them: the spec awaiting its review, the
+ *  decisions with no request, and the verification sent back with a reason. */
+function layoutEntries(): StepEntry[] {
+  return [
+    specEntry({ latest_version: 1, state: "awaiting", waiting_on: "human" }),
+    decisionsEntry(),
+    verificationEntry({
+      by: { id: "bob", kind: "user" },
+      latest_version: 4,
+      reason: "The checks name no command.",
+      state: "changes_requested",
+      version: 4,
+    }),
+  ];
+}
+
+// dispatch://INFRA-3935 R1 and R10: `layout` defaults to `block`, which is `main`'s list. The
+// list and each entry are boxes of their own that wrap within themselves, and the primary
+// document's chip and its two actions are each its entry's own item, with no box around the
+// actions. Given or not, `block` draws the same markup, with `main`'s options and with the
+// header's, on both surfaces.
+test("ApprovalSteps at its default layout draws main's list", async () => {
+  const pairs: readonly (readonly [string, () => ReactNode, () => ReactNode])[] = [
+    [
+      "main's options",
+      () => <ApprovalSteps entries={layoutEntries()} primaryArtifactId={SPEC_ID} />,
+      () => <ApprovalSteps entries={layoutEntries()} layout="block" primaryArtifactId={SPEC_ID} />,
+    ],
+    [
+      "the header's options",
+      () => (
+        <ApprovalSteps
+          actionsOn={[SPEC_ID, VERIFICATION_ID]}
+          entries={layoutEntries()}
+          primaryArtifactId={SPEC_ID}
+          reasons={false}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      ),
+      () => (
+        <ApprovalSteps
+          actionsOn={[SPEC_ID, VERIFICATION_ID]}
+          entries={layoutEntries()}
+          layout="block"
+          primaryArtifactId={SPEC_ID}
+          reasons={false}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      ),
+    ],
+  ];
+  const changed: string[] = [];
+  for (const surface of ["outside", "inside"] as const) {
+    for (const [name, plain, given] of pairs) {
+      if ((await markupOf(given(), surface)) !== (await markupOf(plain(), surface))) {
+        changed.push(`${name}, ${surface}`);
+      }
+    }
+  }
+  expect(changed).toEqual([]);
+
+  const view = draw(
+    <ApprovalSteps entries={layoutEntries()} primaryArtifactId={SPEC_ID} />,
+    "outside"
+  );
+  try {
+    const list = within(view.container).getByRole("list", { name: "Approvals" });
+    expect(list.dataset.testid).toBe("issue-approval-steps");
+    expect(list.getAttribute("class")).toBe(
+      "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2"
+    );
+    expect(parentOf(list).getAttribute("class")).toBe("flex w-full min-w-0 flex-col gap-2");
+    const entries = within(list).getAllByRole("listitem");
+    expect(entries.map((entry) => entry.getAttribute("class"))).toEqual([
+      "flex min-w-0 flex-wrap items-center gap-2",
+      "flex min-w-0 flex-wrap items-center gap-2",
+      "flex min-w-0 flex-wrap items-center gap-2",
+    ]);
+    const [spec] = entries;
+    if (spec === undefined) throw new Error("no entry for the spec");
+    const chipBox = parentOf(within(spec).getByRole("button", { name: "Awaiting approval" }));
+    expect(chipBox.getAttribute("class")).toBe("contents");
+    expect(parentOf(chipBox)).toBe(spec);
+    expect(parentOf(within(spec).getByRole("button", { name: "Approve" }))).toBe(chipBox);
+    expect(parentOf(within(spec).getByRole("button", { name: "Request changes" }))).toBe(chipBox);
+    expect(view.container.querySelector("[class~='flex-nowrap']")).toBeNull();
+    expect(
+      view.container.querySelector('[data-approval-step-reason="criteria"]')?.parentElement
+    ).toBe(parentOf(list));
+  } finally {
+    undraw(view);
+  }
+});
+
+// dispatch://INFRA-3935 R1 and R10: `keepActionsTogether` is off by default, so a caller that
+// draws the chip alone, as today's issue header, a document's header and the Inbox's reading
+// pane do, gets `main`'s markup: Approve and Request changes are each the chip's parent's own
+// item, with no box around them. Given as false, it draws the same markup, on both surfaces.
+test("ApprovalChip at its defaults draws its two actions with no box around them", async () => {
+  const awaiting = doc(SPEC_ID, "spec.md", {
+    latest_version: 1,
+    state: "awaiting",
+    waiting_on: "human",
+  });
+  const changed: string[] = [];
+  for (const surface of ["outside", "inside"] as const) {
+    const given = await markupOf(
+      <ApprovalChip artifact={awaiting} keepActionsTogether={false} variant="header" />,
+      surface
+    );
+    const plain = await markupOf(<ApprovalChip artifact={awaiting} variant="header" />, surface);
+    if (given !== plain) changed.push(surface);
+  }
+  expect(changed).toEqual([]);
+
+  const view = draw(
+    <div data-case="host">
+      <ApprovalChip artifact={awaiting} variant="header" />
+    </div>,
+    "outside"
+  );
+  try {
+    const host = caseOf(view, "host");
+    const chipBox = parentOf(within(host).getByRole("button", { name: /^Awaiting approval/ }));
+    expect(parentOf(within(host).getByRole("button", { name: "Approve" }))).toBe(chipBox);
+    expect(parentOf(within(host).getByRole("button", { name: "Request changes" }))).toBe(chipBox);
+    expect(host.querySelector("[class~='flex-nowrap']")).toBeNull();
+  } finally {
+    undraw(view);
+  }
+});
+
+// dispatch://INFRA-3935 R10, decision 86 of dispatch://INFRA-1196/artifact/part-decisions-md: at
+// `layout="contents"` neither the list nor an entry draws a box, so in part P's header line each
+// entry's name, its chip and its actions are that line's items; the actions are one box that
+// does not wrap, so Approve and Request changes never land on two lines. The list keeps its name
+// and test id, and a reason is still drawn. `layout` acts on every surface.
+test("ApprovalSteps with layout contents adds no box of its own and keeps each entry's actions together", () => {
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <div className="flex flex-wrap" data-case="line">
+        <ApprovalSteps
+          actionsOn={[SPEC_ID, VERIFICATION_ID]}
+          entries={layoutEntries()}
+          layout="contents"
+          primaryArtifactId={SPEC_ID}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      </div>,
+      surface
+    );
+    try {
+      const line = caseOf(view, "line");
+      /** The class of each element between `element` and the caller's line. */
+      const boxesAbove = (element: Element) => {
+        const boxes: string[] = [];
+        for (let at = parentOf(element); at !== line; at = parentOf(at)) {
+          boxes.push(at.getAttribute("class") ?? "");
+        }
+        return boxes;
+      };
+      const list = within(line).getByRole("list", { name: "Approvals" });
+      expect(list.dataset.testid).toBe("issue-header-approval-steps");
+      const entries = within(list).getAllByRole("listitem");
+      expect(entries.map((entry) => entry.dataset.approvalStep)).toEqual([
+        "spec",
+        "decisions",
+        "criteria",
+      ]);
+      const [spec, decisions, verification] = entries;
+      if (spec === undefined || decisions === undefined || verification === undefined) {
+        throw new Error("an entry is missing");
+      }
+
+      // Each action is found by the words it draws, which its name begins with: inside
+      // `NoTooltips` the name goes on to say its document, since `actionsOn` names two (decision
+      // 99 of dispatch://INFRA-1196/artifact/part-decisions-md, read in `shared-writes.test.ts`).
+      const groups = [spec, verification].map((entry) => {
+        const approve = within(entry).getByRole("button", { name: /^Approve\b/u });
+        const group = parentOf(approve);
+        expect(parentOf(within(entry).getByRole("button", { name: /^Request changes\b/u }))).toBe(
+          group
+        );
+        expect(group.children).toHaveLength(2);
+        expect(classOf(group)).toEqual(
+          expect.arrayContaining(["flex-nowrap", "whitespace-nowrap"])
+        );
+        expect(classOf(group)).not.toContain("contents");
+        return group;
+      });
+      const reason = line.querySelector('[data-approval-step-reason="criteria"]');
+      if (reason === null) throw new Error("the verification's reason is not drawn");
+      expect(reason.textContent).toContain("The checks name no command.");
+      const names = entries.map((entry) => {
+        const name = entry.firstElementChild;
+        if (name === null) throw new Error(`the ${entry.dataset.approvalStep} entry draws nothing`);
+        return name;
+      });
+      expect(names.map((name) => name.textContent)).toEqual(["Spec", "Decisions", "Verification"]);
+      const items: Element[] = [
+        ...names,
+        within(spec).getByRole("button", { name: "Awaiting approval" }),
+        within(decisions).getByText(
+          surface === "inside" ? CONTROL_LABELS.not_requested : "Not requested"
+        ),
+        within(verification).getByRole("button", { name: "Changes requested" }),
+        ...groups,
+        reason,
+      ];
+      // Each item's every box up to the line draws none, so the item is the line's own.
+      const boxed = items.flatMap((item) =>
+        boxesAbove(item)
+          .filter((box) => box !== "contents")
+          .map((box) => `${item.textContent}: ${box}`)
+      );
+      expect(boxed).toEqual([]);
     } finally {
       undraw(view);
     }
@@ -757,7 +996,8 @@ test("inRow draws no label and the words of Details", async () => {
 
 // dispatch://INFRA-3935 R4: `chipClassName` is the chip's whole shape - only what holds a chip on
 // its line is kept - and the labels wrap. It acts on every surface; without it the labels keep
-// `main`'s strings.
+// `main`'s strings. Inside `NoTooltips` what holds the chip on its line also breaks a long label
+// rather than keeping it whole (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md).
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
   const mainChip =
@@ -784,7 +1024,9 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
       for (const label of ["api", "frontend"]) {
         const chip = within(rail).getByText(label);
         expect(chip.getAttribute("class")).toBe(
-          `inline-flex shrink-0 items-center whitespace-nowrap ${given}`
+          surface === "outside"
+            ? `inline-flex shrink-0 items-center whitespace-nowrap ${given}`
+            : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${given}`
         );
       }
     } finally {
@@ -801,6 +1043,173 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
     }
   } finally {
     undraw(plain);
+  }
+});
+
+// dispatch://INFRA-3935 R4/R6, decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// inside `NoTooltips` a label chip stays within its line and breaks a long label anywhere, with
+// `chipClassName` and without it, because a chip that kept a 40-character label with no space
+// whole (the longest label `IssueLabels` takes) ran past Details. Outside, each chip keeps
+// `main`'s string, and the prefix it keeps before a given `chipClassName`.
+test("inside NoTooltips a label chip wraps a long label and is never cut", () => {
+  const given = "rounded-[5px] border px-1.5 leading-5";
+  const long = "dispatchissuepagedetailslabelwithnospace";
+  expect(long).toHaveLength(40);
+  expect(long).not.toMatch(/\s/u);
+  const mainChip =
+    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+  const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
+  const cuts = ["shrink-0", "whitespace-nowrap"];
+
+  for (const chipClassName of [undefined, given]) {
+    for (const variant of ["default", "rail"] as const) {
+      for (const surface of ["inside", "outside"] as const) {
+        const view = draw(
+          <IssueLabels
+            chipClassName={chipClassName}
+            disabled={false}
+            labels={[long]}
+            onSave={async () => undefined}
+            project="CORE"
+            saving={false}
+            variant={variant}
+          />,
+          surface
+        );
+        try {
+          const chip = within(view.container).getByText(long);
+          const drawn = classOf(chip);
+          // Each read names its case, so a failure says which chip was cut.
+          const which = { chipClassName, surface, variant };
+          if (surface === "inside") {
+            expect({
+              ...which,
+              cuts: drawn.filter((token) => cuts.includes(token)),
+              wraps: drawn.filter((token) => wraps.includes(token)).sort(),
+            }).toEqual({ ...which, cuts: [], wraps });
+          } else {
+            expect({ ...which, class: chip.getAttribute("class") }).toEqual({
+              ...which,
+              class:
+                chipClassName === undefined
+                  ? mainChip
+                  : `inline-flex shrink-0 items-center whitespace-nowrap ${given}`,
+            });
+          }
+        } finally {
+          undraw(view);
+        }
+      }
+    }
+  }
+});
+
+// dispatch://INFRA-3935 R4/R6, decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// inside `NoTooltips` the control of an issue with no label says what it does, as the priority's
+// says "Add a priority", because its row of Details already names the property and the
+// property's name in the control drew "Labels None Labels". Its accessible name there begins with
+// the words it draws and ends with the issue's key, as the priority's "Add a priority to CORE-1"
+// does, so a voice user says what they read (WCAG 2.5.3 Label in Name, dispatch://INFRA-3935
+// R2); with no key given it is those words alone. Outside it says `main`'s word and keeps
+// `main`'s name, "Edit labels", key or no key (R1).
+test("inside NoTooltips the empty labels control says Add a label", () => {
+  expect(`${CONTROL_LABELS.add_label} to CORE-1`).toBe("Add a label to CORE-1");
+  for (const variant of ["default", "rail"] as const) {
+    for (const surface of ["inside", "outside"] as const) {
+      for (const issueKey of ["CORE-1", undefined]) {
+        const view = draw(
+          <IssueLabels
+            disabled={false}
+            issueKey={issueKey}
+            labels={[]}
+            onSave={async () => undefined}
+            project="CORE"
+            saving={false}
+            variant={variant}
+          />,
+          surface
+        );
+        try {
+          const name =
+            surface === "outside"
+              ? "Edit labels"
+              : issueKey === undefined
+                ? CONTROL_LABELS.add_label
+                : `${CONTROL_LABELS.add_label} to ${issueKey}`;
+          const control = within(view.container).getByRole("button", { name });
+          const which = { issueKey, surface, variant };
+          expect({ ...which, word: control.textContent }).toEqual({
+            ...which,
+            word: surface === "inside" ? CONTROL_LABELS.add_label : "Labels",
+          });
+          if (surface === "inside") {
+            expect({
+              ...which,
+              nameBeginsWithWord: name.startsWith(control.textContent ?? ""),
+            }).toEqual({ ...which, nameBeginsWithWord: true });
+            // Neither its words nor any attribute of it says the property's name.
+            expect({ ...which, control: control.outerHTML.includes("Labels") }).toEqual({
+              ...which,
+              control: false,
+            });
+          }
+        } finally {
+          undraw(view);
+        }
+      }
+    }
+  }
+});
+
+// dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// while its labels save, the control inside `NoTooltips` draws the page's "Saving labels…"
+// whatever it holds, and it stays focusable, marked busy. Its accessible name then begins with
+// those words, their ellipsis dropped, and ends with the issue's key ("Saving labels of CORE-1"),
+// or is those words alone with no key given, so a voice user says what they read (WCAG 2.5.3
+// Label in Name). Outside it draws `main`'s "Saving labels…" and keeps `main`'s name, "Edit
+// labels", in every state (R1).
+test("inside NoTooltips the saving labels control is named by its visible words", () => {
+  expect(ANSWER_LINES.saving_labels).toBe("Saving labels…");
+  for (const labels of [[], ["api"]]) {
+    for (const surface of ["inside", "outside"] as const) {
+      for (const issueKey of ["CORE-1", undefined]) {
+        const view = draw(
+          <IssueLabels
+            disabled={false}
+            issueKey={issueKey}
+            labels={labels}
+            onSave={async () => undefined}
+            project="CORE"
+            saving
+          />,
+          surface
+        );
+        try {
+          const name =
+            surface === "outside"
+              ? "Edit labels"
+              : issueKey === undefined
+                ? "Saving labels"
+                : `Saving labels of ${issueKey}`;
+          const control = within(view.container).getByRole("button", { name });
+          const which = { issueKey, labels, surface };
+          expect({
+            ...which,
+            busy: control.getAttribute("aria-disabled"),
+            word: control.textContent,
+          }).toEqual({ ...which, busy: "true", word: "Saving labels…" });
+          if (surface === "inside") {
+            const said = (control.textContent ?? "").replace(/…$/u, "");
+            expect({ ...which, nameBeginsWithWords: name.startsWith(said) }).toEqual({
+              ...which,
+              nameBeginsWithWords: true,
+            });
+          }
+        } finally {
+          undraw(view);
+        }
+      }
+    }
   }
 });
 
@@ -892,8 +1301,9 @@ test("author names a session by its title and never by its short id", async () =
     expect(named("actor, nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(named("id, nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(named("through an agent")).toBe(`alice, acting through ${AUTHOR_KIND_WORDS.agent}`);
-    // Without `author` the same session keeps `main`'s name, its short id.
-    expect(named("nameless, not an author")).toBe("session:01234567…");
+    // Without `author` the same session reads the same: inside, every form of `AgentName` names
+    // a session nothing names by the page's word (decision 107).
+    expect(named("nameless, not an author")).toBe(CONTROL_LABELS.unnamed_author);
 
     expect(authored("listed")).toBe("Implementer");
     expect(authored("stamped")).toBe("Old planner");
@@ -1834,6 +2244,57 @@ test("the default shapes keep main's class strings", async () => {
   expect(read).toEqual(want);
 });
 
+// dispatch://INFRA-3935 R1 and decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// a value that wraps inside `NoTooltips` keeps `main`'s classes outside it, the two the table
+// above does not read among them: a labelled CopyButton's words carry no class, and a route
+// marker that names its route, as today's issue header draws it, truncates that name.
+test("outside NoTooltips a labelled CopyButton's words and a route marker's route keep main's classes", () => {
+  const view = draw(
+    <>
+      <div data-case="copy">
+        <CopyButton value="session-1" what="session ID">
+          session-1
+        </CopyButton>
+      </div>
+      <div data-case="route">
+        <UnresponsiveRouteMarker
+          issue={{
+            route: "role:reviewer",
+            route_holder: STALLED_SESSION,
+            route_status: "holder_unresponsive",
+            route_status_reason: null,
+          }}
+          showRoute
+        />
+        <UnreachableRouteMarker
+          issue={{
+            route: "role:architect",
+            route_holder: null,
+            route_status: "no_holder",
+            route_status_reason: null,
+          }}
+          showRoute
+        />
+      </div>
+    </>,
+    "outside"
+  );
+  try {
+    const words = within(caseOf(view, "copy")).getByText("session-1");
+    expect(words.tagName).toBe("SPAN");
+    expect(words.getAttribute("class")).toBeNull();
+    const routes = [...caseOf(view, "route").querySelectorAll("span")].filter((span) =>
+      /^role:(reviewer|architect):$/.test(span.textContent ?? "")
+    );
+    expect(routes.map((span) => span.getAttribute("class"))).toEqual([
+      "min-w-0 truncate",
+      "min-w-0 truncate",
+    ]);
+  } finally {
+    undraw(view);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // The focus and Escape in the controls' own forms
 // ---------------------------------------------------------------------------------------------
@@ -1980,6 +2441,52 @@ test("Escape in the priority's form closes the form alone and returns the focus 
       escapes.stop();
       document.removeEventListener("keydown", onDocument);
       undraw(view);
+    }
+  }
+});
+
+// The same ruling, for the third way the form closes: Add's write disables the add control until
+// the write settles, and a disabled control holds no focus, so the focus waits on the body and
+// moves to the add control once the write settles. A focus the reader put elsewhere in between
+// stays where the reader put it.
+test("Add in the priority's form returns the focus to its add control once its write settles", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["outside", "inside"] as const) {
+    for (const reader of ["waits", "moves on"] as const) {
+      const patchIssue = answerIssuePatches();
+      const written = Promise.withResolvers<Issue>();
+      patchIssue.mockImplementation(() => written.promise);
+      const view = draw(
+        <>
+          <button type="button">Elsewhere</button>
+          {addablePriorityLine(surface)}
+        </>,
+        surface
+      );
+      try {
+        addControlOf(view, surface).focus();
+        await user.keyboard("{Enter}");
+        const picker = await pickerOf(view);
+        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+        await user.selectOptions(picker, "evals-now");
+        await user.click(within(view.container).getByRole("button", { name: CONTROL_LABELS.add }));
+        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+        // While the write is out the add control is disabled and holds no focus.
+        expect(pickerShown(view)).toBe(false);
+        expect(addControlOf(view, surface)).toBeDisabled();
+        expect(document.activeElement).toBe(document.body);
+        const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
+        if (reader === "moves on") elsewhere.focus();
+        written.resolve({} as Issue);
+        await waitFor(() => expect(addControlOf(view, surface)).not.toBeDisabled());
+        await settleReads();
+        expect(document.activeElement).toBe(
+          reader === "waits" ? addControlOf(view, surface) : elsewhere
+        );
+      } finally {
+        patchIssue.mockRestore();
+        undraw(view);
+      }
     }
   }
 });

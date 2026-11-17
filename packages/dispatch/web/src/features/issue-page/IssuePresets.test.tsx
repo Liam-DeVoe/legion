@@ -90,3 +90,93 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
     restoreMatchMedia();
   }
 });
+
+// A press on a view control leaves the focus where it is (decision 93). Focus taken on
+// mousedown would leave the outline, whose row then closes its body under the pointer, and on an
+// address that names a node (`#b-`) the press would end elsewhere and do nothing.
+test("a press on a view control leaves the focus where it is, and moves to the view's address", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
+      <button type="button">a row of the outline</button>
+      <IssuePresets active="conversation" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const row = screen.getByRole("button", { name: "a row of the outline" });
+    row.focus();
+    const spec = screen.getByRole("button", { name: "Spec" });
+    await user.pointer({ keys: "[MouseLeft>]", target: spec });
+    expect(document.activeElement, "the press's mousedown took the focus").toBe(row);
+    await user.pointer({ keys: "[/MouseLeft]", target: spec });
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "spec")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// A press on a control's signal, the `<label>` of its button, leaves the focus where it is too
+// (decision 93): a label takes no focus, so its mousedown would move the focus to the body, and
+// its own activation would focus the button at the click.
+test("a press on a view control's count leaves the focus where it is, and moves to the view's address", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
+      <button type="button">a row of the outline</button>
+      <IssuePresets active="conversation" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const row = screen.getByRole("button", { name: "a row of the outline" });
+    row.focus();
+    const count = view.container.querySelector<HTMLElement>('[data-preset-count="spec"]');
+    if (count === null) throw new Error("Spec draws no count");
+    await user.pointer({ keys: "[MouseLeft>]", target: count });
+    expect(document.activeElement, "the press's mousedown on the count took the focus").toBe(row);
+    await user.pointer({ keys: "[/MouseLeft]", target: count });
+    expect(document.activeElement, "the press's click on the count took the focus").toBe(row);
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "spec")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// Below 1280 px a press on the one control leaves the focus where it is until its menu opens
+// and takes it (decision 93), so the outline keeps its row open under the pointer.
+test("a press on the one control leaves the focus where it is, then opens its menu on the view that is on", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(true);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <button type="button">a row of the outline</button>
+      <IssuePresets active="spec" issueKey="CORE-1" signals={SIGNALS} />
+    </MemoryRouter>
+  );
+  try {
+    const row = screen.getByRole("button", { name: "a row of the outline" });
+    row.focus();
+    const chooser = screen.getByRole("button", { name: /^Spec\b/ });
+    await user.pointer({ keys: "[MouseLeft>]", target: chooser });
+    expect(document.activeElement, "the press's mousedown on the one control took the focus").toBe(
+      row
+    );
+    await user.pointer({ keys: "[/MouseLeft]", target: chooser });
+    expect(screen.queryByRole("menu"), "the press did not open the menu").not.toBeNull();
+    expect(document.activeElement, "the menu opened with the focus off the view that is on").toBe(
+      menuItem("spec")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});

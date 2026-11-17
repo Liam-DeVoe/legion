@@ -1,9 +1,6 @@
 import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
-import { pageQuietText } from "../../theme/classes";
-import { useClamp } from "./NodeRow";
-import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { MoreWords, useClamp } from "./NodeRow";
 import { FOCUSABLE, useOutOfTabOrder } from "./RowText";
 
 /**
@@ -58,25 +55,13 @@ export function CutWords({
         ) : null}
       </div>
       {clamp === undefined || whole ? null : (
-        <button
-          className={`dispatch-inline-link self-start text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-          data-node-more=""
-          onClick={() => setOpened((held) => !held)}
-          onMouseDown={(event) => event.preventDefault()}
-          tabIndex={tabStops ? undefined : -1}
-          type="button"
-          {...pageChrome}
-        >
-          {opened ? (
-            CONTROL_LABELS.read_less
-          ) : (
-            <>
-              {CONTROL_LABELS.read_more} ·{" "}
-              <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-              {CONTROL_LABELS.read_more_words}
-            </>
-          )}
-        </button>
+        <MoreWords
+          className="self-start"
+          hidden={clamp.hidden}
+          onToggle={() => setOpened((held) => !held)}
+          opened={opened}
+          tabStops={tabStops}
+        />
       )}
     </>
   );

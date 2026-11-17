@@ -65,9 +65,12 @@ export function ConnectionDot({
         className={`h-2.5 w-2.5 rounded-full ${(tooltips ? DOT_CLASS_BY_STATE : PAGE_DOT_CLASS_BY_STATE)[connection]}`}
       />
       {notice === undefined ? null : (
+        // Inside `NoTooltips` the notice is a reading of the document, a value, so it keeps
+        // `max-w-full` and breaks anywhere (decision 104 of
+        // dispatch://INFRA-1196/artifact/part-decisions-md).
         <span
           aria-hidden
-          className={`text-xs ${tooltips ? textMutedOnSurface : pageQuietText}`}
+          className={`text-xs ${tooltips ? textMutedOnSurface : `max-w-full [overflow-wrap:anywhere] ${pageQuietText}`}`}
           {...page?.authorText}
         >
           {notice}

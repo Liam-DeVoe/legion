@@ -1,7 +1,11 @@
+import { useQueries } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { api } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { buildIssuePath } from "../../refs/routes";
 import { useAddressTarget } from "../address-target";
 import { IssuePresetPanels } from "../IssuePresetPanels";
@@ -26,7 +30,26 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { root } = useIssueTree(issue);
+  const { blocksHeld, root } = useIssueTree(issue);
+  // Whether every read the tree's nodes come from holds its answer: the issue's children come
+  // with the issue, the documents' blocks are `blocksHeld`, and every other node comes from one
+  // of these, read under the keys `useIssueTree` reads them by, so they cost no request of their
+  // own. Until then a tree with no node is one whose nodes have not arrived, and the outline's
+  // line that the issue holds nothing would be false on every cold load, so the outline draws
+  // nothing in its place. A read that failed holds nothing either: the page cannot say what it
+  // would have held.
+  const key = issue.key;
+  const nodesHeld = useQueries({
+    combine: (answers) => answers.every((answer) => answer.data !== undefined),
+    queries: [
+      issueCoverageQuery(key),
+      issueDecisionsQuery(key, true),
+      issueResultsQuery(key),
+      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] },
+      { queryFn: () => api.listComments(key), queryKey: ["comments", key] },
+      { queryFn: () => api.listIssueMessages(key), queryKey: ["issue-messages", key] },
+    ],
+  });
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it.
   const { named, reveal } = useAddressTarget(root, address);
@@ -57,9 +80,14 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
         <IssueTree
           artifacts={artifacts}
           context={view.context}
-          emptyLine={
-            address.filter === "" ? EMPTY_STATE_LINES.conversation : EMPTY_STATE_LINES.no_match
-          }
+          {...(nodesHeld && blocksHeld
+            ? {
+                emptyLine:
+                  address.filter === ""
+                    ? EMPTY_STATE_LINES.conversation
+                    : EMPTY_STATE_LINES.no_match,
+              }
+            : {})}
           filtering={view.filtering}
           focusReveal
           // The words filter's Escape comes before the outline is left (part N).
