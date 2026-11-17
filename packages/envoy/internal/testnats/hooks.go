@@ -107,7 +107,7 @@ type Event struct {
 	Point Point
 	// Gen is the consumer file store's generation, one per store made; 0 at a server point.
 	Gen uint64
-	// Consumer is the consumer's name at a file store point.
+	// Consumer is the consumer's name at a file store point and at MetaApply.
 	Consumer string
 	// Store is the stream's store directory at a file store point, and the server's own store
 	// directory at a server point.
@@ -121,11 +121,11 @@ type Event struct {
 	Err   string
 	// Server, Account, Subject, Stream, Client and Kind describe a server point's request or
 	// message: Account is the account that sent the request at APIWorker, the publishing
-	// connection's at ClientPublish and the stream's at StreamApply; Client is the publishing
-	// connection's name, Kind its kind. ServerID is the ID of the server's run at ServerShutdown
-	// and ServerDown.
+	// connection's at ClientPublish, and the stream's at StreamApply and at MetaApply; Stream is
+	// the stream's name at StreamApply and at MetaApply; Client is the publishing connection's
+	// name, Kind its kind. ServerID is the ID of the server's run at ServerShutdown and ServerDown.
 	Server, ServerID, Account, Subject, Stream, Client, Kind string
-	// Recovering is set at StreamApply while the server replays its log at start.
+	// Recovering is set at StreamApply and at MetaApply while the server replays its log at start.
 	Recovering bool
 }
 
