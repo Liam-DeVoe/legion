@@ -88,18 +88,23 @@ func Derive(in Input) (State, error) {
 // zero value, and the judge would read that value as a real one, which turns a state toward true or
 // hides a failure; so the judge never reads one, and no state is given:
 //
-//   - the subject: its commit, its now, and a branch or a deploy (subjectFault); with no now no
-//     time limit would end, and with neither, no check of production would be judged;
-//   - each approved node, as ReadApproved refuses it (ApprovedNode.check): a node with no version or
-//     a block that is not its one block would leave the node out, and a version with no time would
-//     make no result suspect (R7: "A change to the text of a statement makes every result under it
-//     suspect");
+//   - the subject: its commit, its now, exactly one of a branch and a deploy, and graph_tx only with
+//     a deploy (subjectFault); with no now no time limit would end, and with neither, no check of
+//     production would be judged;
+//   - each approved node, as ReadApproved refuses it (ApprovedNode.check), and under its own id, as
+//     WriteApproved refuses it: a node with no version, a block that is not its one block or a key
+//     that is not its id would leave the node out, and a version with no time would make no result
+//     suspect (R7: "A change to the text of a statement makes every result under it suspect");
 //   - each result (Result.fault), with the current text of its check when it carries that text's
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
 //     At and one Seq (sameRecordFault);
-//   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check): a commit with no
-//     files would be an empty tree, and two of them one tree;
+//   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check), and a nil
+//     *FixtureHistory (historyFault): a commit with no files would be an empty tree, and two of them
+//     one tree;
 //   - each known tie, as NewTie refuses it: a known tie with no path covers no change;
+//   - JobRuns and Uncited, which only lower a state, set, empty for none: with no job run a leg that
+//     ended with no result would be hidden (R9), and with no map of the checks that CI refused, a
+//     refused check would be judged (R48);
 //   - each job run (JobRun.fault).
 //
 // current is the tree of the current texts of in.Approved.
@@ -108,7 +113,11 @@ func (in Input) check(current Tree) error {
 		return fmt.Errorf("specgraph: subject: %s", fault)
 	}
 	for _, id := range slices.Sorted(maps.Keys(in.Approved.Nodes)) {
-		if err := in.Approved.Nodes[id].check(); err != nil {
+		n := in.Approved.Nodes[id]
+		if n.ID != id {
+			return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
+		}
+		if err := n.check(); err != nil {
 			return err
 		}
 	}
@@ -143,6 +152,12 @@ func (in Input) check(current Tree) error {
 				}
 			}
 		}
+	}
+	switch {
+	case in.JobRuns == nil:
+		return errors.New("specgraph: it sets no JobRuns; an Input at a commit where no job ran sets an empty list")
+	case in.Uncited == nil:
+		return errors.New("specgraph: it sets no Uncited; an Input at a commit where CI refused no check sets an empty map")
 	}
 	for i, r := range in.JobRuns {
 		if fault := r.fault(); fault != "" {

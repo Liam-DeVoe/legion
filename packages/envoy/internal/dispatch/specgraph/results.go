@@ -27,35 +27,43 @@ const (
 	ResultFailingExample ResultKind = "failing_example"
 )
 
-// Result is one result of a check as Dispatch stores it (R7, R12): appended and never edited.
+// Result is one result of a check as Dispatch stores it (R7, R12): appended and never edited. Its
+// JSON names are the form of results.json, which names the approved version of the check that ran
+// in the place of CheckDigest (scenarioResult), and its tag input marks how each member reads when
+// its writer does not set it (memberMark).
 type Result struct {
 	// Check is the id of the check, and CheckDigest the Digest of the check's text that ran: the
 	// procedure of the result (R7).
-	Check, CheckDigest string
-	Kind               ResultKind
-	Outcome            Outcome
+	Check       string     `json:"check" input:"nonzero"`
+	CheckDigest string     `json:"-" input:"nonzero"`
+	Kind        ResultKind `json:"kind" input:"nonzero"`
+	Outcome     Outcome    `json:"outcome" input:"nonzero"`
 	// Commit, Deploy and GraphTx are the subject that the result read: a commit of the code, a
 	// deploy of production, or a transaction of the graph; at most one of the three is set. A result
 	// counts only at the subject of its kind that the derivation is given (R7: "A result counts only
 	// for the procedure that ran it and for the subject that it read").
-	Commit, Deploy, GraphTx string
-	// Job and Leg are the job that reported the result and its matrix values, "" for none (R12).
-	Job, Leg string
-	Attempt  int
-	// At is Dispatch's record time and Seq its order of record: (At, Seq) orders results.
-	At  time.Time
-	Seq int64
+	Commit  string `json:"commit" input:"zero: it read no commit; fault refuses that for a run or a failing example of a check of the code"`
+	Deploy  string `json:"deploy" input:"zero: it read no deploy; fault refuses that for a run of a check of production"`
+	GraphTx string `json:"graph_tx" input:"zero: it read no transaction; fault refuses that for a run of a check of the graph that ran"`
+	// Job and Leg are the job that reported the result and its matrix values, "" for none (R12), and
+	// Attempt the attempt of the job's run.
+	Job     string `json:"job" input:"zero: no job reported it; fault refuses that for a run of a program check that names a job"`
+	Leg     string `json:"leg" input:"zero: the leg of no matrix"`
+	Attempt int    `json:"attempt" input:"zero: no rule reads it"`
+	// At is Dispatch's record time and Seq its order of record, from 1: (At, Seq) orders results.
+	At  time.Time `json:"at" input:"nonzero"`
+	Seq int64     `json:"seq" input:"nonzero"`
 	// FaultAuthor wrote the fault of a failing example, and TestAuthors the test that ran on it
 	// (R9: "An agent that did not write the test writes the fault"). The failing example of a
 	// program check counts only when both are named and FaultAuthor is none of TestAuthors.
-	FaultAuthor string
-	TestAuthors []string
+	FaultAuthor string   `json:"fault_author" input:"zero: it names no author, so a failing example of a program check reads fault_by_test_author"`
+	TestAuthors []string `json:"test_authors" input:"zero: it names no author, so a failing example of a program check reads fault_by_test_author"`
 	// TestCommit is the commit of the test that ran, for a run or a failing example of a program
 	// check whose subject is production or the graph, and "" for a result of any other check. Such a
 	// result counts only while no file of the check's tie differs between TestCommit and the
 	// subject's commit (R7: the procedure is "the code that runs it" too; R9: "its test, as it is
 	// now").
-	TestCommit string
+	TestCommit string `json:"test_commit" input:"zero: no test of its own ran; fault refuses that for a program check of production or the graph"`
 }
 
 // fault is the first member of r that the derivation reads and that r does not set, or does not
@@ -63,15 +71,17 @@ type Result struct {
 // results.json and the entry of the derivation (Derive and CheckStates) both refuse a result by it,
 // since the zero value of such a member would read as a real one and hide a failure (R7: "A pass
 // and a failure on one such subject and one procedure make the state unknown"; "a later failure
-// cancels an earlier pass"): a result with no at would be older than every approval, and one with
-// no subject, no job or no test commit would count nowhere. Every result sets its check, the
-// digest of the text that ran, a kind and an outcome of the format, at most one subject, and at.
-// procedure is the text of the check that ran, when the caller holds it, and nil when not; with it,
-// r also sets what that text makes the judge read: a run, and a failing example of a check of the
-// code, the subject of the check's kind (commit, deploy or graph_tx); a run of a program check that
-// names a job, the job; and a result of a program check of production or of the graph, test_commit.
-// A failing example of a query or an agent of production or of the graph names no subject, since
-// each one counts (CheckStates, step 7).
+// cancels an earlier pass"): a result with no at would be older than every approval, one with no
+// seq the first record of its at, and one with no subject, no job or no test commit would count
+// nowhere. Every result sets its check, the digest of the text that ran, a kind and an outcome of
+// the format, at most one subject, at, and seq from 1. procedure is the text of the check that ran,
+// when the caller holds it, and nil when not; with it, r also sets what that text makes the judge
+// read: a run, and a failing example of a check of the code, the subject of the check's kind
+// (commit, deploy or graph_tx), except a run of a check of the graph that could not run, which read
+// no transaction (R13: "A query that cannot read its data, or that passes a time or row limit, gives
+// unknown"); a run of a program check that names a job, the job; and a result of a program check of
+// production or of the graph, test_commit. A failing example of a query or an agent of production or
+// of the graph names no subject, since each one counts (CheckStates, step 7).
 func (r Result) fault(procedure *Check) string {
 	switch named := namedSubjects(r); {
 	case r.Check == "":
@@ -86,12 +96,14 @@ func (r Result) fault(procedure *Check) string {
 		return fmt.Sprintf("it names the subjects %s; a result reads one subject", strings.Join(named, " and "))
 	case r.At.IsZero():
 		return "it sets no at"
+	case r.Seq < 1:
+		return "it sets no seq"
 	case procedure == nil:
 		return ""
 	}
 	c, run := *procedure, r.Kind == ResultRun
 	switch {
-	case (run || c.Subject == SubjectCode) && readOf(c, r.Commit, r.Deploy, r.GraphTx) == "":
+	case (run || c.Subject == SubjectCode) && readOf(c, r.Commit, r.Deploy, r.GraphTx) == "" && !readNoTransaction(c, r):
 		return fmt.Sprintf("it sets no %s, the subject that a check of %s reads",
 			readOf(c, "commit", "deploy", "graph_tx"), readOf(c, "the code", "production", "the graph"))
 	case run && c.Procedure == ProcedureProgram && checkJob(c) != "" && r.Job == "":
@@ -136,19 +148,20 @@ func sameRecordFault(results []Result) string {
 }
 
 // JobRun is one run of a CI job at a commit, in one leg of its matrix ("" for none, the form of
-// Result.Leg), and whether the run ended (R9: "after a run of its job ends").
+// Result.Leg), that ended (R9: "after a run of its job ends"): Ended is true, and a run that has not
+// ended is no JobRun. Its JSON names are the form of jobs.json.
 type JobRun struct {
-	Job    string `json:"job"`
-	Leg    string `json:"leg"`
-	Commit string `json:"commit"`
-	Ended  bool   `json:"ended"`
+	Job    string `json:"job" input:"nonzero"`
+	Leg    string `json:"leg" input:"zero: the leg of no matrix"`
+	Commit string `json:"commit" input:"nonzero"`
+	Ended  bool   `json:"ended" input:"nonzero"`
 }
 
 // fault is the first member of r that the derivation reads and that r does not set, as a refusal
-// names it, and "" when r sets each: the job and the commit, since a run of no job or at no commit
-// would hide a leg of the check's job that ended with no result (R9: "When a check has no result
-// that counts after a run of its job ends, it reads unknown"). Leg "" is the leg of no matrix, and
-// Ended false a run that has not ended. The reader of jobs.json and the entry of the derivation
+// names it, and "" when r sets each: the job, the commit and ended, since a run of no job, at no
+// commit, or that does not say that it ended would hide a leg of the check's job that ended with no
+// result (R9: "When a check has no result that counts after a run of its job ends, it reads
+// unknown"). Leg "" is the leg of no matrix. The reader of jobs.json and the entry of the derivation
 // both refuse a job run by it.
 func (r JobRun) fault() string {
 	switch {
@@ -156,6 +169,8 @@ func (r JobRun) fault() string {
 		return "it sets no job"
 	case r.Commit == "":
 		return "it sets no commit"
+	case !r.Ended:
+		return "it does not set ended to true: a job run is a run of its job that ended"
 	}
 	return ""
 }

@@ -99,7 +99,16 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 		{name: "a pass at tx1, at a deploy that names no transaction", check: g, tx: "",
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)},
 			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
-		{name: "the head of a branch that names a transaction judges no check of the graph", check: g, branch: "b", tx: "tx1",
+		// R13: "A query that cannot read its data, or that passes a time or row limit, gives unknown."
+		// Such a run read no transaction, so it may name none, and then it counts at each transaction:
+		// the newest run at tx1 could not run.
+		{name: "a pass at tx1, then a run that could not run and names no transaction", check: g, tx: "tx1",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour), run(g, "", "", OutcomeCouldNotRun, 2*time.Hour)},
+			want: CheckState{State: "unknown", Reason: "could_not_run"}, statements: "unknown"},
+		{name: "control: the same, then a pass at tx1", check: g, tx: "tx1",
+			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour), run(g, "", "", OutcomeCouldNotRun, 2*time.Hour), run(g, "tx1", "", OutcomePass, 3*time.Hour)},
+			want: CheckState{State: "true", Reason: "passed", From: "tx1"}, statements: "met"},
+		{name: "the head of a branch judges no check of the graph", check: g, branch: "b",
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)}, absent: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {

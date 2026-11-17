@@ -25,14 +25,14 @@ type History interface {
 // Files is the whole tree of each commit, as a label of each path's content. Parent is for the
 // reader, and Changed never reads it.
 type FixtureHistory struct {
-	Commits []FixtureCommit `json:"commits"`
+	Commits []FixtureCommit `json:"commits" input:"present: no commit, so no result carries; a file sets [] for none"`
 }
 
 // FixtureCommit is one commit of a FixtureHistory: its id, its parent and its tree.
 type FixtureCommit struct {
-	ID     string            `json:"id"`
-	Parent string            `json:"parent"`
-	Files  map[string]string `json:"files"`
+	ID     string            `json:"id" input:"nonzero"`
+	Parent string            `json:"parent" input:"zero: a commit with no parent; Changed never reads it"`
+	Files  map[string]string `json:"files" input:"nonzero"`
 }
 
 // historyForm is the form of history.json, with the type of each value, as ReadFixtureHistory
@@ -40,11 +40,18 @@ type FixtureCommit struct {
 const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
 
 // ReadFixtureHistory reads a history.json. It refuses what decodeJSON refuses, a value of another
-// type than historyForm needs named by its place among them, and what FixtureHistory.check
-// refuses.
+// type than historyForm needs named by its place among them, a file that does not set commits
+// (unsetFault), and what FixtureHistory.check refuses.
 func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
+	}
 	var h FixtureHistory
-	if err := decodeJSONFrom(r, &h, historyForm); err != nil {
+	if err := decodeJSON(data, &h, historyForm); err != nil {
+		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
+	}
+	if err := unsetFault(data, &h, historyForm); err != nil {
 		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
 	}
 	if err := h.check(); err != nil {
@@ -76,16 +83,19 @@ func (h FixtureHistory) check() error {
 	return nil
 }
 
-// historyFault is the fault of h that FixtureHistory.check gives when h is a FixtureHistory, and
-// nil for any other History, such as GitHistory, which reads the trees of a clone.
+// historyFault is the fault of h that FixtureHistory.check gives when h is a FixtureHistory, an
+// error for a nil *FixtureHistory, whose Changed would panic where a result carries, and nil for any
+// other History, such as GitHistory, which reads the trees of a clone, and for no History, with
+// which nothing carries.
 func historyFault(h History) error {
 	switch h := h.(type) {
 	case FixtureHistory:
 		return h.check()
 	case *FixtureHistory:
-		if h != nil {
-			return h.check()
+		if h == nil {
+			return errors.New("specgraph: history: a nil *FixtureHistory holds no commit; an Input with no history sets no History")
 		}
+		return h.check()
 	}
 	return nil
 }

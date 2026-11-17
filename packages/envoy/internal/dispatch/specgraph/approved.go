@@ -14,12 +14,12 @@ import (
 
 // ApprovedVersion is one text that the approved spec held for a node (R2: "Dispatch keeps each
 // text that the approved spec held"): its version number, the time of the approval that wrote it,
-// in approved.json an RFC 3339 time as time.RFC3339Nano writes it, with an upper-case T and Z, and
-// Block, the node's block as Print writes it, which a change copies into the files.
+// in approved.json a time of timeForm, and Block, the node's block as Print writes it, which a
+// change copies into the files.
 type ApprovedVersion struct {
-	Version int       `json:"version"`
-	At      time.Time `json:"at"`
-	Block   string    `json:"block"`
+	Version int       `json:"version" input:"nonzero"`
+	At      time.Time `json:"at" input:"nonzero"`
+	Block   string    `json:"block" input:"nonzero"`
 }
 
 // ApprovedNode is one statement, check, component, interface or term of the approved spec, with
@@ -28,29 +28,32 @@ type ApprovedVersion struct {
 // for another text (R1). PartlyChecked marks a statement whose checks decide only part of it, as
 // the reviewer of its level judged (R10).
 type ApprovedNode struct {
-	ID            string            `json:"id"`
-	Removed       bool              `json:"removed"`
-	PartlyChecked bool              `json:"partly_checked"`
-	Versions      []ApprovedVersion `json:"versions"`
+	ID            string            `json:"id" input:"nonzero"`
+	Removed       bool              `json:"removed" input:"present: false is a node that the approved spec keeps"`
+	PartlyChecked bool              `json:"partly_checked" input:"present: false is a statement whose checks decide all of it"`
+	Versions      []ApprovedVersion `json:"versions" input:"nonzero"`
 }
 
 // Approved is the approved spec (R2): each node that it holds or held, by id.
 type Approved struct {
-	Nodes map[string]ApprovedNode
+	Nodes map[string]ApprovedNode `input:"zero: no node"`
 }
 
 // ApprovedFile is approved.json, the approved spec as a file holds it, and the one definition of
 // that form (approvedForm): WriteApproved writes it, and ReadApproved reads it. "at" is an RFC 3339
-// time as time.RFC3339Nano writes it, with an upper-case T and Z, such as "2026-11-10T00:00:00Z":
-// the reader refuses a lower-case t or z, which RFC 3339 allows, and the writer writes upper case.
-// An approved spec that holds no node is {"nodes":[]}.
+// time as time.RFC3339Nano writes it, such as "2026-11-10T00:00:00Z" (timeForm). An approved spec
+// that holds no node is {"nodes":[]}.
 type ApprovedFile struct {
-	Nodes []ApprovedNode `json:"nodes"`
+	Nodes []ApprovedNode `json:"nodes" input:"nonzero"`
 }
 
-// timeForm is a time as each form text of this package names its type: an RFC 3339 time as
-// time.RFC3339Nano writes it, which the readers take only with an upper-case T and Z.
-const timeForm = `<RFC 3339 time with an upper-case T and Z>`
+// timeForm is a time as each form text of this package names its type: an RFC 3339 time with an
+// upper-case T, in UTC with an upper-case Z, as time.RFC3339Nano writes it, or at an offset such as
+// +01:00, which the readers order by its instant. The readers refuse a lower-case t or z, which RFC
+// 3339 allows. A time at the zero instant, 0001-01-01T00:00:00Z at any offset, is no time: the
+// readers refuse it as a member that is not set ("it sets no at", "it sets no now", "it has no
+// time").
+const timeForm = `<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>`
 
 // approvedForm is the form of approved.json, with the type of each value, as ReadApproved names it
 // for a value of another type.
@@ -62,10 +65,11 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
 // after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
 // two nodes, a node with no version, version numbers that do not go up from 1, a version with no
-// time or with one older than the one before it, a block that is not its node's one block as
-// Print writes it, and a node that sets no removed or no partly_checked (approvedFlagsFault). The
-// error names the node, by its id as quoted prints a value of the input, and the version. It reads
-// the whole file, with no bound on its size.
+// time or with one older than the one before it, and a block that is not its node's one block as
+// Print writes it, in an error that names the node, by its id as quoted prints a value of the input,
+// and the version; then a member that the form needs and that a node does not set, removed or
+// partly_checked, since each one's zero value, false, is a real value (unsetFault), in an error that
+// names the place of the member. It reads the whole file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -76,42 +80,13 @@ func ReadApproved(r io.Reader) (Approved, error) {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
 	}
 	a, err := file.approved()
-	if err == nil {
-		err = approvedFlagsFault(data)
-	}
 	if err != nil {
 		return Approved{}, err
 	}
+	if err := unsetFault(data, &file, approvedForm); err != nil {
+		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
+	}
 	return a, nil
-}
-
-// approvedFlagsFault is the first member removed or partly_checked that a node of data, a text
-// that decodeJSON took in approvedForm, does not set, or nil. After that decode an absent member
-// is false, which reads as a real value: a node that the approved spec removed would read as
-// current, so a check that it removed is judged and can make its statement met where the statement
-// reads unknown, and a statement would lose its "partly checked" (R10). So the presence of the two
-// is read from data, and the exported types stay as they are.
-func approvedFlagsFault(data []byte) error {
-	var flags struct {
-		Nodes []struct {
-			Removed       *bool `json:"removed"`
-			PartlyChecked *bool `json:"partly_checked"`
-		} `json:"nodes"`
-	}
-	if err := json.Unmarshal(data, &flags); err != nil {
-		return fmt.Errorf("specgraph: approved spec: %w", err)
-	}
-	for i, n := range flags.Nodes {
-		for _, member := range []struct {
-			name string
-			set  bool
-		}{{"removed", n.Removed != nil}, {"partly_checked", n.PartlyChecked != nil}} {
-			if !member.set {
-				return fmt.Errorf("specgraph: approved spec: it is not in the form %s: the value at %s is not set", approvedForm, quoted(fmt.Sprintf("/nodes/%d/%s", i, member.name)))
-			}
-		}
-	}
-	return nil
 }
 
 // WriteApproved writes a to w as approved.json (ApprovedFile), the nodes in the order of their ids,
@@ -145,9 +120,6 @@ func (f ApprovedFile) approved() (Approved, error) {
 	}
 	a := Approved{Nodes: make(map[string]ApprovedNode, len(f.Nodes))}
 	for _, n := range f.Nodes {
-		if n.ID == "" {
-			return Approved{}, errors.New("specgraph: approved spec: a node has no id")
-		}
 		if _, twice := a.Nodes[n.ID]; twice {
 			return Approved{}, fmt.Errorf("specgraph: approved spec: node %s is in the approved spec two times", quoted(n.ID))
 		}
@@ -161,7 +133,10 @@ func (f ApprovedFile) approved() (Approved, error) {
 
 // check is the first fault of n that ReadApproved refuses, or nil.
 func (n ApprovedNode) check() error {
-	if len(n.Versions) == 0 {
+	switch {
+	case n.ID == "":
+		return errors.New("specgraph: approved spec: a node has no id")
+	case len(n.Versions) == 0:
 		return fmt.Errorf("specgraph: approved node %s: it has no version", quoted(n.ID))
 	}
 	for i, v := range n.Versions {
