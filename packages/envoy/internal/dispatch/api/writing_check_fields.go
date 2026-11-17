@@ -93,6 +93,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 		"route": markPerson, "assignee": markPerson, "parent": markIdentifier,
 		"blocked_by": markIdentifier, "repo": markConfig, "advances": markIdentifier,
 	},
+	reflect.TypeFor[issueRoleHolder](): {"role": markEnum, "session": markPerson},
 	// Priorities.
 	reflect.TypeFor[createPriorityInput](): {
 		"title": markNotAKind, "description": markNotAKind, "id": markIdentifier, "owner": markPerson,
