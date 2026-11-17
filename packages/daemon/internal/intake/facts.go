@@ -683,19 +683,41 @@ func (r PullRequestReview) LegionHead() string {
 
 // LegionEntry is the entry of the round the review says it is of: the entry field of the last
 // Legion footer in the review's body (lastLegionFooter), the number the reviewer's task names
-// (workflow's ReviewEntryLabel, record.PhaseRow.Entry). It is 0 when the body carries no footer,
-// the footer's JSON cannot be parsed, it names no entry, or the entry is not a positive whole
-// number written as a JSON integer: a string, a fraction, an exponent, zero, a negative number
-// or one past int64 names no entry. Such a footer still names its session and head, so the review
-// decides its round as before; only the commit the reviewer read (record.PhaseRow.ReviewedHead)
-// waits for a review that names the entry that stands (workflow's review).
+// (workflow's ReviewEntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
+// string of digits (`"entry":"<entry>"`), so a placeholder left unfilled keeps the footer JSON,
+// and it is read as a positive whole number written either that way or as a JSON integer. It is
+// 0 when the body carries no footer, the footer's JSON cannot be parsed, it names no entry, or
+// the entry is anything else: an unfilled placeholder, an empty string, a word, a fraction, an
+// exponent, a sign, zero, one past int64, null, a boolean, an array or an object names no entry.
+// Such a footer still names its session and head, so the review decides its round as before;
+// only the commit the reviewer read (record.PhaseRow.ReviewedHead) waits for a review that names
+// the entry that stands (workflow's review).
 func (r PullRequestReview) LegionEntry() int64 {
-	raw := r.lastLegionFooter().Entry
-	entry, err := strconv.ParseInt(string(raw), 10, 64)
+	digits := string(r.lastLegionFooter().Entry)
+	if strings.HasPrefix(digits, `"`) {
+		if err := json.Unmarshal([]byte(digits), &digits); err != nil || !onlyDigits(digits) {
+			return 0
+		}
+	}
+	entry, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil || entry <= 0 {
 		return 0
 	}
 	return entry
+}
+
+// onlyDigits says whether s is one or more of the ASCII digits 0 to 9 and nothing else: no sign,
+// no space, no point.
+func onlyDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
