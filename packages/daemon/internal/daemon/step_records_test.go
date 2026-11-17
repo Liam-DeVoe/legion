@@ -293,25 +293,16 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	r.retro()
 	r.merge()
 
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "stopped", noAgentRead: true},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
-		{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
+	// The roll forward wrote the end of the implementer's run open at the rollback: no agent was
+	// read for that run, so its record names the implementer's claim and no session and no model.
+	want := slices.Clone(stepRecordsTen)
+	want[2].result, want[2].owner = "stopped", &stepOwner{agent: string(r.token(claim.RoleImplementer))}
 	var read stepRecordsRead
 	r.waitSteps("the walk's records across the rollback", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
 	id := func(step int, count int64) string {
 		return workflow.StepID(r.key, 1, record.StepPlace{Task: "default", Kind: "step", Place: step}, count)
 	}
-	if ended := read.find("step", 2, 2); ended.ID != id(2, 2) || ended.Agent != string(r.token(claim.RoleImplementer)) ||
-		ended.EndedAt == nil || !ended.EndedAt.Equal(rolledBackAt) {
+	if ended := read.find("step", 2, 2); ended.ID != id(2, 2) || ended.EndedAt == nil || !ended.EndedAt.Equal(rolledBackAt) {
 		t.Fatalf("the implementer's run open at the rollback reads %+v (ended %v), want the record %s its start wrote, the implementer's, stopped at the moment the way back kept, %s",
 			ended, ended.EndedAt, id(2, 2), rolledBackAt)
 	}
@@ -940,12 +931,10 @@ type stepWant struct {
 	step, attempt     int
 	role, typ, result string
 	returnedTo        *int
-	// noAgentRead is a record whose end the roll forward of a rollback wrote: the daemon read no
-	// agent for it, and its start names none, so it holds no session and no model.
-	noAgentRead bool
 	// owner, when set, is whose the record is exactly: its agent, its session and its model, an
-	// empty session and model meaning none (the merger the merge launches never registers). Unset,
-	// the record is any agent's, and one of kind step names a session and stepRecordsModel.
+	// empty session and model meaning none (the merger the merge launches never registers, and a run
+	// whose end the roll forward of a rollback wrote). Unset, the record is any agent's, and one of
+	// kind step names a session and stepRecordsModel.
 	owner *stepOwner
 }
 
@@ -971,9 +960,8 @@ func withOwners(t *testing.T, want []stepWant, owners ...*stepOwner) []stepWant 
 
 // stepsHold says whether read holds exactly the records of want, each of the task default, ended,
 // with its role, type, agent, start, end, result and return; each of an owner named for that owner
-// exactly (owner), and each other of kind step with its session and the model that answered it,
-// or with neither where the roll forward wrote its end (noAgentRead). The error names the first
-// record that is missing or wrong.
+// exactly (owner), and each other of kind step with its session and the model that answered it.
+// The error names the first record that is missing or wrong.
 func stepsHold(read stepRecordsRead, want []stepWant) error {
 	for _, w := range want {
 		got := read.find(w.kind, w.step, w.attempt)
@@ -987,11 +975,9 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 			return fmt.Errorf("%s started %v, ended %v with result %q; want a start, an end and %q", name, got.StartedAt, got.EndedAt, got.Result, w.result)
 		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
 			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
-		case w.noAgentRead && (got.Session != "" || got.Model != ""):
-			return fmt.Errorf("%s names session %q and model %q, want neither: no agent was read for its end", name, got.Session, got.Model)
 		case w.owner != nil && (got.Agent != w.owner.agent || got.Session != w.owner.session || got.Model != w.owner.model):
 			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, w.owner.agent, w.owner.session, w.owner.model)
-		case w.kind == "step" && w.owner == nil && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
+		case w.kind == "step" && w.owner == nil && (got.Session == "" || got.Model != stepRecordsModel):
 			return fmt.Errorf("%s names session %q and model %q, want its agent's session and %s", name, got.Session, got.Model, stepRecordsModel)
 		}
 	}
