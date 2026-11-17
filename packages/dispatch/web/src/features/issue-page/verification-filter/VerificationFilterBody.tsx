@@ -168,18 +168,48 @@ export function VerificationFilterBody({
    *  Where it is not given it is `view`, as it is where no query is typed. */
   whole?: TreeNode;
 }): ReactNode {
-  // Each line of overtaken nodes the reader opened, by the id of the node whose children it
-  // folds: the issue's, for its overtaken statements and its overtaken checks that serve none,
-  // and a statement's, for its overtaken checks. Each is drawn closed until the reader opens it
-  // (dispatch://INFRA-4063 R5). The body reads the view as those lines leave it
+  // The lines of overtaken nodes (dispatch://INFRA-4063 R5, R6), each by the id of the node
+  // whose overtaken children it folds: the issue's, for its overtaken statements and its
+  // overtaken checks that serve none, and a statement's, for its overtaken checks. Each is drawn
+  // closed until the reader opens it. While the words filter holds words - which is when the
+  // slot hands the view with no query as `whole` - each is drawn open, since the view then holds
+  // only the query's matches and the statements they stand under, so every line in it holds a
+  // match; a line the reader closed under the words stays closed, as the outline's do
+  // (`IssueTree.tsx`'s `linesOpen`). The body reads the view as those lines leave it
   // (`foldOvertaken`), so a statement's overtaken checks are rows of the tree only while its
   // line is open, and the issue's overtaken rows are drawn under its own line, after every other
   // row (`treeRows`). The issue's reading, which the summary and the chips count, is read from
   // the view as it came, whatever the lines hold.
-  const [overtaken, setOvertaken] = useState<ReadonlySet<string>>(() => new Set());
+  const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
+  const holdsWords = whole !== view;
   const unfolded = view;
-  const fold = useMemo(() => foldOvertaken(unfolded, overtaken), [overtaken, unfolded]);
-  view = fold.view;
+  const fold = useMemo(
+    () => foldOvertaken(unfolded, (id) => lineIsOpen(lines, holdsWords, id)),
+    [holdsWords, lines, unfolded]
+  );
+  // The state chip the reader pressed, as `only` below holds it: read here, before the view is
+  // read, and set to `only` as each drawing begins. Under a chip the view draws no statement the
+  // chip's count leaves out - a proposed one, or one at or under an overtaken node
+  // (`outOfCounts`, dispatch://INFRA-4063 R3) - so what a chip counts and what it draws agree.
+  const [chosen, setChosen] = useState<StatementState | undefined>(undefined);
+  const counted = useMemo(
+    () =>
+      chosen === undefined
+        ? fold.view
+        : {
+            ...fold.view,
+            children: fold.view.children.filter(
+              (child) => child.type !== "requirement" || !outOfCounts(child)
+            ),
+          },
+    [chosen, fold.view]
+  );
+  // Where the chip leaves the query's view no row at all, the table says that no statement
+  // stands in that state, as it says where the issue holds none in it.
+  if (counted.children.length === 0 && fold.view.children.length > 0) {
+    emptyLine = EMPTY_STATE_LINES.verification_none;
+  }
+  view = counted;
   // The query's reading, which the body draws, and the issue's, which it says how the issue
   // stands by (part V's departure 10). With no query typed the two are one reading.
   const read = useMemo(() => verificationReading({ checks, view }), [checks, view]);
@@ -191,6 +221,7 @@ export function VerificationFilterBody({
   // Which state the reader narrowed the body to, as the picture's chips do; nothing is
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
+  if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
   const shown =
     only === undefined ? statements : statements.filter((statement) => statement.state === only);
@@ -206,6 +237,19 @@ export function VerificationFilterBody({
   // The rows are drawn once all three reads hold an answer, and not while one is out or failed.
   const answered = reads.state === "answered";
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
+  // The rows the issue's line of overtaken nodes holds: its overtaken statements, each with its
+  // checks, and its overtaken checks that serve none (dispatch://INFRA-4063 R5).
+  const shownOvertaken = shown.filter((statement) => isOvertaken(statement.node));
+  const looseOvertaken = loose.filter((check) => isOvertaken(check.node));
+  // Each line of overtaken nodes the tree draws is one of its rows too, by its own id
+  // (`lineRow`): the keys walk to it as to a row, and it takes the tree's one tab stop as a row
+  // does (dispatch://INFRA-4063 R5).
+  if (rows.length > 0) {
+    for (const statement of shown) {
+      if (fold.held.has(statement.node.id)) rows.push(lineRow(statement.node.id));
+    }
+    if (shownOvertaken.length + looseOvertaken.length > 0) rows.push(lineRow(view.id));
+  }
   // Each read that failed before it first answered, which the body says over the tree.
   const unreadable = reads.state === "failed" ? reads : undefined;
   // Each statement of the issue by its address, named by its first words, which "Also under"
@@ -226,30 +270,46 @@ export function VerificationFilterBody({
   const [rovingId, setRovingId] = useState(view.id);
   if (rovingId !== view.id && !rows.includes(rovingId)) setRovingId(view.id);
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
-  // The rows the issue's line of overtaken nodes holds: its overtaken statements, each with its
-  // checks, and its overtaken checks that serve none (dispatch://INFRA-4063 R5).
-  const shownOvertaken = shown.filter((statement) => isOvertaken(statement.node));
-  const looseOvertaken = loose.filter((check) => isOvertaken(check.node));
-  /** Opens the line of overtaken nodes under the node `id`, or closes it. Closing the issue's
-   *  line takes its rows off the tree, so the stop goes back to the issue's row where one of
-   *  them held it, as it does for a check a statement's closed line takes off (`rows`). */
-  const toggleOvertaken = (id: string) => {
-    const under = treeRows(id, shownOvertaken, looseOvertaken, []).slice(1);
-    if (id === view.id && overtaken.has(id) && under.includes(rovingId)) setRovingId(view.id);
-    setOvertaken((held) => {
-      const next = new Set(held);
-      if (held.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  /** Opens the line of overtaken nodes under the node `id`, the line element `line`, or closes
+   *  it. Closing a line takes the rows it holds off the tree, so the tab stop one of them held
+   *  goes to the line itself. A line closed while the words filter holds words is held closed
+   *  until the reader opens it again (`OvertakenLines`). */
+  const toggleOvertaken = (id: string, line: HTMLElement) => {
+    const opening = !lineIsOpen(lines, holdsWords, id);
+    if (
+      !opening &&
+      line.querySelector(`[data-verification-row="${CSS.escape(rovingId)}"]`) !== null
+    ) {
+      setRovingId(lineRow(id));
+    }
+    setLines((held) => {
+      const open = new Set(held.open);
+      const closed = new Set(held.closed);
+      if (opening) {
+        open.add(id);
+        closed.delete(id);
+      } else {
+        open.delete(id);
+        if (holdsWords) closed.add(id);
+      }
+      return { closed, open };
     });
   };
-  /** The line of overtaken checks the statement `id` holds, where it holds any. */
+  /** The line of overtaken nodes under the node `id`, as its row draws it, where `id` is the
+   *  issue's and it holds any overtaken row, or a statement's that holds an overtaken check. */
   const lineOf = (id: string): OvertakenFoldState | undefined => {
-    const held = fold.held.get(id);
-    return held === undefined
+    const held = id === view.id ? shownOvertaken.length + looseOvertaken.length : fold.held.get(id);
+    return held === undefined || held === 0
       ? undefined
-      : { held, onToggle: () => toggleOvertaken(id), open: overtaken.has(id) };
+      : {
+          held,
+          onToggle: (line) => toggleOvertaken(id, line),
+          open: lineIsOpen(lines, holdsWords, id),
+          row: lineRow(id),
+          tabIndex: tabIndexFor(lineRow(id)),
+        };
   };
+  const issueLine = lineOf(view.id);
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
   // the focus alone decides (part V's departure 5). It is held here rather than in each check so
@@ -322,6 +382,9 @@ export function VerificationFilterBody({
     // A key the tree does nothing with reaches the keymap before the rows are read.
     const key = event.key;
     if (!TREE_KEYS.has(key)) return;
+    // The lines of overtaken nodes are rows the keys walk too, where they are drawn: each takes
+    // the focus as a row does, though it stands for no node (dispatch://INFRA-4063 R5).
+    const TREE_ROW = WALKED_ROW;
     const elements = [...event.currentTarget.querySelectorAll<HTMLElement>(TREE_ROW)];
     // The row the focus is on, or the one that holds the control it is on: the innermost, so a
     // check's words and the links in them are the check's, and a chip is the issue's.
@@ -449,13 +512,8 @@ export function VerificationFilterBody({
               {/* The issue's overtaken statements, and its overtaken checks that serve none, fold
                   to one line after every other row, which the reader opens in place; opened, it
                   holds them as rows of the tree (dispatch://INFRA-4063 R5). */}
-              {shownOvertaken.length + looseOvertaken.length === 0 ? null : (
-                <OvertakenFold
-                  held={shownOvertaken.length + looseOvertaken.length}
-                  level={1}
-                  onToggle={() => toggleOvertaken(view.id)}
-                  open={overtaken.has(view.id)}
-                >
+              {issueLine === undefined ? null : (
+                <OvertakenFold level={1} line={issueLine}>
                   {shownOvertaken.map((statement) => (
                     <Statement
                       context={context.has(statement.node.id)}
@@ -617,14 +675,14 @@ function checkRowId(statement: string, check: string): string {
 
 /**
  * The view as its lines of overtaken nodes leave it (dispatch://INFRA-4063 R5): each statement's
- * overtaken checks out of it, and, where the reader opened that statement's line (`open`, by its
- * id), after its other checks, so they are drawn and read under the line that holds them; and
- * how many overtaken checks each statement that holds any holds, by its id, which its line
- * says. A view no statement of which holds an overtaken check is the view itself.
+ * overtaken checks out of it, and, where its line is open (`open`, by the statement's id), after
+ * its other checks, so they are drawn and read under the line that holds them; and how many
+ * overtaken checks each statement that holds any holds, by its id, which its line says. A view
+ * no statement of which holds an overtaken check is the view itself.
  */
 function foldOvertaken(
   view: TreeNode,
-  open: ReadonlySet<string>
+  open: (id: string) => boolean
 ): { readonly held: ReadonlyMap<string, number>; readonly view: TreeNode } {
   const held = new Map<string, number>();
   const children = view.children.map((child) => {
@@ -635,11 +693,36 @@ function foldOvertaken(
       ...child,
       children: [
         ...child.children.filter((one) => !isOvertaken(one)),
-        ...(open.has(child.id) ? under : []),
+        ...(open(child.id) ? under : []),
       ],
     };
   });
   return { held, view: held.size === 0 ? view : { ...view, children } };
+}
+
+/** The lines of overtaken nodes the reader opened, and those they closed while the words filter
+ *  held words, which stay closed while it does (dispatch://INFRA-4063 R5, R6): each by the id
+ *  of the node whose overtaken children it folds. */
+interface OvertakenLines {
+  readonly closed: ReadonlySet<string>;
+  readonly open: ReadonlySet<string>;
+}
+
+/** No line opened or closed by the reader, which is how the body is first drawn. */
+const NO_LINES: OvertakenLines = { closed: new Set(), open: new Set() };
+
+/** Whether the line of overtaken nodes under the node `id` is drawn open: where the reader
+ *  opened it, and, while the words filter holds words (`words`), where they did not close it
+ *  under them (dispatch://INFRA-4063 R5, R6). */
+function lineIsOpen(lines: OvertakenLines, words: boolean, id: string): boolean {
+  return lines.open.has(id) || (words && !lines.closed.has(id));
+}
+
+/** The id of the line of overtaken nodes under the node `id` among the tree's rows (`rows`),
+ *  which its element carries as `data-verification-row`: no node's id and no check row's
+ *  (`checkRowId`) begins so. */
+function lineRow(id: string): string {
+  return `overtaken:${id}`;
 }
 
 /** The three reads, in the order the body says which of them failed. */
@@ -716,6 +799,11 @@ function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
  *  id there as `data-verification-row`; a check's row, in its statement's group or of the
  *  table's own; and a statement's row. */
 const TREE_ROW = "[data-node-row]";
+/** The line a node's overtaken children fold to (`OvertakenFold`), and every row the tree's keys
+ *  walk: each node's row, and each such line, which takes the focus as a row does
+ *  (dispatch://INFRA-4063 R5). */
+const OVERTAKEN_LINE = "[data-overtaken-line]";
+const WALKED_ROW = `${TREE_ROW}, ${OVERTAKEN_LINE}`;
 const CHECK_ROW = "[data-verification-check]";
 const STATEMENT_ROW = "[data-verification-card]";
 
@@ -743,6 +831,15 @@ function moveTarget(
   elements: readonly HTMLElement[],
   at: number
 ): HTMLElement | null | undefined {
+  // A statement's right arrow reaches its line of overtaken checks where it draws no other
+  // check, and the left arrow on a closed line goes to the statement it stands under, as from
+  // one of its checks (dispatch://INFRA-4063 R5).
+  if (key === "ArrowRight" && row.matches(STATEMENT_ROW)) {
+    return row.querySelector<HTMLElement>(`${CHECK_ROW}, ${OVERTAKEN_LINE}`);
+  }
+  if (key === "ArrowLeft" && row.matches(OVERTAKEN_LINE)) {
+    return row.parentElement?.closest<HTMLElement>(STATEMENT_ROW);
+  }
   switch (key) {
     case "j":
     case "ArrowDown":
@@ -1068,7 +1165,7 @@ function Statement({
   // row under it, marked Overtaken (dispatch://INFRA-4063 R5).
   const overtakenLine =
     line === undefined ? null : (
-      <OvertakenFold held={line.held} level={2} onToggle={line.onToggle} open={line.open}>
+      <OvertakenFold level={2} line={line}>
         {overtakenChecks.map((check) => {
           const row = checkRowId(node.id, check.node.id);
           return (
@@ -1648,11 +1745,14 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
 }
 
 /** A line of overtaken nodes as the row that holds it draws it (dispatch://INFRA-4063 R5): how
- *  many it holds, whether the reader opened it, and what opens or closes it. */
+ *  many it holds, whether it is open, what opens or closes it, given the line's own element,
+ *  and its id among the tree's rows (`lineRow`) with the tab index that id gives it. */
 interface OvertakenFoldState {
   readonly held: number;
-  readonly onToggle: () => void;
+  readonly onToggle: (line: HTMLElement) => void;
   readonly open: boolean;
+  readonly row: string;
+  readonly tabIndex: 0 | -1;
 }
 
 /**
@@ -1660,41 +1760,38 @@ interface OvertakenFoldState {
  * (dispatch://INFRA-4063 R5), as the outline draws its own (`node-states/OvertakenLine.tsx`): a
  * treeitem with `aria-expanded`, `[data-overtaken-line]`, that says how many it holds in one
  * text node ("1 overtaken"). Opened, it holds them in a group under its words, each a row of
- * the tree marked Overtaken. A press on it, Enter and the right arrow open it in place and
- * close it again, and the left arrow closes it. It is no `[data-node-row]`, so the tree's keys
- * pair the rows `treeRows` names with its row elements by index as before: the line is a tab
- * stop of the view, as every control of it is (part V's R8), and every other key pressed on it
- * is the key of the row that holds it, as from a control inside that row.
+ * the tree marked Overtaken. It is a row the tree's keys walk (`WALKED_ROW`), between the rows
+ * before it and those it holds, and it takes the tree's one tab stop as a row does: its id is
+ * one of the tree's rows (`data-verification-row`). A press on it, Enter and the right arrow
+ * open it in place and close it again, and the left arrow closes an open line; on a closed
+ * one it goes to the statement the line stands under (`moveTarget`).
  */
 function OvertakenFold({
   children,
-  held,
   level,
-  onToggle,
-  open,
+  line,
 }: {
   /** The rows it holds, drawn while it is open. */
   children: ReactNode;
-  held: number;
   /** Its level in the tree, which is the level of the rows it stands after. */
   level: number;
-  onToggle: () => void;
-  open: boolean;
+  line: OvertakenFoldState;
 }): ReactNode {
   return (
     <div
-      aria-expanded={open}
+      aria-expanded={line.open}
       aria-level={level}
       className={`flex min-w-0 flex-col ${focusVisibleRing} ${
         level === 1 ? ROW : `border-t first:border-t-0 ${pageLineBorder}`
       }`}
       data-overtaken-line=""
+      data-verification-row={line.row}
       onClick={(event) => {
         // A press on a row it holds is that row's own.
         const rows =
           event.target instanceof Element ? event.target.closest("[data-overtaken-rows]") : null;
         if (rows !== null && event.currentTarget.contains(rows)) return;
-        onToggle();
+        line.onToggle(event.currentTarget);
       }}
       onKeyDown={(event) => {
         // A key on a row it holds is that row's own, and a key with Ctrl, Alt or Meta is the
@@ -1704,18 +1801,18 @@ function OvertakenFold({
         const toggles =
           event.key === "Enter" ||
           event.key === "ArrowRight" ||
-          (event.key === "ArrowLeft" && open);
+          (event.key === "ArrowLeft" && line.open);
         if (!toggles) return;
         event.preventDefault();
-        onToggle();
+        line.onToggle(event.currentTarget);
       }}
       role="treeitem"
-      tabIndex={0}
+      tabIndex={line.tabIndex}
     >
       <p className={`${CELL} text-xs leading-5 font-medium ${pageQuietText}`} {...pageChrome}>
-        {`${held} ${CONTROL_LABELS.overtaken_count}`}
+        {`${line.held} ${CONTROL_LABELS.overtaken_count}`}
       </p>
-      {open ? (
+      {line.open ? (
         // biome-ignore lint/a11y/useSemanticElements: a treeitem owns its child rows through a group, and a fieldset groups form fields.
         <div className="flex min-w-0 flex-col" data-overtaken-rows="" role="group">
           {children}
