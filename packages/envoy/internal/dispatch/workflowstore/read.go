@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // IssueSteps answers every run of every step of one issue, each with its attempt, in the order
@@ -100,7 +102,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)
 		order by i.closed_at desc, i.key
-	`, project, microsecondCeiling(window.Since), microsecondCeiling(window.Until))
+	`, project, store.MicrosecondCeiling(window.Since), store.MicrosecondCeiling(window.Until))
 	if err != nil {
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
@@ -174,23 +176,6 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 		finished = append(finished, issue)
 	}
 	return finished, nil
-}
-
-// microsecondCeiling is a bound of a window as the statement compares it. PostgreSQL holds a close
-// to the microsecond, and pgx encodes a bound by truncating its nanoseconds, which lowers it: a
-// close at the truncated microsecond, before the bound the caller named, would be kept by
-// `>= since` and dropped by `< until`. Every close is a whole microsecond, so it is at or after a
-// bound exactly when it is at or after the bound rounded up to the next microsecond, and before the
-// bound exactly when it is before that: rounding up keeps both meanings. nil is no bound.
-func microsecondCeiling(bound *time.Time) *time.Time {
-	if bound == nil {
-		return nil
-	}
-	ceiling := bound.Truncate(time.Microsecond)
-	if ceiling.Before(*bound) {
-		ceiling = ceiling.Add(time.Microsecond)
-	}
-	return &ceiling
 }
 
 // madePlan is a plan with the moment its node was made, which picks between two plans of one

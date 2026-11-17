@@ -396,7 +396,7 @@ Each item below names a task and where its code is, then notes on it.
 
   - `GET /api/v1/projects/{key}/plans` lists each finished issue of the project, status `done` with `closed_at` set, newest close first, with `?since=` and `?until=` bounding the close to `[since, until)`
     (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, judged as the caller wrote them, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold);
-    each bound reaches the statement rounded up to the next microsecond (`microsecondCeiling`), as the issue listing's closed bounds do, so a finer bound keeps its meaning.
+    each bound reaches the statement rounded up to the next microsecond (`store.MicrosecondCeiling`), as the issue listing's closed bounds do, so a finer bound keeps its meaning.
     Each issue carries its newest plan (the highest generation, null where it has none), every retro's rating in the order the retros ran, the earliest start and the latest end of its runs with their difference in whole seconds (each null where no run holds one, and the difference null too where that end is before that start), and its count of runs of kind `step` that failed.
     The read is the project's lookup, then one statement for all the project's finished issues, whatever their number, and a read-only token may call it (`readScopeRoutes`).
 
@@ -2652,7 +2652,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  The three bounds reach the statement rounded up to the next microsecond (`store.MicrosecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
   the window refusal judges the bounds as the caller wrote them.
 
 - The listing's paging, which is `GET /api/v1/issues`' own.
