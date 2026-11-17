@@ -14,7 +14,7 @@
 # document that holds the secret: its rows, its document's version holding the text and the
 # approval over it, its document's live state, search rows, windows and events. It proves, in
 # order: each run without --confirm refuses; a run against a role, a page, a session, a
-# supertag node, an issue or a document is refused, with --confirm too, and changes no row; a run whose --confirm names
+# supertag node, or an issue or a document whose row stands is refused, with --confirm too, and changes no row; a run whose --confirm names
 # the digest of another listing is refused and changes no row; the block's listing holds the
 # version and the review it would end and the document whose live state it would replace; after
 # the erases a read of the comment's address answers what a deleted node answers, byte for byte,
@@ -379,8 +379,9 @@ whole() {
     "$1" "${2:+ where $2}"
 }
 
-# refused SECTION NODE: runs the erase against NODE, which it refuses by its kind before it reads
-# a row (grapherase.Erase), as an operator runs it: without --confirm, then with --confirm and the
+# refused SECTION NODE: runs the erase against NODE, which it refuses by its kind, or for an issue
+# and a document while its row stands, before it lists a row (grapherase.Erase, Erasure.read), as
+# an operator runs it: without --confirm, then with --confirm and the
 # digest that first run printed, the zero digest where it printed none. Each run must exit
 # non-zero and say the erase refuses NODE. A build that listed such a node rather than refusing it
 # would erase it here for real, and the caller's read of the store whole says so.

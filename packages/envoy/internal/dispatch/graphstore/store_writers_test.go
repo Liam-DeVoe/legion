@@ -101,8 +101,10 @@ var storeWriteCallSites = []string{
 	"api/reviews.go#openApprovalAsk",
 	"docs/ask_blocks.go#createAskBlock",
 	// The removal of an untouched document states its node gone, before its row goes, caused by
-	// the artifact.removed event it appends after the row, by the same write (WriteUncaused,
-	// then Caused). api's TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain holds it.
+	// the artifact.removed event it appends after the row (Write of the node the document's
+	// create would have written, for a document an earlier build made with none, then
+	// WriteUncaused, then Caused). api's TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain
+	// and TestARemovalOfADocumentWithNoNodeDatesTheNodeAtItsCreation hold it.
 	"api/artifact_removal.go#removeArtifact",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
@@ -121,12 +123,12 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
-	// The backfill's passes over the project of every node: the nodes of
-	// the issues, documents, asks and messages written before their writers wrote one, in one
-	// graphstore.Write per batch that takes no other row, and the project of the comment and
-	// block nodes written before a node named one (graphstore.FillScopes), the block batch under
-	// the revision fence (lockBlockDocuments). graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject
-	// runs both.
+	// The backfill's passes over the project of every node: the nodes of the issues, documents,
+	// asks and messages that no live node marks, in one graphstore.Write per batch, after the
+	// owner rows a document's removal takes (lockObjectOwners) and under them, and the project
+	// of the comment and block nodes written before a node named one (graphstore.FillScopes),
+	// the block batch under the revision fence (lockBlockDocuments). graphcensus'
+	// TestTheBackfillGivesEveryRowItsNodeAndProject runs both.
 	"graphcensus/projects.go#writeObjectBatch",
 	"graphcensus/projects.go#writeScopeBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both

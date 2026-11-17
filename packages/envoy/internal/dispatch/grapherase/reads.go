@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -93,6 +94,16 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 			return erasedRead{}, fmt.Errorf("the store holds no node %s:%s", e.Kind, e.ID)
 		}
 		return erasedRead{}, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
+	}
+	// A node whose text is in its own row is refused while that row stands (Erase). A create
+	// writes the node before the row in one transaction, so under the node's lock no create of
+	// this build can add a row this read did not see.
+	if stands, _, err := graphcensus.ObjectRowStands(ctx, tx, e.Kind, e.ID); err != nil {
+		return erasedRead{}, err
+	} else if stands {
+		return erasedRead{}, fmt.Errorf("the erase refuses %s:%s: its row stands and holds the node's text, which the erase "+
+			"does not reach, so erasing the node would report an erasure that left that text in place; change the text through "+
+			"the object's own route, and erase the node once no row stands behind it", e.Kind, e.ID)
 	}
 	var err error
 	if read.document, read.blockID, err = e.ownDocument(ctx, tx); err != nil {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -18,19 +19,19 @@ import (
 // over one of these nodes would delete the node and its tuples, record an erasure and answer
 // applied, and leave the row and its text where they were; the project census would then read the
 // row as missing a node, and the backfill would write the node again. The erase refuses each of
-// the four kinds before it opens a connection, as it refuses a role, a page and a session: run
-// as an operator runs it, without --confirm and then with a digest, each run answers the refusal
-// even given a database URL nothing listens on, and over the real database the node, its tuples
-// and its row with its text are all still there, with no erasure recorded.
+// the four kinds while its row stands: run as an operator runs it, without --confirm and then
+// with a digest, each run answers the refusal, and the node, its tuples and its row with its text
+// are all still there, with no erasure recorded.
 //
-// Its control is the refusal taken out of Erase: the dry run then lists the node, the confirmed
-// run over that listing answers applied, and the row's text is still in place.
-func TestTheEraseRefusesAnIssueADocumentAnAskAndAMessageAndLeavesThemWhole(t *testing.T) {
+// Its control is the refusal taken out of Erasure.read: the dry run then lists the node, the
+// confirmed run over that listing answers applied, and the row's text is still in place.
+func TestTheEraseRefusesAnIssueADocumentAnAskAndAMessageWhileTheirRowStands(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedObjectNodes(t, database)
+	url := database.Pool.Config().ConnString()
 
-	const refusal = "text is in its own row, which the erase does not reach"
+	const refusal = "its row stands and holds the node's text, which the erase does not reach"
 	for _, node := range []struct{ kind, id, table, column, key string }{
 		{graphstore.KindIssue, seeded.issue, "issues", "title", "key"},
 		{graphstore.KindArtifact, seeded.documentRef, "artifacts", "name", "ref_key"},
@@ -43,22 +44,20 @@ func TestTheEraseRefusesAnIssueADocumentAnAskAndAMessageAndLeavesThemWhole(t *te
 				t.Fatalf("the seed holds %s:%s as %+v, want a node with tuples, so this test would prove nothing", node.kind, node.id, before)
 			}
 			text := rowText(t, database, node.table, node.column, node.key, node.id)
-			for _, url := range []string{"postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1", database.Pool.Config().ConnString()} {
-				listing, err := Erase(ctx, url, node.kind, node.id, "", 0)
-				if err == nil && listing != nil {
-					// The refusal is not there: run the confirmed erase an operator runs next,
-					// so the failure says what that erase does to the row.
-					confirmed, confirmErr := Erase(ctx, url, node.kind, node.id, listing.Digest, 0)
-					t.Fatalf("erase --node %s:%s listed it and its confirmed run answered applied %t (err %v); the %s row still reads %q",
-						node.kind, node.id, confirmed != nil && confirmed.Applied, confirmErr, node.table,
-						rowText(t, database, node.table, node.column, node.key, node.id))
-				}
-				for _, confirm := range []string{"", "any digest"} {
-					erasure, err := Erase(ctx, url, node.kind, node.id, confirm, 0)
-					if err == nil || !strings.Contains(err.Error(), "refuses "+node.kind+":"+node.id+": ") || !strings.Contains(err.Error(), refusal) {
-						t.Errorf("erase --node %s:%s (confirm %q) over %s answered %v (applied %t), want the refusal %q before any connection",
-							node.kind, node.id, confirm, url, err, erasure != nil && erasure.Applied, refusal)
-					}
+			listing, err := Erase(ctx, url, node.kind, node.id, "", 0)
+			if err == nil && listing != nil {
+				// The refusal is not there: run the confirmed erase an operator runs next, so the
+				// failure says what that erase does to the row.
+				confirmed, confirmErr := Erase(ctx, url, node.kind, node.id, listing.Digest, 0)
+				t.Fatalf("erase --node %s:%s listed it and its confirmed run answered applied %t (err %v); the %s row still reads %q",
+					node.kind, node.id, confirmed != nil && confirmed.Applied, confirmErr, node.table,
+					rowText(t, database, node.table, node.column, node.key, node.id))
+			}
+			for _, confirm := range []string{"", "any digest"} {
+				erasure, err := Erase(ctx, url, node.kind, node.id, confirm, 0)
+				if err == nil || !strings.Contains(err.Error(), "refuses "+node.kind+":"+node.id+": ") || !strings.Contains(err.Error(), refusal) {
+					t.Errorf("erase --node %s:%s (confirm %q) answered %v (applied %t), want the refusal %q",
+						node.kind, node.id, confirm, err, erasure != nil && erasure.Applied, refusal)
 				}
 			}
 			if after := readTypeNode(t, database, node.kind, node.id); after != before {
@@ -68,6 +67,65 @@ func TestTheEraseRefusesAnIssueADocumentAnAskAndAMessageAndLeavesThemWhole(t *te
 				t.Errorf("erase --node %s:%s left its %s row reading %q, want %q as before the runs", node.kind, node.id, node.table, after, text)
 			}
 		})
+	}
+}
+
+// A build before this one writes no node, so a document it removes during a roll or after a
+// rollback leaves the live node this build wrote for it, with no row behind it: the project
+// census reads it as orphaned, and no backfill reads a node no row stands behind. The erase is
+// that node's remedy: with no row standing, it lists the node and its tuples, removes them on the
+// confirmed run, and records the erasure, and the census then reads no orphaned node.
+//
+// Its control is the refusal made regardless of the row, as Erase made it before a connection
+// once: the orphaned node then has no remedy, and the census keeps reading it.
+func TestTheEraseRemovesAnOrphanedDocumentsNode(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedObjectNodes(t, database)
+	url := database.Pool.Config().ConnString()
+	// The removal a build before this one makes: the row goes, and nothing states its node gone.
+	if _, err := database.Pool.Exec(ctx, `delete from artifacts where ref_key = $1`, seeded.documentRef); err != nil {
+		t.Fatalf("remove the document's row: %v", err)
+	}
+	requireOrphaned(t, database, 1)
+
+	listing, err := Erase(ctx, url, graphstore.KindArtifact, seeded.documentRef, "", 0)
+	if err != nil {
+		t.Fatalf("erase --node artifact:%s with no row behind it answered %v, want its listing", seeded.documentRef, err)
+	}
+	if want := "delete graph_nodes artifact:" + seeded.documentRef; !strings.Contains(strings.Join(listing.Listing, "\n"), want) {
+		t.Errorf("the listing reads %q, want it to name %q", listing.Listing, want)
+	}
+	erased, err := Erase(ctx, url, graphstore.KindArtifact, seeded.documentRef, listing.Digest, 0)
+	if err != nil || !erased.Applied {
+		t.Fatalf("the confirmed erase answered %+v, %v; want applied", erased, err)
+	}
+	if held := readTypeNode(t, database, graphstore.KindArtifact, seeded.documentRef); held.row || held.out != 0 || held.in != 0 || held.erased != 1 {
+		t.Errorf("after the erase the store holds %+v of the document's node, want no row, no tuple and one erasure", held)
+	}
+	requireOrphaned(t, database, 0)
+	// The issue's node, whose row stands, is untouched.
+	if held := readTypeNode(t, database, graphstore.KindIssue, seeded.issue); !held.row || held.erased != 0 {
+		t.Errorf("after the document's erase the store holds %+v of the issue's node, want it as seeded", held)
+	}
+}
+
+// requireOrphaned fails unless the project census reads want orphaned nodes, all of them
+// documents, and no other finding.
+func requireOrphaned(t *testing.T, database *store.Store, want int64) {
+	t.Helper()
+	census, err := graphcensus.ProjectCensus(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("take the project census: %v", err)
+	}
+	for _, kind := range census {
+		orphaned := int64(0)
+		if kind.Kind == graphstore.KindArtifact {
+			orphaned = want
+		}
+		if kind.Orphaned != orphaned || kind.Findings() != orphaned {
+			t.Errorf("the project census reads %+v for %s, want orphaned=%d and no other finding", kind, kind.Kind, orphaned)
+		}
 	}
 }
 

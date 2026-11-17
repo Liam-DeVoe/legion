@@ -418,6 +418,10 @@ func storeKinds() []StoreKind {
 			" its issue",
 		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
 	}, {
+		Name: "artifact_removed", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "artifact.removed events in the window: the removed document's node stated gone (api's removeArtifact)",
+		count:  `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
+	}, {
 		Name: "document_version", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
 		Driver: "artifact_versions.created_at: the document version node each accepted write appends, and its visibility" +
 			" and state",

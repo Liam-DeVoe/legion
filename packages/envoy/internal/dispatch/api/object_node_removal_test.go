@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -49,6 +50,57 @@ func TestARemovedDocumentsNodeIsGoneAndItsAddressIsTakenAgain(t *testing.T) {
 	}
 	if want := []string{graphstore.StateLive, graphstore.StateGone, graphstore.StateLive}; !equalStrings(stated, want) {
 		t.Errorf("the node of %s states %v over its life, want %v", first.RefKey, stated, want)
+	}
+}
+
+// A document a build before this one created has no node until the backfill writes it, and its
+// removal can come first. The removal then writes the node the document's create would have
+// written - live, made by the document's creator at its created_at, at the sentinel, as the
+// backfill writes it - and states it gone under its own event, by the person who removed it and
+// when: the node keeps its made_at and made_by over its life, so a node the removal made would
+// otherwise carry the remover as its maker, and so would the document that takes the address
+// next.
+//
+// Its control is the removal writing the gone node alone, made by the remover at the removal's
+// time: the node is then made by alice now, not by bob at the row's created_at.
+func TestARemovalOfADocumentWithNoNodeDatesTheNodeAtItsCreation(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "RMN", "A document an earlier build made", "The spec.\n")
+	document := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	created := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	// The row a build before this one wrote: made by bob at created, with no node.
+	if _, err := database.Pool.Exec(ctx, `
+		with tuples as (delete from graph_tuples where (from_kind = 'artifact' and from_id = $1) or (to_kind = 'artifact' and to_id = $1))
+		delete from graph_nodes where kind = 'artifact' and id = $1
+	`, document.RefKey); err != nil {
+		t.Fatalf("take the document's node away: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update artifacts set created_by = '{"kind":"user","id":"bob"}', created_at = $2 where id = $1
+	`, document.ID, created); err != nil {
+		t.Fatalf("make the document an earlier build's: %v", err)
+	}
+
+	removedDocument(t, handler, document.ID)
+	removed := artifactEvent(t, database, "artifact.removed", document.ID)
+	requireDocumentNode(t, database, document.RefKey, graphstore.StateGone, removed)
+	node, _, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, document.RefKey)
+	if err != nil {
+		t.Fatalf("read the node of %s: %v", document.RefKey, err)
+	}
+	if !node.MadeAt.Equal(created) || node.MadeBy.ID != "bob" {
+		t.Errorf("the node of %s is made by %s at %s, want bob at the row's created_at %s", document.RefKey, node.MadeBy.ID, node.MadeAt, created)
+	}
+	history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, document.RefKey, graphstore.AttributeState)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("read the state history of %s: %d tuple(s), %v; want live then gone", document.RefKey, len(history), err)
+	}
+	if live := history[0]; live.ToID != graphstore.StateLive || live.SourceEvent != graphstore.NoEvent || !live.At.Equal(created) || live.Who.ID != "bob" {
+		t.Errorf("the first state tuple of %s is %+v, want live at the sentinel, at the row's created_at and by bob", document.RefKey, live)
+	}
+	if gone := history[1]; gone.Who.ID != "alice" || !gone.At.After(created) {
+		t.Errorf("the gone tuple of %s is %+v, want it by alice, the person who removed it, at the removal", document.RefKey, gone)
 	}
 }
 

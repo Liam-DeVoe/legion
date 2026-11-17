@@ -554,9 +554,10 @@ var indexPasses = map[string]string{
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The backfill of the project of every node: the rows of the issues, documents, asks and
-	// messages that no node marks, and the comment and block nodes that name no project, each
-	// with the row its project is read from.
-	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no node marks",
+	// messages that no live node marks, each read again under its owner row before its node is
+	// written, and the comment and block nodes that name no project, each with the row its
+	// project is read from.
+	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no live node marks",
 	"graphcensus/projects.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a

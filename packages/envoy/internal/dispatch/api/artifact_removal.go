@@ -50,7 +50,12 @@ import (
 // is addressed by the document's ref_key, which a later document of the same issue and slug takes
 // again: that document's create finds the node gone and states it live under its own event,
 // rather than finding a live node that states nothing and keeps this document's cause. A node
-// keeps its made_at and made_by over its life, as every node of the store does.
+// keeps its made_at and made_by over its life, as every node of the store does, so a document a
+// build before this one created, which has no node until the backfill writes one, first gets the
+// node its create would have written - live, made by its creator at its created_at, at the
+// sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
+// stated gone, by the person who removed it and when. A document that has its node is written
+// again with nothing moved, which states nothing.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -106,10 +111,15 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The document's node, stated gone before its row goes; its state tuple waits for the event.
-	gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, time.Now().UTC())
-	gone.State = graphstore.StateGone
 	var goneNode graphstore.Uncaused
 	if graphstore.AddressFits(artifact.RefKey) {
+		made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
+		if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
+			return
+		}
+		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, time.Now().UTC())
+		gone.State = graphstore.StateGone
 		var err error
 		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))

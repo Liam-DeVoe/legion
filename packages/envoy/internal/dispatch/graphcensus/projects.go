@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -23,12 +24,12 @@ import (
 // owns - an issue, a document, an ask, a message, a comment and a document's block - is a node of
 // the store whose project is a base attribute its own write states (graphstore.Node), and an
 // object no project owns - a conversation's file, an ask or a comment on one, a message on no
-// issue - names the parties it is between instead. This file is what reads and repairs the two
-// from the rows:
-// scopedRows, the one statement of what each row's node must carry; the census's three classes
-// over it (ProjectCensus); the read that answers every row not yet complete (ProjectComplete);
-// and the backfill of the rows written before their kind's writer did this
-// (backfillObjectNodes, backfillScopes).
+// issue - names the parties it is between instead. This file reads the two against the rows and
+// writes them from the rows:
+// scopedRows, the one statement of what each row's node must carry; the census's classes over it
+// (ProjectCensus); the read that answers every row not yet complete (ProjectComplete); and the
+// backfill of the rows written before their kind's writer did this (backfillObjectNodes,
+// backfillScopes).
 
 // projectKinds are the kinds whose nodes carry a project or parties, in the order the census
 // reports them.
@@ -148,22 +149,27 @@ var scopedRowsSQL = strings.NewReplacer(
 ).Replace(scopedRows)
 
 // The classes the census and ProjectComplete name a row or a node by. missing is a row whose node
-// the store does not hold; unscoped a node holding neither a project nor parties; differs a node
-// holding another project, or other parties, than its row's; orphaned a live node of a kind whose
-// rows only its own creates write (objectKinds) that no row stands behind.
+// the store does not hold; gone a row of a kind whose rows only its own creates write
+// (objectKinds) whose node is not live; unscoped a node holding neither a project nor parties;
+// differs a node holding another project, or other parties, than its row's; orphaned a live node
+// of one of those kinds that no row stands behind.
 const (
 	classMissing  = "missing"
+	classGone     = "gone"
 	classUnscoped = "unscoped"
 	classDiffers  = "differs"
 	classOrphaned = "orphaned"
 )
 
-// orphanKindList is the kinds the census reads the node side of too, as a SQL list: the kinds the
-// backfill writes a node for from their rows (objectKinds) - an issue, a document, an ask and a
-// message - whose rows only their own creates write and only a document's removal deletes, which
-// states the node gone first. The store census reads that direction for a comment and a block
-// already (projections), so the project census reads it for these alone. A kind added to
-// objectKinds is read both ways from that one list.
+// orphanKindList is the kinds the census reads the state and the node side of too, as a SQL list:
+// the kinds the backfill writes a node for from their rows (objectKinds) - an issue, a document,
+// an ask and a message - whose rows only their own creates write and only a document's removal
+// deletes. A node of one of them stands live while its row does, and the removal of this build
+// states it gone as it deletes the row; a build before this one writes no node, so during a roll
+// or after a rollback it can create a row at an address whose node this build stated gone (gone),
+// or remove a row whose node this build wrote (orphaned). The store census reads both directions
+// for a comment and a block already (projections), so the project census reads them for these
+// alone. A kind added to objectKinds is read every way from that one list.
 var orphanKindList = func() string {
 	quoted := make([]string, len(objectKinds))
 	for index, kind := range objectKinds {
@@ -173,8 +179,9 @@ var orphanKindList = func() string {
 }()
 
 // rowClass is the class of one row of scopedRows against its node n, null for a complete one.
-const rowClass = `case
+var rowClass = `case
 		when n.id is null then '` + classMissing + `'
+		when scoped.kind in (` + orphanKindList + `) and n.state <> '` + graphstore.StateLive + `' then '` + classGone + `'
 		when n.project_key is null and n.parties is null then '` + classUnscoped + `'
 		when n.project_key is distinct from scoped.project or n.parties is distinct from scoped.parties then '` + classDiffers + `'
 	end`
@@ -196,24 +203,27 @@ var classedRows = `,
 
 // ProjectKindReport is what the project census read of one kind: how many rows it holds, and how
 // many of them are in each class, and, for a kind whose rows only its own creates write, how many
-// of its live nodes no row stands behind.
+// of its rows name a node that is not live and how many of its live nodes no row stands behind.
 type ProjectKindReport struct {
-	Kind                                 string
-	Rows                                 int64
-	Missing, Differs, Unscoped, Orphaned int64
+	Kind                                       string
+	Rows                                       int64
+	Missing, Gone, Differs, Unscoped, Orphaned int64
 }
 
-// Findings is how many rows and nodes of the kind are incomplete, over the four classes.
-func (r ProjectKindReport) Findings() int64 { return r.Missing + r.Differs + r.Unscoped + r.Orphaned }
+// Findings is how many rows and nodes of the kind are incomplete, over the five classes.
+func (r ProjectKindReport) Findings() int64 {
+	return r.Missing + r.Gone + r.Differs + r.Unscoped + r.Orphaned
+}
 
 // ProjectCensus reads, for every project-owned kind, how many rows it holds and how many of them
-// have no node, a node with no project or parties, or a node in another project or between other
-// parties than the row's, and how many live nodes of an orphan kind no row stands behind, in one
-// statement over q, which the store census runs in its snapshot.
+// have no node, a node that is not live, a node with no project or parties, or a node in another
+// project or between other parties than the row's, and how many live nodes of an orphan kind no
+// row stands behind, in one statement over q, which the store census runs in its snapshot.
 func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindReport, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
 		select kind, count(*) filter (where is_row),
 		       count(*) filter (where class = '`+classMissing+`'),
+		       count(*) filter (where class = '`+classGone+`'),
 		       count(*) filter (where class = '`+classDiffers+`'),
 		       count(*) filter (where class = '`+classUnscoped+`'),
 		       count(*) filter (where class = '`+classOrphaned+`')
@@ -226,7 +236,7 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 	read := map[string]ProjectKindReport{}
 	for rows.Next() {
 		var kind ProjectKindReport
-		if err := rows.Scan(&kind.Kind, &kind.Rows, &kind.Missing, &kind.Differs, &kind.Unscoped, &kind.Orphaned); err != nil {
+		if err := rows.Scan(&kind.Kind, &kind.Rows, &kind.Missing, &kind.Gone, &kind.Differs, &kind.Unscoped, &kind.Orphaned); err != nil {
 			return nil, fmt.Errorf("read the project census: %w", err)
 		}
 		read[kind.Kind] = kind
@@ -247,15 +257,15 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 // (cmd/dispatch/README.md, "The node and tuple store census").
 func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 	for _, kind := range kinds {
-		fmt.Fprintf(w, "census: project kind=%s rows=%d missing=%d differs=%d unscoped=%d orphaned=%d\n",
-			kind.Kind, kind.Rows, kind.Missing, kind.Differs, kind.Unscoped, kind.Orphaned)
+		fmt.Fprintf(w, "census: project kind=%s rows=%d missing=%d gone=%d differs=%d unscoped=%d orphaned=%d\n",
+			kind.Kind, kind.Rows, kind.Missing, kind.Gone, kind.Differs, kind.Unscoped, kind.Orphaned)
 	}
 }
 
 // ProjectComplete answers every project-owned row whose node is not complete, and every live node
-// of an orphan kind no row stands behind, as `<kind> <id>: <class>` (missing, unscoped, differs or
-// orphaned), in one read: the rows and the nodes a read limited by a node's project would answer
-// wrongly. An empty answer is every row and every node of every kind complete.
+// of an orphan kind no row stands behind, as `<kind> <id>: <class>` (missing, gone, unscoped,
+// differs or orphaned), in one read: the rows and the nodes a read limited by a node's project
+// would answer wrongly. An empty answer is every row and every node of every kind complete.
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
 		select kind || ' ' || id || ': ' || class
@@ -278,35 +288,65 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 	return incomplete, rows.Err()
 }
 
-// objectKinds are the kinds the backfill writes a node for from their rows, each with the id it
-// walks from and the read of one batch of its rows naming no node, after the id $1 and at most $2
-// of them, in the order of the index that keys them, as (id, created_at, author, project, session,
-// root author, root target). session is a conversation's, for a document or an ask on one; the
-// root columns are a message's on no issue alone: the author and the target of its thread's root,
-// its parties (graphstore.ThreadParties).
-var objectKinds = []struct{ kind, start, read string }{
-	{graphstore.KindIssue, "", `
+// objectKind is a kind the backfill writes a node for from its rows.
+type objectKind struct {
+	// kind is the node's kind, and start the id the walk over its rows starts after.
+	kind, start string
+	// read is one batch of its rows its marker does not mark (unmarked), after the id $1 and at
+	// most $2 of them, in the order of the index that keys them, as (id, created_at, author,
+	// project, session, root author, root target). session is a conversation's, for a document
+	// or an ask on one; the root columns are a message's on no issue alone: the author and the
+	// target of its thread's root, its parties (graphstore.ThreadParties).
+	read string
+	// rows answers, of the ids $1, each a row of the kind holds now, with its created_at: what
+	// tells the row the batch read from another a build before this one wrote at the same address
+	// since, which a node built from the first would misdate.
+	rows string
+	// owners answers, for a kind some writer deletes rows of, the owner row each row of the ids $1
+	// stands under, as (issue, document id, id): the row that writer takes before anything else
+	// (api's removeArtifact takes its document's issue row). It is empty for a kind no writer
+	// deletes a row of.
+	owners string
+}
+
+// unmarked is the backfill's marker for these kinds, unset: the store holds no live node of kind
+// at the address id. The node is the marker, since no row of these kinds names its node in a
+// column of its own, and a live one, since a row whose node is gone is one a build before this
+// one created at an address this build's removal stated gone, and is owed a live node as much as a
+// row with none (classGone).
+func unmarked(kind, id string) string {
+	return `not exists (select 1 from graph_nodes n where n.kind = '` + kind + `' and n.id = ` + id +
+		` and n.state = '` + graphstore.StateLive + `')`
+}
+
+// objectKinds are the kinds the backfill writes a node for from their rows.
+var objectKinds = []objectKind{
+	{kind: graphstore.KindIssue, read: `
 		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text
 		from issues i
-		where i.key > $1 and not exists (select 1 from graph_nodes n where n.kind = 'issue' and n.id = i.key)
-		order by i.key limit $2`},
-	{graphstore.KindArtifact, "", `
+		where i.key > $1 and ` + unmarked(graphstore.KindIssue, "i.key") + `
+		order by i.key limit $2`,
+		rows: `select key, created_at from issues where key = any($1::text[])`},
+	{kind: graphstore.KindArtifact, read: `
 		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text
 		from artifacts a
 		where a.ref_key > $1 and octet_length(a.ref_key) <= ` + strconv.Itoa(graphstore.MaxAddressBytes) + `
-		  and not exists (select 1 from graph_nodes n where n.kind = 'artifact' and n.id = a.ref_key)
-		order by a.ref_key limit $2`},
-	{graphstore.KindAsk, zeroUUID, `
+		  and ` + unmarked(graphstore.KindArtifact, "a.ref_key") + `
+		order by a.ref_key limit $2`,
+		rows:   `select ref_key, created_at from artifacts where ref_key = any($1::text[])`,
+		owners: `select coalesce(issue_key, ''), id::text, ref_key from artifacts where ref_key = any($1::text[])`},
+	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
 		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
-		where k.id > $1::uuid and not exists (select 1 from graph_nodes n where n.kind = 'ask' and n.id = k.id::text)
-		order by k.id limit $2`},
-	{graphstore.KindMessage, zeroUUID, `
+		where k.id > $1::uuid and ` + unmarked(graphstore.KindAsk, "k.id::text") + `
+		order by k.id limit $2`,
+		rows: `select id::text, created_at from asks where id = any($1::text[]::uuid[])`},
+	{kind: graphstore.KindMessage, start: zeroUUID, read: `
 		with recursive batch as (
 			select m.id, m.issue_key, m.in_reply_to, m.created_at, m.author
 			from messages m
-			where m.id > $1::uuid and not exists (select 1 from graph_nodes n where n.kind = 'message' and n.id = m.id::text)
+			where m.id > $1::uuid and ` + unmarked(graphstore.KindMessage, "m.id::text") + `
 			order by m.id limit $2
 		),
 		walk (message, at, in_reply_to) as (
@@ -319,18 +359,55 @@ var objectKinds = []struct{ kind, start, read string }{
 		left join issues i on i.key = batch.issue_key
 		left join walk on walk.message = batch.id and walk.in_reply_to is null
 		left join messages root on root.id = walk.at
-		order by batch.id`},
+		order by batch.id`,
+		rows: `select id::text, created_at from messages where id = any($1::text[]::uuid[])`},
+}
+
+// ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
+// node for from its rows (objectKinds), and object false for any other kind. The erase reads it to
+// refuse a node of these kinds while its row holds its text (grapherase's Erasure.read).
+func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (stands, object bool, err error) {
+	for _, known := range objectKinds {
+		if known.kind != kind {
+			continue
+		}
+		standing, err := readStanding(ctx, q, known, []string{id})
+		if err != nil {
+			return false, true, fmt.Errorf("read the %s row of %s: %w", kind, id, err)
+		}
+		return len(standing) > 0, true, nil
+	}
+	return false, false, nil
+}
+
+// readStanding reads, of ids, each row of kind that stands, with its created_at (objectKind.rows).
+func readStanding(ctx context.Context, q graphstore.Queryer, kind objectKind, ids []string) (map[string]time.Time, error) {
+	rows, err := q.Query(ctx, kind.rows, ids)
+	if err != nil {
+		return nil, err
+	}
+	standing := make(map[string]time.Time, len(ids))
+	var id string
+	var created time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&id, &created}, func() error {
+		standing[id] = created
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return standing, nil
 }
 
 // zeroUUID is where a walk over a uuid key starts: every id sorts after it.
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
 
-// backfillObjectNodes writes the node of every issue, document, ask and message written before
-// its kind's writer wrote one, under the backfill's contract: it walks only the rows its
-// marker does not mark - the marker is the node itself, which no row of these kinds names in a
-// column of its own - dates each node at its row's own created_at, made by the row's own author,
-// and writes the marker in the transaction that writes the node, so a second run reads no row the
-// first one wrote. It appends no event, and every fact it states carries the sentinel.
+// backfillObjectNodes writes a live node for every issue, document, ask and message written before
+// its kind's writer wrote one, and for every one a build before this one created at an address
+// whose node this build stated gone, under the backfill's contract: it walks only the rows its
+// marker does not mark - the marker is a live node (unmarked) - dates each node at its row's own
+// created_at, made by the row's own author, and writes the marker in the transaction that writes
+// the node, so a second run reads no row the first one wrote. It appends no event, and every fact
+// it states carries the sentinel.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
@@ -345,12 +422,13 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 				break
 			}
 			after = nodes[len(nodes)-1].ID
-			if err := writeObjectBatch(ctx, database, nodes); err != nil {
+			written, err := writeObjectBatch(ctx, database, kind, nodes)
+			if err != nil {
 				return done, err
 			}
-			report.Rows += int64(len(nodes))
-			report.Nodes += int64(len(nodes))
-			report.Tuples += statedOf(nodes)
+			report.Rows += written.Rows
+			report.Nodes += written.Nodes
+			report.Tuples += written.Tuples
 			if len(nodes) < backfillBatch {
 				break
 			}
@@ -379,12 +457,12 @@ func statedOf(nodes []graphstore.Node) int64 {
 	return stated
 }
 
-// readObjectNodes reads one batch of a kind's rows naming no node, and answers the node its
+// readObjectNodes reads one batch of a kind's rows no live node marks, and answers the node its
 // kind's writer writes for each (graphstore.IssueNode and its siblings).
 func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
-		return nil, fmt.Errorf("read the %s rows naming no node: %w", kind, err)
+		return nil, fmt.Errorf("read the %s rows no live node marks: %w", kind, err)
 	}
 	defer rows.Close()
 	var nodes []graphstore.Node
@@ -394,7 +472,7 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		var authorJSON, rootAuthorJSON []byte
 		var project, session, rootTarget *string
 		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget); err != nil {
-			return nil, fmt.Errorf("read a %s row naming no node: %w", kind, err)
+			return nil, fmt.Errorf("read a %s row no live node marks: %w", kind, err)
 		}
 		var author model.Actor
 		if err := json.Unmarshal(authorJSON, &author); err != nil {
@@ -435,18 +513,104 @@ func derefText(value *string) string {
 }
 
 // writeObjectBatch writes one batch's nodes in one transaction (graphstore.Write), which takes
-// their rows in ascending (kind, id) and states each one's base attributes. A node a live writer
-// wrote meanwhile is written again with nothing moved, and states nothing; one in another project
-// fails the batch (graphstore.ErrProjectMoved), which is a difference for the census to report
-// rather than for this run to paper over. The rows carry no column naming their node, so the
-// write takes no lock of a row beside the nodes'.
-func writeObjectBatch(ctx context.Context, database *store.Store, nodes []graphstore.Node) error {
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(ctx, tx, nodes, nil)
-	}); err != nil {
-		return fmt.Errorf("write a batch of %s nodes: %w", nodes[0].Kind, err)
+// their rows in ascending (kind, id) and states each one's base attributes, and answers what it
+// wrote. A node a live writer wrote meanwhile is written again with nothing moved, and states
+// nothing; a gone node is moved live, which states its state alone; one in another project fails
+// the batch (graphstore.ErrProjectMoved), which is a difference for the census to report rather
+// than for this run to paper over.
+//
+// The batch was read before this transaction opened, and a removal may commit in between: a node
+// written live then would stand behind no row. So for a kind a writer deletes rows of
+// (objectKind.owners) the transaction first takes the owner row each of its rows stands under
+// (lockObjectOwners): api's removeArtifact takes the document's issue row before it states the
+// node gone and deletes the row, and a removal of a build before this one takes it too and states
+// nothing. Under those rows it reads which of the batch's rows stand and when each was created
+// (objectKind.rows), and writes the node of each row that is still the row the batch read, and of
+// no other: a row a removal deleted before the lock has its node left as the removal left it, and
+// a row a build before this one wrote at the same address since has another created_at, so the
+// node the batch built from the first would misdate it; it is left for the next run, which the
+// report's remaining count says. A removal that waits for this batch removes a row whose node is
+// live, and this build's removal then states that node gone. The owner rows come first and the
+// nodes after them, the order every writer of these nodes takes (a document's create, its removal,
+// the erase). A kind no writer deletes a row of takes no lock and is read again the same way.
+func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKind, nodes []graphstore.Node) (KindBackfill, error) {
+	ids := make([]string, len(nodes))
+	for index, node := range nodes {
+		ids[index] = node.ID
 	}
-	return nil
+	var written KindBackfill
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if kind.owners != "" {
+			if err := lockObjectOwners(ctx, tx, kind, ids); err != nil {
+				return err
+			}
+		}
+		standing, err := readStanding(ctx, tx, kind, ids)
+		if err != nil {
+			return fmt.Errorf("read which rows of the batch stand: %w", err)
+		}
+		// The nodes the store holds of the batch already: each is gone, since the batch read the
+		// rows no live node marks, and the write states its state alone.
+		held, err := heldNodes(ctx, tx, kind.kind, ids)
+		if err != nil {
+			return fmt.Errorf("read the nodes the store holds of the batch: %w", err)
+		}
+		write := make([]graphstore.Node, 0, len(standing))
+		for _, node := range nodes {
+			if created, stands := standing[node.ID]; !stands || !created.Equal(node.MadeAt) {
+				continue
+			}
+			write = append(write, node)
+			if _, gone := held[node.ID]; gone {
+				written.Tuples++
+			} else {
+				written.Tuples += statedOf([]graphstore.Node{node})
+			}
+		}
+		written.Rows, written.Nodes = int64(len(write)), int64(len(write))
+		if len(write) == 0 {
+			return nil
+		}
+		return graphstore.Write(ctx, tx, write, nil)
+	}); err != nil {
+		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
+	}
+	return written, nil
+}
+
+// heldNodes is the ids of the nodes of kind the store holds of ids.
+func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]struct{}, error) {
+	rows, err := tx.Query(ctx, `select id from graph_nodes where kind = $1 and id = any($2::text[])`, kind, ids)
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]struct{}, len(ids))
+	var id string
+	if _, err := pgx.ForEachRow(rows, []any{&id}, func() error {
+		held[id] = struct{}{}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return held, nil
+}
+
+// lockObjectOwners takes the owner row each row of ids stands under (objectKind.owners), each once
+// and in owner key order (events.LockOwnerRows).
+func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []string) error {
+	rows, err := tx.Query(ctx, kind.owners, ids)
+	if err != nil {
+		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
+	}
+	owners := events.OwnerRows{}
+	var issue, document, id string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
+		owners.Add(issue, document, kind.kind+" "+id)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
+	}
+	return events.LockOwnerRows(ctx, tx, owners)
 }
 
 // scopeKinds are the kinds whose writers stored nodes before a node named its project, each with

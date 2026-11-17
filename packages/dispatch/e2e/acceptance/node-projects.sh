@@ -12,11 +12,15 @@
 # the conversation's session for the file, and for each message the session that sent it and the
 # one it went to. It removes an empty document and reads its node gone. It then runs
 # `envoy-dispatch backfill-graph-store` and `envoy-dispatch census --store` and holds the census to
-# `missing=0 differs=0 unscoped=0 orphaned=0` for every project-owned kind. Last, the control: it
-# takes the ask's node away and holds the census to naming exactly that ask, `missing=1` on the ask
-# kind and `census: project incomplete ask <id>: missing`, so the zeros before are read from an
+# `missing=0 gone=0 differs=0 unscoped=0 orphaned=0` for every project-owned kind. Then the control:
+# it takes the ask's node away and holds the census to naming exactly that ask, `missing=1` on the
+# ask kind and `census: project incomplete ask <id>: missing`, so the zeros before are read from an
 # instrument that sees a missing node; then the backfill writes the node again and the census reads
-# zeros, so the run leaves its database complete.
+# zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
+# creates a document's row at the removed document's address, which the census names `gone` and
+# the backfill gives a live node, then removes that row, which leaves the live node with no row:
+# the census names it `orphaned`, the backfill leaves it, and `envoy-dispatch erase` removes it, so
+# the run leaves its database complete.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), AGENT_SESSION (a session the
@@ -25,7 +29,7 @@
 # writes, which an agent's bearer may not make), DATABASE_URL (the database that server serves,
 # which `envoy-dispatch` reads from its own environment), and `envoy-dispatch` on PATH. It reads
 # this pod's own test database and never a deployment's: it refuses a DATABASE_URL whose host is
-# not loopback, and the one node it deletes is the ask this run made.
+# not loopback, and the nodes it deletes are the ask's this run made and the orphaned document's.
 #
 # Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
 # DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
@@ -294,7 +298,7 @@ pass "$section" "backfill-graph-store runs"
 envoy-dispatch census --store >"$work/census" 2>&1 || true
 for kind in issue artifact ask message comment block; do
   line="$(census_line "$kind")"
-  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
     fail "$section" "the $kind census reads zeros over rows it read" "${line:-no line for $kind}"
   pass "$section" "the $kind census reads zeros: ${line#census: project }"
 done
@@ -307,7 +311,7 @@ query "$section" "take the ask's node away" "
 pass "$section" "took the ask's node away"
 envoy-dispatch census --store >"$work/census" 2>&1 && fail "$section" "the census refuses" "it exited 0" || true
 line="$(census_line ask)"
-[[ "$line" =~ missing=1\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads one missing node" "${line:-no line for ask}"
+[[ "$line" =~ missing=1\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads one missing node" "${line:-no line for ask}"
 pass "$section" "the ask census reads one missing node"
 grep -qxF "census: project incomplete ask $ask: missing" "$work/census" ||
   fail "$section" "the census names the ask" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
@@ -324,7 +328,74 @@ envoy-dispatch census --store >"$work/census" 2>&1 || true
   fail "$section" "the census after the backfill names no incomplete row" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 for kind in issue artifact ask message comment block; do
   line="$(census_line "$kind")"
-  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
     fail "$section" "the $kind census reads zeros again" "${line:-no line for $kind}"
 done
 pass "$section" "the backfill wrote the ask's node again and every project-owned kind reads zeros"
+
+# A build before this one serves beside this one during a roll and after a rollback, and writes no
+# node: the two statements below are its writes, a document's create and its removal, each the
+# row alone. The census's exit is not read, for the reason the control gives.
+section=roll
+query "$section" "an earlier build makes a document at $scratch_ref, whose node is gone" "
+  insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+  values ('$key', '$project', '${scratch_ref#*/}', 'Scratch again', 'doc', '{\"kind\":\"user\",\"id\":\"$person\"}')
+  returning ref_key"
+[[ "$answer" == "$scratch_ref" ]] || fail "$section" "an earlier build makes a document at $scratch_ref" "it made '$answer'"
+envoy-dispatch census --store >"$work/census" 2>&1 || true
+line="$(census_line artifact)"
+[[ "$line" =~ missing=0\ gone=1\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+  fail "$section" "the artifact census reads one row whose node is gone" "${line:-no line for artifact}"
+grep -qxF "census: project incomplete artifact $scratch_ref: gone" "$work/census" ||
+  fail "$section" "the census names $scratch_ref gone" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+pass "$section" "the census names the row an earlier build made at $scratch_ref gone"
+envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+  fail "$section" "backfill-graph-store gives $scratch_ref a live node" "$(tail -n 5 "$work/backfill")"
+query "$section" "the node of $scratch_ref is live" \
+  "select coalesce((select state from graph_nodes where kind = 'artifact' and id = '$scratch_ref'), '(no node)')"
+[[ "$answer" == live ]] || fail "$section" "the backfill gives $scratch_ref a live node" "it reads '$answer'"
+envoy-dispatch census --store >"$work/census" 2>&1 || true
+! grep -q '^census: project incomplete' "$work/census" ||
+  fail "$section" "the census after the backfill names no incomplete row" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+pass "$section" "the backfill gave $scratch_ref a live node and the census names nothing"
+
+query "$section" "an earlier build removes $scratch_ref" "delete from artifacts where ref_key = '$scratch_ref' returning ref_key"
+[[ "$answer" == "$scratch_ref" ]] || fail "$section" "an earlier build removes $scratch_ref" "it removed '$answer'"
+for run in census backfill; do
+  if [[ "$run" == backfill ]]; then
+    envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
+      fail "$section" "backfill-graph-store runs over the orphaned node" "$(tail -n 5 "$work/backfill")"
+  fi
+  envoy-dispatch census --store >"$work/census" 2>&1 || true
+  line="$(census_line artifact)"
+  [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
+    fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned" "$work/census" ||
+    fail "$section" "the census after the $run names $scratch_ref orphaned" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+done
+pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned, and the backfill leaves it"
+
+# erase_node ARGS...: `envoy-dispatch erase ARGS`, with the database credential and no bearer,
+# its output in $work/erase and its exit status in $erase_code.
+erase_node() {
+  erase_code=0
+  env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
+    envoy-dispatch erase "$@" >"$work/erase" 2>&1 || erase_code=$?
+}
+erase_node --node "artifact:$scratch_ref"
+[[ "$erase_code" == 1 ]] || fail "$section" "list the orphaned node's erase" "exited $erase_code: $(<"$work/erase")"
+digest="$(sed -n 's/^  listing digest: \([0-9a-f]\{64\}\)$/\1/p' "$work/erase")"
+[[ -n "$digest" ]] || fail "$section" "read the orphaned node's listing digest" "$(<"$work/erase")"
+erase_node --node "artifact:$scratch_ref" --confirm "$digest"
+[[ "$erase_code" == 0 ]] || fail "$section" "erase the orphaned node" "exited $erase_code: $(<"$work/erase")"
+query "$section" "no node of $scratch_ref remains" "select count(*) from graph_nodes where kind = 'artifact' and id = '$scratch_ref'"
+[[ "$answer" == 0 ]] || fail "$section" "the erase removes the node of $scratch_ref" "$answer node(s) remain"
+envoy-dispatch census --store >"$work/census" 2>&1 || true
+! grep -q '^census: project incomplete' "$work/census" ||
+  fail "$section" "the census after the erase names no incomplete row" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
+for kind in issue artifact ask message comment block; do
+  line="$(census_line "$kind")"
+  [[ "$line" =~ rows=[1-9][0-9]*\ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
+    fail "$section" "the $kind census reads zeros after the erase" "${line:-no line for $kind}"
+done
+pass "$section" "envoy-dispatch erase --node artifact:$scratch_ref --confirm $digest removed the orphaned node and every project-owned kind reads zeros"

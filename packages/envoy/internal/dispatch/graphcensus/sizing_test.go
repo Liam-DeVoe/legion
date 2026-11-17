@@ -476,6 +476,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 1},
 		// CORE-2 is a child of CORE-1 and waits on it.
 		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 4, writes: 1},
+		// No document is removed in the window, so the removal's term reads no write.
+		"artifact_removed": {tuples: 1},
 		"document_version": {tuples: 2, writes: 2}, "criterion": {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
 		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
 		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
