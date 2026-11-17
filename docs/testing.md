@@ -580,6 +580,11 @@ A test of that package that needs rows no other test of the run can see takes a 
 
 A test that needs one of envoy's binaries takes it from `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test process and removes the directory when `testbuild.Main` ends the run.
 
+In Envoy, every connect a test database's URL leads to waits for as long as the test binary's deadline allows, and no less:
+`testdb.Server` sets the URL's `connect_timeout` to the whole seconds left until `t.Deadline()` (`testdb.WithConnectDeadline`), in place of pgx's two minutes, so a Postgres that answers a connect late on a loaded machine slows the test rather than failing it (dispatch://INFRA-4308).
+A child process a test starts on such a database takes the same bound (`cmd/dispatch`'s `databaseURLOf`).
+Envoy's one drop of a test database, `dropDatabase` in `internal/testpg/testdb`, asks again while Postgres answers SQLSTATE 55006, which a forced drop answers while a backend it terminated has not exited yet, until the binary's deadline.
+
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`):
 the server `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on `packages/envoy/scripts/dev-postgres.sh`'s container.
 

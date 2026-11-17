@@ -47,8 +47,10 @@ func (s Server) Database(t testing.TB, prefix string) string {
 	return DatabaseOn(t, databaseURL(server, "postgres"), prefix)
 }
 
-// url is the server the variable names, skipping t when it is unset. The variable's database path
-// is never used: statements that make or drop a database run on the server's postgres database.
+// url is the server the variable names, skipping t when it is unset, with connect_timeout set to
+// t's deadline (WithConnectDeadline), so every database, clone and pool made from it carries the
+// binary's deadline as its connect bound. The variable's database path is never used: statements
+// that make or drop a database run on the server's postgres database.
 func (s Server) url(t testing.TB) url.URL {
 	t.Helper()
 	raw := os.Getenv(string(s))
@@ -60,6 +62,7 @@ func (s Server) url(t testing.TB) url.URL {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
 		t.Fatalf("parse %s: %v", s, errors.Unwrap(err))
 	}
+	setParameter(server, "connect_timeout", connectTimeout(t))
 	return *server
 }
 
@@ -114,8 +117,9 @@ func NewTemplate(server Server, prefix, mainCall string, migrate func(ctx contex
 }
 
 // Clone creates a database of t's own from the template, drops it after t ends, and returns its
-// URL: the variable's URL with its database replaced and its query kept. The binary's first
-// Clone makes and migrates the template. It skips t when the variable is unset.
+// URL: the variable's URL with its database replaced and its query kept, connect_timeout set as
+// the binary's first Clone found it (Server's url). The binary's first Clone makes and migrates
+// the template. It skips t when the variable is unset.
 func (tp *Template) Clone(t testing.TB) string {
 	t.Helper()
 	tp.ready(t)
@@ -201,7 +205,9 @@ func (tp *Template) Main(run func() int) int {
 	if tp.name == "" {
 		return code
 	}
-	if _, err := tp.admin.Exec(context.Background(), "drop database "+tp.name); err != nil {
+	// The template takes no connection (prepare closes it to them), so its forced drop ends
+	// nothing, and dropDatabase waits out a backend of its migration that has not exited yet.
+	if err := dropDatabase(tp.admin, tp.name, testwait.InMain); err != nil {
 		fmt.Fprintf(os.Stderr, "testdb: drop template database %s: %v\n", tp.name, err)
 		if code == 0 {
 			code = 1
@@ -211,38 +217,59 @@ func (tp *Template) Main(run func() int) int {
 }
 
 // SQLSTATE codes a drop reads: Postgres refuses to end another role's backend to a login without
-// pg_signal_backend (insufficient_privilege), and refuses a plain drop of a database a backend is
-// still connected to (object_in_use), whatever words it puts on either message.
+// pg_signal_backend (insufficient_privilege), and refuses a drop of a database a backend is still
+// connected to (object_in_use), whatever words it puts on either message.
 const (
 	insufficientPrivilege = "42501"
 	objectInUse           = "55006"
 )
 
-// drop drops name without waiting for it; Main waits for every drop. Drops in flight together
-// share one checkpoint.
+// execer is what dropDatabase needs of a connection or a pool: one statement.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// dropDatabase drops name through admin. It is every drop of a test database here: DatabaseOn's,
+// and a Template's of each clone, of the binary's other database and of the template itself.
 //
-// `with (force)` ends whatever is still connected. The test's own pool is closed before this runs
-// (Clone's cleanup runs after the caller's), but Postgres tears a backend down after its client
-// has closed the socket, so a drop can land while one is still going. Ending a backend of another
+// `with (force)` ends whatever is still connected. A test's own pool is closed before its drop
+// runs (DatabaseOn's and Clone's cleanups run after the caller's), but Postgres tears a backend
+// down after its client has closed the socket, so a drop can land while one is still going. The
+// forced drop waits only a few seconds for the backends it ended to exit, and answers
+// object_in_use while one has not, which a loaded machine reaches. Ending a backend of another
 // role needs pg_signal_backend, which a login that only owns the database lacks; Postgres refuses
-// such a login, and the drop then waits through the shared wait for every connection to end,
-// asking with a plain drop, which Postgres refuses while one is still there.
+// such a login, and the drop is then asked plainly, which Postgres refuses with object_in_use for
+// as long as any connection is still there.
+//
+// So the drop is asked again for as long as Postgres answers object_in_use, through wait: the
+// caller's shared wait, testwait.InMain in Main and testwait.Eventually in a test's cleanup, which
+// gives up only at the test binary's deadline less testwait's margin. Any other answer is final.
+func dropDatabase(admin execer, name string, wait func(what string, holds func() bool) error) error {
+	ctx := context.Background()
+	statement := "drop database " + name + " with (force)"
+	var err, forced error
+	waited := wait("every backend of database "+name+" to exit, for its drop", func() bool {
+		_, err = admin.Exec(ctx, statement)
+		if forced == nil && sqlState(err) == insufficientPrivilege {
+			forced, statement = err, "drop database "+name
+			_, err = admin.Exec(ctx, statement)
+		}
+		return sqlState(err) != objectInUse
+	})
+	if waited != nil {
+		err = fmt.Errorf("%w; Postgres last answered: %v", waited, err)
+	}
+	if err != nil && forced != nil {
+		err = fmt.Errorf("%w, after the forced drop answered: %v", err, forced)
+	}
+	return err
+}
+
+// drop drops name without waiting for it (dropDatabase); Main waits for every drop. Drops in
+// flight together share one checkpoint.
 func (tp *Template) drop(name string) {
 	tp.drops.Go(func() {
-		ctx := context.Background()
-		_, err := tp.admin.Exec(ctx, "drop database "+name+" with (force)")
-		if sqlState(err) == insufficientPrivilege {
-			forced := err
-			if waited := testwait.InMain("every connection to database "+name+" to end, for its plain drop", func() bool {
-				_, err = tp.admin.Exec(ctx, "drop database "+name)
-				return sqlState(err) != objectInUse
-			}); waited != nil {
-				err = waited
-			}
-			if err != nil {
-				err = fmt.Errorf("%w, after the forced drop answered: %v", err, forced)
-			}
-		}
+		err := dropDatabase(tp.admin, name, testwait.InMain)
 		if err == nil {
 			return
 		}
