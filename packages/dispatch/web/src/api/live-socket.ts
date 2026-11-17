@@ -149,6 +149,11 @@ export interface LiveSocket {
   /** Subscribes session `sessionId`'s agent stream; returns the unsubscribe. */
   subscribeAgent(sessionId: string, handlers: AgentHandlers): () => void;
   state(): LiveSocketState;
+  /** Whether the event feed is up: the socket open, and an events subscription on it that
+   *  Dispatch has neither refused nor ended with no start since the page last sent it. Dispatch
+   *  that cannot start the feed - its database not answering - ends each send a second later with
+   *  the socket still open, and the feed is down while the page waits out its backoff. */
+  eventsUp(): boolean;
   /** Calls `listener` with `state()` whenever it changes; returns the unsubscribe. */
   onState(listener: (state: LiveSocketState) => void): () => void;
   /** Ends every subscription and the socket. */
@@ -761,6 +766,13 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       return () => remove(sub, true);
     },
     state: () => current,
+    eventsUp() {
+      if (!isOpen) return false;
+      for (const sub of subs.values()) {
+        if (sub.kind === "events" && sub.cancelRetry === undefined) return true;
+      }
+      return false;
+    },
     onState(listener) {
       listeners.add(listener);
       return () => {
@@ -790,11 +802,13 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
   return live;
 }
 
-/** Whether `queryClient`'s live feed is up: its socket open. False where it has no socket, which
- *  this makes none of, as `liveSocketFor` would: a reader asking how the feed stands - the issue
- *  page's tree read on a window focus (`subscribeTreeFreshness`) - opens nothing. */
+/** Whether `queryClient`'s live feed is up: its socket open and the event feed's subscription on
+ *  it standing (`LiveSocket.eventsUp`). False where it has no socket, which this makes none of,
+ *  as `liveSocketFor` would: a reader asking how the feed stands - the issue page's tree read, on
+ *  a window focus and on a write the page puts in the cache (`subscribeTreeFreshness`) - opens
+ *  nothing. */
 export function liveFeedUp(queryClient: QueryClient): boolean {
-  return sockets.get(queryClient)?.state().state === "open";
+  return sockets.get(queryClient)?.eventsUp() === true;
 }
 
 /** The live socket's whole state, for the freshness row, which shows the last change time. */
