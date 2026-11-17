@@ -1,5 +1,9 @@
 kind: Fixed
 body: |-
-  `slack_post` follows no redirect. A 3xx from the Web API URL is a refusal that names its status
-  and, when it points at the API URL's own host, the origin it points at; the reply is not sent on.
-  `@legion/envoy-client/redirect` exports `redirectOrigin`, the origin a refused redirect names.
+  `slack_post` follows no redirect. A 3xx from the Web API URL is a refusal, read from its status
+  before any of its body, that names the status and says where it points: the origin when it is on
+  the API URL's own host and `another host` otherwise, another path of the same address, or no
+  target. The reply is not sent on. The refusal of a `SLACK_POST_API_URL` that is no https or
+  loopback URL names it with no user and no password. `@legion/envoy-client/redirect` exports
+  `redirectTarget`, which reads where a 3xx points, and `redirectedTo`, the words a refusal says it
+  with, which name no origin longer than a host name can make.
