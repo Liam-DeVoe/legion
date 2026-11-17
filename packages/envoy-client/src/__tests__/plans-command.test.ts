@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { type FinishedIssue, PROJECT_KEY_RULE, type ProjectPlans } from "@legion/contracts";
+import {
+  type FinishedIssue,
+  type PlanRecord,
+  PROJECT_KEY_RULE,
+  type ProjectPlans,
+} from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Server } from "bun";
 import { bearerCredential } from "../bearer";
@@ -15,15 +20,11 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // cases drive `executeDispatchTool` over a recording fetch, so each reads the text and the details
 // a host is handed; the last case drives the real CLI against a fake Dispatch server.
 
-/** A finished issue Legion ran on its default plan, rated once: an hour and a half, one failed
- *  review. */
-const ratedOnce: FinishedIssue = {
-  issue: "INFRA-12",
-  title: "Retry failed webhook deliveries",
-  closed_at: "2026-11-16T12:00:00Z",
-  plan: {
+/** The plan node Legion writes for an issue it runs on its default steps. */
+function defaultPlan(issue: string): PlanRecord {
+  return {
     id: "6b1f0c3e-2d4a-5e8b-9c7d-1a2b3c4d5e6f",
-    issue: "INFRA-12",
+    issue,
     generation: 1,
     source: "default",
     artifact_id: null,
@@ -34,7 +35,16 @@ const ratedOnce: FinishedIssue = {
         steps: ["planner", "implementer", "tester", "reviewer", "acceptance:owner"],
       },
     ],
-  },
+  };
+}
+
+/** A finished issue Legion ran on its default plan, rated once: an hour and a half, one failed
+ *  review. */
+const ratedOnce: FinishedIssue = {
+  issue: "INFRA-12",
+  title: "Retry failed webhook deliveries",
+  closed_at: "2026-11-16T12:00:00Z",
+  plan: defaultPlan("INFRA-12"),
   ratings: [
     {
       rating: 4,
@@ -82,6 +92,7 @@ const unrated: FinishedIssue = {
 const ratedThrice: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-13",
+  plan: defaultPlan("INFRA-13"),
   closed_at: "2026-11-17T09:00:00Z",
   ratings: [
     {
@@ -124,6 +135,7 @@ const neverRan: FinishedIssue = {
 const unknownStart: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-10",
+  plan: defaultPlan("INFRA-10"),
   closed_at: "2026-11-14T09:00:00Z",
   ratings: [
     {
