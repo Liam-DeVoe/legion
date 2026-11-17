@@ -2,24 +2,32 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { usersQuery } from "../../api/queries";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { badgeSelectBadge, badgeSelectTrigger, badgeSelectWrapper } from "./badge-select";
 import { useIssueAssignee } from "./useIssueAssignee";
+
+/** The option that stands for nobody: the issue goes back to having no assignee. */
+const UNASSIGNED = "";
 
 /**
  * The single assignee editor: shows who answers the issue's asks as a badge (their lowercase
- * email, or a muted "Unassigned" tag) and, on click, tap, Enter or Space, opens a native
- * `<select>` over everyone who has signed in (`GET /users`) with Unassigned first — the same
- * picker on desktop and iPhone, laid invisibly over the badge exactly as `PriorityControl` does.
- * The list is read only once the reader reaches for the control (pointer over it, a
- * touch on it, or focus) and then kept for the session: a fresh issue load makes no request
- * for it, and the badge never waits on it. Anyone signed in may reassign. The write
- * goes through `useIssueAssignee`, so the issue detail, the project lists and the inbox's
- * partitions update at once and roll back together; a refused person shows the server's
- * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
- * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Labelled `Assignee of <KEY>`.
+ * email, or a muted "Unassigned" tag), and the badge is the trigger of the shared list's single
+ * pick (`MultiSelect`) over everyone who has signed in (`GET /users`) with Unassigned first,
+ * whose text box narrows the people as the reader types - the same list on desktop and iPhone,
+ * laid over the badge as the ask card's hand-on is. The list is read only once the reader
+ * reaches for the control (pointer over it, a touch on it, or focus) and then kept for the
+ * session: a fresh issue load makes no request for it, and the badge never waits on it; until it
+ * answers the list holds Unassigned and the person the issue names, says the people are loading
+ * where a typed word leaves nothing, and says so where the read failed. Anyone signed in may
+ * reassign: a pick writes at once, and a pick of the person the issue already names writes
+ * nothing, as a `<select>` set to the value it holds fires nothing. The write goes through
+ * `useIssueAssignee`, so the issue detail, the project lists and the inbox's partitions update
+ * at once and roll back together; a refused person shows the server's reason. Like
+ * `PriorityControl`, the control stays enabled while a save is in flight - a disabled control
+ * drops the focus it holds and leaves the tab order - and a pick made meanwhile is queued behind
+ * the save. Labelled `Assignee of <KEY>`, with the badge's words as its description.
  */
 export function AssigneeControl({
   assignee,
@@ -33,43 +41,49 @@ export function AssigneeControl({
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
+  const [open, setOpen] = useState(false);
   const write = useIssueAssignee(issueKey);
   const logins = (users.data ?? []).map((user) => user.login);
   // An assignee the list does not carry still names who holds the issue; keep it selectable
   // so the control never shows a value its options lack.
-  const options = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
+  const people = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
+  const value = assignee ?? UNASSIGNED;
   const tone = assignee === null ? badgeLow : badgePrimary;
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {assignee ?? "Unassigned"}
-        </span>
-        <select
-          aria-label={`Assignee of ${issueKey}`}
-          className={badgeSelectOverlay}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only keep a press on the trigger, or in the list it opens (portalled, but a React child of this one), out of the header under it, and read the people as the reader reaches for either, so the wrapper needs no role of its own. Every open panel reads a press in the capture phase (`AnchoredPanel`), so stopping it here hides it from none of them. */}
+      <span
+        className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+        onFocus={want}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerEnter={want}
+        onTouchStart={(event) => {
+          event.stopPropagation();
+          want();
+        }}
+      >
+        <MultiSelect
           disabled={disabled}
-          onFocus={want}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
+          emptyMessage={users.isPending ? "Loading people…" : "Nobody matches that."}
+          error={users.isError ? "Could not load the people list." : null}
+          label={`Assignee of ${issueKey}`}
+          mode="single"
+          onOpenChange={setOpen}
+          onPick={(picked) => {
+            if (picked !== value) write.submit(picked === UNASSIGNED ? null : picked);
           }}
-          onChange={(event) => {
-            const { value } = event.target;
-            write.submit(value === "" ? null : value);
-          }}
-          value={assignee ?? ""}
+          open={open}
+          optionLabel={(login) => (login === UNASSIGNED ? "Unassigned" : login)}
+          options={[UNASSIGNED, ...people]}
+          searchLabel="Search people"
+          triggerClassName={badgeSelectTrigger}
+          value={value}
         >
-          <option value="">Unassigned</option>
-          {options.map((login) => (
-            <option key={login} value={login}>
-              {login}
-            </option>
-          ))}
-        </select>
+          <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+            {assignee ?? "Unassigned"}
+          </span>
+        </MultiSelect>
       </span>
       {write.failed ? (
         <QueryError
