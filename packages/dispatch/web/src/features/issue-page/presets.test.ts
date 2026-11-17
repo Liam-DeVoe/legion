@@ -467,3 +467,53 @@ test("a view draws its own document's block where two documents share a block id
   expect(drawn(tree({ spec: view("requirement", "spec") }), "spec")).toEqual(["spec#b-a1"]);
   expect(drawn(tree({ plan: view("plan_task", "plan-md") }), "plan")).toEqual(["plan-md#b-a1"]);
 });
+
+// Two documents share the block id a1: a plan task t1 hangs under the spec's statement a1, and
+// the plan holds a task a1 of its own. The Plan view names t1's parent by that bare id, beside
+// the parent's kind (`parent_line`), so Plan draws t1 as a row of its own with the statement as
+// its line, as the outline places it, never nested under the plan's task a1.
+test("a view places a node by the parent kind its view names where two documents share the parent's id", () => {
+  const plan: TreeAnswer = {
+    converted: false,
+    cursor: null,
+    nodes: [
+      viewNode("a1", "plan_task", "query", {
+        document: { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" },
+      }),
+      viewNode("t1", "plan_task", "query", {
+        document: { artifact_id: "artifact-plan-md", position: 1, slug: "plan-md" },
+        parent: "a1",
+        parent_line: { id: "a1", line: "The spec's statement.", supertag: "requirement" },
+      }),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  };
+  const root = node(
+    "CORE-1",
+    "issue",
+    [
+      node(
+        "spec#b-a1",
+        "requirement",
+        [node("plan-md#b-t1", "plan_task", [], { readId: "t1", text: "The second step." })],
+        { readId: "a1", text: "The spec's statement." }
+      ),
+      node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+    ],
+    { views: { plan } }
+  );
+
+  const rows = presetView(root, "plan", "").root.children;
+  expect({
+    line: rows.find((row) => row.id === "plan-md#b-t1")?.parentLine?.type,
+    rows: rows.map((row) => [row.id, row.children.map((child) => child.id)]),
+  }).toEqual({
+    line: "requirement",
+    rows: [
+      ["plan-md#b-a1", []],
+      ["plan-md#b-t1", []],
+    ],
+  });
+});
