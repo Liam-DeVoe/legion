@@ -36,7 +36,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // of these, read under the keys `useIssueTree` reads them by, so they cost no request of their
   // own. Until then a tree with no node is one whose nodes have not arrived, and the outline's
   // line that the issue holds nothing would be false on every cold load, so the outline draws
-  // nothing in its place. A read that failed holds nothing either: the page cannot say what it
+  // nothing in its place; so would `q` and `w` saying there is no question or decision to go to,
+  // so they say nothing. A read that failed holds nothing either: the page cannot say what it
   // would have held.
   const key = issue.key;
   const nodesHeld = useQueries({
@@ -50,6 +51,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
       { queryFn: () => api.listIssueMessages(key), queryKey: ["issue-messages", key] },
     ],
   });
+  const readsHeld = nodesHeld && blocksHeld;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it.
   const { named, reveal } = useAddressTarget(root, address);
@@ -80,7 +82,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
         <IssueTree
           artifacts={artifacts}
           context={view.context}
-          {...(nodesHeld && blocksHeld
+          {...(readsHeld
             ? {
                 emptyLine:
                   address.filter === ""
@@ -94,6 +96,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
           onEditing={setEditing}
+          readsHeld={readsHeld}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}
           root={view.root}

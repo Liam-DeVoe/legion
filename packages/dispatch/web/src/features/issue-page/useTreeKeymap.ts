@@ -1,6 +1,7 @@
 import { type RefObject, useRef } from "react";
 
 import { useKeymap } from "../shell/keymap";
+import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
@@ -69,6 +70,10 @@ export interface TreeKeyboard {
   /** Whether the tree is read one node at a time, which is how it is drawn at 1024 px and
    *  below: there the arrows that would walk into a branch zoom into it instead. */
   readonly oneNodeAtATime: boolean;
+  /** Whether every read the tree is built from holds its answer (`slots/body.tsx`). Until then
+   *  the next open question or the decision behind a row may be a node that has not arrived, so
+   *  `q` and `w` with nowhere to go say nothing rather than an absence that may be false. */
+  readonly readsHeld: boolean;
   /** The rows as drawn, in the order the keys move through them. */
   readonly rows: readonly DrawnRow[];
   /** The tree the preset left, which the keys that look past the drawn rows walk. */
@@ -140,8 +145,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
   /** Whether the reader is reading: on the page itself, or on a row of the tree. A key that
    *  moves the tree is not taken from a control somewhere else on the page. */
-  const reading = (): boolean =>
-    document.activeElement === null || document.activeElement === document.body || inTheTree();
+  const reading = (): boolean => focusOnDocument() || inTheTree();
   /** The node the reader is on, which is what the keys that act on one node ask for. */
   const focusedRow = (): NodeRow | undefined => {
     const { elements, rows } = drawn();
@@ -201,9 +205,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const stop = elements.findIndex((row) => row.tabIndex === 0);
         moveTo(stop === -1 ? 0 : stop);
       },
-      when: () =>
-        (document.activeElement === null || document.activeElement === document.body) &&
-        drawn().elements.length > 0,
+      when: () => focusOnDocument() && drawn().elements.length > 0,
     },
     {
       id: "tree-next",
@@ -412,7 +414,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       run: () => {
         const question = nextQuestion(tree.root, focusedRow()?.node.id);
         if (question === undefined) {
-          tree.onReport(KEY_REPORTS.no_next_question);
+          tree.onReport(tree.readsHeld ? KEY_REPORTS.no_next_question : "");
           return;
         }
         goTo(question.id);
@@ -427,7 +429,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const node = focusedRow()?.node;
         const decision = node === undefined ? undefined : decisionBehind(tree.root, node.id);
         if (decision === undefined) {
-          tree.onReport(KEY_REPORTS.no_decision);
+          tree.onReport(tree.readsHeld ? KEY_REPORTS.no_decision : "");
           return;
         }
         goTo(decision.id);

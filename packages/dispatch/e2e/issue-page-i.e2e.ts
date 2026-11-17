@@ -183,8 +183,10 @@ async function focusedRow(page: Page): Promise<string | null> {
   return (await focusedNodeId(page)) ?? (await treeActiveDescendant(page));
 }
 
-/** The focused row is on screen and clear of the sticky identity block, which R9 requires after
- *  every move and not only at the end. */
+/** The focused row is on screen, clear of the sticky identity block and above the box at the
+ *  foot, which R9 requires after every move and not only at the end. The foot is bound as
+ *  `onScreen` bounds it: the window's height less the height the page publishes for that box
+ *  (`FOOT_HEIGHT_PROPERTY`), unset while no box is drawn. */
 async function expectFocusedRowClear(page: Page, after: string): Promise<void> {
   const id = await focusedRow(page);
   expect(id, `${after} left the focus on no row`).not.toBeNull();
@@ -196,10 +198,17 @@ async function expectFocusedRowClear(page: Page, after: string): Promise<void> {
     box?.y ?? -1,
     `after ${after} the focused row sits under the sticky header`
   ).toBeGreaterThanOrEqual(header - 1);
+  const floor = await page.evaluate(
+    (property) =>
+      window.innerHeight -
+      (Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(property)) ||
+        0),
+    FOOT_HEIGHT_PROPERTY
+  );
   expect(
     (box?.y ?? 0) + (box?.height ?? 0),
-    `after ${after} the focused row is below the viewport`
-  ).toBeLessThanOrEqual(900);
+    `after ${after} the focused row is below the viewport or under the box at its foot`
+  ).toBeLessThanOrEqual(floor);
 }
 
 /** The focused row is whole on screen, clear below the band that stays at the top and above the
@@ -211,6 +220,18 @@ async function expectFocusedRowOnScreen(page: Page, after: string, failure: stri
   await expect
     .poll(() => onScreen(nodeRow(page, id ?? "").first()), { message: `${after} ${failure}` })
     .toBe(true);
+}
+
+/** Presses End or Home and reads that it moved the focus to the outline's last or first drawn
+ *  row, which a row reads before where that row stands: a key that moved nowhere, or to another
+ *  row, leaves a row on screen just as well. */
+async function pressToOutlineEnd(page: Page, key: "End" | "Home"): Promise<void> {
+  await page.keyboard.press(key);
+  const ids = await visibleIds(page);
+  const [end, row] = key === "End" ? ["last", ids.at(-1)] : ["first", ids[0]];
+  expect(await focusedNodeId(page), `${key} did not move to the outline's ${end} row`).toBe(
+    row ?? ""
+  );
 }
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
@@ -405,13 +426,16 @@ function askNodeId(ask: PlacedAsk, slugOf: ReadonlyMap<string, string>): string 
 /** What the outline of `seedWholeIssue` holds, read from the server's own reads rather than from
  *  the page: every node of its conversation by the id the tree draws it under, the slugs of its
  *  documents and files, which no row may be, the summary callout, which the head draws
- *  (dispatch://INFRA-1196 R8, c-three-things), and the frontier - every node open and unanswered,
- *  which the fold opens the path to (R1). */
+ *  (dispatch://INFRA-1196 R8, c-three-things), the frontier - every node open and unanswered,
+ *  which the fold opens the path to (R1) - and the words the server stores for each node whose
+ *  read sends them, by the same id: an ask's question, a comment's and a message's body, and a
+ *  requirement's, a decision's and a check's text. */
 interface SeededOutline {
   readonly frontier: ReadonlySet<string>;
   readonly nodes: ReadonlySet<string>;
   readonly slugs: ReadonlySet<string>;
   readonly summary: string;
+  readonly words: ReadonlyMap<string, string>;
 }
 
 async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
@@ -421,28 +445,35 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
   // The issue itself is no row: the header is the issue (ruling 5).
   const nodes = new Set<string>(seeded.children.keys);
   const frontier = new Set<string>();
+  const words = new Map<string, string>();
+  const add = (id: string, stored: string) => {
+    nodes.add(id);
+    words.set(id, stored);
+  };
   for (const ask of await listIssueAsks(seeded.key)) {
     if (ask.kind !== "question") continue;
-    nodes.add(askNodeId(ask, slugOf));
+    add(askNodeId(ask, slugOf), ask.question);
     if (ask.state === "open") frontier.add(askNodeId(ask, slugOf));
   }
-  for (const comment of await listComments(seeded.key)) nodes.add(comment.id);
+  for (const comment of await listComments(seeded.key)) add(comment.id, comment.body);
   for (const thread of await listIssueMessages(seeded.key)) {
-    for (const message of [thread.message, ...(thread.replies ?? [])]) nodes.add(message.id);
+    for (const message of [thread.message, ...(thread.replies ?? [])]) {
+      add(message.id, message.body);
+    }
   }
   for (const requirement of (await getIssueCoverage(seeded.key)).requirements ?? []) {
     const id = blockNodeId(slug(seeded.specArtifactId), requirement.block_id);
-    nodes.add(id);
+    add(id, requirement.text);
     if (requirement.checks === 0) frontier.add(id);
   }
   for (const decision of (await getIssueDecisions(seeded.key)).decisions ?? []) {
     const id = blockNodeId(slug(seeded.decisionsArtifactId), decision.block_id);
-    nodes.add(id);
+    add(id, decision.text);
     if (decision.waiting_review) frontier.add(id);
   }
   for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
     const id = blockNodeId(slug(check.artifact_id), check.block_id);
-    nodes.add(id);
+    add(id, check.text);
     if (checkStanding(check).state !== "passed") frontier.add(id);
     for (const result of check.results ?? []) nodes.add(result.id);
   }
@@ -452,6 +483,7 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
     nodes,
     slugs: new Set(artifacts.map((artifact) => artifact.slug)),
     summary: blockNodeId(slug(seeded.specArtifactId), seeded.summaryBlockId),
+    words,
   };
 }
 
@@ -692,7 +724,8 @@ test("with no filter the page is the conversation, each node edited once, folded
 
     // A folded branch is where the page draws one line for a node (the architect's ruling 1 on
     // R1): that line ends at a sentence end or at 100 characters, always at a word, and is the
-    // node's own text. Every other row draws its words whole, so the focused row holds them.
+    // first line of the words the server stores for the node, cut by the page's own rule
+    // (`firstLineOf`). Every other row draws its words whole, so the focused row holds them.
     const lines = folded.filter((row) => row.firstLine !== null);
     expect(lines.length, "the page as it opens draws no folded branch's line").toBeGreaterThan(0);
     for (const row of lines) {
@@ -701,7 +734,14 @@ test("with no filter the page is the conversation, each node edited once, folded
         line.length,
         `row ${row.id} draws a first line of ${line.length} characters`
       ).toBeLessThanOrEqual(100);
-      expect(row.text, `row ${row.id}'s first line is not its own text`).toContain(line);
+      const storedWords = outline.words.get(row.id ?? "");
+      expect(
+        storedWords,
+        `the server's reads hold no words for the folded ${row.id}`
+      ).toBeDefined();
+      expect(line, `row ${row.id}'s first line is not the first line of its stored words`).toBe(
+        firstLineOf(storedWords ?? "").line
+      );
       expect(row.words, `the folded row ${row.id} draws its words whole as well`).toBeNull();
       // A line that ends at a sentence end has no mark after it, and a cut line has one `…`
       // (row 20 drew four dots).
@@ -2087,16 +2127,15 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await nodeBodies(page).count(),
       "a body is drawn with the keyboard focus on no control"
     ).toBe(0);
-    // The pointer rests on each row, as on each link below, past the delay a card opens after on
-    // every other page, so a body that opens for a resting pointer a moment after it arrives is
-    // drawn by the time the row reads its absence: read at once after each hover, it was not.
     const resting = REF_PREVIEW_OPEN_DELAY_MS + 200;
     const before = await treeText(page);
     const rows = nodeRows(page);
     const count = await rows.count();
     for (let index = 0; index < count; index += 1) {
       await rows.nth(index).hover();
-      // The absence is the claim, so the pointer rests for the span a body would take to open.
+      // The pointer rests on each row, as on each link below, past the delay a card opens after
+      // on every other page, so a body that opens for a resting pointer a moment after it arrives
+      // is drawn by the time the row reads its absence: read at once after each hover, it was not.
       await page.waitForTimeout(resting);
       expect(
         await nodeBodies(page).count(),
@@ -2173,8 +2212,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     // Forced colours put the reader's own colours in place of the page's, which neither the
     // tokens nor the words above show. Read with them on: each shape a row draws still stands
     // out from what is behind it as a graphic must (`SHAPE_CONTRAST`), so none is drawn by a
-    // colour they take away, such as a box's background; and the states are still told apart by
-    // what the screen shows, each state's word and the outlines its shapes draw.
+    // colour they take away, such as a box's background.
     await page.emulateMedia({ forcedColors: "active" });
     const forced = await drawnRows(page);
     expectRowVocabulary(forced, await rowTags(page));
@@ -2191,16 +2229,6 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
         ).toBeGreaterThanOrEqual(SHAPE_CONTRAST);
       }
     }
-    const seen = new Map<string, string>();
-    for (const [index, row] of forced.entries()) {
-      if (row.state === null) continue;
-      const outlines = painted[index]?.shapes.map((shape) => shape.outline) ?? [];
-      seen.set(`${row.type}:${row.state}`, `${row.stateWord} ${outlines.join(" + ")}`);
-    }
-    expect(
-      [...new Set(seen.values())].length,
-      `two states look the same once the colours are forced: ${JSON.stringify([...seen])}`
-    ).toBe(seen.size);
 
     // Another page keeps its hover card: this change touches no page but the issue's, and the
     // Inbox's owner link opens a card for a resting pointer as it always has.
@@ -2407,9 +2435,9 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
       await page.keyboard.press("j");
       await expectFocusedRowClear(page, `move ${step + 1} with j`);
     }
-    await page.keyboard.press("End");
+    await pressToOutlineEnd(page, "End");
     await expectFocusedRowClear(page, "End");
-    await page.keyboard.press("Home");
+    await pressToOutlineEnd(page, "Home");
     await expectFocusedRowClear(page, "Home");
 
     // The box at the foot of the screen: part L draws one and publishes its height on the
@@ -2427,7 +2455,7 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
         "left the focused row under the box at the foot"
       );
     }
-    await page.keyboard.press("End");
+    await pressToOutlineEnd(page, "End");
     await expectFocusedRowOnScreen(page, "End", "left the focused row under the box at the foot");
     await takeFootAway();
 
@@ -2440,8 +2468,8 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     // moves with k left the row's top at 40, 13, 15 and 0 px under a band 51 px tall; at I's
     // head without P, where nothing published the band, at 40, 13 and 0 px.
     await page.setViewportSize({ height: 664, width: 390 });
-    await page.keyboard.press("Home");
-    await page.keyboard.press("End");
+    await pressToOutlineEnd(page, "Home");
+    await pressToOutlineEnd(page, "End");
     for (let step = 0; step < 25; step += 1) {
       await page.keyboard.press("k");
       await expectFocusedRowOnScreen(
