@@ -3,7 +3,13 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +83,66 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 	}
 	if moved < 15 {
 		t.Fatalf("moved %d rows of the table out of a step, want every row that leaves one", moved)
+	}
+}
+
+// endWriters is every call, in the daemon's non-test code, of a writer of a run's end — the
+// engine's endStep and the store's two marks of an end — by the file and the function it is in.
+func endWriters(t *testing.T) map[string]int {
+	t.Helper()
+	writers := map[string]bool{"endStep": true, "EndStepStart": true, "EndUncountedStep": true}
+	calls := map[string]int{}
+	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && writers[sel.Sel.Name] {
+					calls[fmt.Sprintf("%s:%s:%s", filepath.ToSlash(path), fn.Name.Name, sel.Sel.Name)]++
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read the daemon's code: %v", err)
+	}
+	return calls
+}
+
+// No way out of a step writes the end of its run itself: the fact's settle is the one caller of
+// the one writer of an end (settleRuns, endStep), and that writer the one caller of the store's
+// marks of an end. A call anywhere else — a new file's included — fails by name.
+func TestOnlyTheSettleWritesTheEndOfARun(t *testing.T) {
+	want := map[string]int{
+		"../workflow/run_end.go:settleRuns:endStep":     2,
+		"../workflow/steps.go:endStep:EndStepStart":     1,
+		"../workflow/steps.go:endStep:EndUncountedStep": 1,
+	}
+	got := endWriters(t)
+	for site, calls := range got {
+		if want[site] != calls {
+			t.Errorf("%s calls a writer of a run's end %d times, want %d: only the fact's settle ends a run", site, calls, want[site])
+		}
+	}
+	for site, calls := range want {
+		if got[site] != calls {
+			t.Errorf("%s calls a writer of a run's end %d times, want %d", site, got[site], calls)
+		}
 	}
 }
 

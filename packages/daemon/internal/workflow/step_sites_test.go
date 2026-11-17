@@ -323,10 +323,10 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		if err := engine.EndRunningStep(ctx, tx, issue); err != nil {
+		if err := engine.endStep(ctx, tx, issue, stepStopped); err != nil {
 			return err
 		}
-		return engine.EndRunningStep(ctx, tx, issue)
+		return engine.endStep(ctx, tx, issue, stepStopped)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
 		onStored(t, pool, engine, key, endTwice)
@@ -1021,7 +1021,7 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.EndRunningStep(ctx, tx, root); err != nil {
+		if err := engine.endStep(ctx, tx, root, stepStopped); err != nil {
 			return err
 		}
 		return engine.StartStepRecord(ctx, tx, root)

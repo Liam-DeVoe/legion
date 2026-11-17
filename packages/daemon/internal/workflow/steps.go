@@ -155,14 +155,14 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
-// endStep writes the end of the step before stands in (record.StandsAt, so a held issue ends the
-// step of the phase its hold is from), before being the issue as it stood before the write that
-// ends the step. The record is the one its start wrote: the same generation and the count of
+// endStep writes the end of the run of the step before stands in (record.StandsAt, so a held issue
+// ends the step of the phase its hold is from), before being the issue as it stood in that run. It
+// is the one writer of an end, and the fact's settle its one caller (settleRuns), which decides
+// that the run is over. The record is the one its start wrote: the same generation and the count of
 // starts unchanged, and the agent and the moment that start wrote, so the two writes agree
-// whichever reaches Dispatch first. One run gets one end: the end marks the run ended in the
-// store, in its own transaction (record.Store.EndStepStart), and an end of a run already marked
-// writes nothing, so a run two writes end — the linger's and the hand-over's of one member — keeps
-// the first end, and Dispatch never takes the later one for it. A run no start of this release
+// whichever reaches Dispatch first. One run gets one end: the end marks the run ended in the store,
+// in its own transaction (record.Store.EndStepStart), and an end of a run already marked writes
+// nothing. A run no start of this release
 // counted — one running when this release deployed, or one an earlier release started after a
 // rollback, whose place the roll forward marked uncounted — gets a record of its own at the count
 // the store gives it, with the agent its start would have named and, for a phase worker, the
@@ -349,14 +349,6 @@ func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.P
 		end.Report = handoff.HandoffRecord
 	}
 	return end
-}
-
-// EndRunningStep ends, stopped, the step before stands in: admission's re-admission of an issue
-// whose run ends under it (admit's readmit), and its promotion's end of a member's merge a linger
-// left open (admit's startMidPhaseMembers). A run another write ended already gets no second end
-// (endStep).
-func (e *Engine) EndRunningStep(ctx context.Context, tx pgx.Tx, before record.Issue) error {
-	return e.endStep(ctx, tx, before, stepStopped)
 }
 
 // StartStepRecord writes the start of the step issue stands in, under the agent that step names
