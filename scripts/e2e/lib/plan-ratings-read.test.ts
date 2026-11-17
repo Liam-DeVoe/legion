@@ -45,7 +45,13 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
       };
 }
 
-/** A finished issue as Dispatch lists it: what the script reads of it, and the rest made up. */
+/**
+ * A finished issue as Dispatch lists it: what the script reads of it, and the rest an answer
+ * Dispatch can give. Its records end a minute before its close and start seconds before that
+ * (duration_seconds is the whole seconds from started_at to ended_at, as Dispatch reckons it), and
+ * each retro ends inside that span, a minute after the one before. An issue of unknown time
+ * (seconds null) has no start and no end.
+ */
 function finished(
   issue: string,
   closed: string,
@@ -54,6 +60,9 @@ function finished(
   seconds: number | null,
   failed: number
 ): FinishedIssue {
+  const end = Date.parse(closed) - 60_000;
+  const start = seconds === null ? null : end - seconds * 1000;
+  const at = (moment: number) => new Date(moment).toISOString();
   return {
     issue,
     title: `The work of ${issue}`,
@@ -63,10 +72,10 @@ function finished(
       rating,
       reason,
       step_id: `${issue}-retro-${place + 1}`,
-      ended_at: closed,
+      ended_at: start === null ? null : at(start + (place + 1) * 60_000),
     })),
-    started_at: seconds === null ? null : closed,
-    ended_at: seconds === null ? null : closed,
+    started_at: start === null ? null : at(start),
+    ended_at: start === null ? null : at(end),
     duration_seconds: seconds,
     failed_steps: failed,
   };
