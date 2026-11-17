@@ -353,6 +353,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 		record.OutboxKindClaimRelease:       {{"a Dispatch claim's release", record.ClaimRelease{}, false}},
 		record.OutboxKindGatedStepsPublish:  {{"the gated steps' publish", record.GatedStepsPublish{}, false}},
 		record.OutboxKindDesignGatesPublish: {{"an issue's design gates' publish", record.DesignGatesPublish{}, false}},
+		record.OutboxKindRoleHoldersPublish: {{"an issue's role holders' publish", record.RoleHoldersPublish{}, false}},
 		record.OutboxKindIssueSuspend:       {{"a closed issue's pod deleted", record.IssueSuspend{}, false}},
 		record.OutboxKindLingerClose:        {{"a linger's close", record.LingerClose{}, false}},
 		record.OutboxKindWorkspaceRemove:    {{"a workspace's removal", record.WorkspaceRemove{}, false}},

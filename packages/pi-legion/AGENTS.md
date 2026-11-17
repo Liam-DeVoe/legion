@@ -102,7 +102,10 @@ workspace's unpushed commits and no content, the operator's routes gain
 that a caller from a pod whose claims record a contract under 157 is not served
 (`api.stateFor`, `withoutProjectRelease`), a claim's `suspendedBy` gains `project_release`, and a
 `ready_for_update` whose round is `release:<id>` answers the release; no shape this plugin
-parses becomes required), after contract 146 (dispatch://INFRA-2614:
+parses becomes required), after contract 151 (dispatch://INFRA-3729: issue pods in GKE Sandbox
+microVMs, whose launcher flags, hello answer and kill report change, and the state's settings
+gain `runtime.kubernetes.sandbox`, which this plugin parses loosely, so no shape it parses
+changes), after contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
