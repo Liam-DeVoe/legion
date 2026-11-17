@@ -4,7 +4,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
 import type { Preset } from "../web/src/features/issue-page/page-words";
-import { checkState } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { buildDispatchReference } from "../web/src/features/refs/routes";
 import {
@@ -440,7 +440,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     () => getIssueResults(key),
     (read) =>
       (read.checks ?? []).some(
-        (check) => check.block_id === whole.checks.older && checkState(check) === "failed"
+        (check) => check.block_id === whole.checks.older && checkStanding(check).state === "failed"
       ),
     "check 4 never reads Failed after its failing result, so no flag reading can rely on it"
   );
