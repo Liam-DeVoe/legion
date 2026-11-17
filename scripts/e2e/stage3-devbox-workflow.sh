@@ -713,7 +713,9 @@ port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
 [ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
 docker exec "$pg_container" createdb -U legion legion
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -740,8 +742,9 @@ manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-l
 cat >"$work/instructions.md" <<'EOF'
 # Stage 3 proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
@@ -799,9 +802,10 @@ pass
 
 begin panes-pinned-to-the-rig-before-any-agent-turn
 # The two admitted architects are the only panes before any phase worker: each takes its first turn
-# from the daemon's catch-up notice, not from the proof. Every later pane is checked when it
-# registers and again before each instruction. An architect whose root already waits on a person
-# (it registered its closed gate and stays live) was checked by the pane watcher at its launch.
+# from the task its start carries and the daemon's catch-up notice, not from the proof. Every later
+# pane is checked when it registers and again before each instruction. An architect whose root
+# already waits on a person (it registered its closed gate and stays live) was checked by the pane
+# watcher at its launch.
 wait_for_architect "$root_issue"
 wait_for_architect "$held_issue"
 note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL=http://127.0.0.1:$port_dispatch, DISPATCH_TOKEN_FILE=$state/secrets/dispatch-token, ENVOY_URL=http://127.0.0.1:$port_listener, ENVOY_NATS_URL=nats://127.0.0.1:$port_nats"
@@ -1072,7 +1076,7 @@ primary_issue() {
   # here, after the first look's report and the smoke main's cleanup: what remains of the 30
   # minutes, and a bound deferred by a look still open when it came due (by the look's own
   # two-hour bound) fails here by name rather than hanging. The last look's pending closes the
-  # check as not_run: the tester's claim is retired, its session dropped (issue_close), and the
+  # check as not_run: the tester's claim is retired, its session kept (issue_close), and the
   # state omits the check.
   until_true 1800 "the bound to start the last look of $root_issue's production check" last_look_started "$root_issue"
   state_file check-look-2
@@ -1358,7 +1362,7 @@ status_actors() {
   note "every lifecycle transition on $root_issue ($(jq -r '[.[] | select(.type | IN("issue.updated", "issue.closed")) | .payload.status] | join(" ")' "$evidence/root-events.json")) records actor legion-daemon:$project; one agent-attributed write was rejected"
   pass
 }
-# Every workflow notice is for the architect that owns its issue, on that architect's role topic:
+# Every workflow notice is for an architect, on that architect's role topic:
 # the run's pr-blocked, the reviewer's phase-finished at its approval (the architect's acceptance
 # cue) and worker-died reach their architects (checked where each is written), and no phase-worker
 # session of the run receives any notice.

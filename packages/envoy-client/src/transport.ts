@@ -78,6 +78,15 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// as an absent key (a listener that predates the field), or as a real array. The reader answers []
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
+const StringListWireSchema = z
+  .array(z.string())
+  .nullish()
+  .transform((list) => list ?? []);
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -92,9 +101,9 @@ const SessionWireSchema = z.object({
   dir: z.string(),
   port: z.number().int(),
   title: z.string(),
-  topics: z.array(z.string()),
-  roles: z.array(z.string()).optional(),
-  capabilities: z.array(z.string()).optional(),
+  topics: StringListWireSchema,
+  roles: StringListWireSchema,
+  capabilities: StringListWireSchema,
   self_subscribed: z.boolean(),
   last_seen: z.number().int().optional(),
   state: WireStateSchema,
@@ -902,6 +911,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // and stands or falls on the listener's own answer. A listener that did want one answers 401
     // or 403, and that is reported as the failed trade it really is, below.
     let unminted: unknown;
+    // One deadline for the whole attempt: the credential is given it, so a broker credential
+    // waiting on a pod's missing registration stops at it, and the request runs on what is left.
+    const deadline = AbortSignal.timeout(deadlineMs);
     try {
       const headers = new Headers(init.headers);
       // Awaited only when the credential answers with a promise. A bearer answers at once, and
@@ -909,16 +921,19 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // drain at shutdown — start before this request leaves.
       let presented: Readonly<Record<string, string>> | undefined;
       try {
-        const ready = credential?.headers(init.method ?? "GET", url, actingSession);
+        const ready = credential?.headers(init.method ?? "GET", url, actingSession, deadline);
         presented = ready instanceof Promise ? await ready : ready;
       } catch (error) {
         unminted = error;
       }
+      // A credential stopped by the deadline leaves nothing to send: the attempt is unanswered,
+      // in the credential's own words (a pending registration names its session).
+      if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       response = await config.fetch(url, {
         ...init,
         headers,
-        signal: AbortSignal.timeout(deadlineMs),
+        signal: deadline,
       });
     } catch (error) {
       return { unanswered: error };
