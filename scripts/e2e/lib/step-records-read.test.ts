@@ -170,12 +170,24 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(1);
   });
 
-  test("a step of kind step with no model fails, exit 1; the retro and the merge need none", () => {
+  test("a step of kind step with no model fails, exit 1, naming it", () => {
     const { code, stdout } = read(
       changed(/ 1 step planner /, (line) => line.replace("anthropic/claude-opus-5", "-"))
     );
     expect(stdout).toContain("FAIL: the step names no model: default 1 step planner planning");
     expect(code).toBe(1);
+  });
+
+  test("a retro with no model passes, exit 0: only a record of kind step must name one", () => {
+    const { code, stdout } = read(
+      changed(/ retro implementer /, (line) => line.replace("anthropic/claude-opus-5", "-"))
+    );
+    expect(stdout).toContain(
+      "default 0 retro implementer - attempt 1 legion-infra-infra-42-implementer - "
+    );
+    expect(stdout).not.toContain("FAIL");
+    expect(stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(code).toBe(0);
   });
 
   test("a read that fails is UNKNOWN, exit 2, with what the command said", () => {
