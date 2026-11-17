@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,9 +37,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -192,6 +195,183 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 	if before, after := started.find("step", 3, 1), read.find("step", 3, 1); before.ID != after.ID {
 		t.Fatalf("the testing record read after the restart is %s, want the one its start wrote before it, %s", after.ID, before.ID)
 	}
+}
+
+// A rollback of this release and its roll forward, through the whole daemon and the store it
+// left. The walk stops with Dispatch down and the review sent back, so the implementer's second
+// run is open and the outbox holds the issue's step records and its other writes unsent, beside a
+// count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
+// the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
+// every outbox row and every count stands after it as it stood before. The earlier release then
+// moves the issue as its own transitions leave the store, to testing with the tester's entry
+// raised again, and the newer image boots, its Migrate applying the roll forward. The walk ends at
+// done, and the read holds the implementer's run that the earlier release ended stopped at the
+// moment of the rollback under the id its start wrote, the tester's run that release started as a
+// record of its own at the next count, started when its entry was raised, and the tester's run this
+// release counted under its own id.
+func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
+	r := newStepRecordsRig(t)
+	r.plan()
+	r.implement()
+	r.test()
+	r.dispatch.stop()
+	r.review("CHANGES_REQUESTED", phase.Implementing)
+	// The implementer's second run: its pane holds the task the review sent back, and no turn of it
+	// reaches this release.
+	implementer := r.worker(claim.RoleImplementer)
+	implementer.receive()
+	r.d.stop()
+
+	outbox, starts := r.storeRows(stepRecordsOutboxRows), r.storeRows(stepRecordsStartRows)
+	var stepRows, otherRows int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) filter (where kind = $1), count(*) filter (where kind <> $1) from outbox`,
+		string(record.OutboxKindStepRecord)).Scan(&stepRows, &otherRows); err != nil {
+		t.Fatalf("count the outbox's rows: %v", err)
+	}
+	if stepRows == 0 || otherRows == 0 || !slices.ContainsFunc(starts, func(row string) bool {
+		return strings.Contains(row, `"place":2`) && strings.Contains(row, `"starts":2`) && strings.Contains(row, `"run":"open"`)
+	}) {
+		t.Fatalf("at the rollback the outbox holds %d step records and %d other rows and step_starts holds %q; want both kinds of row unsent and implementing's second start open, or the way back runs over nothing it could lose",
+			stepRows, otherRows, starts)
+	}
+	rollBackFrom := r.databaseNow()
+	r.rollBackStepRecords()
+	rollBackTo := r.databaseNow()
+	if after := r.storeRows(stepRecordsOutboxRows); !slices.Equal(after, outbox) {
+		t.Fatalf("the way back changed the outbox:\nbefore %q\nafter  %q", outbox, after)
+	}
+	if after := r.storeRows(stepRecordsStartRows); !slices.Equal(after, starts) {
+		t.Fatalf("the way back changed step_starts:\nbefore %q\nafter  %q", starts, after)
+	}
+
+	// The earlier release: the implementer works that task and completes, which ends its turn,
+	// moves the issue to testing and raises the tester's entry, whose run it starts and counts
+	// nowhere.
+	implementer.endTurnUnseen()
+	earlierStart := time.Now().UTC().Truncate(time.Millisecond)
+	r.exec(`update issues set phase = 'testing' where key = $1`, r.key)
+	r.exec(`update phases set entry = entry + 1, entry_raised_at = $2 where issue = $1 and role = 'tester'`, r.key, earlierStart)
+	r.dispatch.start()
+	rebindHeldPorts(t, &r.cfg)
+	r.boot()
+	for _, c := range r.claims {
+		c.reconnect()
+	}
+	// No delivery of the earlier release stands in the store, so the tester's claim still serves
+	// the entry it confirmed before the rollback, and the boot's admission sends it the task of the
+	// entry its row names (workflow's SendOwedEntry), which the tester works. That send starts no
+	// run: only a raise of the entry does (workflow's enter).
+	tester := r.worker(claim.RoleTester)
+	tester.take()
+	r.finish(tester, "test", testCompletion, phase.Reviewing)
+	r.review("APPROVED", phase.Accepting)
+	r.accept()
+	r.retro()
+	r.merge()
+
+	want := []stepWant{
+		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+		{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "stopped", noAgentRead: true},
+		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+		{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
+		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
+		{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
+		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+	}
+	var read stepRecordsRead
+	r.waitSteps("the walk's records across the rollback", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	id := func(step int, count int64) string {
+		return workflow.StepID(r.key, 1, record.StepPlace{Task: "default", Kind: "step", Place: step}, count)
+	}
+	if ended := read.find("step", 2, 2); ended.ID != id(2, 2) || ended.Agent != string(r.token(claim.RoleImplementer)) ||
+		ended.EndedAt.Before(rollBackFrom.Truncate(time.Second)) || ended.EndedAt.After(rollBackTo) {
+		t.Fatalf("the implementer's run open at the rollback reads %+v (ended %v), want the record %s its start wrote, the implementer's, stopped at the rollback, between %s and %s",
+			ended, ended.EndedAt, id(2, 2), rollBackFrom, rollBackTo)
+	}
+	if counted := read.find("step", 3, 1); counted.ID != id(3, 1) {
+		t.Fatalf("the tester's run this release counted reads %+v, want its own record %s", counted, id(3, 1))
+	}
+	if earlier := read.find("step", 3, 2); earlier.ID != id(3, 2) || earlier.Agent != string(r.token(claim.RoleTester)) ||
+		!earlier.StartedAt.Equal(earlierStart) {
+		t.Fatalf("the tester's run the earlier release started reads %+v (started %v), want the record %s of the next count, the tester's, started at %s",
+			earlier, earlier.StartedAt, id(3, 2), earlierStart)
+	}
+}
+
+const (
+	// stepRecordsOutboxRows is every row of the daemon's outbox, whole, in its order.
+	stepRecordsOutboxRows = `select row_to_json(o)::text from outbox o order by id`
+	// stepRecordsStartRows is every row of step_starts, whole, in its key's order.
+	stepRecordsStartRows = `select row_to_json(s)::text from step_starts s order by issue, task, kind, place`
+	// stepRecordsRollForward is the version of the migration whose header carries the step records'
+	// way back, which the way back re-arms and the newer image's Migrate applies again.
+	stepRecordsRollForward = 20261117064152
+)
+
+// storeRows is each row query answers on the daemon's store, as text.
+func (r *stepRecordsRig) storeRows(query string) []string {
+	r.t.Helper()
+	rows, err := r.st.Pool().Query(context.Background(), query)
+	if err != nil {
+		r.t.Fatalf("%s: %v", query, err)
+	}
+	all, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("%s: %v", query, err)
+	}
+	return all
+}
+
+// exec runs one statement with args on the daemon's store, as the earlier release's writes land.
+func (r *stepRecordsRig) exec(statement string, args ...any) {
+	r.t.Helper()
+	if _, err := r.st.Pool().Exec(context.Background(), statement, args...); err != nil {
+		r.t.Fatalf("%s: %v", statement, err)
+	}
+}
+
+// databaseNow is the store's clock, which the way back stamps the rollback's moment with.
+func (r *stepRecordsRig) databaseNow() time.Time {
+	r.t.Helper()
+	var now time.Time
+	if err := r.st.Pool().QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		r.t.Fatalf("read the store's clock: %v", err)
+	}
+	return now
+}
+
+// rollBackStepRecords runs the way back the roll forward's migration carries in its header, from
+// its insert into step_starts_rollback to the delete of its own version row, as an operator runs it
+// with the daemon stopped.
+func (r *stepRecordsRig) rollBackStepRecords() {
+	t := r.t
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	mark := fmt.Sprintf("-- delete from schema_version where version = %d;", stepRecordsRollForward)
+	for _, migration := range all {
+		if migration.Version != stepRecordsRollForward {
+			continue
+		}
+		var block []string
+		for _, line := range strings.Split(migration.SQL, "\n") {
+			if block == nil && !strings.HasPrefix(line, "-- insert into step_starts_rollback") {
+				continue
+			}
+			block = append(block, strings.TrimPrefix(line, "-- "))
+			if line == mark {
+				r.exec(strings.Join(block, "\n"))
+				return
+			}
+		}
+		t.Fatalf("%s carries no way back from its insert into step_starts_rollback to %q", migration.Name, mark)
+	}
+	t.Fatalf("no embedded migration has version %d, the step records' roll forward", stepRecordsRollForward)
 }
 
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,
@@ -682,11 +862,15 @@ type stepWant struct {
 	step, attempt     int
 	role, typ, result string
 	returnedTo        *int
+	// noAgentRead is a record whose end the roll forward of a rollback wrote: the daemon read no
+	// agent for it, and its start names none, so it holds no session and no model.
+	noAgentRead bool
 }
 
 // stepsHold says whether read holds exactly the records of want, each of the task default, ended,
 // with its role, type, agent, start, end, result and return, and each of kind step with its session
-// and the model that answered it; the error names the first record that is missing or wrong.
+// and the model that answered it, or with neither where the roll forward wrote its end
+// (noAgentRead); the error names the first record that is missing or wrong.
 func stepsHold(read stepRecordsRead, want []stepWant) error {
 	for _, w := range want {
 		got := read.find(w.kind, w.step, w.attempt)
@@ -700,7 +884,9 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 			return fmt.Errorf("%s started %v, ended %v with result %q; want a start, an end and %q", name, got.StartedAt, got.EndedAt, got.Result, w.result)
 		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
 			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
-		case w.kind == "step" && (got.Session == "" || got.Model != stepRecordsModel):
+		case w.noAgentRead && (got.Session != "" || got.Model != ""):
+			return fmt.Errorf("%s names session %q and model %q, want neither: no agent was read for its end", name, got.Session, got.Model)
+		case w.kind == "step" && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
 			return fmt.Errorf("%s names session %q and model %q, want its agent's session and %s", name, got.Session, got.Model, stepRecordsModel)
 		}
 	}
@@ -833,15 +1019,32 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 // turn's start shows the claim working, the answer before it has been read too.
 func (c *stepClaimant) take() {
 	c.r.t.Helper()
-	var prompt shimwire.Prompt
-	select {
-	case prompt = <-c.prompts:
-	case <-time.After(stepRecordsWait):
-		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
-	}
+	prompt := c.receive()
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
+}
+
+// receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
+// and holds until a turn works it.
+func (c *stepClaimant) receive() shimwire.Prompt {
+	c.r.t.Helper()
+	select {
+	case prompt := <-c.prompts:
+		return prompt
+	case <-time.After(stepRecordsWait):
+		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
+		return shimwire.Prompt{}
+	}
+}
+
+// endTurnUnseen ends every turn a prompt started with no daemon of this release there to read it,
+// as the earlier release runs the agent after a rollback: the pane holds no open turn when its
+// shim next connects, so the daemon's state probe finds it idle.
+func (c *stepClaimant) endTurnUnseen() {
+	c.mu.Lock()
+	c.open = nil
+	c.mu.Unlock()
 }
 
 // ownTurn is a turn of the agent's own in which its model answers: it returns once the claim is
@@ -1087,12 +1290,7 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 // Pi's message_end names them.
 func (c *stepClaimant) takeAnswering(model string) {
 	c.r.t.Helper()
-	var prompt shimwire.Prompt
-	select {
-	case prompt = <-c.prompts:
-	case <-time.After(stepRecordsWait):
-		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
-	}
+	prompt := c.receive()
 	c.answerWith(model)
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
