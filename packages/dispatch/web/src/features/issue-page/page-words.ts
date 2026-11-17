@@ -435,6 +435,9 @@ export const NODE_REFERENCES_WORDS = freeze({
     answers: "answer",
     attached_to: "attached document",
     blocked_by: "blocked issue",
+    /** The edge from a node a command bar run changed to that run, which
+     *  `run-references/run-references.ts` draws on the run's row in Details' Referenced by. */
+    changed_by_run: "changed this issue",
     child_of: "child issue",
     followed_by: "follower",
     needs: "needed by",
@@ -451,6 +454,9 @@ export const NODE_REFERENCES_WORDS = freeze({
     block: "document",
     comment: "comment",
     component: "component",
+    /** A run of the command bar, which only its asker reads (dispatch://INFRA-4064). It is
+     *  lowercase, as this table holds its words, and the row draws it with `sentenceCase`. */
+    interaction: "command bar run",
     issue: "issue",
     message: "message",
     session: "agent",
@@ -459,6 +465,17 @@ export const NODE_REFERENCES_WORDS = freeze({
    *  It names the row, because Details' References section holds the issue's own Referenced by
    *  beside it and two lists cannot share one name. */
   what_references: "What references this row",
+} as const);
+
+/**
+ * The headings of a command bar run's own page (`run-page/RunPage.tsx`, dispatch://INFRA-4064 R3):
+ * the asker's whole question, and the nodes the run changed. The page's heading is the run's
+ * kind word, `NODE_REFERENCES_WORDS.kinds.interaction`, and what each frame of its answer says is
+ * in `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`.
+ */
+export const RUN_PAGE_WORDS = freeze({
+  question: "Question",
+  what_changed: "What it changed",
 } as const);
 
 /**
@@ -496,6 +513,9 @@ export const EMPTY_STATE_LINES = freeze({
    *  issue holds such nodes, and none of them holds those words. */
   no_match: "Nothing here holds these words.",
   plan: "This issue has no plan tasks yet.",
+  /** What a command bar run's page says for its `none` frame, where the model produced no
+   *  answer text at all (`run-page/RunPage.tsx`). */
+  run_none: "The model gave no answer.",
   spec: "This issue has no statements yet.",
   /** What the Spec filter's Decided by column says beside a run of statements no decision
    *  shaped (R35): one statement, and several. */
@@ -607,6 +627,23 @@ export const STATE_LINES = freeze({
    *  be read, above the agents it lists without it (`IssueCollaboratorList.tsx`,
    *  dispatch://INFRA-3948 R5): the Collaborators tab's words. */
   legion_record_unreadable: "Legion's record of this issue's agents could not be read.",
+  /** What a command bar run's page says for its `changed` frame, where pieces of the answer
+   *  are shown as plain text or removed (`run-page/RunPage.tsx`). The frame's `dropped` count
+   *  is drawn between `before` and `after`, as `BLOCKED_BY_REFUSALS` cuts its sentences. */
+  run_changed: { after: ".", before: "Pieces of the answer shown as plain text or removed: " },
+  /** What a command bar run's page says for its `cut` frame, where the answer was cut short
+   *  (`run-page/RunPage.tsx`). The frame's `words` count is drawn between `before` and `after`,
+   *  as `BLOCKED_BY_REFUSALS` cuts its sentences. */
+  run_cut: { after: " words.", before: "The answer was cut short after " },
+  /** What a command bar run's page says for the error code `ANSWER_DID_NOT_ARRIVE`
+   *  (`run-page/RunPage.tsx`). */
+  run_did_not_arrive: "The answer did not arrive in time.",
+  /** What a command bar run's page says for the error code `ANSWER_FAILED`, and for any code
+   *  the page does not know (`run-page/RunPage.tsx`). */
+  run_failed: "The question could not be answered.",
+  /** What a command bar run's page says for the error code `NO_MODEL_CONFIGURED`
+   *  (`run-page/RunPage.tsx`). */
+  run_no_model: "No model is set up to answer questions.",
   /** What Details' People section says where the issue's subscribed agents could not be read,
    *  which it reads on every load for their count (`details-more.tsx`, dispatch://INFRA-3948
    *  R5): today's issue header's words, with Retry beside them. */
@@ -656,6 +693,9 @@ export const ANSWER_LINES = freeze({
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What a command bar run's page says when its one read failed with anything but 400 or
+   *  404, with Retry beside it (`run-page/RunPage.tsx`). */
+  run_unreadable: "Could not load this run.",
   /** What the list of who worked the issue says while its read, which the reader opened, is
    *  out, and when it failed (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): the
    *  Collaborators tab's words. */
@@ -1499,6 +1539,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
+  RUN_PAGE_WORDS,
 ]);
 
 /** What the page says only in answer to the reader's own act, and never on load
