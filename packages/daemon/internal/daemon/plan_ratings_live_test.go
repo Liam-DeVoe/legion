@@ -77,7 +77,8 @@ func (l *planRatingsLive) readByProject() {
 	if code != 0 {
 		t.Fatalf("`dispatch plans --project %s` exited %d: %s", l.cfg.Project, code, out)
 	}
-	if err := plansPrintedHold(l.cfg.Project, out, want); err != nil {
+	lines, err := plansPrintedHold(l.cfg.Project, out, want)
+	if err != nil {
 		t.Fatalf("`dispatch plans --project %s` printed\n%s\nand the read does not hold the three: %v", l.cfg.Project, out, err)
 	}
 	l.note("`dispatch plans --project %s` as the person, exit 0:", l.cfg.Project)
@@ -85,11 +86,6 @@ func (l *planRatingsLive) readByProject() {
 		l.note("  %s", line)
 	}
 
-	// plansPrintedHold held the lines in want's order, so the first is want[0]'s.
-	lines, err := parsePlans(l.cfg.Project, out)
-	if err != nil {
-		t.Fatal(err)
-	}
 	out, code = l.readScript(want[0].issue)
 	if code != 0 || !readScriptPassed(out, lines[0]) {
 		t.Fatalf("scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 0 and a PASS line naming the plan and the ratings of %q", l.cfg.Project, want[0].issue, code, out, lines[0].text)
@@ -112,7 +108,7 @@ func (l *planRatingsLive) readByProject() {
 	if code != 0 {
 		t.Fatalf("control: `dispatch plans --project %s` after the delete exited %d: %s", l.cfg.Project, code, out)
 	}
-	err = plansPrintedHold(l.cfg.Project, out, want)
+	_, err = plansPrintedHold(l.cfg.Project, out, want)
 	if err == nil {
 		t.Fatalf("control: the parse of `dispatch plans --project %s` passed with the failed review's record deleted:\n%s", l.cfg.Project, out)
 	}

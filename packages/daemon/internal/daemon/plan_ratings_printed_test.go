@@ -163,24 +163,25 @@ func failedStepsPrinted(issue string, got, want int) string {
 // plansPrintedHold says whether out, the output of `dispatch plans --project project`, lists exactly
 // the issues of want, in want's order, which is newest close first, each with the default plan,
 // its rating with its reason (or none), its time, the hours and minutes from the earliest start to
-// the latest end of its records, and its count of failed steps. The error names the first issue
+// the latest end of its records, and its count of failed steps. It answers the lines it held, so
+// the line in each place is the issue of want's in that place, or an error naming the first issue
 // that is missing or wrong.
-func plansPrintedHold(project, out string, want []ratedWant) error {
+func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error) {
 	lines, err := parsePlans(project, out)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(lines) != len(want) {
-		return fmt.Errorf("`dispatch plans` lists %d finished issues, want %d", len(lines), len(want))
+		return nil, fmt.Errorf("`dispatch plans` lists %d finished issues, want %d", len(lines), len(want))
 	}
 	var before time.Time
 	for _, line := range lines {
 		closed, err := time.Parse(time.RFC3339Nano, line.closed)
 		if err != nil {
-			return fmt.Errorf("%s prints the close %q: %v", line.issue, line.closed, err)
+			return nil, fmt.Errorf("%s prints the close %q: %v", line.issue, line.closed, err)
 		}
 		if !before.IsZero() && closed.After(before) {
-			return fmt.Errorf("%s closed at %s is printed after an issue closed at %s, want the newest close first", line.issue, closed, before)
+			return nil, fmt.Errorf("%s closed at %s is printed after an issue closed at %s, want the newest close first", line.issue, closed, before)
 		}
 		before = closed
 	}
@@ -188,23 +189,23 @@ func plansPrintedHold(project, out string, want []ratedWant) error {
 	for place, w := range want {
 		got := lines[place]
 		if got.issue != w.issue {
-			return fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.issue)
+			return nil, fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.issue)
 		}
 		started, ended := w.steps.span()
 		minutes := int64(ended.Sub(started) / time.Minute)
 		spent := fmt.Sprintf("%dh%dm", minutes/60, minutes%60)
 		switch {
 		case got.plan != plan:
-			return fmt.Errorf("%s prints plan %s, want plan %s", w.issue, got.plan, plan)
+			return nil, fmt.Errorf("%s prints plan %s, want plan %s", w.issue, got.plan, plan)
 		case w.rating == 0 && len(got.ratings) != 0:
-			return fmt.Errorf("%s prints the ratings %+v, want none", w.issue, got.ratings)
+			return nil, fmt.Errorf("%s prints the ratings %+v, want none", w.issue, got.ratings)
 		case w.rating != 0 && (len(got.ratings) != 1 || got.ratings[0] != printedRating{rating: w.rating, reason: w.reason}):
-			return fmt.Errorf("%s prints the ratings %+v, want the one rating %d/5 %q", w.issue, got.ratings, w.rating, w.reason)
+			return nil, fmt.Errorf("%s prints the ratings %+v, want the one rating %d/5 %q", w.issue, got.ratings, w.rating, w.reason)
 		case got.time != spent:
-			return fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.issue, got.time, spent, started, ended)
+			return nil, fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.issue, got.time, spent, started, ended)
 		case got.failed != w.failed:
-			return errors.New(failedStepsPrinted(w.issue, got.failed, w.failed))
+			return nil, errors.New(failedStepsPrinted(w.issue, got.failed, w.failed))
 		}
 	}
-	return nil
+	return lines, nil
 }
