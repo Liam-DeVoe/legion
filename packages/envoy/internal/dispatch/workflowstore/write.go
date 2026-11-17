@@ -41,8 +41,9 @@ var (
 // generation), or it is refused ErrStepInput and writes nothing. A write that names a type for a
 // node of kind retro or merge is refused ErrStepInput too, since neither has one. The write that
 // sets the report states the `reports` relation to that handoff. A type and a rating are judged
-// against the kind the node holds, not the one the write names, so a run made as a step never
-// takes a rating.
+// against the kind the write names and against the kind the node holds (typeOfKind,
+// ratingOfKind), so a run made as a step never takes a rating, whatever kind a later write calls
+// it.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -71,14 +72,16 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 					return err
 				}
 			}
-			if write.Rating != nil && kind != "" && kind != StepKindRetro {
-				return inputError("rating is the rating a retro gives its plan, and step %s is a run of kind %s", id, kind)
+			if write.Rating != nil {
+				if err := ratingOfKind(id, kind); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
-		relations: func(setting map[string]any) []tuple {
+		relations: func(setting map[string]string) []tuple {
 			if report, sets := setting[AttributeReport]; sets {
-				return []tuple{{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report.(string)}}
+				return []tuple{{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report}}
 			}
 			return nil
 		},
@@ -110,8 +113,9 @@ type nodeWrite struct {
 	// this write makes); a refusal is answered as it is. Nil takes every write.
 	check func(held map[string]json.RawMessage) error
 	// relations are the relation tuples the write states beside its attributes and its
-	// `part_of`, from the attributes it sets. Nil states none.
-	relations func(setting map[string]any) []tuple
+	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
+	// name. Nil states none.
+	relations func(setting map[string]string) []tuple
 }
 
 // errNoNode is a write that finds no node and does not name the identity that would make one; the
@@ -184,19 +188,21 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 	}
 
 	setting := map[string]any{}
+	texts := map[string]string{}
 	var tuples []tuple
 	for _, attribute := range write.stated {
 		if _, holds := held[attribute.name]; holds {
 			continue
 		}
 		setting[attribute.name] = attribute.value
+		texts[attribute.name] = attribute.text
 		tuples = append(tuples, tuple{fromID: write.id, kind: attribute.name, toKind: KindValue, toID: attribute.text})
 	}
 	if made {
 		tuples = append(tuples, tuple{fromID: write.id, kind: RelationPartOf, toKind: KindIssue, toID: write.issue})
 	}
 	if write.relations != nil {
-		tuples = append(tuples, write.relations(setting)...)
+		tuples = append(tuples, write.relations(texts)...)
 	}
 	if len(setting) == 0 {
 		return heldText, nil
@@ -339,7 +345,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		canonical := report.String()
 		stated = append(stated, attribute{AttributeReport, canonical, canonical})
 	}
-	rated, err := write.rating(kind)
+	rated, err := write.rating(id, kind)
 	if err != nil {
 		return "", nil, err
 	}
@@ -348,27 +354,24 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
 // gave the plan, and answers their two attributes, or none where the write states no rating. The
-// reason is stated (a reason "" is none), not blank and holds at most RatingReasonMost code points;
-// the rating is 1 to 5, and kind, where the write names one, is a retro.
-func (write StepWrite) rating(kind string) ([]attribute, error) {
+// rating is 1 to 5, the reason is neither left out ("") nor blank and holds at most
+// RatingReasonMost code points, and kind, where the write names one, is a retro (ratingOfKind).
+func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	if write.Rating == nil {
 		return nil, nil
 	}
 	rating, reason := write.Rating.Rating, write.Rating.Reason
-	if reason == "" {
-		return nil, inputError("rating and rating_reason are written together, and this write names rating %d and no rating_reason", rating)
-	}
 	if rating < 1 || rating > 5 {
 		return nil, inputError("rating %d is no rating: a plan is rated from 1 (the plan cost the work) to 5 (the plan fit the work)", rating)
 	}
 	if strings.TrimSpace(reason) == "" {
-		return nil, inputError("rating_reason is blank: a rating carries one sentence of why")
+		return nil, inputError("rating_reason is left out or blank: a rating carries one sentence of why")
 	}
 	if length := utf8.RuneCountInString(reason); length > RatingReasonMost {
 		return nil, inputError("rating_reason holds %d characters, more than the %d a reason holds", length, RatingReasonMost)
 	}
-	if kind != "" && kind != StepKindRetro {
-		return nil, inputError("rating is the rating a retro gives its plan, and this write is of a run of kind %s", kind)
+	if err := ratingOfKind(id, kind); err != nil {
+		return nil, err
 	}
 	return []attribute{
 		{AttributeRating, int64(rating), strconv.Itoa(rating)},
@@ -403,6 +406,15 @@ func (write StepWrite) missingIdentity() []string {
 func typeOfKind(kind, typ string) error {
 	if typ != "" && kind != "" && kind != StepKindStep {
 		return inputError("type %q is no type of a %s: no plan names it, so it has none", typ, kind)
+	}
+	return nil
+}
+
+// ratingOfKind refuses a rating for run id of kind step or merge: a rating is the rating a retro
+// gives its plan.
+func ratingOfKind(id, kind string) error {
+	if kind != "" && kind != StepKindRetro {
+		return inputError("rating is the rating a retro gives its plan, and step %s is a run of kind %s", id, kind)
 	}
 	return nil
 }

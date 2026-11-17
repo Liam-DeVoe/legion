@@ -133,20 +133,35 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 
 // The read of a project lists each of its issues that is done, newest close first, each with the
 // plan its run wrote, the rating of its retro with the reason, the time from its first start to its
-// last end, and its count of failed steps; the issue still in progress is not listed. The two plans
-// differ in id and in steps, so a plan read onto another issue's row is seen, and the first issue's
-// last end is 30.7 seconds past a whole minute, so its time is whole seconds, cut, not minutes.
+// last end, and its count of failed steps; the issue still in progress is not listed. The three
+// finished issues close in an order that is neither their key order nor their title order, either
+// way round, so a read sorted by key or by title is seen. The plans differ in id and in steps, so a
+// plan read onto another issue's row is seen, and the first issue's last end is 30.7 seconds past
+// a whole minute, so its time is whole seconds, cut, not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
-	handler := newTestHandler(t)
-	issues := createListedIssues(t, handler, "LEG", 3)
-	reviewed, fitted, running := issues[0], issues[1], issues[2]
+	handler, database := newTestHandlerWithStore(t)
+	issues := createListedIssues(t, handler, "LEG", 4)
+	reviewed, fitted, hurried, running := issues[0], issues[1], issues[2], issues[3]
 	daemon := daemonSession("LEG")
 	fittedSteps := []string{"planner", "implementer", "acceptance:owner"}
+	hurriedSteps := []string{"implementer", "acceptance:owner"}
 	reviewedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: reviewed, Generation: 1, Source: "default",
 		Tasks: []model.PlanTask{{ID: "default", Steps: defaultStepLine}}}
 	fittedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: fitted, Generation: 1, Source: "default",
 		Tasks: []model.PlanTask{{ID: "default", Steps: fittedSteps}}}
+	hurriedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: hurried, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: hurriedSteps}}}
 	merged := at(50).Add(30*time.Second + 700*time.Millisecond)
+	// The closes, oldest first: fitted, hurried, reviewed. So the read lists reviewed, hurried,
+	// fitted: issues 0, 2, 1, which is neither ascending nor descending by key or by title.
+	fittedClosed, hurriedClosed, reviewedClosed := at(1000), at(2000), at(3000)
+	closeAt := func(key string, closed time.Time) {
+		t.Helper()
+		closeIssue(t, handler, key)
+		if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", key, closed); err != nil {
+			t.Fatalf("close %s at %s: %v", key, closed, err)
+		}
+	}
 
 	putPlanRecordOK(t, handler, reviewed, reviewedPlan.ID, defaultPlanBody(daemon, 1))
 	runs := recordRuns(t, handler, "LEG", reviewed,
@@ -160,7 +175,6 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	)
 	reviewedRetro := runs[5]
 	rateRetro(t, handler, "LEG", reviewed, reviewedRetro, 1, 4, "The tester found the bug.")
-	closeIssue(t, handler, reviewed)
 
 	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
 		"tasks": []map[string]any{{"id": "default", "steps": fittedSteps}},
@@ -173,18 +187,38 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	)
 	fittedRetro := runs[2]
 	rateRetro(t, handler, "LEG", fitted, fittedRetro, 1, 5, "The plan fit the work.")
-	closeIssue(t, handler, fitted)
+
+	putPlanRecordOK(t, handler, hurried, hurriedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
+		"tasks": []map[string]any{{"id": "default", "steps": hurriedSteps}},
+	}))
+	runs = recordRuns(t, handler, "LEG", hurried,
+		run{"step", "implementer", 1, new(at(300)), new(at(310)), "failed"},
+		run{"step", "implementer", 1, new(at(311)), new(at(318)), "failed"},
+		run{"retro", "implementer", 0, new(at(320)), new(at(321)), "passed"},
+		run{"merge", "merger", 0, nil, new(at(330)), "passed"},
+	)
+	hurriedRetro := runs[2]
+	rateRetro(t, handler, "LEG", hurried, hurriedRetro, 1, 2, "No tester read the work.")
+
+	closeAt(fitted, fittedClosed)
+	closeAt(hurried, hurriedClosed)
+	closeAt(reviewed, reviewedClosed)
 
 	putPlanRecordOK(t, handler, running, uuid.NewString(), defaultPlanBody(daemon, 1))
 	recordRuns(t, handler, "LEG", running, run{"step", "reviewer", 4, new(at(200)), new(at(205)), "failed"})
 
 	read := readPlans(t, handler, "LEG", "")
-	if read.Project != "LEG" || len(read.Issues) != 2 || read.Issues[0].Issue != fitted || read.Issues[1].Issue != reviewed {
-		t.Fatalf("the read lists %+v, want %s then %s, the newest close first", read, fitted, reviewed)
+	listed := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
+		listed[index] = issue.Issue
+	}
+	if want := []string{reviewed, hurried, fitted}; read.Project != "LEG" || !slices.Equal(listed, want) {
+		t.Fatalf("the read of %s lists %v, want %v, the newest close first", read.Project, listed, want)
 	}
 	for _, want := range []struct {
 		issue          model.FinishedIssue
 		title          string
+		closed         time.Time
 		plan           model.PlanRecord
 		rating         int
 		reason         string
@@ -194,8 +228,9 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		failed         int
 		started, ended time.Time
 	}{
-		{read.Issues[0], "LEG listed issue 1", fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
-		{read.Issues[1], "LEG listed issue 0", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
+		{read.Issues[0], "LEG listed issue 0", reviewedClosed, reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
+		{read.Issues[1], "LEG listed issue 2", hurriedClosed, hurriedPlan, 2, "No tester read the work.", hurriedRetro, at(321), 1800, 2, at(300), at(330)},
+		{read.Issues[2], "LEG listed issue 1", fittedClosed, fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
 	} {
 		issue := want.issue
 		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
@@ -210,8 +245,8 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 			t.Errorf("%s's rating is of record %s ended %v, want the retro %s ended %s", issue.Issue, rated.StepID, rated.EndedAt,
 				want.retro, want.retroEnded)
 		}
-		if closed := issueClosedAt(t, handler, issue.Issue); issue.Title != want.title || !issue.ClosedAt.Equal(closed) {
-			t.Errorf("%s is listed with title %q closed %s, want %q closed %s", issue.Issue, issue.Title, issue.ClosedAt, want.title, closed)
+		if issue.Title != want.title || !issue.ClosedAt.Equal(want.closed) {
+			t.Errorf("%s is listed with title %q closed %s, want %q closed %s", issue.Issue, issue.Title, issue.ClosedAt, want.title, want.closed)
 		}
 		if issue.DurationSeconds == nil || *issue.DurationSeconds != want.duration ||
 			issue.StartedAt == nil || !issue.StartedAt.Equal(want.started) || issue.EndedAt == nil || !issue.EndedAt.Equal(want.ended) {
@@ -226,19 +261,6 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 			t.Fatalf("%s counts %d failed steps, want %d", issue.Issue, issue.FailedSteps, want.failed)
 		}
 	}
-}
-
-// issueClosedAt is the close of issue key as the issue's own read answers it.
-func issueClosedAt(t *testing.T, handler http.Handler, key string) time.Time {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-	read := decodeBody[struct {
-		ClosedAt *time.Time `json:"closed_at"`
-	}](t, response)
-	if response.Code != http.StatusOK || read.ClosedAt == nil {
-		t.Fatalf("read %s: status=%d body=%s, want its close", key, response.Code, response.Body.String())
-	}
-	return *read.ClosedAt
 }
 
 // A rating is a retro's: the rating route refuses a record of kind step or merge, and a record the
@@ -411,38 +433,45 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	}
 }
 
-// Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
-// rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A body naming
-// neither is the rating route's own refusal, since the store takes a step write with no rating; the
-// same body on the step route lands, which is its control. A reason of exactly 2,000 code points is
-// taken, which is the control of the bound.
+// Each rating outside its form is refused 400 STEP_INPUT in the words of the check that refuses it,
+// and writes nothing: the rating 1 to 5 and the reason not blank and at most 2,000 code points,
+// each the store's refusal. A body naming no rating is the rating route's own refusal, since the
+// store takes a step write with no rating; the same body on the step route lands, which is its
+// control. Every row names its refusal's words, since the route's own refusal names both rating
+// and rating_reason, so a value the route dropped on its way to the store is seen. A rating with no
+// reason reaches the store only after the issue's lookup: the same body for an issue Dispatch does
+// not hold is 404 ISSUE_NOT_FOUND. A reason of exactly 2,000 code points is taken, which is the
+// control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSession("LEG"), 1)
 	noReason := withStepFields(retro, map[string]any{"rating": 3})
 	noRating := withStepFields(retro, map[string]any{"rating_reason": "Why."})
+	const routesOwn = "rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason"
 
 	for _, row := range []struct {
-		name  string
-		body  map[string]any
-		field string
+		name    string
+		body    map[string]any
+		refusal string
 	}{
-		{"a rating of 0", withStepFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating"},
-		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
-		{"no rating", noRating, "rating"},
-		{"neither a rating nor a reason", retro, "rating"},
-		{"no reason", noReason, "rating_reason"},
-		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
-		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
+		{"a rating of 0", withStepFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating 0 is no rating"},
+		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating 6 is no rating"},
+		{"no rating", noRating, routesOwn},
+		{"neither a rating nor a reason", retro, routesOwn},
+		{"no reason", noReason, "rating_reason is left out or blank: a rating carries one sentence of why"},
+		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason is left out or blank: a rating carries one sentence of why"},
+		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason holds 2001 characters"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.field)
+			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.refusal)
 		})
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused ratings left %d records, want none", len(steps))
 	}
+	missing := putRating(t, handler, "LEG-999", uuid.NewString(), noReason)
+	requireStepRefusal(t, "a rating with no reason of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 	if written := putStepOK(t, handler, issue, uuid.NewString(), retro); written.Kind != "retro" || written.Rating != nil {
 		t.Fatalf("the step route answers %s for the retro's identity alone, want the retro with no rating", stepJSON(t, written))
 	}
@@ -539,7 +568,8 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 // An issue that ran twice has two plans and two retros. The second run's plan is its owner's, with
 // the document, the version and two tasks in the order the owner gave them, not by id; the plan write
 // answers it whole. The read lists that plan, the highest generation, though the first run's plan
-// was written after it, and both ratings, in the order the retros ran.
+// was written after it, and both ratings whole, in the order the retros ran: each its own score,
+// reason, record and end, the two scores different, so a score read onto the other retro is seen.
 func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -557,12 +587,15 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 		t.Fatalf("the owner's plan write answers %+v, want %+v", written, owners)
 	}
 	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 1))
-	for generation, retro := range map[int]struct {
+	retros := map[int]struct {
 		started time.Time
 		rating  int
 		reason  string
-	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}} {
+	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}}
+	ids := map[int]string{}
+	for generation, retro := range retros {
 		id := uuid.NewString()
+		ids[generation] = id
 		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"started_at": retro.started}))
 		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"result": "passed", "ended_at": retro.started.Add(time.Minute)}))
 		rateRetro(t, handler, "LEG", issue, id, generation, retro.rating, retro.reason)
@@ -576,13 +609,28 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	if plan := read.Issues[0].Plan; plan == nil || !reflect.DeepEqual(*plan, owners) {
 		t.Fatalf("the read lists the plan %+v, want the owner's plan of generation 2, %+v", plan, owners)
 	}
-	var got []string
-	for _, rating := range read.Issues[0].Ratings {
-		got = append(got, rating.Reason)
+	want := []model.PlanRating{
+		{Rating: 3, Reason: "The plan was late.", StepID: ids[1], EndedAt: new(at(11))},
+		{Rating: 4, Reason: "The second plan fit.", StepID: ids[2], EndedAt: new(at(101))},
 	}
-	if want := []string{"The plan was late.", "The second plan fit."}; !slices.Equal(got, want) {
-		t.Fatalf("the ratings are %v, want %v", got, want)
+	if got := planRatingsText(read.Issues[0].Ratings); !slices.Equal(got, planRatingsText(want)) {
+		t.Fatalf("the ratings are\n%s\nwant each retro's own, in the order they ran\n%s",
+			strings.Join(got, "\n"), strings.Join(planRatingsText(want), "\n"))
 	}
+}
+
+// planRatingsText is each rating of a read as one line, its score, reason, record and end, so two
+// lists compare whole and a difference prints whole.
+func planRatingsText(ratings []model.PlanRating) []string {
+	lines := make([]string, len(ratings))
+	for index, rating := range ratings {
+		ended := "no end"
+		if rating.EndedAt != nil {
+			ended = rating.EndedAt.UTC().Format(time.RFC3339Nano)
+		}
+		lines[index] = fmt.Sprintf("%d %q %s %s", rating.Rating, rating.Reason, rating.StepID, ended)
+	}
+	return lines
 }
 
 // A record whose start Dispatch never got (a step that started before the release) counts no time:
@@ -635,6 +683,32 @@ func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
 	}
 	if read.StartedAt == nil || !read.StartedAt.Equal(at(10)) || read.EndedAt == nil || !read.EndedAt.Equal(at(5)) {
 		t.Fatalf("the time is %v to %v, want %s to %s, as the records hold them", read.StartedAt, read.EndedAt, at(10), at(5))
+	}
+}
+
+// An issue whose last end is the moment of its first start holds a time of 0 seconds, which the
+// read answers as 0 and not as no duration: a run whose start Dispatch never got ended at the
+// moment a later run started, whose end has not reached Dispatch. The start and the end are the
+// moment the records hold.
+func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	recordRuns(t, handler, "LEG", issue,
+		run{"step", "planner", 1, nil, new(at(10)), "passed"},
+		run{"step", "implementer", 2, new(at(10)), nil, ""},
+	)
+	closeIssue(t, handler, issue)
+
+	finished := readPlans(t, handler, "LEG", "").Issues
+	if len(finished) != 1 {
+		t.Fatalf("the read lists %d issues, want %s", len(finished), issue)
+	}
+	read := finished[0]
+	if read.DurationSeconds == nil || *read.DurationSeconds != 0 {
+		t.Fatalf("the issue's time is %v seconds, want 0: its last end and its first start are both %s", read.DurationSeconds, at(10))
+	}
+	if read.StartedAt == nil || !read.StartedAt.Equal(at(10)) || read.EndedAt == nil || !read.EndedAt.Equal(at(10)) {
+		t.Fatalf("the time is %v to %v, want %s to %s, as the records hold them", read.StartedAt, read.EndedAt, at(10), at(10))
 	}
 }
 
@@ -755,8 +829,10 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 }
 
 // Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a tasks that is no
-// list at all the package's own 400 INVALID_JSON; none writes a plan. An id another issue's plan
-// holds is 409 PLAN_OTHER_ISSUE.
+// list at all the package's own 400 INVALID_JSON; none writes a plan. A lone half of a document
+// reaches the store, which names it or the half left out: a default plan naming either half, and
+// an owner's plan naming its document and no version. An id another issue's plan holds is 409
+// PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
@@ -778,6 +854,9 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 		{"a step that is no step", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"Planner"}}}}), "steps"},
 		{"a generation of 0", withStepFields(plan, map[string]any{"generation": 0}), "generation"},
 		{"an owner's plan with no document", withStepFields(plan, map[string]any{"source": "owner", "version": 2}), "artifact_id"},
+		{"an owner's plan with a document and no version", withStepFields(plan, map[string]any{"source": "owner", "artifact_id": uuid.NewString()}), "version is required"},
+		{"a default plan naming a version alone", withStepFields(plan, map[string]any{"version": 2}), "version names"},
+		{"a default plan naming a document alone", withStepFields(plan, map[string]any{"artifact_id": uuid.NewString()}), "artifact_id names"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			response := putPlanRecord(t, handler, issues[0], uuid.NewString(), row.body)

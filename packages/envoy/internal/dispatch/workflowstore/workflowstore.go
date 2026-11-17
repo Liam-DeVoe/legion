@@ -244,7 +244,9 @@ type Rating struct {
 }
 
 // Window bounds the close of the issues a read of a project lists to [Since, Until), each nil for
-// no bound. It is one value so a read cannot take the two bounds in the wrong order.
+// no bound. It is one value so a read cannot take the two bounds in the wrong order. A bound need
+// not be a whole microsecond: the read rounds each up to the next one (microsecondCeiling), which
+// keeps its meaning against a close PostgreSQL holds to the microsecond.
 type Window struct {
 	Since, Until *time.Time
 }

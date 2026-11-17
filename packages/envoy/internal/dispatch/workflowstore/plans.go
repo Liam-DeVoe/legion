@@ -89,9 +89,9 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	stated = append(stated, attribute{AttributeSource, source, source})
 
 	// A document's half that is "" or 0 states nothing, as a write's empty field does.
-	document := write.Document
-	if document == nil {
-		document = &PlanDocument{}
+	var document PlanDocument
+	if write.Document != nil {
+		document = *write.Document
 	}
 	switch source {
 	case PlanSourceDefault:
