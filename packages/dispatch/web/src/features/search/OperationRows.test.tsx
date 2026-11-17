@@ -681,6 +681,94 @@ test("a read of the setting that fails after the refusal still asks first, since
   }
 });
 
+test("with the setting on, a write Dispatch refused is listed by the next confirm step, which sends it alone", async () => {
+  const user = userOnFakeClock();
+  settings.mockResolvedValue({ confirm_writes: true });
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    written.mockImplementation(async (_run, input) => {
+      if (input.invocation === 0 && sent().length <= 2) {
+        throw new ApiError(409, { code: "ISSUE_CLOSED", error: "the issue is closed" });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    const first = await screen.findByTestId("going-confirm-step");
+    expect(within(first).getAllByTestId("going-write-line")).toHaveLength(2);
+    await user.click(within(first).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
+      ).toEqual(["ISSUE_CLOSED", null])
+    );
+
+    await submit(user);
+    const second = await screen.findByTestId("going-confirm-step");
+    const listed = within(second).getAllByTestId("going-write-line");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toHaveTextContent("LEGION-3");
+    await user.click(within(second).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(sent().slice(2)).toEqual([
+        { approved: "confirmed", invocation: 0, offer: "dispatch_issue_update" },
+      ])
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("a confirm step after a refusal of the route and a refusal for the setting lists both writes it sends", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    await waitFor(() => expect(settings).toHaveBeenCalledTimes(1));
+    settings.mockResolvedValue({ confirm_writes: true });
+    written.mockImplementation(async (_run, input) => {
+      if (input.approved === "auto" && input.invocation === 0) {
+        throw new ApiError(404, { code: "ISSUE_NOT_FOUND", error: "no such issue" });
+      }
+      if (input.approved === "auto") {
+        throw new ApiError(409, {
+          code: "GOING_CONFIRMATION_REQUIRED",
+          error: "your setting asks you to confirm every write of the bar",
+        });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
+      ).toEqual(["ISSUE_NOT_FOUND", "GOING_CONFIRMATION_REQUIRED"])
+    );
+    await submit(user);
+    const step = await screen.findByTestId("going-confirm-step");
+    expect(
+      within(step)
+        .getAllByTestId("going-write-line")
+        .map((line) => line.textContent)
+    ).toEqual([expect.stringContaining("LEGION-3"), expect.stringContaining("LEGION-4")]);
+    await user.click(within(step).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(sent().slice(2)).toEqual([
+        { approved: "confirmed", invocation: 0, offer: "dispatch_issue_update" },
+        { approved: "confirmed", invocation: 1, offer: "dispatch_issue_update" },
+      ])
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
 /** The decision's update of LEGION-3, which the words named, beside one of LEGION-4 that only an
  *  item's stored text asked for: the proposal marks it not automatic. */
 const injected: GoingProposalEvent = {

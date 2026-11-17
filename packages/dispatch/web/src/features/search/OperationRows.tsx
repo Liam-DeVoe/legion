@@ -314,6 +314,21 @@ export function useGoingOperations({
   // Each line's own invocation, `action:index`, so an action whose automatic invocations ran
   // still offers the ones the person has to pick.
   const ranInvocations = new Set(counted.map((line) => line.key));
+  // The invocations a write of the turn still settles - one sending, or done - which a further
+  // submit sends again none of; a refused or a stopped line is the person's to send again.
+  const settled = new Set(
+    (turn?.lines ?? [])
+      .filter((line) => line.state === "sending" || line.state === "done")
+      .map((line) => line.key)
+  );
+  // What the confirm step lists and what its Confirm sends: one set, so the person agrees to
+  // exactly the writes the bar then makes.
+  const confirming =
+    stage?.kind === "confirming"
+      ? runIndexes(offerOf(proposal, stage.action), "confirmed").filter(
+          (index) => !settled.has(`${stage.action}:${index}`)
+        )
+      : [];
   // The field a missing argument is asked in takes focus as it appears, so the person types the
   // value where the bar asked for it; a ref of one identity, so a later render moves nothing.
   const focusField = useCallback((field: HTMLInputElement | HTMLSelectElement | null) => {
@@ -371,6 +386,14 @@ export function useGoingOperations({
     const step = nextStep(words, preparing, current, confirmWrites);
     if (step.kind !== "preparing") apply(step);
   }, [preparing, current, confirmWrites, words]);
+
+  // A confirm step with nothing left to send - every write of the action sent or done - closes:
+  // there is nothing for the person to agree to.
+  const confirmsNothing = stage?.kind === "confirming" && confirming.length === 0;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the stage moves only when the step is left with nothing to confirm
+  useEffect(() => {
+    if (confirmsNothing) setStage({ kind: "idle", words });
+  }, [confirmsNothing]);
 
   const submit = () => {
     if (stage?.kind === "filling") {
@@ -562,10 +585,8 @@ export function useGoingOperations({
             action={stage.action}
             offer={offerOf(proposal, stage.action)}
             onCancel={() => setStage({ kind: "idle", words })}
-            onConfirm={() => run(stage.action, "confirmed", stage.fills)}
-            runs={runIndexes(offerOf(proposal, stage.action), "confirmed").filter(
-              (index) => !ranInvocations.has(`${stage.action}:${index}`)
-            )}
+            onConfirm={() => run(stage.action, "confirmed", stage.fills, confirming)}
+            runs={confirming}
           />
         ) : null}
         {withheldBeside.length === 0 ? null : (
