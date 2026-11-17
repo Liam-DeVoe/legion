@@ -40,8 +40,9 @@ func TestAStalledGoCommandShowsItsStandardErrorWhenTheTestTimesOut(t *testing.T)
 	defer cancel()
 	cmd := exec.CommandContext(killing, os.Args[0], "-test.run=^TestTheStalledGoCommand$", "-test.timeout=3s")
 	cmd.Env = append(os.Environ(), stalledGoEnv+"="+dir)
-	// The stand-in holds the output pipe until it sees the child gone; WaitDelay bounds a stand-in
-	// that does not.
+	// The stand-in holds none of this command's pipes: Output's writers are no *os.File, so exec
+	// gives go pipes of the child's own, and the child's exit ends CombinedOutput. WaitDelay bounds
+	// that wait only if something the child starts ever inherits these pipes.
 	cmd.WaitDelay = 10 * time.Second
 	output, err := cmd.CombinedOutput()
 	if killing.Err() != nil {
