@@ -57,9 +57,10 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 }
 
 // A stored publish whose acknowledgement the connection's drop lost is sent again once the
-// connection is back, inside the publish's own bound (sendStored), here the row's (ownWait): the
-// caller is answered the stream's acknowledgement, as a duplicate of the copy the first send stored
-// under the same Nats-Msg-Id, rather than ErrConnectionLost.
+// connection is back, inside the publish's own bound (sendStored): publishBound, 5 s, to which the
+// publish caps the row's longer context (PublishStoredAck through publishJetStreamOn). The caller
+// is answered the stream's acknowledgement, as a duplicate of the copy the first send stored under
+// the same Nats-Msg-Id, rather than ErrConnectionLost.
 //
 // The control is the same row at 2b8a5d7cbb: the client's JetStream context answered the loss
 // ErrConnectionLost, which sendStored's retry, reading nats.ErrConnectionClosed alone, passed over,
