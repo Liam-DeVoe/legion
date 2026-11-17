@@ -23,9 +23,9 @@ import (
 // role to three roles: the worker holding the issue's phase, the implementer, whose code the
 // checks ran on, and the tree's architect, who owns the tree. Each message names every check the
 // settlement reports and the conclusion it reports for it, in name order. A role named twice - the
-// implementer holding the phase, the architect holding accepting - is told once, and a phase no
-// worker holds names none. Nothing else happens: no phase moves, no architect
-// hears checks-red, no worker is started, and no return is counted.
+// implementer holding the phase, the architect holding admitted or accepting - is told once, and a
+// phase no worker holds names none. Nothing else happens: no phase moves, no architect hears
+// checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -33,6 +33,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 		// roles are the roles told, in the order tellChecks addresses them.
 		roles []claim.Role
 	}{
+		{phase.Admitted, "in_progress", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Implementing, "in_progress", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Testing, "testing", []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
@@ -347,7 +348,9 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 				}
 				return
 			}
-			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
+			// The fact names no merge state and no read time: a test states a verdict rather than
+			// reading one, and the reason says so (conflictReason).
+			want := "the head conflicts with main: GitHub answered mergeable=CONFLICTING with no mergeState for head head at an unknown time, and runs no checks on it; merge main forward"
 			reason, from := checksRedNotice(t, pool)
 			var status string
 			if err := pool.QueryRow(context.Background(), "select payload->>'status' from outbox where kind = 'dispatch_status'").Scan(&status); err != nil {
@@ -394,7 +397,7 @@ func TestEveryConflictingReadDecidesAndTheMoveItselfStopsTheRepeat(t *testing.T)
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the same conflicting read again the issue is in %s, want implementing", got)
 	}
-	want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
+	want := "the head conflicts with main: GitHub answered mergeable=CONFLICTING with no mergeState for head head at an unknown time, and runs no checks on it; merge main forward"
 	var notices int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'").Scan(&notices); err != nil {
 		t.Fatalf("count the architect's checks-red notices: %v", err)
@@ -405,6 +408,55 @@ func TestEveryConflictingReadDecidesAndTheMoveItselfStopsTheRepeat(t *testing.T)
 	}
 	if pass := implementerPass(t, pool); pass != 1 {
 		t.Fatalf("pass = %d, want the one return to implementing counted once", pass)
+	}
+}
+
+// The reason the daemon gives for a conflicting head names the evidence it rests on
+// (conflictReason, dispatch://INFRA-2833 R3): the head GitHub answered for, GitHub's mergeable and
+// merge-state answer, and the time that answer was in hand, so the implementer the task tells to
+// merge the base forward can hold it against a read of its own and refuse the merge on a
+// measurement. The architect's checks-red notice and the implementer's task both carry it. A fact
+// that carries no read time says the time is unknown, even where the record holds the stamp of an
+// earlier read, since that stamp dates another answer than this one; and an answer that carried
+// no merge state says so rather than printing an empty field.
+func TestConflictReasonNamesTheHeadTheAnswerAndTheReadTime(t *testing.T) {
+	const head = "4b5621b7c8822528498173e10294c3ed85dd8222"
+	readAt := time.Date(2026, 11, 17, 8, 56, 2, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		// stamped is the read time an earlier read left on the record, zero for none.
+		stamped time.Time
+		state   record.MergeState
+		readAt  time.Time
+		want    string
+	}{
+		{"a read that carries its time", time.Time{}, record.MergeStateDirty, readAt,
+			"the head conflicts with main: GitHub answered mergeable=CONFLICTING mergeState=dirty for head " + head +
+				" at 2026-11-17T08:56:02Z, and runs no checks on it; merge main forward"},
+		{"a fact with no read time over an earlier read's stamp", readAt.Add(-10 * time.Hour), record.MergeStateDirty, time.Time{},
+			"the head conflicts with main: GitHub answered mergeable=CONFLICTING mergeState=dirty for head " + head +
+				" at an unknown time, and runs no checks on it; merge main forward"},
+		{"an answer that carried no merge state", time.Time{}, record.MergeStateUnread, readAt,
+			"the head conflicts with main: GitHub answered mergeable=CONFLICTING with no mergeState for head " + head +
+				" at 2026-11-17T08:56:02Z, and runs no checks on it; merge main forward"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+				Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+				Number: 42, Branch: "legion/LEGION-208", HeadSHA: head, StateReadAt: tc.stamped})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			applyRefusingNothing(t, pool, mergingEngine(), intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main",
+				HeadSHA: head, Mergeable: record.MergeabilityConflicting, MergeState: tc.state, ReadAt: tc.readAt})
+			if got := issuePhase(t, pool); got != phase.Implementing {
+				t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
+			}
+			reason, _ := checksRedNotice(t, pool)
+			if task := implementerTask(t, pool); reason != tc.want || !strings.Contains(task, tc.want) {
+				t.Fatalf("notice reason %q, task %q; want the notice's reason to be %q and the task to carry it", reason, task, tc.want)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -72,7 +73,7 @@ func TestADeniedBucketOpenNamesTheRefusedSubject(t *testing.T) {
 		t.Fatalf("open JetStream: %v", err)
 	}
 
-	_, err = OpenKeyValue(client.Conn, js, bucket)
+	_, err = OpenKeyValue(context.Background(), client.Conn, js, bucket)
 
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("an open whose bucket lookup the server refused = %v, want ErrPublishDenied", err)

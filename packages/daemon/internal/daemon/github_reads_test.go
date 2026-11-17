@@ -209,7 +209,10 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 			if tc.want != phase.Implementing {
 				return
 			}
-			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
+			// GitHub's answer names head code and no merge state, and the read's time is the stamp
+			// the record now holds, written from the same fact (workflow's conflictReason).
+			want := "the head conflicts with main: GitHub answered mergeable=CONFLICTING with no mergeState for head code at " +
+				pr.StateReadAt.UTC().Format(time.RFC3339) + ", and runs no checks on it; merge main forward"
 			reasons := noticeReasons(t, pool, "checks-red")
 			if len(reasons) != 1 || !strings.Contains(reasons[0], want) {
 				t.Fatalf("checks-red notices %q, want one saying %q", reasons, want)

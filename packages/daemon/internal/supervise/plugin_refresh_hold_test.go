@@ -74,8 +74,16 @@ func TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContrac
 	if got := h.claim(); got.PluginContract != refreshContract {
 		t.Fatalf("the relaunched claim records contract %d, want this daemon's %d", got.PluginContract, refreshContract)
 	}
-	if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
-		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process this daemon serves", got, next)
+	// The stale process left no report the daemon took (a stale plugin's report is refused), so
+	// the relaunch recorded its background work as unknown, and the take of the task carries that
+	// sentence in front of it and tells it (dispatch://INFRA-3276 R3).
+	got := h.wantPrompts(sent + 1)[sent]
+	ended := h.claim().EndedWork
+	if ended.Cause != endStalePlugin || ended.Reported || !ended.Told || ended.ToldBy != got.DeliveryID {
+		t.Fatalf("the relaunch recorded %+v, want an unreported end of the stale plugin's process, told by the take of %s", ended, got.DeliveryID)
+	}
+	if want := relaunchSentence(ended, true) + "\n\n" + next; got.Message != want {
+		t.Fatalf("the take after the relaunch is %+v, want the task %q behind the relaunch's sentence, by the process this daemon serves", got, want)
 	}
 }
 

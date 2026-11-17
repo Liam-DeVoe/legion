@@ -41,6 +41,13 @@ import (
 // transaction, so a start row that runs again after a crash takes no second one: the fact applies
 // once for the row that wrote it. A launch's own ready takes none, since the launch took its turn
 // at the machine's gate (supervise's reserveWake); so does every ready while the pacing is off.
+//
+// A launch's ready that carries the sentence of what the last let-go of the architect's process
+// ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
+// of a relaunched root architect can be this catch-up's rather than its task's, and the
+// architect then reads that its subagent died before it reads its tree. A take of a task the
+// claim holds tells the same record and is what marks it told, so a catch-up that is held,
+// superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
@@ -57,7 +64,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	if fact.Paced && e.cfg.Reserve != nil {
 		paced = e.cfg.Reserve(now)
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *root, fact.Launch, now, paced)
+	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *root, fact.Launch, fact.Relaunch, now, paced)
 }
 
 // QueueCatchUp is the one composer of a root architect's catch-up, which both the ready
@@ -65,6 +72,14 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // through, so the two never compose one differently. It states root's tree as the record holds it
 // (treeCatchUp) for launch, the launch it was written for, so a failed forward of an older one is
 // not queued again behind it (the outbox's rehold).
+//
+// relaunch is the sentence of what the last let-go of the architect's process ended, which a
+// launch's ready carries while the claim's record of it is untold (intake.ClaimReady.Relaunch),
+// and "" from every other caller. The notice's reason — the text the architect reads of the
+// catch-up — opens with it, so the architect reads what died with its last process before it
+// reads its tree. The copy tells nothing: the record is the claim's, and it is told at the
+// accepted take of a task that tells the same record (supervise's accept, Delivery.message),
+// which the outbox's publish of this notice does not see.
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,
@@ -84,7 +99,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // releaseWaiting), and with now beside it (record.Notice.PacedFrom) it is the wait in the line
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
-func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue, launch uint64, now, paced time.Time) error {
+func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
 	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, root)
 	if err != nil {
 		return err
@@ -108,6 +123,9 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if len(awaiting) > 0 {
 		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
 	}
+	if relaunch != "" {
+		reason = relaunch + "\n\n" + reason
+	}
 	at := now
 	notice := record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: reason, CatchUp: &catchUp}
 	if !paced.IsZero() {
@@ -120,28 +138,11 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
 // start of the phase that will still act, which carries the phase's task itself, or a stop that
 // will still act, which is about to end the claim this ready came from. Both are StartFor's rule
-// about queued rows, read without its question about the claim's own liveness: this claim is
-// live, which is precisely why it is being given its task.
+// about queued rows (actingStop, queuedStartActs), read without its question about the claim's own
+// liveness: this claim is live, which is precisely why it is being given its task.
 func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	var lastStart int64
-	if run.Claim != nil {
-		lastStart = run.Claim.LastStartRow
-	}
-	var stop int64
-	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
-			stop = max(stop, queued.ID)
-		}
-	}
-	if stop != 0 {
-		return true
-	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current {
-			return true
-		}
-	}
-	return false
+	stop := actingStop(run, root)
+	return stop != 0 || queuedStartActs(run, stop, current)
 }
 
 // readyWorkerTask gives a phase worker whose claim has just become ready its phase's task again,
@@ -156,9 +157,16 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
 // claim's, its tree does not linger, and its phase's own terminating fact has not arrived
 // (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
-// its merger must not be handed merging again at every launch. A claim that holds any task is left
+// its merger must not be handed merging again at every launch. A claim that holds a task is left
 // alone: it has work, and a second task would be a second prompt for work under way. So is a role
 // a queued row already covers (queuedRowCovers).
+//
+// The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
+// that holds that alone is read as holding nothing. The phase's task that this queues takes that
+// delivery's place while no take of it is accepted, or once the accepted take's turn has run
+// (supervise's queue), and carries the sentence in front of itself while the record is untold.
+// A worker that came back holding only that delivery — its ready found it holding one from an
+// earlier launch its agent never read — would otherwise be given no phase task at all.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -227,8 +235,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
+	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
 	held := run.Claim
-	if held == nil || held.Pending != nil {
+	if held == nil || supervise.HoldsTask(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
@@ -286,11 +295,11 @@ func finishedInItsSession(held record.RoleClaim) bool {
 // says what is the architect's own to do.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, []string, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
-	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
+	handed, err := ArchitectCarried(ctx, tx, store, root)
 	if err != nil {
 		return record.CatchUp{}, nil, err
 	}
-	if handed != nil && handed.Generation == root.Generation {
+	if handed != nil {
 		catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 	}
 	gates, err := store.GatesOf(ctx, tx, root.Key)

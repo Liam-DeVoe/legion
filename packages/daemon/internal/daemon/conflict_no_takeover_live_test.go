@@ -79,11 +79,6 @@ const (
 	conflictBase = "main"
 )
 
-// conflictReason is the reason the workflow gives a conflicting head, which the implementer's
-// task, the architect's notice and the tester's phase-ended message all carry (workflow's
-// mergeability).
-const conflictReason = "the head conflicts with " + conflictBase + ": GitHub runs no checks on it; merge " + conflictBase + " forward"
-
 // The three heads the proof drives: the implementer's seeded head, the fix it pushes for the
 // tester's second assignment, and the fix it pushes while the reviewer reviews. Each red is
 // settled at a head of its own, since a settlement that replays to the judgement already recorded
@@ -230,6 +225,7 @@ func (r *conflictNoTakeoverLive) conflictTakesNoTurnOver() {
 			before.State, before.Pending)
 	}
 	stopsBefore, launchesBefore := r.stopsOf(r.test.token), len(launchesOf(r.rt, r.test.token))
+	drove := time.Now()
 	r.driveConflict()
 	r.note("drove the base of %s past %s, so GitHub answers its head conflicting, while the tester's turn runs", r.key, conflictFirstHead)
 
@@ -259,10 +255,11 @@ func (r *conflictNoTakeoverLive) conflictTakesNoTurnOver() {
 	r.note("read back: %s is in implementing, and the implementer's fix task is queued as task %d and not yet taken (%s), while the tester is still working delivery %s",
 		r.key, value.Task.Number, firstLine(queued.Pending.Task), before.Pending.ID)
 
-	// The tester is told its phase ended, once, on its own role topic.
+	// The tester is told its phase ended, once, on its own role topic, with the reason the
+	// architect's notice carries.
 	topic := notify.RoleTopicPrefix + string(r.test.token)
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
-		Reason: conflictReason}.Message(r.key)
+		Reason: r.conflictReason(conflictFirstHead, drove)}.Message(r.key)
 	var told []listenerPublish
 	testwait.Eventually(t, "the phase-ended message on the tester's role topic", func() bool {
 		told = r.notices.acceptedOn(topic)
@@ -302,6 +299,35 @@ func (r *conflictNoTakeoverLive) conflictTakesNoTurnOver() {
 		t.Fatalf("the implementer took task %d, want task %d, the one the conflict queued", fix.Number, value.Task.Number)
 	}
 	r.note("read back: once the tester's turn ended, the implementer's take of task %d was accepted (%s)", fix.Number, firstLine(fix.Text))
+}
+
+// conflictReason is the reason the workflow gave the conflict this proof drove at head (workflow's
+// conflictReason), which the implementer's task, the architect's notice and the tester's
+// phase-ended message all carry, read back from the architect's checks-red notice for that head.
+// It names the base, GitHub's answer for the head — `mergeable: false` and no merge state, which
+// is what the stand-in answers — and the moment that answer was in hand, which is the daemon's own
+// clock and so lies between since, a moment before the proof drove the conflict, and now.
+func (r *conflictNoTakeoverLive) conflictReason(head string, since time.Time) string {
+	r.t.Helper()
+	opening := "the head conflicts with " + conflictBase + ": GitHub answered mergeable=CONFLICTING with no mergeState for head " + head + " at "
+	closing := ", and runs no checks on it; merge " + conflictBase + " forward"
+	var reason string
+	testwait.Eventually(r.t, "the architect's checks-red notice for head "+head, func() bool {
+		for _, notice := range r.architectNotices(r.key, "checks-red") {
+			if strings.HasPrefix(notice.Payload, opening) {
+				reason = notice.Payload
+				return true
+			}
+		}
+		return false
+	})
+	stamp, closed := strings.CutSuffix(strings.TrimPrefix(reason, opening), closing)
+	at, err := time.Parse(time.RFC3339, stamp)
+	if !closed || err != nil || at.Before(since.Truncate(time.Second)) || at.After(time.Now()) {
+		r.t.Fatalf("the architect's checks-red notice reads %q, want %q, then a read time between %s and now, then %q",
+			reason, opening, since.UTC().Format(time.RFC3339), closing)
+	}
+	return reason
 }
 
 // stopsOf is how many times the runtime was asked to stop token's process: its suspensions and

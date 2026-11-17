@@ -39,10 +39,13 @@ const taskWithinOfReady = 2 * time.Minute
 // start row that moved the issue into testing created and launched its claim, its agent said it
 // was ready, and that row's task was delivered to it. Its supervisor fires the ready fact the
 // daemon fires (workflowRuntime.terminal) and keeps its claims where the workflow reads them, in
-// Postgres, so readyWorkerTask sees the claim and its pending task as the daemon's does.
+// Postgres, so readyWorkerTask sees the claim and its pending task as the daemon's does. It reads
+// the session's activity report from that store as the daemon does (supervise.Deps.ClaimActivity),
+// which is what a relaunch records the work it ended from.
 type readyWorkerRig struct {
 	t       *testing.T
 	pool    *store.Pool
+	st      *store.Store
 	sup     *supervisor
 	rt      *fake.Runtime
 	runner  *outbox
@@ -54,6 +57,17 @@ type readyWorkerRig struct {
 
 // newReadyWorkerRig starts the tester of a testing issue and queues it the start's task.
 func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
+	t.Helper()
+	rig := newStartedTesterRig(t, "Test it.")
+	if held := rig.claim().Pending; held == nil || held.Task != "Test it." {
+		t.Fatalf("the started tester holds %+v, want the start's task", held)
+	}
+	return rig
+}
+
+// newStartedTesterRig starts the tester of a testing issue from a start carrying task, which ""
+// leaves carrying none, and brings its agent to ready in testerSession.
+func newStartedTesterRig(t *testing.T, task string) *readyWorkerRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -71,10 +85,11 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	}
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
+	sup.deps.ClaimActivity = st.ClaimActivity
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories}, quietLogger())
 	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
-	rig := &readyWorkerRig{t: t, pool: pool, sup: sup, rt: rt, issue: issue,
+	rig := &readyWorkerRig{t: t, pool: pool, st: st, sup: sup, rt: rt, issue: issue,
 		runner: &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
 			trees: st, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), handlers: []intake.Handler{engine},
 			// The outbox reads the clock to lease rows; a minute on runs every row the ready
@@ -89,9 +104,9 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	rig.conn = fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(rig.token, rig.conn)
 	// The start that moved the issue into testing: it creates the claim, launches it and hands it
-	// the phase's task, which waits for the agent to be ready.
+	// task where it carries one, which waits for the agent to be ready.
 	if err := rig.runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree,
-		Role: claim.RoleTester, Generation: issue.Generation, Phase: phase.Testing, Task: "Test it."}, time.Now())); err != nil {
+		Role: claim.RoleTester, Generation: issue.Generation, Phase: phase.Testing, Task: task}, time.Now())); err != nil {
 		t.Fatalf("start the tester: %v", err)
 	}
 	machine, found := sup.Machine(rig.token)
@@ -100,9 +115,6 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	}
 	rig.machine = machine
 	rig.boot(testerSession)
-	if held := rig.claim().Pending; held == nil || held.Task != "Test it." {
-		t.Fatalf("the started tester holds %+v, want the start's task", held)
-	}
 	return rig
 }
 
@@ -129,8 +141,9 @@ func (r *readyWorkerRig) boot(session string) {
 // then sends the turn-outcome report naming the task, which is what finishes it: with background
 // work on, an agent_end names no task — a background result wakes a settled session and starts
 // turns the daemon never gave a task — so a task's life ends at the report of its number rather
-// than at any turn end. The tester is then the phase holder the issue waits on, idle with nothing
-// pending, where CI, a review or an operator's resume leaves one.
+// than at any turn end. The session then reports that nothing of its own runs, as Oh My Pi's does
+// at every turn's end, so a come-back ends no work of it. The tester is then the phase holder the
+// issue waits on, idle with nothing pending, where CI, a review or an operator's resume leaves one.
 func (r *readyWorkerRig) workTheTask() {
 	r.t.Helper()
 	ctx := context.Background()
@@ -151,6 +164,26 @@ func (r *readyWorkerRig) workTheTask() {
 	r.machine.Wait()
 	if held := r.claim().Pending; held != nil {
 		r.t.Fatalf("after its turn the tester still holds %+v, want the task retired with the turn", held)
+	}
+	r.report()
+}
+
+// report is the tester's session reporting what of its own runs (putActivity): the kinds named,
+// or nothing running when it names none.
+func (r *readyWorkerRig) report(kinds ...string) {
+	r.t.Helper()
+	putActivity(r.t, r.st, r.token, r.claim().Generation, kinds...)
+}
+
+// putActivity is token's session reporting what of its own runs, through the store's own write
+// onto launch, the launch it runs now (the activity route's PutClaimActivity): background work of
+// the kinds named, or nothing running when it names none.
+func putActivity(t *testing.T, st *store.Store, token claim.Token, launch uint64, kinds ...string) {
+	t.Helper()
+	known, err := st.PutClaimActivity(context.Background(), token, launch, claim.SessionActivity{
+		At: time.Now(), BackgroundWork: claim.BackgroundWork{Running: len(kinds) > 0, Kinds: kinds}})
+	if err != nil || !known {
+		t.Fatalf("report the activity of %s: known=%v, %v", token, known, err)
 	}
 }
 

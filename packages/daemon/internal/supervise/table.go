@@ -1076,7 +1076,7 @@ func fillTable(t *builder) {
 	t.row(onRuleResume, "the claim runs: nothing to resume", nothingToDo, nil, live...)
 	t.row(onRuleResume, "a queued claim is spawned by its start, not resumed", nothingToDo, nil, StateQueued)
 	t.row(onRuleResume, "the previous launch's pane is still uncertain: the boot's reconciliation decides it", nothingToDo, nil, StateLaunchUncertain)
-	t.row(onRuleResume, "a failed claim spent its launch budget: only the workflow's retry relaunches it", nothingToDo, nil, StateFailed)
+	t.row(onRuleResume, "a failed claim spent its launch budget or was refused in a way no try changes: only the workflow's retry relaunches it", nothingToDo, nil, StateFailed)
 	t.row(onRuleResume, "the claim is retired", nothingToDo, nil, StateRetired)
 
 	stoppable := []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered,
@@ -1265,9 +1265,11 @@ const unansweredAsksWarn = 3
 // is still running, and ends it when the agent says it is not. An ask the agent does not answer
 // says nothing about the turn: the claim stays working, the question stays armed, and the next
 // sweep asks again. Taken as "not streaming", it would end a turn still running and set the claim
-// idle, and the sweep would then send the task into the busy agent every interval.
+// idle, and the sweep would then write the value of a task into the busy agent every interval.
 //
-// A turn that is over is ended through turnEnded, which clears askFirst with the turn.
+// A turn that is over is ended through turnEnded, which clears askFirst with the turn. The end is
+// counted as every end is (TurnsEnded), so the daemon posts it to the issue's other claims, whose
+// phase tasks may have been held for this turn (its wakeIssue).
 func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	if !m.askFirst {
 		return nil
@@ -1493,8 +1495,10 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 //     has not ended; suspending it mid-turn";
 //   - a failure of the claim (fail): "supervise: claim failed";
 //   - a retirement (retire), which writes no line of its own: the agent's own exit says
-//     "supervise: the agent reported its exit" before it, and a stop or the workflow's close of
-//     the issue or the tree retires the claim with no line at all;
+//     "supervise: the agent reported its exit" before it, a stop that ended work of the agent
+//     says "supervise: the relaunch ended work the agent had running" under the stop's cause
+//     (recordEnd, endStopped), and the workflow's close of the issue or the tree retires the
+//     claim with no line at all;
 //   - a stale-plugin relaunch of a claim whose turn is not waited out (relaunchStale):
 //     "supervise: the process speaks another plugin contract; relaunching it onto the current
 //     plugin" — one that is waited out says "supervise: the process speaks another plugin
@@ -1505,6 +1509,16 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // worker ran.
 //
 // The mark a restart left (askFirst) goes with the turn.
+//
+// A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
+// cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
+// it (suspendHeldAtEnd): the next process is told it was in no turn, and the task whose turn
+// this was is no task cut off in its turn (recordEnd).
+//
+// Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
+// can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
+// task one of them holds rather than adopt the working copy they share under this turn may be
+// taken now.
 //
 // A claim working because its session is being compacted is left exactly where it is: a
 // compaction aborts whatever turn its session was running, so the agent_end of a background
@@ -1518,6 +1532,7 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // against ends finds the pair.
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
+	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
 	m.resetPromptBudgets()
@@ -1532,7 +1547,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil {
 		// The task whose turn this was is finished by the settle that follows: the claim is
 		// suspended by then, where no end-frame bound watches a task (settle).
-		if err := m.suspendHeld(ctx); err != nil {
+		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
 				// suspended in memory (suspended).
@@ -1626,7 +1641,9 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // checked before the retirement, so the process is kept and the deadline tried again at the probe
 // interval, as one whose stop fails is. An operator suspension retained through a rule-resuming
 // launch instead completes here: no ready will arrive to run it, and relaunching would drop the
-// operator's hold.
+// operator's hold. The retirement's stop records what it ended as the deadline's (endNeverReady,
+// letGo) — what its agent never did is no turn, so a record comes only of background work the
+// process reported — and the relaunch that follows lets nothing more go.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By == SuspendedByOperator {
 		return m.suspendHeld(ctx)
@@ -1641,12 +1658,12 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: %w", m.claim.Token, never, err)
 		}
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx); err != nil {
+		if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -1730,8 +1747,21 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // finishReady persists the current claim before publishing ready, then offers again a take the
 // claim's not being ready refused. reready may reach it while the claim is idle or working, so it
 // must not rewrite the state to ready.
+//
+// Between the ready's durable report and the offer, a claim that holds no delivery while its
+// record of what the last let-go ended is untold and shows running work is given the daemon's own
+// delivery of that record (queueRelaunch), whose queue writes its value, so the new process takes
+// the sentence at once. The order is the point: the report is the workflow's ready, read in its
+// own transaction while this decision runs (Machine.OnDurableState, the daemon's applyTerminal),
+// and it must find the claim holding nothing, or a phase worker the workflow still owes a resume
+// task would be queued none (workflow's readyWorkerTask). A claim that holds a delivery takes it
+// with the sentence in front, and one whose held task the offer drops instead is given the
+// daemon's own delivery there (takeable, queueRelaunch).
 func finishReady(m *Machine, ctx context.Context) error {
 	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
+		return err
+	}
+	if err := m.queueRelaunch(ctx); err != nil {
 		return err
 	}
 	return m.offerPending(ctx)
@@ -1830,15 +1860,17 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	return retry(m, ctx, ev)
 }
 
-// stop ends one claim: the runtime releases it, and it retires. A release that fails changes
-// nothing, so the stop can be asked again. The tree's root claim ends only with its tree: a
-// retired root would leave the orphan sweep's known set, which would then take whatever the
-// runtime holds for the root issue — under a sandbox, its Sandbox, and with it the pod and the
-// disk that pod owns. Any other
-// stop of it is refused, naming the operator's close when it is that close which ends the tree.
+// stop ends one claim: the runtime releases it, and it retires, recording what the released
+// process ended under the stop's own cause (endStopped, retire), so a retry that keeps the session,
+// each of which endStopped's comment names, tells its next process the turn the stop cut off and
+// the background work it ended. A release that fails changes nothing, so the stop can be asked
+// again. The tree's root claim ends only with its tree: a retired root would leave the orphan
+// sweep's known set, which would then take whatever the runtime holds for the root issue — under a
+// sandbox, its Sandbox, and with it the pod and the disk that pod owns. Any other stop of it is
+// refused, naming the operator's close when it is that close which ends the tree.
 func stop(m *Machine, ctx context.Context, _ Event) error {
 	if !m.claim.treeRoot() {
-		return m.end(ctx)
+		return m.end(ctx, endStopped)
 	}
 	closable, err := m.treeClosable(ctx)
 	if err != nil {
@@ -1850,7 +1882,7 @@ func stop(m *Machine, ctx context.Context, _ Event) error {
 // treeClose is the workflow's close of the tree, which ends the root claim too. It is the
 // workflow's own decision: it stops every claim of a tree whose linger expired, and the issue
 // record it still holds for that tree is exactly what TreeClosable refuses on, so it is not asked.
-func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx) }
+func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
 
 // issueClose is the workflow's close of a child issue as done: it releases the claim through the
 // runtime, which ends at most this role's process and forgets the claim. It deletes no issue
@@ -1880,7 +1912,7 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.release(ctx); err != nil {
 		return err
 	}
-	return m.retire(ctx)
+	return m.retire(ctx, noEnd)
 }
 
 // forgetSession drops the named session record from a processless claim: the operator's
@@ -1910,7 +1942,7 @@ func operatorClose(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.closeRefusal(ctx); err != nil {
 		return err
 	}
-	return m.end(ctx)
+	return m.end(ctx, noEnd)
 }
 
 // operatorCloseRetired answers a close of a claim that has already retired. The outcome the
@@ -1953,12 +1985,13 @@ func (m *Machine) treeClosable(ctx context.Context) (bool, error) {
 }
 
 // end releases the claim's process and retires the claim, which is what every stop and close does
-// once it is allowed.
-func (m *Machine) end(ctx context.Context) error {
+// once it is allowed, recording what that process ended under cause (retire): the stop's own
+// (endStopped), and noEnd for a close, which ends the claim's work on purpose.
+func (m *Machine) end(ctx context.Context, cause string) error {
 	if err := m.release(ctx); err != nil {
 		return err
 	}
-	return m.retire(ctx)
+	return m.retire(ctx, cause)
 }
 
 // rootStopRefusal is ErrRootStop with what stops the root's process in state instead: a suspension,
@@ -2017,12 +2050,14 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // it instead, so it stays resumable and known to the orphan sweep, which would otherwise take
 // whatever the runtime holds for the tree with it. The agent has ended either way, so a runtime
 // that cannot release or suspend its process is logged and the claim moves all the same: a
-// finished agent's claim never stays live, its secret still authenticating.
+// finished agent's claim never stays live, its secret still authenticating. A root's stop records
+// what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
+// retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.endProcess(ctx); err != nil {
+		if err := m.endProcess(ctx, endSuspended(SuspendedByExit)); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
@@ -2031,7 +2066,7 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.release(ctx); err != nil {
 		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)
 	}
-	return m.retire(ctx)
+	return m.retire(ctx, noEnd)
 }
 
 // openPodUpdate records this claim's update round (PodUpdateOpen). The daemon's sweep posts the

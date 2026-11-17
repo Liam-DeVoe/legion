@@ -237,7 +237,9 @@ func suspensionRank(source SuspendSource) int {
 // a confirmed one, which settle would retire as a finished turn. What happens to it then is the
 // suspension's: the operator's resume re-sends it to the same owner, and a daemon's suspension retires
 // a phase's task with the phase (settle), so the next start hands the session its phase's resume task;
-// the workspace, the issue's branch and the session are kept either way.
+// the workspace, the issue's branch and the session are kept either way. The stop records the turn
+// it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
+// Machine.cutTurnOf, recordEnd).
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.claim.State == StateWorking {
 		m.log.Warn("supervise: the agent's turn has not ended; suspending it mid-turn", "by", m.held.By, "deadline", m.held.Deadline)
@@ -275,9 +277,10 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	return request, nil
 }
 
-// suspendNow stops the claim's process for request and keeps its session.
+// suspendNow stops the claim's process for request and keeps its session, recording what the
+// stop ended as a suspension by request's source (endSuspended, letGo).
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend) error {
-	if err := m.endProcess(ctx); err != nil {
+	if err := m.endProcess(ctx, endSuspended(request.By)); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
 	return m.suspendedFor(ctx, request)
@@ -298,9 +301,23 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend) erro
 // memory even when the write fails. The finished phase's unconfirmed task is retired after it by
 // settle, which Handle runs after every row; a retirement that fails is reported, and the claim's
 // next decision retires it before anything else.
+//
+// A process still recorded here is one whose stop the runtime refused and the suspension let go
+// all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
+// did land records it (endSuspended, letGo), and the record goes to the store with this write.
+//
+// A take of the claim's task whose turn has not started is taken back in this same write
+// (takeBackUnstarted), under its own number, as a retirement takes one back: the stopped process
+// never ran its text. So the resumed process's take of the number is decided afresh, behind the
+// records that tell then — the one this let-go wrote, joined with whatever the take had told
+// (recordEnd, joined) — and tells them once, rather than being answered with the text the stopped
+// process was given, which carries none of what this let-go recorded and marks nothing told.
 func (m *Machine) suspended(ctx context.Context, by SuspendSource) error {
-	m.letGo()
+	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
+	if m.takeBackUnstarted(takenBackSuspended) {
+		return m.putClaimAndPendingOwed(ctx)
+	}
 	return m.persist(ctx)
 }
 
@@ -323,6 +340,20 @@ func (m *Machine) suspendHeld(ctx context.Context) error {
 	return nil
 }
 
+// suspendHeldAtEnd is suspendHeld at the end of the turn, or of the compaction, the claim is
+// still stored working for (turnEnded, compactEnded): nothing runs any more, so the stop cuts
+// off no turn, and the let-go it makes reads the claim in back, the state that end gives the
+// claim back in, for its record (Machine.heldStopBack, endState, recordEnd). Read as the working it
+// is still stored in, the record would tell the next process that the turn it was in was
+// interrupted, of a turn that had ended or a compaction that ran none. The claim's own state is
+// left alone, as is everything else the stop decides: the end sets it once the hold's outcome is
+// known, and the mark goes when the stop returns, landed or refused.
+func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
+	m.heldStopBack = back
+	defer func() { m.heldStopBack = "" }()
+	return m.suspendHeld(ctx)
+}
+
 // dropHeld ends the held suspension without running it.
 func (m *Machine) dropHeld() {
 	m.held = nil
@@ -334,6 +365,11 @@ func (m *Machine) dropHeld() {
 // the claim is suspended rather than relaunched, and nothing is charged: died asks before it charges
 // anything. The stop and the suspension are the two steps every claim with nothing left to run
 // takes, written once (letProcessGoFor).
+//
+// What the stop ends is recorded as a suspension by the held request's source (endSuspended):
+// the suspension is what ends the process, rather than the relaunch it replaces. A death or a
+// displacement that reached here recorded its own end first (died, displaced), and that record
+// stands.
 func (m *Machine) endHeld(ctx context.Context) error {
 	request := *m.held
 	m.dropHeld()
@@ -350,12 +386,12 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // exactly as a death in a turn takes it back (interrupted): the turn ran, the worker took the
 // task, and no process finished it. Its next accepted take carries the note of a pod that ran out
 // of memory where the report that found the process gone said so (goneOutOfMemory), and the
-// claim records that report's account of the death (goneCause, Claim.LastDeathCause), as died
-// records the death it judges, so the task is taken again saying why the process died. A
-// take-back the store will not write stops everything — nothing is stopped, nothing is sent and
-// the claim is left as it stands, its last death's cause put back, as died leaves it — so the
-// caller's next request takes it back then, rather than this leaving a suspended claim holding a
-// task settle would retire as a finished turn.
+// claim keeps that report's account of the death for the operator's listing and a failed claim's
+// notices (goneCause, Claim.LastDeathCause), as died keeps the death it judges. A take-back the
+// store will not write stops everything — nothing is stopped, nothing is sent and the claim is
+// left as it stands, its last death's cause put back, as died leaves it — so the caller's next
+// request takes it back then, rather than this leaving a suspended claim holding a task settle
+// would retire as a finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone, letProcessGoFor). Sent before the write, a write
@@ -366,6 +402,15 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // would keep the dead session's role and issue claims while the fresh session forgets that
 // session's id. Where died did judge the death, the stop goes again for a registration already
 // ended, which tells the listener nothing new.
+//
+// What the dead process ended is recorded as its death once the take-back has landed (recordEnd,
+// endDied, under the same goneCause): the take-back's own mark is what tells the record that the
+// task was taken from the dead turn (Machine.cutTurnOf), and the stop's let-go that follows finds
+// this launch's record standing and records no suspension in its place. So the task's next
+// accepted take says the process died, which is what the sentence in front of it reads from that
+// record (interruptedTask, relaunchSentence), rather than saying a suspension ended it. Where died
+// judged the death, its record stands and this adds none. A take-back that fails records nothing,
+// as it changes nothing else.
 //
 // Nothing is charged, as endHeld charges nothing. Where died judged the death it was charged
 // there, or found to have nothing to charge (Claim.DeathCharged). Where the read is the first to
@@ -380,6 +425,7 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 		m.claim.LastDeathCause = cause
 		return err
 	}
+	m.recordEnd(ctx, endDied(m.goneCause))
 	m.sessionGone()
 	return m.letProcessGoFor(ctx, request)
 }
@@ -394,7 +440,7 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 // runs on, which is the owner of a stalled worker's to hear (the daemon's stallBackstopRecord).
 func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend) error {
 	incarnation := m.claim.Locator.Incarnation
-	if err := m.endProcess(ctx); err != nil {
+	if err := m.endProcess(ctx, endSuspended(request.By)); err != nil {
 		m.stopUnconfirmed = true
 		m.log.Error("supervise: could not stop the process with the runtime; suspending its claim anyway",
 			"incarnation", incarnation, "error", err)

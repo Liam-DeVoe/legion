@@ -28,6 +28,21 @@ func (h *harness) registerFresh() {
 	h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: replacingSession})
 }
 
+// wantAbandonedToldBy is whether the claim's abandoned session has been told, and by the
+// confirmation of which delivery (AbandonedSession.ToldBy), as the machine holds it and as the
+// store holds it: "" is a session still untold, which names no delivery.
+func (h *harness) wantAbandonedToldBy(by, when string) {
+	h.t.Helper()
+	for where, got := range map[string]AbandonedSession{"the machine": h.claim().Abandoned, "the store": h.store.load(h.token).Abandoned} {
+		if got.Session == "" {
+			h.t.Fatalf("%s: %s records no abandoned session, want one", when, where)
+		}
+		if got.Told != (by != "") || got.ToldBy != by {
+			h.t.Fatalf("%s: %s records the abandonment told=%v by %q, want told=%v by %q", when, where, got.Told, got.ToldBy, by != "", by)
+		}
+	}
+}
+
 // abandonSession walks the claim to where the provider refused every turn of it out of its launch
 // budget and an operator retried it, which leaves that session behind: from here the claim records
 // an abandoned session nothing has told its replacement of yet.
@@ -151,13 +166,12 @@ func TestTakeRefusedLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 			t.Errorf("the accepted take's text does not name %q:\n%s", want, taken)
 		}
 	}
-	if told, stored := h.claim().Abandoned.Told, h.store.load(h.token).Abandoned.Told; !told || !stored {
-		t.Fatalf("after the accepted take the claim records the abandonment told = %v and the store %v, want it told in both", told, stored)
-	}
+	h.wantAbandonedToldBy(h.pending().ID, "at the accepted take")
 	if again := h.mustTake(); again != taken {
 		t.Fatalf("the take sent again was answered %q, want the same text %q", again, taken)
 	}
 	h.wantPrompts(base + 2)
+	h.wantAbandonedToldBy(h.pending().ID, "after the take sent again, which marks nothing again")
 
 	// That task's turn is over, so the one after it is the task alone.
 	h.must(StreamTurnStart{Claim: h.token})
@@ -167,6 +181,60 @@ func TestTakeRefusedLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 
 	if next := h.mustTake(); next != "the next task" {
 		t.Errorf("the task after the one the agent took is %q, want the task alone", next)
+	}
+}
+
+// The abandoned session's sentence is told by the accepted take whose text carried it, by the rule
+// the record of a let-go follows (accept), and the record names that take's delivery (ToldBy). A
+// take a hold refused carried nothing: the fresh agent is in a turn of its own, so the abandonment
+// is still untold, and the take after that turn's end carries it and tells it. A provider error
+// then takes that take back: the error is a model call that failed, often the turn's first, so
+// the telling goes back with the take (giveBackTake), and the take after the ladder's wait carries
+// the session again and tells it again. Once that task's turn is over, the task after it is the
+// task alone.
+//
+// The negative control is the give-back taken out of the provider error's take-back (takeBack's
+// giveBackTake): the take after the wait is then answered with the task and the provider's note
+// alone, and this test reads the missing session there.
+func TestAnAbandonedSessionsSentenceIsToldAtTheAcceptedTake(t *testing.T) {
+	h := newHarness(t)
+	refusal := "the provider ended the turn with an error at 226k tokens of context"
+	h.abandonSession(refusal)
+	h.registerFresh()
+	h.manualTakes()
+	says := []string{session, "abandoned", refusal, "legion/LEGION-209"}
+
+	// A turn of the fresh agent's own is running when the task arrives, so its take is refused.
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
+	h.wantRefused(HoldInTurn)
+	h.wantAbandonedToldBy("", "after the take a hold refused")
+
+	h.must(StreamTurnEnd{Claim: h.token})
+	first := h.mustTake()
+	wantSays(t, first, says...)
+	id := h.pending().ID
+	h.wantAbandonedToldBy(id, "at the accepted take")
+
+	// The take's turn ends in a provider error, which takes the take back.
+	h.must(StreamTurnStart{Claim: h.token})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
+	if p := h.pending(); p.ID != id || p.taken() {
+		t.Fatalf("pending after the provider error = %+v, want the task %s taken back", p, id)
+	}
+	h.wantAbandonedToldBy("", "after the provider error took the take that told it back")
+
+	h.advance(promptRetryDelay(1))
+	again := h.mustTake()
+	wantSays(t, again, says...)
+	h.wantAbandonedToldBy(id, "at the take accepted after the ladder's wait")
+
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(StreamTurnEnd{Claim: h.token})
+
+	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
+	if next := h.mustTake(); next != "the next task" {
+		t.Errorf("the task after the one whose take told the abandonment is %q, want the task alone", next)
 	}
 }
 

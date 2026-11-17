@@ -145,8 +145,11 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — 20261114031356_merge_queue_removal at this release, which touches no
-	// column the fill reads — and nothing else.
+	// migration above it — at this release the five recorded after it,
+	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
+	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal and
+	// 20261114061900_phase_entry_verbatim, which run after its fill and touch no column the fill
+	// writes or this test reads — and nothing else.
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)

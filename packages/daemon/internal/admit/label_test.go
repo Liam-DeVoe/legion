@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -165,7 +166,8 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 	assertEffects(t, pool, []effect{
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1}},
+		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
+			Task: architectStart(t, pool, admission, "LEGION-1", ""), Origin: supervise.OriginNotice, Entry: 1}},
 	})
 }
 

@@ -36,7 +36,7 @@ func TestTakeBackByADeathKeepsItsNumberAndItsNextTakeNamesTheDeath(t *testing.T)
 		if again.DeliveryID != first.DeliveryID || again.Number != first.Number {
 			t.Fatalf("death %d: the task was taken again as %+v, want the same task %s, number %d", death, again, first.DeliveryID, first.Number)
 		}
-		if want := interruptedTask(h.claim().LastDeathCause) + "implement the plan"; again.Message != want {
+		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; again.Message != want {
 			t.Fatalf("death %d: the take was answered %q, want %q", death, again.Message, want)
 		}
 		if p := h.pending(); !p.awaitsTurn() {
@@ -79,7 +79,7 @@ func TestTakeAfterADeathCarriesTheNoteOfTheEndThatCutItsLastTurn(t *testing.T) {
 		Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), OutOfMemory: true,
 	}})
 	h.relaunched()
-	if want := interruptedTask(deathCause(runtime.Observation{Kind: runtime.Gone})) + outOfMemoryTask + "implement the plan"; h.wantPrompts(2)[1].Message != want {
+	if want := interruptedTask(endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))) + outOfMemoryTask + "implement the plan"; h.wantPrompts(2)[1].Message != want {
 		t.Fatalf("after the out-of-memory end the take was answered %q, want %q", h.wantPrompts(2)[1].Message, want)
 	}
 	if p := h.store.load(testToken).Pending; p == nil || !p.OutOfMemory {
@@ -90,7 +90,7 @@ func TestTakeAfterADeathCarriesTheNoteOfTheEndThatCutItsLastTurn(t *testing.T) {
 	h.wantState(StateWorking)
 	h.observe(runtime.Gone)
 	h.relaunched()
-	if want := interruptedTask(deathCause(runtime.Observation{Kind: runtime.Gone})) + "implement the plan"; h.wantPrompts(3)[2].Message != want {
+	if want := interruptedTask(endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))) + "implement the plan"; h.wantPrompts(3)[2].Message != want {
 		t.Fatalf("after the ordinary end the take was answered %q, want %q: the note describes no end of this turn",
 			h.wantPrompts(3)[2].Message, want)
 	}

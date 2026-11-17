@@ -75,7 +75,7 @@ const schemas: Record<string, z.ZodType> = {
   // refused turns the claim now ends with and whether this report failed it.
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
-  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 139).
+  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 156).
   "task.json": LegionTaskResponse,
   "take-accepted.json": LegionTakeResponse,
   "take-refused.json": LegionTakeResponse,
@@ -653,6 +653,77 @@ test("the state golden carries each issue's tree memory draw", () => {
   drawn.memoryDrawMode = "off";
   drawn.memoryDrawnAt = "the morning";
   expect(parses()).toBeFalse();
+});
+
+// Contract 141: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
+// the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
+// the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
+// an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
+// carries no key at all, as does every issue of the body served a caller before 141, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries the experiments each issue was drawn for", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const issueOf = (key: string) => {
+    const issue = state.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const drawn = issueOf("LEGION-208");
+  expect(drawn.assignments).toEqual([
+    {
+      experiment: "memory",
+      variant: "memory",
+      mode: "random",
+      drawnAt: "2026-09-20T11:04:05Z",
+    },
+    {
+      experiment: "plan-length",
+      variant: "short",
+      mode: "random",
+      drawnAt: "2026-09-21T18:42:11Z",
+    },
+  ]);
+  // The issue experiment's arm is the issue's own: the child of that tree stands in the other.
+  expect((issueOf("LEGION-209").assignments as Record<string, unknown>[])[1]?.variant).toBe("long");
+  // The hand-over's answer: an arm and a mode, both empty, and no instant at all.
+  expect(issueOf("LEGION-210").assignments).toEqual([
+    { experiment: "plan-length", variant: "", mode: "" },
+  ]);
+  // An issue no experiment has reached carries no key.
+  expect(issueOf("LEGION-211").assignments).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 141, and one served to a pod below it.
+  const held = drawn.assignments;
+  delete drawn.assignments;
+  expect(parses()).toBeTrue();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+
+  // A row naming no experiment, a variant that is no string, and a draw time that is no time.
+  drawn.assignments = [{ experiment: "", variant: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: 1, mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [
+    { experiment: "memory", variant: "memory", mode: "random", drawnAt: "the morning" },
+  ];
+  expect(parses()).toBeFalse();
+  // A row that leaves out `variant` or `mode`: both ride the wire whatever they hold, the empty
+  // string included, so a row without one is no row this daemon writes.
+  drawn.assignments = [{ experiment: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: "memory" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
 });
 
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
@@ -1318,7 +1389,7 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
-    // The task routes (contract 139), each under the agent's secret form and the bridge's boot
+    // The task routes (contract 156), each under the agent's secret form and the bridge's boot
     // token form, and the turn outcome that names the task and the provider error it ended in.
     [
       "task read",
@@ -1712,7 +1783,7 @@ test("the register golden names the task agents the role's prompts dispatch", ()
   expect(LegionRegisterResponse.safeParse(mutated).success).toBeFalse();
 });
 
-// A worker holds its claim's value from its registration and from `claims/task` (contract 139):
+// A worker holds its claim's value from its registration and from `claims/task` (contract 156):
 // the value, or null where the bucket holds none, beside the number of the last task the claim
 // finished. Both keys are always written, so neither may be left out, and a value always names a
 // task and a revision.
@@ -1746,7 +1817,7 @@ test("the register golden and the task read carry the claim's value and its fini
   expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
 });
 
-// A take is answered one of three ways (contract 139), each written by the Go side: accepted with
+// A take is answered one of three ways (contract 156), each written by the Go side: accepted with
 // the text the worker runs, refused naming the hold, or dropped. An accepted answer without its
 // text and a refused one without its hold are refused; a hold a later daemon names is read.
 test("the take goldens are its three answers", () => {
@@ -2085,12 +2156,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
   expect(LegionStateResponse.safeParse(blank.document).success).toBeFalse();
 });
 
-// The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
-// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
-// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
-// 56) — three keys each, neither the released nor the retired one wider than the failed one —
-// and a state with none carries an empty list rather than none.
+// The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
+// each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
+// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
+// relaunch (contract 56) — three keys each, neither the suspended nor the retired one wider than
+// the failed one — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([

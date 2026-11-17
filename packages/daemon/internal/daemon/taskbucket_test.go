@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -858,9 +859,9 @@ func taskBucketRefusalServer(t *testing.T, missing string) (uri, daemonSeed, ses
 	if len(grant.Publish) != held-1 {
 		t.Fatalf("the daemon grant does not contain %s: %v", missing, grant.Publish)
 	}
-	daemonSeed, daemonUser := testnats.User(t)
-	sessionSeed, sessionUser := testnats.User(t)
-	adminSeed, adminUser := testnats.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
+	sessionSeed, sessionUser := testnkeys.User(t)
+	adminSeed, adminUser := testnkeys.User(t)
 	session := daemonpermissions.Permissions{Publish: []string{"$JS.API.INFO"}, Subscribe: []string{nats.InboxPrefix + ">"}}
 	_, uri = testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
 		testnats.NkeyUser{Public: daemonUser, Permissions: grantPermissions(t, grant)},
@@ -888,14 +889,14 @@ func taskBucketRefusals(t *testing.T, check func(t *testing.T, cfg func(config.C
 	t.Run("the daemon's own user lacks the bucket's create", func(t *testing.T) {
 		check(t, func(cfg config.Config) config.Config {
 			cfg.NatsURLs = []string{uri}
-			cfg.NatsDaemonNkeySeedFile = testnats.SeedFile(t, daemonSeed+"\n")
+			cfg.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, daemonSeed+"\n")
 			return cfg
 		}, []string{legiontasks.Bucket, missing})
 	})
 	t.Run("the daemon connects as the pane seed's session user", func(t *testing.T) {
 		check(t, func(cfg config.Config) config.Config {
 			cfg.NatsURLs = []string{uri}
-			cfg.NatsNkeySeedFile = testnats.SeedFile(t, sessionSeed+"\n")
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, sessionSeed+"\n")
 			return cfg
 		}, []string{legiontasks.Bucket, "$JS.API.STREAM.INFO." + legiontasks.Stream, natsauth.SeedFileVariable, natsauth.DaemonSeedFileKey})
 	})

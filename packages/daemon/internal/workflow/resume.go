@@ -172,12 +172,12 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
-// there is given one. An owner is answered as suspended while its claim at the issue's generation
-// stands suspended, whatever the source: which sources a start may act on is each caller's to
-// judge. It is answered as live while that claim has a process, launching or up (supervise's
-// Claim.RunsNothing, read the other way), which only the cutover's repair reads: booted starts no
-// live claim.
+// The owner of admitted and of accepting is the tree's architect, which admission starts with the
+// tree, so no issue in either is given one. An owner is answered as suspended while its claim at
+// the issue's generation stands suspended, whatever the source: which sources a start may act on
+// is each caller's to judge. It is answered as live while that claim has a process, launching or
+// up (supervise's Claim.RunsNothing, read the other way), which only the cutover's repair reads:
+// booted starts no live claim.
 func (e *Engine) phaseOwnersOf(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {

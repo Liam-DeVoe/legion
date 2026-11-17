@@ -531,6 +531,9 @@ func TestRelaunchTakesTheSameNumberOnce(t *testing.T) {
 func TestRelaunchTakesAWakeTaskOnce(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
+	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so the
+	// release ends no work and the wake's task goes as it was given (recordEnd).
+	h.reportActivity()
 	h.must(RequestSuspend{Claim: testToken, By: SuspendedByReleased})
 	h.wantState(StateSuspended)
 	base := len(h.prompts())

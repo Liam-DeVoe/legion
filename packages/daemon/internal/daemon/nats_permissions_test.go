@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -431,8 +432,8 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 
 func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
 	t.Helper()
-	daemonSeed, daemonPublic := testnats.User(t)
-	adminSeed, adminPublic := testnats.User(t)
+	daemonSeed, daemonPublic := testnkeys.User(t)
+	adminSeed, adminPublic := testnkeys.User(t)
 	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: grantPermissions(t, grant)},
 		testnats.NkeyUser{Public: adminPublic})

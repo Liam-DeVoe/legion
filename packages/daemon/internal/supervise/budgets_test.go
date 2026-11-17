@@ -338,7 +338,7 @@ func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLi
 
 		h.wantBudgets(Budgets{Deaths: exit})
 		resent := h.wantPrompts(1 + exit)[exit]
-		if want := interruptedTask(h.claim().LastDeathCause) + "implement the plan"; resent.Message != want {
+		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; resent.Message != want {
 			t.Fatalf("stall exit %d: the take was answered %q, want %q", exit, resent.Message, want)
 		}
 		if p := h.pending(); p.ID != resent.DeliveryID || !p.awaitsTurn() {

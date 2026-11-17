@@ -465,7 +465,10 @@ func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
 // sweep's posts of the round revive nothing, and a suspended claim's worker takes nothing. The
 // resume relaunches the claim, and the take its worker makes at ready drops the older daemon's
 // task, though it names the round the claim is still in (dispatch://INFRA-2981 R1). The role gets
-// the round's Envoy ask instead, which the sweep publishes and this machine does not.
+// the round's Envoy ask instead, which the sweep publishes and this machine does not. The drop
+// leaves the claim holding nothing, and the suspension's record of an idle process that left no
+// report shows no running work, so no delivery of the daemon's own follows it either
+// (takeable, queueRelaunch; dispatch://INFRA-2811 departure D2).
 //
 // The negative control is takeable's drop narrowed to the rule before this one, an ask of a
 // round the claim is not in now or has left (`asks && (round != m.claim.UpdateRound ||
@@ -502,10 +505,10 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 	h.wantPrompts(sent)
 	h.wantDropped()
 	c := h.wantRound(testRound)
-	if c.Pending != nil {
+	if HoldsTask(c.Pending) {
 		t.Fatalf("pending = %+v after the resume, want the older daemon's ask dropped", c.Pending)
 	}
-	if d, held := h.store.delivery(h.token); held {
+	if d, held := h.store.delivery(h.token); held && HoldsTask(&d) {
 		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
 }
@@ -1129,8 +1132,16 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 				h.relaunched()
 			}
 
-			if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
-				t.Fatalf("the take after the end is %+v, want the task %q the round held back", got, next)
+			// The suspension let a process go that had run a turn and left no report the daemon
+			// took (its plugin is stale here), so the resumed claim's task carries the sentence
+			// of what it may have ended (dispatch://INFRA-3276 R3); the live claim's process was
+			// never let go, and its task goes as it was queued.
+			want := next
+			if tc.suspend {
+				want = relaunchSentence(h.claim().EndedWork, true) + "\n\n" + next
+			}
+			if got := h.wantPrompts(sent + 1)[sent]; got.Message != want {
+				t.Fatalf("the take after the end is %+v, want the task %q the round held back", got, want)
 			}
 		})
 	}
@@ -1308,7 +1319,10 @@ func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 // The death is the path a restored claim meets: the turn of the take the older daemon accepted
 // starts, and the claim's process dies in it. The relaunch comes up in the round's own pod, so
 // the claim is still in the round, and the take its worker makes at the ready is dropped rather
-// than accepted.
+// than accepted. The drop leaves the claim holding nothing while the record of what the death
+// ended tells of the turn it cut off, so the claim is given the daemon's own delivery of that
+// record in its place (takeable, queueRelaunch, dispatch://INFRA-3276 R3), which the worker
+// takes next.
 func TestTakeBackOfAnAskKeepsItsRound(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.inPod(testRoundPod)
@@ -1344,14 +1358,18 @@ func TestTakeBackOfAnAskKeepsItsRound(t *testing.T) {
 		}
 	}
 	h.wantDropped()
-	if p := h.claim().Pending; p != nil {
-		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped", p)
+	p := h.claim().Pending
+	if p == nil || !p.Relaunch() || HoldsTask(p) {
+		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped and the daemon's own delivery of what the death ended in its place", p)
 	}
-	if d, held := h.store.delivery(h.token); held {
+	if d, held := h.store.delivery(h.token); held && HoldsTask(&d) {
 		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
-	if _, held := h.values.value(h.token); held {
-		t.Error("the bucket still holds the dropped ask's value")
+	if value, held := h.values.value(h.token); !held || value.Number != p.Number {
+		t.Errorf("the bucket holds %+v (%v), want the value of the daemon's own delivery, task %d, in place of the dropped ask's", value, held, p.Number)
+	}
+	if told := h.mustTake(); told != RelaunchSentence(h.claim().EndedWork) {
+		t.Errorf("the take after the drop was answered %q, want the sentence of what the death ended", told)
 	}
 }
 

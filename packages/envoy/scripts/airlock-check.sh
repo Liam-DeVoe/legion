@@ -312,13 +312,31 @@ start_extra_broker() { # <name> <VAR=value>...
 	shift
 	local log="$WORK_DIR/broker-$name.log"
 	: >"$log"
-	# Two ports the system picks, so this one never collides with the broker it was copied from.
-	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" "$@"
+	# Three ports the system picks, so this one never collides with the broker it was copied from.
+	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
-	await "the $name broker" 120 "$log" 'airlock proxy listening addr=' "$pid"
-	EXTRA_PROXY_ADDR="$(sed -n 's/.*airlock proxy listening addr=\([^ ]*\).*/\1/p' "$log" | head -n 1)"
+	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
+	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$log")"
+}
+
+# logged_addr answers the addr field of the first line of a broker's log whose message is the one
+# named, or nothing. The broker logs one JSON object per line, and a line still being written
+# parses as nothing, so half an address is never read as the whole one.
+logged_addr() { # <message> <log>
+	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
+}
+
+# bound_call_lines prints, one JSON object per line, the lines the named broker logs hold for
+# the airlock's proxy port: the call line of a call to a bound host the proxy carried or failed
+# (`airlock proxy: a call to a bound host`), and every refusal record of that port (`broker:
+# answer refused` with caller_class airlock). Those records are a refused call's to a bound
+# host, which the proxy writes in its call line's place, and the port's other refusals too: a
+# request that is no proxy request, a 407, a refused address. A line still being written parses
+# as nothing and is left out.
+bound_call_lines() { # <log>...
+	jq -Rc 'fromjson? | select(.message == "airlock proxy: a call to a bound host" or (.message == "broker: answer refused" and .caller_class == "airlock"))' "$@" 2>/dev/null || true
 }
 
 # stack_facts reads the few settings a second broker and the fake store need and that the
@@ -635,7 +653,7 @@ check_k3() {
 	scoped_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-scoped-token")"
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
-	log_before="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log 2>/dev/null | wc -l)"
+	log_before="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 
 	cat >"$WORK_DIR/k3-steps.sh" <<EOF
 set -u
@@ -713,18 +731,22 @@ EOF
 
 	# Thirteen of the fourteen requests this command makes reach the proxy on a CONNECT to a
 	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
-	# handshake fails before a request exists. The run also checks that both a carried and a
-	# refused call are among the lines, each with its reason.
-	local log_after log_lines allowed refused
-	log_after="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log 2>/dev/null | wc -l)"
-	log_lines="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | tail -n 3 | sed 's/^/    /')"
-	allowed="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c 'allowed=true')"
-	refused="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c 'allowed=false.*reason=')"
-	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run, $allowed of them allowed and $refused refused with a reason; the last three:"
+	# handshake fails before a request exists. A carried call logs its call line and a refused
+	# one its refusal record in that line's place, so the two are counted together
+	# (bound_call_lines). The run also checks that both a carried and a refused call are among
+	# them, the refused one with the reason its record names. Each number comes from one read of
+	# the logs, so a line written between two reads cannot make them disagree.
+	local calls log_after log_lines allowed refused
+	calls="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log)"
+	log_after="$(jq -s length <<<"$calls")"
+	log_lines="$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
+	allowed="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
+	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
+	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
 	judge "$([ "$((log_after - log_before))" -ge 13 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
 		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with a reason"
+		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN entry is the scoped entry with its
 	# allow removed: the same host and the authorization header, and no allow list.
@@ -1157,7 +1179,7 @@ EOF
 	mapfile -t K6_AZ_ARM_HEADERS < <(printf '%s' "$recs" | jq -r '.[] | select(.path == "/subscriptions") | .header.Authorization // [] | .[]')
 	K6_AZ_ARM_STATUS="$(grep '^exit ' "$d/runs.log" | tr '\n' ' ')"
 	K6_AZ_EXCHANGES="$(printf '%s' "$recs" | jq '[.[] | select(.path | endswith("/token"))] | length')"
-	K6_AZ_SERVED="$(for log in "$AIRLOCK_DIR"/broker*.log; do printf '%s:%s ' "${log##*/}" "$(grep -c 'a call to a bound host' "$log")"; done)"
+	K6_AZ_SERVED="$(for log in "$AIRLOCK_DIR"/broker*.log; do printf '%s:%s ' "${log##*/}" "$(bound_call_lines "$log" | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host")] | length')"; done)"
 }
 
 # k6_aws runs the AWS CLI's three calls and boto3's two against the stand-in AWS service.
@@ -1296,6 +1318,8 @@ check_k6() {
 # at main and nothing of them is rewritten; what this check adds around them is a DOTFILES_DIR
 # of its own holding the files they read of each other (scripts/secret-run-reason and
 # agent-secrets/broker-url.sh), because secret-run resolves both relative to its own directory.
+# One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
+# manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
 # The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
 # the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
@@ -1329,8 +1353,9 @@ k7_dotfiles() {
 }
 
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
-# whose environment comes from the running one, with the rules file, the two listening addresses
-# and the public URL replaced.
+# whose environment comes from the running one, with the rules file, the three listening addresses
+# and the public URL replaced; the metrics port is one the system picks, since nothing here
+# scrapes it and the stack's own brokers hold theirs.
 k7_broker() {
 	local d="$WORK_DIR/k7" api proxy
 	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -1342,12 +1367,13 @@ k7_broker() {
 		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
 		BROKER_PUBLIC_URL="$K7_API_URL" \
 		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
-		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL"
+		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
+		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
-	await "k7's broker" 120 "$d/broker.log" 'airlock proxy listening addr=' "$started"
+	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
 }
 
 # k7_names is the rules file and the fake secrets this check adds: one name per consumer, bound
@@ -1360,7 +1386,7 @@ k7_names() {
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com"]},
+	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": "GWS_THEOREM_READ_OAUTH", "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": "GWS_THEOREM_ADMIN_OAUTH", "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
@@ -1431,6 +1457,13 @@ say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GIT
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
 
+# A gRPC client: Pulumi's gcpkms secrets manager, which calls Cloud KMS over gRPC alone and offers
+# h2 and nothing else in its TLS handshake, makes a stack's data key at stack init with the
+# placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
+# value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
+# ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
+say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$GCLOUD_SAMI" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+
 # gcloud-broker with gcloud projects list.
 say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
@@ -1466,6 +1499,7 @@ EOF
 check_k7() {
 	expect "each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses"
 	expect "each real service refused the fake value"
+	expect "a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value"
 	expect "the gh consumer's own call is refused the fake value by GitHub"
 	expect "S got the fake value in each client's call"
 	expect "the command's exit status is 3, and the CLI's stderr has the line agent-secrets: NAME from …"
@@ -1518,6 +1552,7 @@ check_k7() {
 	observe "slack.com/api/auth.test under bun: ${K7[slack]-}"
 	observe "gh api user under secret-run for GITHUB_ADMIN_PAT: ${K7[gh]-}"
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
+	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
 	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
 	observe "the gws theorem read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
@@ -1542,21 +1577,32 @@ check_k7() {
 	k7_refused gws "${K7[gws]-}"
 	k7_refused admin "${K7[admin]-}"
 	k7_refused git "${K7[git]-}"
+	k7_refused kms "${K7[kms]-}"
 	observe "what each real service answered the fake value${refusals}"
 	observe "the gh consumer: $(printf '%s' "${K7[gh]-}" | head -c 300)"
 
-	# What the broker logged: one line per call to a bound host, which is how a call is known to
-	# have reached the proxy port and been decided there.
-	local logged swapped
-	logged="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
-	swapped="$(grep -c 'a call to a bound host.*allowed=true' "$WORK_DIR/k7/broker.log" || true)"
+	# What the broker logged: one line per call to a bound host - its call line, or the refusal
+	# record a refused call writes in that line's place (bound_call_lines) - which is how a call
+	# is known to have reached the proxy port and been decided there. Each number comes from one
+	# read of the log.
+	local calls logged swapped
+	calls="$(bound_call_lines "$WORK_DIR/k7/broker.log")"
+	logged="$(jq -s length <<<"$calls")"
+	swapped="$(jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length' <<<"$calls")"
 	observe "this check's broker logged $logged calls to a bound host, $swapped of them allowed; the last three:"
-	observe "$(grep 'a call to a bound host' "$WORK_DIR/k7/broker.log" | tail -n 3 | sed 's/^/    /')"
+	observe "$(printf '%s' "$calls" | tail -n 3 | sed 's/^/    /')"
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
-	judge "$([ "$refused" = 6 ] && echo 0 || echo 1)" \
-		"each real service refused the fake value" "$refused of the 6 consumers that can run in this pod refused it${refusals}"
+	judge "$([ "$refused" = 7 ] && echo 0 || echo 1)" \
+		"each real service refused the fake value" "$refused of the 7 consumers that can run in this pod refused it${refusals}"
+	# The gRPC consumer on its own: Google's own UNAUTHENTICATED is what says the call crossed the
+	# proxy in HTTP/2 and reached Cloud KMS, and a call line naming its host is the proxy's side.
+	local kms_calls
+	kms_calls="$(jq -s '[.[] | select(.host == "cloudkms.googleapis.com")] | length' <<<"$calls")"
+	judge "$(printf '%s' "${K7[kms]-}" | grep -qi 'unauthenticated' && ! printf '%s' "${K7[kms]-}" | grep -qi 'application protocol' && [ "$kms_calls" -ge 1 ] && echo 0 || echo 1)" \
+		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
+		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
 	if [ -z "$K7_GH_DIR" ]; then
 		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. shims/gh's own admin line is \`secret-run … GITHUB_ADMIN_PAT -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
 	else
@@ -1583,10 +1629,10 @@ check_k7() {
 	# released no value for a name the rules name, so nothing it runs reaches the proxy port.
 	fetch_old_cli
 	local before_control after_control old_out old_status
-	before_control="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
+	before_control="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
 	old_out="$(AGENT_SECRETS_URL="$K7_API_URL" "$OLD_CLI" GITHUB_ADMIN_PAT -- sh -c 'curl -sS -o /dev/null -w %{http_code} https://api.github.com/user' 2>&1)"
 	old_status=$?
-	after_control="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
+	after_control="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
 	control "the last released agent-secrets ($OLD_CLI_TAG, the CLI without this change) exited $old_status saying '$(printf '%s' "$old_out" | tail -n 1)'"
 	control "the proxy logged $((after_control - before_control)) further calls to a bound host while it ran"
 	judge "$([ "$((after_control - before_control))" = 0 ] && echo 0 || echo 1)" \
@@ -1602,7 +1648,7 @@ check_k7() {
 
 # k8a_start_broker starts a broker on one rules file and answers 0 when it refused to start for
 # that file, leaving why in K8A_WHY. Its environment is the running stack broker's own, with the
-# rules file and the two addresses replaced, so that what it refuses on is the rules file and
+# rules file and the three addresses replaced, so that what it refuses on is the rules file and
 # not a setting this function left out. It runs in the foreground under timeout, because what it
 # is here to see is a broker that never comes up.
 k8a_start_broker() { # <rules file> <label>
@@ -1611,7 +1657,8 @@ k8a_start_broker() { # <rules file> <label>
 		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
 		BROKER_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_AIRLOCK_RULES_FILE="$1" \
-		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0"
+		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	"${BROKER_ENV[@]}" timeout 25 "$BROKER_BIN" >"$log" 2>&1
 	local status=$?
 	K8A_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"

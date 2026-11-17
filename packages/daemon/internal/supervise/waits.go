@@ -256,11 +256,11 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose shim never reconnected: take the task back: %w", m.claim.Token, err)
 		}
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx); err != nil {
+		if err := m.suspendProcess(ctx, endNeverReady("never said hello to the daemon that started")); err != nil {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose shim never reconnected: suspend: %w", m.claim.Token, err)
 		}
 		m.log.Warn("supervise: the shim never reconnected after the daemon started; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx, CauseNeverReconnected)
+		return m.relaunchAfterFailure(ctx, CauseNeverReconnected, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }

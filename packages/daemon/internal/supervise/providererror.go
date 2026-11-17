@@ -48,6 +48,13 @@ func promptRetryDelay(attempt int) time.Duration {
 // counts its own run of such turns instead, and a turn that ends with no error puts that run back
 // to zero (reportedTask).
 //
+// What the take told goes back to untold with it (takeBack, giveBackTake), so the task's next
+// accepted take carries the abandoned session's sentence, the record of the last let-go, or both,
+// again. A provider error is a model call that failed — often the turn's first, whose model never
+// read the take's text — so the sentence may have reached nobody, and where an earlier call of
+// the turn did read it, it is told twice rather than lost. The claim's handshake keeps its
+// confirmation of the take's entry: the turn started on the take's text.
+//
 // The decision is made here, from this turn's own report and nothing else
 // (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
 // answered either holds the issue (holdsTheIssue) or the task is given to the same session again
@@ -141,7 +148,8 @@ func providerErrorCause(status int) string {
 }
 
 // providerErrorTask is the sentence the next accepted take of a task a provider error took back
-// carries, as interruptedTask is the sentence a task taken back by a death carries. Another agent
+// carries, as the relaunch's sentence is the one the next accepted take of a task taken back from
+// a turn its process could not finish carries (relaunchSentence, interruptedTask). Another agent
 // reads it, so it follows ASD-STE100: one instruction per sentence, and active voice.
 func providerErrorTask(cause string) string {
 	return "Your previous turn on this task stopped because of " + cause + ". Your work did not cause it. " +
@@ -177,9 +185,12 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 }
 
 // replaceable is whether a newer task takes this pending task's place rather than waiting behind
-// it (queue). One task answers true: the one the ladder's wait stands for
-// (waitsForProviderError), which the claim owes with nothing working it and with a wait that
-// the next provider error only makes longer. R2 has a newer task replace it.
+// it (queue). Two deliveries answer true while no take of them is accepted. One is the task the
+// ladder's wait stands for (waitsForProviderError), which the claim owes with nothing working it
+// and with a wait that the next provider error only makes longer. R2 has a newer task replace it.
+// The other is the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
+// queueRelaunch): it holds no work of the claim's, only the record's sentence, which the newer
+// task carries in front of itself while the record is untold (Delivery.message).
 //
 // Every other pending task waits for its turn, the task a provider error took back on a claim
 // the operator stopped among them: the ladder's wait went with the claim's timers (letGo), and
@@ -187,21 +198,20 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 // retry's fresh session makes of it finishes it (R3, scripts/e2e/provider-error-retry.sh step 5).
 // An update round's ask is never the newer task here: the daemon publishes it to the role's Envoy
 // topic (internal/daemon's openPodUpdate) and queues no task for it. A task a take holds is work
-// in flight and is never replaced either.
+// in flight and is never replaced either, the relaunch's delivery among them: the turn of its
+// accepted take is the session's next, and a newer task waits for it as for any task's.
 func (m *Machine) replaceable(p *Delivery) bool {
-	if p.taken() {
-		return false
-	}
-	return m.waitsForProviderError(p.ID)
+	return !p.taken() && (m.waitsForProviderError(p.ID) || p.Relaunch())
 }
 
-// replaceOwedTask has a newer task take the place of the task a provider error took back, and
-// reports whether it did. Both places a newer task arrives at a claim that owes one run it: the
-// task queue is given (queue), and the operator's task that runs a launch the pacing parked
-// (runParkedLaunchNow). A pending task no ladder's wait stands for is replaced by neither, and
-// each caller answers that its own way, so this reports it rather than deciding it. The task it
-// replaces is the one the claim owes (m.claim.Pending), which is the one task either caller
-// could mean, and a claim owing none replaces none.
+// replaceOwedTask has a newer task take the place of a pending delivery a newer task replaces
+// (replaceable) — the task a provider error took back, or the daemon's own untaken delivery of
+// a relaunch's record — and reports whether it did. Both places a newer task arrives at a claim
+// that holds one run it: the task queue is given (queue), and the operator's task that runs a
+// launch the pacing parked (runParkedLaunchNow). A pending task no newer one replaces is replaced
+// by neither, and each caller answers that its own way, so this reports it rather than deciding
+// it. The delivery it replaces is the one the claim holds (m.claim.Pending), which is the one
+// either caller could mean, and a claim holding none replaces none.
 //
 // The replaced task's row ends as any other retirement ends it (retirePending), and the value the
 // newer task's queue writes is what the worker is handed next.

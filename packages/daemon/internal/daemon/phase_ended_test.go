@@ -36,7 +36,10 @@ import (
 // supplies stand apart from the daemon's own words. It is no
 // architect notice: the architect's own notice goes out beside it, to the architect's topic.
 func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
-	const why = "the head conflicts with main: GitHub runs no checks on it; merge main forward"
+	// The conflict applyTheConflict states names no merge state and no read time, and the reason
+	// says so (workflow's conflictReason).
+	const why = "the head conflicts with main: GitHub answered mergeable=CONFLICTING with no mergeState for head sha-1 at an unknown time," +
+		" and runs no checks on it; merge main forward"
 	tail := " Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
 		" The workspace is the implementing phase's now, so stop writing it at once and leave whatever you have uncommitted." +
 		" Reason: " + why + "."

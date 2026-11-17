@@ -460,7 +460,7 @@ func TestTaskRelayFrameNamesTheRevisionAndEpoch(t *testing.T) {
 	}
 
 	// A message of the session's own consumer, received and not yet done, awaits its ack.
-	_, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	_, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	held := session.message(t, 5*time.Second)
 	if err := session.conn.Publish(held.Reply, []byte(relayReplyReceived)); err != nil {
 		t.Fatalf("answer the session's frame received: %v", err)
@@ -684,8 +684,8 @@ func TestTaskRelayWithoutTheGrantKeepsServingAndLogsTheGrant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open JetStream as the session's sender: %v", err)
 		}
-		item := listenerTestEnvelope(contracts.AgentSubject(sessionID), "task-relay-ungranted")
-		if _, err := js.Publish(contracts.AgentSubject(sessionID), marshalListenerEnvelope(t, item)); err != nil {
+		item := listenerTestEnvelope(contracts.LegacyAgentSubject(sessionID), "task-relay-ungranted")
+		if _, err := js.Publish(contracts.LegacyAgentSubject(sessionID), marshalListenerEnvelope(t, item)); err != nil {
 			t.Fatalf("store a message for the session: %v", err)
 		}
 		var relayed contracts.Envelope
@@ -816,7 +816,7 @@ func TestTaskRelayWaitsQuietlyForAnAbsentBucket(t *testing.T) {
 			t.Fatalf("the task relay logged at %v while it waited for the bucket: %s", record["level"], line)
 		}
 	}
-	item, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	item, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	var relayed contracts.Envelope
 	if err := json.Unmarshal(session.message(t, 5*time.Second).Data, &relayed); err != nil || relayed.EventID != item.EventID {
 		t.Fatalf("the session was relayed event %q (%v), want %q", relayed.EventID, err, item.EventID)

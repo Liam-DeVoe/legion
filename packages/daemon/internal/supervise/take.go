@@ -60,7 +60,7 @@ type TaskValue struct {
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 139
+const TaskTakeContract = 156
 
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
@@ -277,13 +277,15 @@ const (
 )
 
 // The causes a take-back is logged under (takenBackLine): a provider error's turn
-// (providerErrored), a compaction that took the claim (compactStart), and a retirement that keeps
-// the task (retire). The second wait's take-back is logged under its wait's name (WaitTurnStart),
-// and a death's or a forced stop's under the sentence its own Warn line gives (interrupted).
+// (providerErrored), a compaction that took the claim (compactStart), and a retirement and a
+// suspension that keep the task (retire, suspended, takeBackUnstarted). The second wait's
+// take-back is logged under its wait's name (WaitTurnStart), and a death's or a forced stop's under
+// the sentence its own Warn line gives (interrupted).
 const (
 	takenBackProviderError = "provider-error"
 	takenBackCompaction    = "compaction"
 	takenBackRetired       = "retired"
+	takenBackSuspended     = "suspended"
 )
 
 // The causes a delete of the claim's value is logged under (valueDeletedLine): a task finished
@@ -481,7 +483,7 @@ func (m *Machine) recordTake(take RequestTake, state TakeState) bool {
 }
 
 // take is a take reaching a claim that is ready or idle, the one state a worker asks from. It
-// runs the holds, the two drops and the root's narrowing, in that order (takeable), and then the
+// runs the holds, the three drops and the root's narrowing, in that order (takeable), and then the
 // adoption of the working copy, which goes back to Machine.Take to make; a take that adopts
 // nothing is accepted here.
 //
@@ -668,21 +670,48 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // the text the take is answered with (TakenText), composed here with the notes the claim's state
 // puts in front of the task (Delivery.message) — so a take sent again is answered with exactly
 // this text, and after a restart too; the claim records the number taken (TaskTaken) and the take
-// at its revision; the record of failed sends is cleared, since this task got through; and an
-// abandoned session's sentence, which this text carries, is told. It all goes in one write, which
-// is where the store tells the decisions the task names (store's putDelivery), and once that write
-// holds the workflow is told the agent took its work (Deps.TaskConfirmed).
+// at its revision; the record of failed sends is cleared, since this task got through; and the
+// records whose sentences this text carries are told. It all goes in one write, which is where
+// the store tells the decisions the task names (store's putDelivery), and once that write holds
+// the workflow is told the agent took its work (Deps.TaskConfirmed).
+//
+// This is where the claim's two records of what became of the agent's earlier work — the session
+// the claim abandoned (AbandonedSession) and what the last let-go of its process ended
+// (EndedWork) — become told, and it is the rule every other mention of their telling points to. A
+// record is told by the accepted take whose text carried its sentence to this process
+// (Delivery.message answers which it carries), since the worker runs that text as its turn's
+// message, and it records the delivery whose take told it (ToldBy). A take later taken back gives
+// that telling back with it, so the next accepted take carries the sentence again (giveBackTake);
+// one a let-go cuts off once its turn started keeps it, since that turn ran the text
+// (interrupted). A take sent again and answered from the record (answerAgain) marks nothing: the
+// take it repeats marked it. Both records are the claim's fields, so they go in the same write as
+// the take, and a restart reads both or neither. The one record told anywhere else is the old
+// session's record of a let-go, which the abandonment of that session ends by no delivery
+// (forgetSession, where that rule is written).
+//
+// A task of the entry the claim's handshake names records its confirmation there too, the first
+// one only (Claim.Handshake, EntryHandshake.confirmed): the delivery's own ConfirmedAt goes with
+// the delivery when its task is finished, and the handshake is what keeps when the worker took
+// that entry's work. The same write carries it, since the claim is half of it.
 //
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
 // the start of this take's turn, as at any turn's start or end (turnStarted). A write that fails
 // tells no one and is owed: the take stands in memory, and a take sent again is answered from it.
 func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	p := m.claim.Pending
-	text := p.message(m.claim)
+	text, told := p.message(m.claim)
 	p.ConfirmedAt, p.TakenText = m.deps.Clock.Now(), text
 	p.SendFailures, p.LastSendFailureAt, p.LastSendError = 0, time.Time{}, ""
-	if m.claim.Abandoned.Tells() {
-		m.claim.Abandoned.Told = true
+	m.claim.Handshake = m.claim.Handshake.confirmed(*p)
+	if a := &m.claim.Abandoned; told.abandoned && a.Tells() {
+		a.Told, a.ToldBy = true, p.ID
+		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
+			"task", p.Number, "delivery", p.ID, "session", a.Session)
+	}
+	if e := &m.claim.EndedWork; told.ended && e.Tells() {
+		e.Told, e.ToldBy = true, p.ID
+		m.log.Info("supervise: an accepted take told the agent what its relaunch ended",
+			"task", p.Number, "delivery", p.ID, "cause", e.Cause, "ended", e.Generation)
 	}
 	m.claim.TaskTaken = p.Number
 	m.recordTake(request, TakeAccepted)
@@ -701,9 +730,11 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // (takePending) and the hold's end (offerPending) ask it, so a value is written again exactly
 // where a take would be accepted.
 //
-// The claim's own holds come first (claimHold). Then the two drops, which retire the task and
+// The claim's own holds come first (claimHold). Then the three drops, which retire the task and
 // delete its value: an ask of an update round that an older daemon queued as a task, whichever
-// round it names, and a task whose issue has left the phase it was queued for. Then a root
+// round it names; the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
+// queueRelaunch) whose record no longer tells, since its text is that record's sentence and
+// nothing else; and a task whose issue has left the phase it was queued for. Then a root
 // architect's task of a run, held while its root has no architect to hear it and narrowed to what
 // it still names once the root hears (currentRootTask), and retired when that leaves it naming
 // nothing. Last, for a task that adopts the working copy the issue's roles share, another role of
@@ -719,27 +750,47 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // ask as well. A claim that has answered its open round reaches no drop here (answeredOpenRound,
 // claimHold): the task waits for the round's end, which drops an ask of that round
 // (dropUpdateTask), and the next take after the end drops an ask of any other round here.
+//
+// A relaunch's record that no longer tells leaves its delivery nothing to say. The claim holds
+// one in that state when its session is abandoned before the delivery is taken (forgetSession),
+// and a take of it would tell the fresh agent the old session's record in the text it was queued
+// with.
+//
+// A drop that leaves the claim holding nothing while its record of the last let-go still tells of
+// running work gives it the daemon's own delivery of that record (queueRelaunch): the ready
+// queues that delivery only for a claim that holds nothing then (finishReady), so a held task
+// dropped at a take or a hold's end would otherwise leave the sentence waiting for whatever task
+// comes next.
 func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err error) {
 	if hold := m.claimHold(); hold != "" {
 		return hold, false, nil
 	}
 	p := m.claim.Pending
 	round, asks := updateRoundOf(p.ID)
-	holds := !asks
+	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
+	holds := !asks && !spent
 	if holds {
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
 			return "", false, err
 		}
 	}
 	if !holds {
-		if asks {
+		switch {
+		case asks:
 			m.log.Info("supervise: this task is an ask an older daemon queued for an update round; it is dropped and never taken",
 				"task", p.Number, "delivery", p.ID, "asked", round, "round", m.claim.UpdateRound, "left", m.claim.UpdateLeftRound)
-		} else {
+		case spent:
+			m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than taken",
+				"task", p.Number, "delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation,
+				"toldBy", m.claim.EndedWork.ToldBy)
+		default:
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than taken",
 				"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
 		}
-		return "", true, m.dropPending(ctx, valueDeletedDropped)
+		if err := m.dropPending(ctx, valueDeletedDropped); err != nil {
+			return "", true, err
+		}
+		return "", true, m.queueRelaunch(ctx)
 	}
 	if m.asksRoot(*p) {
 		hears, err := m.rootHears(ctx, *p)
@@ -752,8 +803,11 @@ func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err 
 			return HoldRootHears, false, nil
 		}
 		taken, err := m.currentRootTask(ctx)
-		if err != nil || !taken {
+		if err != nil {
 			return "", !taken, err
+		}
+		if !taken {
+			return "", true, m.queueRelaunch(ctx)
 		}
 	}
 	if other, inTurn := m.adoptionWaits(); inTurn {
@@ -1007,14 +1061,21 @@ func (c Claim) sawLatestWrite() bool {
 // knows the worker asked at this revision and writes the value again (offerPending), and the
 // machine remembers the number (Machine.retaken), so that write is logged as the retake it is.
 //
+// What the take told and, for a take whose turn had not started, the handshake's confirmation go
+// back with it (giveBackTake): a provider error's turn started on the take's text, and a
+// compaction's and the second wait's had not. Where either moved, the claim goes with the
+// delivery in one write.
+//
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
-// write that fails leaves the delivery unsaved, and settle writes it again.
+// write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
 func (m *Machine) takeBack(ctx context.Context, cause string) error {
 	m.disarm(TimerFinish)
 	p := m.claim.Pending
-	p.ConfirmedAt, p.TakenText = time.Time{}, ""
+	claimMoved := m.clearTake(p, cause)
 	m.retaken = p.Number
-	m.log.Info(takenBackLine, "task", p.Number, "cause", cause)
+	if claimMoved {
+		return m.putClaimAndPendingOwed(ctx)
+	}
 	return m.putPending(ctx)
 }
 

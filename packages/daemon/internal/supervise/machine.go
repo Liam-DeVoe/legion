@@ -55,13 +55,14 @@ const (
 	StateRegistered ClaimState = "registered"
 	// StateReady: the agent finished booting and can be prompted.
 	StateReady ClaimState = "ready"
-	// StateWorking: a turn is in flight.
+	// StateWorking: a turn is in flight or a compaction is in progress (compact.go's compactStart).
 	StateWorking ClaimState = "working"
 	// StateIdle: the agent finished a turn and can be prompted.
 	StateIdle ClaimState = "idle"
 	// StateSuspended: the process was stopped and the session kept; the claim resumes on demand.
 	StateSuspended ClaimState = "suspended"
-	// StateFailed: a budget ran out. Nothing relaunches the claim on its own.
+	// StateFailed: a budget ran out, or a launch was refused in a way no try changes (a system
+	// prompt past the start frame, promptRefused). Nothing relaunches the claim on its own.
 	StateFailed ClaimState = "failed"
 	// StateRetired: the claim is over — stopped by the operator, or ended by its agent.
 	StateRetired ClaimState = "retired"
@@ -155,6 +156,12 @@ type Claim struct {
 	// before this one is gone whatever happens next. A claim that has abandoned none records a
 	// session of "".
 	Abandoned AbandonedSession
+	// EndedWork is what the last let-go of the claim's process ended of the work its agent had
+	// running, for the next process to be told (EndedWork, recordEnd). It is persisted, since the
+	// take that tells it can be a relaunch, a wake and a daemon restart away, and a newer let-go
+	// replaces it — as the union of the two while it is still untold (joined). A claim whose
+	// let-gos ended nothing worth telling records none.
+	EndedWork EndedWork
 	// ServingGeneration is the issue generation of the last taken delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery a take holds, then this,
@@ -209,6 +216,22 @@ type Claim struct {
 	TaskTakeState       TakeState
 	TaskWrittenEpoch    string
 	TaskWrittenRevision uint64
+	// Handshake is the handshake between the daemon and this claim's worker over the last phase
+	// entry the claim was queued a task of: that entry, the issue generation the task was of, when
+	// a task of that entry was first queued to the claim and when a take of it by its worker was
+	// first accepted (EntryHandshake). It outlasts the task it was read from, which the report of
+	// the take's turn finishes, so it is what the state reads an issue's two times from
+	// (api.Issue.EntryQueuedAt and EntryConfirmedAt), and for a tree's own root it is its
+	// architect's in every phase the root stands in. The zero value names no entry, which every
+	// claim of a daemon upgraded in place is until its role's next start: the two times read as
+	// absent there. Four decisions write it, each beside GivenEntry or the delivery it records:
+	// queue and EntryGiven, where the claim is given an entry's work; accept, where a take of a
+	// task of that entry is accepted; and the take-back of that take where its turn never started
+	// — a compaction, the second wait, a let-go or a retirement of a take that awaits its turn
+	// (giveBackTake) — which clears the handshake's own. A queue of another entry replaces it, and
+	// nothing else clears it: a finish, a turn's end, a hold, a provider error's take-back and a
+	// let-go's take-back of a take whose turn started each leave it.
+	Handshake EntryHandshake
 	// ServingCheckLook is the production check look of the last confirmed delivery this claim
 	// retired, the look side of ServingGeneration: what ServingCheck answers with once no delivery
 	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a
@@ -277,9 +300,10 @@ type Claim struct {
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
-	// one, each zero until that event happens. They are persisted, so a restart keeps them: they
-	// are what a reader has to tell a worker still making progress from one wedged in a turn or
-	// idle since yesterday, and a claim rebuilt without them would look as if it had never worked.
+	// one, each zero until that event happens. A turn's start is when the daemon first learned of
+	// it: its agent_start (turnStarted). They are persisted, so a restart keeps them: they are
+	// what a reader has to tell a worker still making progress from one wedged in a turn or idle
+	// since yesterday, and a claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
@@ -296,8 +320,9 @@ type Claim struct {
 	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
 	// until another of its own kind replaces it. LastReady is when the agent last said it could be
 	// prompted, which is what says how old either cause is. All three are persisted: the operator
-	// reading a claim after a restart is the one who has to act on them, and the restarted worker
-	// is told the death's cause (interruptedTask).
+	// reading a claim after a restart is the one who has to act on them, and the death's cause is
+	// what the record of that death names (endDied, EndedWork), which the restarted worker is told
+	// (RelaunchSentence, interruptedTask).
 	LastDeathCause   string
 	LastStartFailure string
 	LastReady        time.Time
@@ -446,8 +471,9 @@ type Claim struct {
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
-	// no write a machine makes carries it or erases it, exactly as a session's activity report
-	// is held.
+	// no write a machine makes carries it or erases it, a launch's included: the store's putClaim
+	// names none of its eight columns. The activity report below is held the same way but for
+	// that one write, which clears the report and leaves the step as it stood.
 	Step StepRecord
 	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what the
 	// process this claim runs now last reported it was doing (POST /legion/v1/claims/activity):
@@ -460,10 +486,10 @@ type Claim struct {
 	// The store's putClaim sets all four to their zero values on a write that moves Generation
 	// (launchNow), because the report describes the process that made it and the launch replaces
 	// that process; and a report is written only onto the launch whose secret the route
-	// authenticated it with, so one a dead process sent around its relaunch is refused rather
-	// than written over that clear. So a worker displaced into a replacement pod while a
-	// background task of its own ran is read as a session that has reported nothing, not as one
-	// still waiting on that task.
+	// authenticated it with, so one a dead process sent around its relaunch is never written over
+	// that clear, whatever the route answers it (store's PutClaimActivity). So a worker displaced
+	// into a replacement pod while a background task of its own ran is read as a session that has
+	// reported nothing, not as one still waiting on that task.
 	//
 	// The daemon's minute sweep reads them off the live claim, which is the only reading it has
 	// of what a quiet worker says it is waiting on (internal/daemon's tellSilentPhaseWorkers,
@@ -473,6 +499,68 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+}
+
+// EntryHandshake is the handshake between the daemon and a claim's worker over one phase entry:
+// the entry, the issue generation the entry's task was of (Delivery.Generation), when a task of
+// that entry was first queued to the claim (the first such Delivery.QueuedAt) and when a take of a
+// task of it by the claim's worker was first accepted (the first such Delivery.ConfirmedAt). The
+// zero value names no entry, and a zero ConfirmedAt is an entry no take of whose task stands
+// accepted.
+type EntryHandshake struct {
+	Entry       int64
+	Generation  uint64
+	QueuedAt    time.Time
+	ConfirmedAt time.Time
+}
+
+// queued is h once a task of entry, of generation's run, was queued to the claim at the moment at.
+// Where h already names that entry of that run it stands as it is: a second task of one entry is
+// a sweep's start again after the retirement of an untaken task put the entry back
+// (retirePending), or a held phase's retry (RequestDeliver.ResendEntry), and the entry was still
+// first queued, and perhaps confirmed, when h says. Any other entry replaces h with that entry,
+// queued at and confirmed by no take yet.
+func (h EntryHandshake) queued(entry int64, generation uint64, at time.Time) EntryHandshake {
+	if h.Entry == entry && h.Generation == generation {
+		return h
+	}
+	return EntryHandshake{Entry: entry, Generation: generation, QueuedAt: at}
+}
+
+// confirmed is h once a take of the task d was accepted (accept): the first confirmation of a task
+// of h's entry and run is recorded at d.ConfirmedAt. Every other confirmation leaves h as it
+// stands: a later one of the same entry, which a task taken back and taken again makes, and one of
+// a task of another entry or of no entry, a wake's or an operator's, which is no part of this
+// handshake.
+func (h EntryHandshake) confirmed(d Delivery) EntryHandshake {
+	if !h.takenOf(d) || !h.ConfirmedAt.IsZero() {
+		return h
+	}
+	h.ConfirmedAt = d.ConfirmedAt
+	return h
+}
+
+// unconfirmed is h once the daemon gave back the accepted take of the task d before its turn
+// started (giveBackTake): a compaction, the second wait, or a let-go or a retirement of a take
+// that awaited its turn, so the worker never ran the take's text and nothing says it took the
+// task. Where that confirmation is the one h recorded — d is of h's entry and run, and its
+// ConfirmedAt is h's — h is unconfirmed again, the task's next accepted take is recorded in its
+// place, and the answer is true. Any other give-back leaves h as it stands and answers false: one
+// of a task of another entry or of no entry, and one of a later confirmation of h's entry, after
+// the first one stood. The bool is what its callers read to know whether the claim's write must
+// carry the handshake, rather than comparing two handshakes that hold times.
+func (h EntryHandshake) unconfirmed(d Delivery) (EntryHandshake, bool) {
+	if !h.takenOf(d) || !d.ConfirmedAt.Equal(h.ConfirmedAt) {
+		return h, false
+	}
+	h.ConfirmedAt = time.Time{}
+	return h, true
+}
+
+// takenOf is whether d is a taken task of h's entry and run (Delivery.taken): a task whose
+// accepted take can be h's confirmation.
+func (h EntryHandshake) takenOf(d Delivery) bool {
+	return d.Entry != 0 && d.Entry == h.Entry && d.Generation == h.Generation && d.taken()
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
@@ -784,6 +872,12 @@ type Deps struct {
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
 	Secrets Enroller
+	// Registrar keeps each process's pod registered at the secrets broker to trade under the
+	// claim's session (ensureRegistered). nil — every deployment that names no
+	// `runtime.kubernetes.agent_secrets.exchange_audience` — registers nothing, and pins and logs
+	// no hello's key (helloKey). It reads the pod token the shim's hello carried, so it does
+	// nothing without Secrets.
+	Registrar Registrar
 	// Identity is the git identity a role's commits carry on issue: its App's bot, minted for the
 	// owner of the repository the issue works. A phase task hands it to the agent's working copy
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
@@ -811,9 +905,11 @@ type Deps struct {
 	// next runs — which can be after a park, a hand back to `todo` or a linger, generations later.
 	// Such a task names a person's decisions, which its own confirmation tells (daemon's
 	// settleKept, the claim store's putDelivery), so it is held rather than dropped: false keeps it
-	// pending, unsent and uncharged, and the start of the root's next run sends it (queue). It is
+	// pending, untaken and uncharged, and the start of the root's next run offers it (StartedBy,
+	// offerPending) — unless that start's own task supersedes it (supersedes, queue), which
+	// retires it untaken and leaves the decisions it names for the catch-up that follows. It is
 	// asked only about a root architect's task of a run — never a phase worker's, never a task of
-	// no run such as an operator's or a production check's. nil sends every delivery.
+	// no run such as an operator's or a production check's. nil lets every delivery be taken.
 	RootHears func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootTask is what a root architect's held task of a run says now: its text, and what it names
 	// of the decisions a person made while nobody in the root's tree could hear them
@@ -834,6 +930,16 @@ type Deps struct {
 	// the tree commits in its own transaction and can still land between this answer and the
 	// retire. nil closes every tree.
 	TreeClosable func(ctx context.Context, c Claim) (bool, error)
+	// ClaimActivity reads the activity report the store holds for launch generation of the claim
+	// token (the store's PutClaimActivity columns), and whether it holds one: false for a launch
+	// whose process has reported nothing, and for any launch but the one the row records. It is
+	// what a let-go reads the background work the process it lets go reported from (recordEnd,
+	// launchActivity), because the machine's claim holds only what it read at its own boot, and
+	// it is read before the launch's first write, which clears the report as it moves the
+	// generation. It is a read of the record, as RootTask is, bounded by the claim-write deadline
+	// where it is read; nil reads no report, so every let-go of a process that ran a turn
+	// records that the daemon has none.
+	ClaimActivity func(ctx context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error)
 	// PluginContract is the daemon's own plugin contract number (api.DaemonAPIVersion; supervise
 	// cannot import api), compared against each claim's recorded PluginContract to decide whether a
 	// registration or a restored claim is stale.
@@ -1166,6 +1272,18 @@ type Machine struct {
 	// a hold's end, and any write clears it (putValue). letGo clears it with the process, and it
 	// is memory only: a restart's own writes are its boot's (valueRead).
 	retaken uint64
+	// cutTurnOf is the delivery id of the pending task the decision that lets the claim's process
+	// go takes back from its turn (interrupted), and "" while no decision has taken one back from
+	// it. interrupted sets it where it takes back a take whose turn was running. The take-back
+	// clears the take, so this, rather than the take or the claim's state, is what tells the
+	// let-go that follows — in the same decision, or at the turn of a wake the replacement parked
+	// — that the task's turn was cut off (recordEnd, EndedWork.TaskTurn). The two decisions that
+	// record the end of a process they found gone before they take its task back (died,
+	// displaced) need no mark: that record reads the take itself. The delivery id never changes,
+	// so the mark stands under it across the take-back. letGo clears it with the process. It is
+	// memory only: a daemon restarted inside such a park records the end without it, from what
+	// the claim still holds.
+	cutTurnOf string
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
 	// a turn that ends under a compaction leaves the claim where it is (turnEnded), and only
@@ -1173,6 +1291,26 @@ type Machine struct {
 	// restarts mid-compaction leaves a claim stored working, whose agent's own get_state answer
 	// then ends it (askTurnOver).
 	compacting *compacting
+	// lostCompaction is the compaction a gone verdict dropped with the process it ran over
+	// (compactionLostProcess), kept for the let-go of that process alone and cleared by letGo,
+	// nil for none. The verdict drops the compaction before the death or the displacement
+	// records what the process ended, and a relaunch the wake pacing parks lets the process go
+	// a wake's turn later with the claim still in the working the compaction took it to, so
+	// recordEnd reads this, as it reads compacting, to tell that working from a turn's
+	// (endState). Nothing else reads it: for the rest of the daemon the compaction is gone. It
+	// is memory only, as compacting is.
+	lostCompaction *compacting
+	// heldStopBack is the state the claim's held suspension finds it in when it runs at the end of
+	// the turn, or of the compaction, the claim is still stored working for (suspendHeldAtEnd):
+	// the state that end gives the claim back in. That is idle after a turn, and after a
+	// compaction the state it gives back (compacting.back): the state it took the claim from
+	// where no turn ran under it, and idle where a turn ran and ended under it (endState). It is
+	// "" at every other moment. Nothing runs any more at that end, so the let-go the stop makes
+	// reads the claim in this state rather than as a turn cut off (endState, recordEnd). The
+	// claim's own state stays working through the stop, as it always has: the stop publishes the
+	// claim while the runtime stops it (stoppingProcess), and the end gives the claim its state
+	// back only once the hold's outcome is known (turnEnded, compactEnded).
+	heldStopBack ClaimState
 	// processGone is what the runtime's last report of the process the claim records found
 	// (reportedProcess, Claim.ProcessGone), and false until a report has found that process
 	// gone. Every report the machine judges writes it — a gone verdict sets it and a verdict
@@ -1196,9 +1334,15 @@ type Machine struct {
 	goneOutOfMemory bool
 	// goneCause is the runtime's account of the death the report that set processGone found
 	// (deathCause), and empty wherever processGone is false: written and cleared with it. It is
-	// kept for the same suspension, which puts it on the claim as died would have
-	// (Claim.LastDeathCause), so the task it takes back tells the agent why its process died
-	// rather than nothing, or an older death's cause (interruptedTask).
+	// kept for the same suspension, which records the dead process's end as the death it is under
+	// this account (recordEnd, endDied) once the dead turn's task is taken back, unless a death
+	// died judged already recorded it, so the task's next accepted take says why its process died
+	// rather than that a suspension ended it: the sentence in front of it reads that record, its
+	// own while the record is untold (relaunchSentence) and the record's cause once it is told
+	// (interruptedTask, EndedWork.Cause). Before the take-back the suspension also puts it on the
+	// claim as died would have (Claim.LastDeathCause), which the operator's listing and a failed
+	// claim's notices read, and it puts back the cause the claim held when the take-back's write
+	// fails (suspendOverADeadProcess).
 	goneCause string
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands
@@ -1271,6 +1415,17 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
+	// registration is the pod-session registration this machine keeps written for the claim's
+	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
+	// writes it again at its shim's first hello to the new daemon.
+	registration *podRegistration
+	// helloKey is the thumbprint the first hello of the claim's current incarnation named, which
+	// every registration of that incarnation is bound to (ensureRegistered); a later hello of the
+	// same incarnation naming another key is logged and changes nothing. A machine with no
+	// Registrar pins none and logs none, since it keeps no registration for a key to be bound to.
+	// Memory only, like registration: a restored claim pins the key its shim's first hello to the
+	// new daemon names.
+	helloKey helloKey
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
 	// goroutines counts the goroutines the machine started whose decision has not been handled
@@ -1287,6 +1442,10 @@ type Machine struct {
 	// has a lock of its own, held only to set, clear or read it, so a reader never waits on mu.
 	decidingMu sync.Mutex
 	deciding   Event
+	// turnsEnded counts the turns whose end this machine has recorded (turnEnded), whichever event
+	// ended them, for the daemon to read across a decision (TurnsEnded). It is atomic so that read
+	// never waits on mu.
+	turnsEnded atomic.Uint64
 }
 
 // armed is one scheduled timer: its arming's sequence and delivery, how to cancel it, and when it
@@ -1405,6 +1564,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		}
 		m.identity = &heldIdentity{incarnation: m.claim.Locator.Incarnation, AgentSecretsIdentity: identity}
 		m.enrollmentSent = false
+		if m.deps.Registrar != nil {
+			m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
+		}
 	}
 	dropped := m.dropWakeFor(ev)
 	if err := m.runParkedLaunchNow(ctx, ev); err != nil {
@@ -1529,14 +1691,26 @@ func (c Claim) ReleasedLaunch() bool {
 // Deps.RootHears): this start is the root running again, so the held task's value is written
 // again now (offerPending), before the start's own work — including when that start carries no
 // task of its own to deliver, where nothing else would ask.
-func (m *Machine) StartedBy(ctx context.Context, row int64) error {
+//
+// The one held task it does not offer is one the start's own task supersedes (task, the request
+// the start delivers once the claim is brought back, nil for a start that carries none;
+// supersedes): a tree's root architect's task of an earlier run, or of a lower entry of the same
+// run, that carries an entry of its own and no take of which is accepted. Offered here, it would
+// be the re-admitted architect's first take — a task saying what was true of a run that is over
+// (dispatch://INFRA-2614 R3) — and the start's own task, the one the transition that raised the
+// newer entry wrote (R4), would wait behind its turn. The start's delivery retires it untaken
+// instead (queue), which releases the decisions it names for the catch-up that follows to tell. A
+// start of no entry supersedes nothing, and a held task of no entry, a wake's (workflow's
+// wakeRow) among them, is superseded by nothing, so either way a held task is offered at the start
+// as before.
+func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
 	if row <= m.claim.LastStartRow {
-		return m.offerPending(ctx)
+		return m.releaseHeld(ctx, row, task)
 	}
 	m.claim.LastStartRow = row
 	if m.held != nil {
@@ -1545,6 +1719,18 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 	}
 	if err := m.persist(ctx); err != nil {
 		return err
+	}
+	return m.releaseHeld(ctx, row, task)
+}
+
+// releaseHeld is StartedBy's offer of the pending task (offerPending), which it skips for a task
+// the start's own task supersedes (supersedes, the one rule queue applies when that task arrives).
+func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliver) error {
+	if p := m.claim.Pending; p != nil && task != nil && m.supersedes(*p, *task) {
+		m.log.Info("supervise: the start's own task supersedes the held task, so the held task is not offered; the start's delivery retires it",
+			"row", row, "held", p.ID, "heldTask", p.Number, "heldGeneration", p.Generation, "heldEntry", p.Entry,
+			"generation", task.Generation, "entry", task.Entry)
+		return nil
 	}
 	return m.offerPending(ctx)
 }
@@ -1556,6 +1742,11 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 // difference the admission pass reads between the entry a role's phases row names
 // (record.PhaseRow.Entry) and the entry its claim was given has to close here rather than
 // through a second task of the same entry.
+//
+// The handshake is written with the number (Claim.Handshake), from the task the claim holds where
+// that task carries entry: its queued time is when that entry's work was first queued, and its
+// confirmed time, where a take of it was accepted, when the worker took it. A claim holding no
+// task of entry has no handshake of it to record and keeps the one it holds.
 //
 // A claim already at or above entry is left alone and written nothing: the number only rises, so
 // a row run again after the claim was given a later entry's work cannot take it back.
@@ -1570,6 +1761,9 @@ func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 		return nil
 	}
 	m.claim.GivenEntry = entry
+	if p := m.claim.Pending; p != nil && p.Entry == entry {
+		m.claim.Handshake = m.claim.Handshake.queued(entry, p.Generation, p.QueuedAt).confirmed(*p)
+	}
 	return m.persist(ctx)
 }
 
@@ -1752,6 +1946,16 @@ func (m *Machine) Deciding() Event {
 	defer m.decidingMu.Unlock()
 	return m.deciding
 }
+
+// TurnsEnded is how many turns this machine has recorded the end of (turnEnded), whichever event
+// ended them: the agent's own agent_end, or its answer to the sweep's question that it is no
+// longer streaming (askTurnOver). The daemon reads it on both sides of a decision to tell whether
+// that decision ended a turn, and posts the end to the issue's other claims (its wakeIssue,
+// IssueTurnEnded): a phase task one of them holds for this turn may go now. It never waits on the
+// decision in flight, and a count read after Handle returns is one the claim that decision
+// published already carries, since the count moves inside the decision and the publish is that
+// decision's last act (unlock).
+func (m *Machine) TurnsEnded() uint64 { return m.turnsEnded.Load() }
 
 // decide publishes ev as the event the decision now beginning handles (Deciding), and unlock
 // clears it. The caller holds mu.
@@ -2066,7 +2270,10 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // first, so it is the one waited out. The boot token's hash is persisted before the process
 // starts, so the shim's first hello resolves. A launch the runtime or the spec refuses is a launch
 // failure and is tried again after the backoff (backOff), waiting out the same process, until the
-// budget runs out; only a start that succeeds forgets it. A launch that fails stops the process it
+// budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
+// (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
+// nothing, and a start the session store could not answer is charged nothing and tried again
+// (startWaitsForStore). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2074,8 +2281,11 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // turn in the wake pacing first (reserveWake), the project controller's claim excepted: it is the
 // recovery path, which no request raises, so there is no request here to let one through. A
 // launch a request raised that the pacing lets through goes by launchAfter (revive).
-func (m *Machine) launch(ctx context.Context) error {
-	return m.launchAfter(ctx, false, false)
+//
+// cause is why the process the claim still records is let go, which the let-go records with
+// what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
+func (m *Machine) launch(ctx context.Context, cause string) error {
+	return m.launchAfter(ctx, false, false, cause)
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -2108,13 +2318,17 @@ func (m *Machine) launch(ctx context.Context) error {
 // waited all of that before its request was even looked at. A cancelled start is charged nothing,
 // as a start the daemon's stop cut short is, and the cause of every start that did fail is kept on
 // the claim (Claim.LastStartFailure) for whoever asks why it is not running.
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt) }
+//
+// cause is launch's: why the process the claim still records is let go. It travels with the
+// launch to wherever it runs — here, or at the turn of the wake the gate parks it on, which is
+// when a process the park left running is let go and what it ended is read (launchNow, letGo).
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string) error {
+	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
 	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
-		return m.launchNow(ctx, charged, exempt)
+		return m.launchNow(ctx, charged, exempt, cause)
 	}, again)
 }
 
@@ -2138,14 +2352,20 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool) error {
 // raises waits under the lane's own kind rather than under the launch kind every other launch
 // takes — the restoration a refused turn's retry takes, from the same wrapper (retryHolding,
 // runWake, reserveWake, dispatch://INFRA-2712 R4).
-func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
+//
+// It is also where the process a relaunch replaces is let go, for cause, and what that process
+// ended is recorded before the first try's write moves the generation and clears the process's
+// activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
+// failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
+// claim that records no process any more, so they pass noEnd.
+func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
 	// arms must put that same one back where it runs. Reading it without taking it is what the
 	// wake gate does for the kind it reads off it (reserveWake).
 	intent := m.pluginRelaunch
 	m.commitPluginRelaunch()
-	m.letGo()
+	m.letGo(ctx, cause)
 	starting, started := m.startable(ctx)
 	defer started()
 	for {
@@ -2163,7 +2383,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-				return m.launchAfter(ctx, charged, exempt)
+				return m.launchAfter(ctx, charged, exempt, noEnd)
 			}))
 			return err
 		}
@@ -2207,22 +2427,48 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		var tooLarge *runtime.PromptTooLarge
+		if errors.As(err, &tooLarge) {
+			return m.promptRefused(ctx, starting, err)
+		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-			// The refusal is this claim's own cause only where nothing else is already being
-			// relaunched after: a claim that died and whose relaunch the runtime then refused
-			// reads died (Claim.PendingCause).
-			cause := m.claim.PendingCause
-			if cause == "" {
-				cause = CauseLaunchRefused
-			}
-			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
+			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
 		charged = true
 	}
+}
+
+// promptRefused is a start the runtime refused because the role's composed system prompt is larger
+// than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
+// launcher reads, which the sandbox runtime measures before anything starts. Nothing was
+// started, and every later try would compose the same text from the same files and be refused
+// the same way until the deployment changes them, which takes a restart of the daemon. So it is
+// charged no launch failure and not tried again: the claim fails at once, under the cause the
+// charged path at its limit would name (launchNow), with the refusal's sentence — the role, the
+// prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as
+// the claim view's `failure.detail` and `lastStartFailure`. The process the launch let go is
+// stopped first, as every refused start's is.
+func (m *Machine) promptRefused(ctx, starting context.Context, refusal error) error {
+	err := errors.Join(refusal, m.stopPrevious(starting))
+	m.log.Error("supervise: the role's system prompt is too large to launch; failing the claim, charging no launch failure",
+		"generation", m.claim.Generation, "error", err, "launchFailures", m.claim.Budgets.LaunchFailures)
+	return m.failLaunch(ctx, err, fmt.Sprintf("launch refused, charged no launch failure: %v", refusal))
+}
+
+// failLaunch fails the claim over a launch the runtime refused, with err, the refusal and what
+// stopping the process it let go answered, and detail, the claim's failure sentence. The refusal
+// is this claim's own cause only where nothing else is already being relaunched after: a claim
+// that died and whose relaunch the runtime then refused reads died (Claim.PendingCause).
+func (m *Machine) failLaunch(ctx context.Context, err error, detail string) error {
+	cause := m.claim.PendingCause
+	if cause == "" {
+		cause = CauseLaunchRefused
+	}
+	return errors.Join(err, m.fail(ctx, cause, detail))
 }
 
 // startable is the context the tries of one launch run on: the caller's, which a suspension can
@@ -2285,13 +2531,14 @@ const (
 // session nor a launch failure — charging it would fail a claim whose agent is fine for a fault
 // outside it — and the same session is started again every minute (relaunchLater) until the store
 // answers. The issue and the controller are told at once and then hourly, since nothing else says
-// why the worker is not running.
+// why the worker is not running. The process the launch let go is let go already, so the retry
+// lets none go (noEnd).
 func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.log.Error("supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt) })
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -2481,12 +2728,12 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // live: one launch failure, and the same session relaunched after it, or failed when the budget
 // is spent. The runtime's account of the death is kept on the claim (Claim.LastDeathCause) before
 // anything else, so whoever asks afterwards — the operator's listing, the notices a failed claim
-// sends, the relaunched agent's own first prompt — is told why this claim's process ended rather
-// than left to read the daemon's log. A task whose turn the process was running goes back to
-// waiting (interrupted), for the relaunch to send, and a death with work outstanding is counted
-// as one (chargeDeath), failing the claim at the limit. A process that dies while a suspension is
-// held leaves the claim suspended instead (endHeld). A process that ended with a pod the daemon
-// itself replaced is not a death at all (displaced).
+// sends, the relaunched agent's own first take — is told why this claim's process ended rather
+// than left to read the daemon's log. A task whose take's turn the process was running goes back
+// to waiting (interrupted), for the relaunched agent to take again, and a death with work
+// outstanding is counted as one (chargeDeath), failing the claim at the limit. A process that dies
+// while a suspension is held leaves the claim suspended instead (endHeld). A process that ended
+// with a pod the daemon itself replaced is not a death at all (displaced).
 //
 // One dead process is one death, however often the runtime reports that process gone. The report
 // that reaches the charge below makes the charge decision and writes it (Claim.DeathCharged), and a
@@ -2513,6 +2760,14 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // with the deaths it charged in the same statement: a claim restored from the store is charged
 // exactly what the daemon before it charged (Claim.DeathCharged).
 //
+// What the death ended is recorded first, before the take-back changes the task it finds
+// (recordEnd): the process is gone whatever this decision goes on to do, every fact the record
+// reads is still as the death left it, and the relaunch that lets the process go can be a wake's
+// turn away. A task whose take's turn was running is still taken there, so the record says its
+// turn was cut off; one whose turn ended with its report still to come is finished rather than
+// taken back (interrupted). The let-go that follows — the launch, the held suspension's or the
+// failure's — finds this launch's record standing and adds none.
+//
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
 // closes every stream while the agents run on — and the probe that reaches here is what tells the
@@ -2522,6 +2777,8 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
+	ended := endDied(m.claim.LastDeathCause)
+	m.recordEnd(ctx, ended)
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -2530,7 +2787,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.endHeld(ctx)
 	}
 	if m.claim.DeathCharged {
-		return m.relaunchAfterFailure(ctx, CauseDied)
+		return m.relaunchAfterFailure(ctx, CauseDied, ended)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
@@ -2545,7 +2802,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, CauseDied))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, CauseDied, ended))
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the
@@ -2571,15 +2828,19 @@ type AbandonedSession struct {
 	At          time.Time `json:"at"`
 	// Told is set once a take of a task whose text carries the sentence is accepted (accept), so
 	// the agent that replaced the session is told of it in the first task it actually takes and in
-	// no later one. It is written in the accepted take's own write, rather than where the task was
-	// queued, because a task nobody took reached nobody: the fresh session still has to be told of
-	// its predecessor in whatever take does reach it (dispatch://INFRA-714). A take sent again is
-	// answered the text the first answer carried, sentence and all, and marks nothing again.
-	Told bool `json:"told,omitempty"`
+	// no later one, and ToldBy is the delivery whose accepted take told it. It is written in the
+	// accepted take's own write, rather than where the task was queued, because a task nobody took
+	// reached nobody: the fresh session still has to be told of its predecessor in whatever take
+	// does reach it (dispatch://INFRA-714). A take sent again is answered the text the first answer
+	// carried, sentence and all, and marks nothing again. A take given back gives the telling back
+	// with it (giveBackTake): a sentence told twice is the harmless way round, where losing it
+	// strands a worker reading an empty transcript as a fresh start.
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
 }
 
-// Tells is whether a prompt to this claim's agent must still name the session the claim
-// abandoned: one was abandoned and it has not been told yet.
+// Tells is whether the next accepted take of this claim's agent must still name the session the
+// claim abandoned: one was abandoned and it has not been told yet.
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
@@ -2600,6 +2861,28 @@ func (m *Machine) sessionGone() {
 // nothing of. The session is recorded as abandoned, with why it was, since nothing else keeps
 // where it went and the fresh agent is told of it in its first task.
 //
+// A fresh session is not told the old session's record of what the last let-go of its process
+// ended (EndedWork), and this is the one place that rule is written. When it records the
+// abandoned session, it ends that record too: a record that still tells is marked told, by no
+// delivery (ToldBy empty), so no take-back ever untells it (untell). The
+// abandoned session's sentence (abandonedTask) already says that the turns, tool calls,
+// subagents and background jobs of the old session are gone, and the fresh agent started none of
+// them, so the record's sentence would tell it that work it never had has stopped. A record that
+// tells beside an abandoned session that tells is therefore always one of the fresh session's own
+// processes, and each reader tells both: the composer of an accepted take's text
+// (Delivery.message), the delivery of the record alone (queueRelaunch), and the ready's sentence
+// for a root architect's catch-up (the daemon's applyTerminal). A delivery of the record alone
+// that the claim still holds has nothing left to say, and its next take or offer drops it
+// (takeable).
+//
+// Every caller runs it after the old process's record is written, so no let-go writes a record of
+// that process later: the launch's startFresh runs after the launch let the old process go
+// (launchNow, letGo), and retry's fresh session and the operator's forget-session reach only a
+// claim that runs nothing — queued, suspended, failed or retired — whose process the suspension,
+// the failure or the retirement already let go (suspended, fail, retire), or that never had one. A
+// let-go records nothing for a claim that records no process (recordEnd), so the next record
+// written is of the fresh session's own process.
+//
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
 // so the project's controller can be told again if the new one goes the same way — which is what
@@ -2610,6 +2893,11 @@ func (m *Machine) forgetSession(why string) {
 	if m.claim.Session != "" {
 		m.claim.Abandoned = AbandonedSession{
 			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: why, At: m.deps.Clock.Now(),
+		}
+		if e := &m.claim.EndedWork; e.Tells() {
+			e.Told, e.ToldBy = true, ""
+			m.log.Info("supervise: the claim abandons its session, so the record of what the old session's process ended is not told to the fresh agent; the abandoned session's sentence says that work is gone",
+				"session", m.claim.Session, "cause", e.Cause, "ended", e.Generation)
 		}
 	}
 	m.claim.Session, m.claim.SessionFile = "", ""
@@ -2626,14 +2914,17 @@ func (m *Machine) forgetSession(why string) {
 //
 // cause is the word for what failed it, from the site that decided: it is written with the
 // sentence and the moment, and the pending cause this call has just consumed is cleared, since
-// the episode it named has ended here (Claim.PendingCause).
+// the episode it named has ended here (Claim.PendingCause). The process it lets go is recorded
+// as ended by the failure, under that sentence (endFailed, recordEnd), unless the decision that
+// failed it already recorded that process's end — a death's (died).
 func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) error {
+	ended := endFailed(why)
 	if loc := m.claim.Locator; loc != nil {
-		if err := m.endProcess(ctx); err != nil {
+		if err := m.endProcess(ctx, ended); err != nil {
 			m.log.Error("supervise: could not suspend the failed claim's process", "incarnation", loc.Incarnation, "error", err)
 		}
 	}
-	m.letGo()
+	m.letGo(ctx, ended)
 	m.claim.State, m.claim.Failure = StateFailed, why
 	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
 	m.claim.PendingCause = ""
@@ -2657,23 +2948,24 @@ func (m *Machine) release(ctx context.Context) error {
 
 // suspendProcess asks the runtime to stop the claim's process and keep its session — release's
 // counterpart for a claim that goes on — and lets the stopped process go, for the next launch of
-// the same session to wait out. A suspension that fails leaves the claim holding its process. A
-// claim whose process is retired and relaunched in one decision (chargePrompt, the registration
-// deadline) calls it directly; one that does not run again afterwards calls endProcess.
-func (m *Machine) suspendProcess(ctx context.Context) error {
+// the same session to wait out, recording what it ended under cause (letGo). A suspension that
+// fails leaves the claim holding its process, and records nothing. A claim whose process is
+// retired and relaunched in one decision (chargePrompt, the registration deadline) calls it
+// directly; one that does not run again afterwards calls endProcess.
+func (m *Machine) suspendProcess(ctx context.Context, cause string) error {
 	if err := m.deps.Runtime.Suspend(ctx, *m.claim.Locator); err != nil {
 		return err
 	}
-	m.letGo()
+	m.letGo(ctx, cause)
 	return nil
 }
 
 // endProcess is suspendProcess for a claim that does not run again afterwards — suspended, failed,
 // or a root that exited — so View says the process is being stopped (ClaimView.Stopping) while the
-// runtime stops it, and nothing is routed to the session it stops.
-func (m *Machine) endProcess(ctx context.Context) error {
+// runtime stops it, and nothing is routed to the session it stops. cause is suspendProcess's.
+func (m *Machine) endProcess(ctx context.Context, cause string) error {
 	defer m.stoppingProcess()()
-	return m.suspendProcess(ctx)
+	return m.suspendProcess(ctx, cause)
 }
 
 // retire ends the claim: nothing of it runs any more and nothing relaunches it. The round it was
@@ -2693,14 +2985,24 @@ func (m *Machine) endProcess(ctx context.Context) error {
 // two is the claim the paragraph above forbids: retired, and still recording its round. A
 // crash or a failed write between them would leave exactly that behind.
 //
-// A take of the claim's task whose turn has not started is taken back in that same write: the
-// process that took it is the one the claim stops running, so that turn never starts, and the
-// next launch's worker — an operator's retry, a reopened issue's start — takes the number afresh,
-// its text composed again (Delivery.message), where a take answered from the record would hand a
-// fresh session the text the stopped one was given, without the sentence naming the session it
-// replaced (abandonedTask).
-func (m *Machine) retire(ctx context.Context) error {
-	m.letGo()
+// A take of the claim's task whose turn has not started is taken back in that same write
+// (takeBackUnstarted): the process that took it is the one the claim stops running, so that turn
+// never starts, and the next launch's worker — an operator's retry, a reopened issue's start —
+// takes the number afresh, its text composed again (Delivery.message), where a take answered from
+// the record would hand a fresh session the text the stopped one was given, without the sentence
+// naming the session it replaced (abandonedTask). What that take told and the handshake's
+// confirmation of its entry go back with it, since no turn ran its text (giveBackTake).
+//
+// A retirement records what the process it lets go ended under cause (letGo), and its one write
+// above carries the record (persist, or retirePending's transaction), as every let-go's own write
+// does (recordEnd). A stop passes its own cause (endStopped), whose comment names every retry
+// that relaunches a stopped claim on the session it records, so the turn the stop cut off and the
+// background work it ended are told to that session's next turn (relaunchSentence). The tree's
+// or the issue's close and the agent's own exit pass noEnd: each ends the claim's work on
+// purpose, so a record left on it would tell a later start of the claim that work it ended on
+// purpose was lost.
+func (m *Machine) retire(ctx context.Context, cause string) error {
+	m.letGo(ctx, cause)
 	m.claim.State = StateRetired
 	drops := m.dropsUpdateTask()
 	if drops {
@@ -2711,9 +3013,7 @@ func (m *Machine) retire(ctx context.Context) error {
 	if drops {
 		return m.dropPending(ctx, valueDeletedRetired)
 	}
-	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
-		p.ConfirmedAt, p.TakenText = time.Time{}, ""
-		m.log.Info(takenBackLine, "task", p.Number, "cause", takenBackRetired)
+	if m.takeBackUnstarted(takenBackRetired) {
 		return m.putClaimAndPendingOwed(ctx)
 	}
 	return m.persist(ctx)
@@ -2729,10 +3029,11 @@ func (m *Machine) retire(ctx context.Context) error {
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
-// nothing: ownsCompaction) — and the process the claim records, when it records one, moves into
-// previous — the claim no longer runs it (it was stopped, found dead, or left behind), and the
-// next launch of the same session waits it out. The identity of the turn that process was
-// running goes with it (turnsTask): a turn whose process is gone ends by a line of
+// nothing: ownsCompaction), and none that a gone verdict dropped with it is kept for this
+// record any more (lostCompaction) — and the process the claim records, when it records one,
+// moves into previous — the claim no longer runs it (it was stopped, found dead, or left
+// behind), and the next launch of the same session waits it out. The identity of the turn that
+// process was running goes with it (turnsTask): a turn whose process is gone ends by a line of
 // its own rather than by turnEnded, so nothing is left to read it, and a later turn must never
 // end naming the task of a turn that died with its process. What the runtime last reported of
 // that process goes with it too, and what was charged for its death with that (processGone,
@@ -2741,7 +3042,15 @@ func (m *Machine) retire(ctx context.Context) error {
 // reaches the store with the write every caller of this makes of the claim it leaves — the
 // launch that records the new process, the suspension, the retirement, the failure — so no
 // stored charge ever outlives the process it was made for.
-func (m *Machine) letGo() {
+//
+// Before any of that, what the process ended is recorded for cause, the caller's reading of why
+// it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
+// task's, and the background work its own activity report named. It is read here, first,
+// because everything it reads goes with the process below, and the launch that follows clears
+// the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
+// with the process too (cutTurnOf).
+func (m *Machine) letGo(ctx context.Context, cause string) {
+	m.recordEnd(ctx, cause)
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil
@@ -2749,12 +3058,14 @@ func (m *Machine) letGo() {
 	m.held = nil
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.retaken = 0, 0, 0
-	m.compacting = nil
+	m.cutTurnOf = ""
+	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
-	m.identity, m.enrollmentSent = nil, false
+	m.identity, m.enrollmentSent, m.helloKey = nil, false, helloKey{}
+	m.stopRegistration()
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}
@@ -2831,7 +3142,8 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// The process is gone either way the verdict splits, so a compaction running over it
 		// loses it here, before anything else is decided (compactionLostProcess): the relaunch
 		// below can be one the wake pacing parks, which writes nothing of the claim and so
-		// leaves its end nothing else to read.
+		// leaves its end nothing else to read. The record of what that process's end cut off
+		// still reads the compaction, until the let-go (Machine.lostCompaction, recordEnd).
 		m.compactionLostProcess()
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
@@ -3026,7 +3338,9 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // row appended and whose delivery is not the claim's pending one until the store has taken both
 // — what it writes is ahead of memory rather than equal to it, so neither the delivery's mark nor
 // the claim write the machine may owe can be read off this write, and queue writes memory itself
-// once the store has answered — and putClaimAndPending, which passes memory's own claim with
+// once the store has answered — interrupted, whose delivery is the task taken back, which becomes
+// the claim's only once the store has taken it, beside a claim whose telling or handshake the
+// take-back gave back (giveBackTake); and putClaimAndPending, which passes memory's own claim with
 // memory's own pending delivery and is the call that settles both.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
 	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
@@ -3042,10 +3356,11 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // (putClaimAndPendingOwed, repair).
 //
 // Its callers are the decisions that write both of memory's own rows: an accepted take (accept),
-// the start of its turn (startTakesTurn), a retirement that takes back a take whose turn has not
-// started (retire), settle's write of a delivery an earlier write left unsaved, and repair's
-// branch for a claim that holds a pending delivery. Each has a pending delivery by the time it
-// calls, which is what this reads.
+// the start of its turn (startTakesTurn), a take-back that gave back a telling or a handshake's
+// confirmation with the take (takeBack, giveBackTake), a retirement that takes back a take whose
+// turn has not started (retire), settle's write of a delivery an earlier write left unsaved, and
+// repair's branch for a claim that holds a pending delivery. Each has a pending delivery by the
+// time it calls, which is what this reads.
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
 		return err
@@ -3295,5 +3610,6 @@ func copyClaim(c Claim) Claim {
 	c.BootTokenHash = bytes.Clone(c.BootTokenHash)
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
+	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
 	return c
 }

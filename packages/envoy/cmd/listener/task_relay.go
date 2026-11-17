@@ -210,7 +210,8 @@ func (r *taskRelay) run() {
 
 // repair opens the bucket and starts its watch while there is none, and watches it again on the
 // current connection when the watcher ended, its copy needs a read nothing is making
-// (kvwatch.Watcher.NeedsRead), or reconnected says a reconnect brought a new connection. A failure
+// (kvwatch.Watcher.NeedsRead), or reconnected says a reconnect brought a new connection. Both are
+// made under run's context, which stop ends (bus.OpenKeyValue, kvwatch.Watcher.Rewatch). A failure
 // is logged as its kind is (failed), and the next interval or reconnect tries again. The
 // connection's last error is read before the call, so that a refusal an earlier call drew is not
 // read as this one's (newViolation).
@@ -225,7 +226,7 @@ func (r *taskRelay) repair(reconnected bool) {
 	case w == nil:
 		err = r.open(conn)
 	case reconnected || w.Err() != nil || w.NeedsRead():
-		err = w.Rewatch(conn)
+		err = w.Rewatch(r.ctx, conn)
 	default:
 		return
 	}
@@ -243,7 +244,7 @@ func (r *taskRelay) open(conn *nats.Conn) error {
 	if err != nil {
 		return err
 	}
-	kv, err := bus.OpenKeyValue(conn, js, legiontasks.Bucket)
+	kv, err := bus.OpenKeyValue(r.ctx, conn, js, legiontasks.Bucket)
 	if err != nil {
 		return err
 	}
@@ -465,8 +466,9 @@ func (r *taskRelay) disconnected() {
 // reconnect is the relay's reconnect hook. It only wakes run, which watches the bucket again on
 // the new connection, or opens it there, in the background: so a bucket that is missing or refused
 // holds up no other hook and fails no hook run, which the bus would retry without end and /healthz
-// would report (bus.Client.HookStall).
-func (r *taskRelay) reconnect(*nats.Conn) error {
+// would report (bus.Client.HookStall). It waits on nothing, so it reads nothing of the run's
+// context.
+func (r *taskRelay) reconnect(context.Context, *nats.Conn) error {
 	select {
 	case r.reconnected <- struct{}{}:
 	default:
@@ -476,10 +478,12 @@ func (r *taskRelay) reconnect(*nats.Conn) error {
 
 // stop ends run and retires the watcher for the shutdown (kvwatch.Watcher.Stop), before the
 // session-consumer connection the frames go out on drains; the drain of the main connection ends
-// the watcher (end). It does not wait for run: a lookup of the bucket in flight takes no context and
-// can wait out its whole JetStream wait, ten seconds, which the shutdown's budget cannot spend. Such
-// a lookup installs no watcher once stop has run (open reads stopped), a frame run was publishing is
-// cut by run's context, and nothing either brings back is logged.
+// the watcher (end). It does not wait for run, whose open and watch of the bucket are made under
+// run's context, which stop ends: the bucket's lookup, which nats.go gives no context and which
+// could otherwise wait out its whole JetStream wait, ten seconds, is waited for only until then,
+// its answer dropped (bus.OpenKeyValue). An open whose lookup was answered first installs no
+// watcher once stop has run (open reads stopped), a frame run was publishing is cut by run's
+// context, and nothing either brings back is logged.
 func (r *taskRelay) stop() {
 	if r == nil {
 		return

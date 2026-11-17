@@ -735,8 +735,16 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	h.relaunched()
 
-	if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
-		t.Fatalf("the take after the relaunch is %+v, want the task %q, by the process the launch started", got, next)
+	// The stale process left no report the daemon took (a stale plugin's report is refused), so
+	// its let-go at the launch's turn recorded its background work as unknown, and the take
+	// carries that sentence in front of the task, which tells it (dispatch://INFRA-3276 R3).
+	got := h.wantPrompts(sent + 1)[sent]
+	ended := h.claim().EndedWork
+	if ended.Cause != endStalePlugin || !ended.Told || ended.ToldBy != got.DeliveryID {
+		t.Fatalf("the launch's turn recorded %+v, want the end of the stale plugin's process, told by the take of %s", ended, got.DeliveryID)
+	}
+	if want := relaunchSentence(ended, true) + "\n\n" + next; got.Message != want {
+		t.Fatalf("the take after the relaunch is %+v, want the task %q, by the process the launch started", got, want)
 	}
 }
 
@@ -774,6 +782,10 @@ func TestTakeBackByAStaleAddressKeepsTheNumberAcrossTheParkedLaunch(t *testing.T
 		t.Fatalf("the task is %+v, want no turn of it: a take is refused while the launch waits", p)
 	}
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	// The session reports at that turn's end that nothing of its own runs, as Oh My Pi's does, so
+	// the let-go at the launch's turn ends no work and the task is taken again as it was given
+	// (recordEnd).
+	h.reportActivity()
 
 	h.advance(waiting.At.Sub(h.clock.Now()))
 	h.wantState(StateLaunching)
@@ -1849,6 +1861,9 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	replaced := h.locator()
 
 	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
+	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so
+	// the replacement below ends no work and the operator's task goes as it was given (recordEnd).
+	h.reportActivity()
 	owed := h.pending()
 	if !h.m.replaceable(&owed) {
 		t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this test needs the ladder's wait", owed)

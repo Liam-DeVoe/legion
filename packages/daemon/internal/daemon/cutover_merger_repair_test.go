@@ -510,7 +510,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	// given and served, with no task recorded for that entry, S's included, whose start the old
 	// record still holds but which 20261110233602 unmarked before the fill read the marked starts.
 	// A merger left behind its entry would be sent the same resume task by another rule
-	// (workflow's sendOwedEntry, for an entry with no task), so the prompts the test counts would
+	// (workflow's sendOwedEntry, for an entry with no task), so the tasks the test counts would
 	// not tell the two records apart.
 	for _, issue := range rig.roots() {
 		var entry, given, served int64
@@ -882,7 +882,7 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	r.await(t, issue.key+"'s merger to be told its task and hold nothing more", func() bool {
-		if len(r.prompts(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
+		if len(r.tasks(issue.merger)) == 0 || r.startsQueued(t, issue.key, claim.RoleMerger) != 0 {
 			return false
 		}
 		held := r.daemon.claim(issue.merger)
@@ -913,7 +913,11 @@ func (r *cutoverRig) wroteUnderOrigin(t *testing.T, logs *syncBuffer, issue cuto
 
 // toldOnce holds that issue's merger took exactly one task over its whole life in this test, and
 // that it is the merging task: the resume task of the phase it holds (workflow.ResumePhaseTask),
-// read from the issue as the record holds it now.
+// read from the issue as the record holds it now. A's merger is relaunched onto the current
+// plugin from an idle process that left no report of its last turn, so its record of what that
+// relaunch ended says only that the daemon has none; such a record queues no delivery of the
+// sentence alone (supervise's queueRelaunch, dispatch://INFRA-2811 D2), and the sentence stands in
+// front of the first task the merger takes instead (cutoverWorkTask).
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	stands := readIssue(t, r.pool, issue.key)
@@ -921,7 +925,7 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
 	want := workflow.ResumePhaseTask(*stands)
-	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
+	if told := r.tasks(issue.merger); len(told) != 1 || cutoverWorkTask(told[0]) != want {
 		t.Fatalf("%s's merger took %q, want once its merging task %q", issue.key, told, want)
 	}
 }
@@ -932,14 +936,14 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 func (r *cutoverRig) toldTheQueuedTask(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	want := cutoverSlotRepairTask(issue.key)
-	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
+	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger took %q, want once the task of the start the old record queued for it, %q: no other start gives it a second task",
 			issue.key, told, want)
 	}
 }
 
-// prompts is the text of every task token's processes took, oldest first.
-func (r *cutoverRig) prompts(token claim.Token) []string {
+// tasks is the text of every task token's processes took, oldest first (cutoverAgent.told).
+func (r *cutoverRig) tasks(token claim.Token) []string {
 	r.mu.Lock()
 	agents := slices.Clone(r.agents[token])
 	r.mu.Unlock()
@@ -1222,9 +1226,9 @@ type cutoverAgent struct {
 	conn  net.Conn
 	lines *bufio.Reader
 	// mu orders the serving goroutine's writes and its record of takes against the test's reads.
-	mu      sync.Mutex
-	writer  *shimwire.Writer
-	prompts []string
+	mu     sync.Mutex
+	writer *shimwire.Writer
+	tasks  []string
 }
 
 // dialCutoverAgent connects a process to the worker stream at address and returns once the
@@ -1303,22 +1307,50 @@ func (a *cutoverAgent) write(frame shimwire.Frame) error {
 }
 
 // takes is the plugin of this process taking each task its claim is given, for as long as t
-// runs (takeDriver.watch): it records the text it took, and the take's turn ends at once, with
-// its report naming the task.
+// runs (takeDriver.watch): it records the text of each task it took, and the take's turn ends at
+// once, with its report naming the task. The daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch) is no task: it tells a relaunched process what its relaunch
+// ended (dispatch://INFRA-3276 R3), and is not recorded. A take's answer carries no delivery id,
+// so such a take is told by its text, which is that record's sentence alone
+// (cutoverRelaunchSentenceAlone).
 func (a *cutoverAgent) takes(t *testing.T, driver *takeDriver) {
 	driver.watch(t, func(took takenTask) {
-		a.mu.Lock()
-		a.prompts = append(a.prompts, took.Text)
-		a.mu.Unlock()
+		if !cutoverRelaunchSentenceAlone(took.Text) {
+			a.mu.Lock()
+			a.tasks = append(a.tasks, took.Text)
+			a.mu.Unlock()
+		}
 		if err := driver.endTurn(); err != nil {
 			t.Errorf("end the turn of task %d: %v", took.Number, err)
 		}
 	})
 }
 
-// told is the text of every task this process took, oldest first.
+// told is the text of every task this process took, oldest first: every take but those of the
+// daemon's own delivery of a relaunch's record.
 func (a *cutoverAgent) told() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return slices.Clone(a.prompts)
+	return slices.Clone(a.tasks)
+}
+
+// cutoverRelaunchOpens is how the sentence of a relaunch's record opens, alone and in front of a
+// task whose turn the relaunch did not cut off (supervise's relaunchSentence).
+const cutoverRelaunchOpens = "Your previous process ended"
+
+// cutoverRelaunchSentenceAlone is whether a take's text is the sentence of a relaunch's record
+// alone, which is the text of the daemon's own delivery of it (supervise.RelaunchSentence): a
+// task that carries the sentence carries it as a paragraph in front of the task's own text.
+func cutoverRelaunchSentenceAlone(text string) bool {
+	return strings.HasPrefix(text, cutoverRelaunchOpens) && !strings.Contains(text, "\n\n")
+}
+
+// cutoverWorkTask is the task a take's text carries: the text itself, or the text behind the
+// sentence of a relaunch's record still untold where the take carried that sentence in front of
+// its task (supervise's Delivery.message).
+func cutoverWorkTask(text string) string {
+	if sentence, task, found := strings.Cut(text, "\n\n"); found && strings.HasPrefix(sentence, cutoverRelaunchOpens) {
+		return task
+	}
+	return text
 }

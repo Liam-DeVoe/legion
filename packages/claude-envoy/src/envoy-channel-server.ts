@@ -1,9 +1,9 @@
 import { type Stats, unwatchFile, watchFile } from "node:fs"
 import { rm } from "node:fs/promises"
 import {
-  agentSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  legacyAgentSubject,
   ROLE_TOPIC_PREFIX,
   zodSchemaApi,
 } from "@legion/contracts"
@@ -64,6 +64,7 @@ import {
   EnvoyToolOperation,
   envoyToolSpecs,
   publishConfirmationText,
+  publishResultDetails,
   sendConfirmationText,
   sessionsOnMachine,
   type ToolArgumentsByOperation,
@@ -643,7 +644,7 @@ export function createChannelDelivery(input: {
  */
 export async function startChannelSession(options: ChannelSessionOptions): Promise<ChannelSession> {
   const { identity } = options
-  let directSubject = agentSubject(identity.id)
+  let directSubject = legacyAgentSubject(identity.id)
   /**
    * What this session does with a person's direct messages, for the id now bound: the record is
    * kept per session id (`./user-turn-state`), so a `/clear` builds another one. Undefined until
@@ -1391,7 +1392,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (next === undefined || next === identity.id) return
     const previous = identity.id
     const previousSubject = directSubject
-    const nextSubject = agentSubject(next)
+    const nextSubject = legacyAgentSubject(next)
     followedTopics.follow(nextSubject)
     try {
       // Bounded: this runs inside the registry chain, and a flush on a stalled NATS
@@ -1877,6 +1878,8 @@ export async function executeEnvoyTool(
         recipient: result.recipient,
         recipient_state: result.recipientState,
         confirmed: result.confirmed,
+        state: result.state,
+        ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
       }
     }
     case EnvoyToolOperation.publish: {
@@ -1888,17 +1891,16 @@ export async function executeEnvoyTool(
         message: args.message,
         ...toMessageMetadata(args),
       })
-      // The answer the model reads, its line first. A publish to a topic the stream captures is
-      // answered with the envelope alone; a kept answer is a success of its own, which the line
-      // says in the words the Oh My Pi plugin uses (`publishConfirmationText`).
+      // The answer the model reads, its line first: the counts of a stored topic's answer, a role
+      // holder, or a kept answer, which is a success of its own, all in the words the Oh My Pi
+      // plugin uses (`publishConfirmationText`). This server always names its own session as the
+      // source, so the listener sends that session a message for a kept copy no session took,
+      // unless it drops the copy more than an hour late, and the line says so.
       return {
-        message: publishConfirmationText(result),
+        message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
         topic: result.envelope.topic,
-        ...(result.holder === undefined ? {} : { holder: result.holder }),
-        ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
-        ...(result.kept === undefined ? {} : { kept: result.kept }),
-        ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+        ...publishResultDetails(result),
       }
     }
     case EnvoyToolOperation.subscribe: {
@@ -2273,7 +2275,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
         )
         return active === null
           ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, AbortSignal.timeout(ms))
+          : new DispatchClient(active.url, active.credential, fetch, {
+              signal: AbortSignal.timeout(ms),
+            })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),

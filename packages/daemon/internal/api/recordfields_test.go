@@ -98,6 +98,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		TaskWritten: 5, TaskTaken: 5, TaskFinished: 4, TaskFinishedSession: "ses_implementer_500",
 		TaskSeenEpoch: "2026-11-02T08:00:00.123456789Z", TaskSeenRevision: 41, TaskTakeState: supervise.TakeAccepted,
 		TaskWrittenEpoch: "2026-11-02T08:00:00.123456789Z", TaskWrittenRevision: 41,
+		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
 		Locator: &runtime.Locator{
@@ -138,7 +139,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
-		Abandoned:   supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
+			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
 		SessionLost: true,
 		Step: supervise.StepRecord{
 			At: at.Add(-time.Minute), TurnStartedAt: at.Add(-2 * time.Minute),

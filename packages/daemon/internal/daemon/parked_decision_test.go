@@ -994,9 +994,10 @@ func handOverRows(t *testing.T, pool *store.Pool) []string {
 }
 
 // seedHeldArchitectTask records root's architect ready with a start task it has been given and
-// nobody has sent: unconfirmed, naming kept, as a task held while its root has no architect to
-// hear it stands (supervise's sendPending), with each row it names held by that delivery, as the
-// write that queued it left them (the claim store's putDelivery).
+// whose take nobody has accepted: unconfirmed, naming kept, as a task whose take is refused while
+// its root has no architect to hear it stands (supervise's takeable, root-hears), with each row it
+// names held by that delivery, as the write that queued it left them (the claim store's
+// putDelivery).
 func seedHeldArchitectTask(t *testing.T, pool *store.Pool, root string, kept record.KeptDecisions) {
 	t.Helper()
 	ctx := context.Background()

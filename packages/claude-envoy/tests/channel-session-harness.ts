@@ -203,10 +203,34 @@ export class FakeNats implements ChannelConnection {
     })
   }
 
+  /**
+   * The listener's connection probe on `sessionID`'s relay subject: a core request carrying
+   * `Envoy-Probe: 1` and no body, never a frame's headers. Answers whether a subscription took
+   * it; false is the no-responders a server answers for a subject nothing subscribes, which the
+   * listener reads as stopped.
+   */
+  emitProbe(sessionID: string, reply: string): boolean {
+    const subject = deliverSubject(sessionID)
+    const queue = this.subscriptions.get(subject)
+    if (queue === undefined) return false
+    this.deliver(queue, {
+      subject,
+      data: new Uint8Array(),
+      reply,
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : undefined) },
+    })
+    return true
+  }
+
   /** Hands `message` to the subscription `subject`, or queues it until that subscription pulls. */
   private enqueue(subject: string, message: ChannelBrokerMessage): void {
     const queue = this.subscriptions.get(subject)
     if (queue === undefined) throw new Error(`no subscription for ${subject}`)
+    this.deliver(queue, message)
+  }
+
+  /** Hands `message` to the iterator parked on `queue`, or queues it for the next pull. */
+  private deliver(queue: Queue, message: ChannelBrokerMessage): void {
     if (queue.waiter === undefined) {
       queue.messages.push(message)
       return
