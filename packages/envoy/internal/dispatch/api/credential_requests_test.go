@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/logtest"
 )
 
 // credentialTestAccountToken stands in for Dispatch's own projected ServiceAccount token: what
