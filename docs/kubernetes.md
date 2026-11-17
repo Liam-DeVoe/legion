@@ -2009,7 +2009,7 @@ where that run was still open at the rollback, the end ends that run's record, w
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
-A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
+A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
 
@@ -2021,7 +2021,8 @@ delete from outbox where kind = 'plan_record';
 delete from outbox where kind = 'step_record' and payload->>'rating' is not null;
 ```
 
-Each deleted `plan_record` row costs the plan of one run: Dispatch holds no plan for that run, and the read of the project's finished issues lists the issue with no plan.
+Each deleted `plan_record` row costs one write of a run's plan, and Dispatch keeps the version of that plan it already holds.
+Where that row was the run's first write, Dispatch holds no plan for the run until Legion takes a later version of the owner's plan, and until then the read of the project's finished issues lists the issue with no plan.
 Each deleted rating row costs the rating of one retro: the retro's record holds no rating, and nothing else of the issue changes.
 An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
 A rating row left in place is not harmless in the same way: the release that records each step decodes a `step_record` row strictly and knows no `rating`, so it fails that row's decode at every attempt, logs the failure each time and retries it on its backoff until the roll forward.
