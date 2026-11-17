@@ -891,18 +891,25 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while its
-// caller resolves: on every StreamHeartbeat it resolves the caller again, and once the caller no
-// longer resolves (a logout, a membership the sign-in issuer no longer confirms, a revoked token)
-// it cancels the connection's context, on which the document server and the live socket close the
-// socket. The check runs beside the handler, which holds pooled connections of its own while it
-// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
-// it resolves on a context detached from the access-log line, which names the caller the socket
-// was admitted as (accesslog.Detached).
+// caller resolves as the caller it was admitted as: on every StreamHeartbeat it resolves the
+// caller again, and once the caller no longer resolves (a logout, a membership the sign-in issuer
+// no longer confirms, a revoked token), or its credential now lists other projects or holds other
+// scopes than when the connection opened (sameCredentialGrant), it cancels the connection's
+// context, on which the document server and the live socket close the socket (1008). The page
+// opens a new one under what the credential holds now, so a token narrowed to fewer projects
+// reads nothing more of the ones it lost. The check runs beside the handler, which holds pooled
+// connections of its own while it admits the socket, so it marks a context of its own for the
+// pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log line,
+// which names the caller the socket was admitted as (accesslog.Detached).
 func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancel(r.Context())
 		defer closeConnection()
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
+		// What the credential holds as the connection opens, before the handler admits it, so a
+		// change made while it is admitted is a change the first heartbeat sees. A caller that
+		// does not resolve is the handler's to refuse.
+		admitted, _, _ := s.callerStillResolves(check)
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
@@ -916,7 +923,8 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 					// broker's answer alone rather than the proof the upgrade already spent
 					// (callerStillResolves). Every other credential is resolved exactly as it
 					// is on a request.
-					if err := s.callerStillResolves(check); err != nil {
+					caller, broker, err := s.callerStillResolves(check)
+					if err != nil || (!broker && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
 						closeConnection()
 						return
 					}
@@ -925,6 +933,15 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		}()
 		handler(w, r.WithContext(ctx))
 	}
+}
+
+// sameCredentialGrant reports whether two resolutions of one connection's credential grant the
+// same: the same list of projects and the same scopes, each compared as a set.
+func sameCredentialGrant(admitted, now *model.Credential) bool {
+	if admitted == nil || now == nil {
+		return admitted == now
+	}
+	return sameProjects(admitted.Projects, now.Projects) && sameProjects(admitted.Scopes, now.Scopes)
 }
 
 type apiError struct {

@@ -602,7 +602,7 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	// Two heartbeats of the socket that proof opened. Both carry it, and neither is refused:
 	// the re-resolution never looks at it.
 	for beat := range 2 {
-		if err := served.callerStillResolves(admitted); err != nil {
+		if _, broker, err := served.callerStillResolves(admitted); err != nil || !broker {
 			t.Fatalf("heartbeat %d: %v, want the caller to keep resolving", beat, err)
 		}
 	}
@@ -611,7 +611,7 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	// closes. The affirmative answer is remembered for a few seconds, so this reads past it.
 	rig.broker.Says(token, brokertoken.Introspection{Active: false})
 	time.Sleep(brokertoken.AffirmativeCacheTTL + 50*time.Millisecond)
-	if err := served.callerStillResolves(admitted); err == nil {
+	if _, _, err := served.callerStillResolves(admitted); err == nil {
 		t.Fatal("a revoked token kept resolving on an open connection")
 	}
 }

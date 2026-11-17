@@ -218,7 +218,8 @@ it names no session, it names neither a person nor a service, or it was issued t
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+A websocket re-resolves its caller every heartbeat from the request that opened it, and closes (1008) once the caller no longer resolves, or once a personal token's projects or scopes are other than when it opened, so a token narrowed to fewer projects reads nothing more of the ones it lost on a socket it already held.
+For a broker-issued credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
