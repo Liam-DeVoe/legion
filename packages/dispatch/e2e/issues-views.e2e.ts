@@ -1878,7 +1878,6 @@ function storedLayout(page: Page): Promise<{ sizing?: Record<string, number>; or
   );
 }
 
-// SLOW(>=2s): a header dragged, the page reloaded and the table scrolled to its right edge.
 test("on a desktop a Title width the reader drags is the width drawn after a reload, and Title scrolls with the table once the pinned columns would pass their share", async ({
   browser,
 }) => {
@@ -1964,7 +1963,6 @@ async function dropHeader(page: Page, from: string, onto: string): Promise<void>
   );
 }
 
-// SLOW(>=2s): two headers dragged on a phone's width and the page reloaded.
 test("on a phone Select and Key are pinned, Title follows them to the table's right edge, and a header dropped among the others or onto Title stays where it was dropped", async ({
   browser,
 }) => {

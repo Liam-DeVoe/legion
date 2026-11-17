@@ -79,7 +79,14 @@ function ViewTab({
           />
         ) : null}
       </span>
-      {count === undefined ? null : <span className={countClass}>{count}</span>}
+      {count === undefined ? null : (
+        // The space makes the tab's text read "Open 6", the words its name starts with, as a
+        // speech user says them (WCAG 2.5.3). A flex box draws no space between its items.
+        <>
+          {" "}
+          <span className={countClass}>{count}</span>
+        </>
+      )}
     </button>
   );
 }

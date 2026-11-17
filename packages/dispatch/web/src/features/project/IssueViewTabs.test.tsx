@@ -119,6 +119,23 @@ test("on a phone a tab's count stands under its name, and beside it from md up",
   expect(count?.textContent).toBe("3");
 });
 
+// A speech user says the words a tab shows. So its name starts with them, in their order (WCAG
+// 2.5.3, axe's label-content-name-mismatch): "Open 3" in "Open, 3 issues", never "Open3".
+test("each tab's name starts with the words the tab shows, in their order", () => {
+  tabs({ changed: true });
+  const row = screen.getByRole("tablist", { name: "Views" });
+  expect(
+    within(row)
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent)
+  ).toEqual(["Open 3", "Done", "Mine 1", "Closed lately"]);
+  for (const tab of within(row).getAllByRole("tab")) {
+    const shown = (tab.textContent ?? "").split(/\s+/).filter(Boolean);
+    const named = (tab.getAttribute("aria-label") ?? "").split(/[\s,]+/).filter(Boolean);
+    expect(named.slice(0, shown.length)).toEqual(shown);
+  }
+});
+
 test("no alert line is drawn while every read answered", () => {
   tabs();
   expect(screen.queryByRole("alert")).toBeNull();

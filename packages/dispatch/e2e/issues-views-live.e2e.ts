@@ -958,6 +958,11 @@ async function workFromItems(page: Page, key: string, closedAt: number): Promise
     .toBe("equal");
 }
 
+/** Wakes a pass of the eval refresher, the pass that gives WIDGETS its eval. The fixture writes
+ *  WIDGETS by SQL, which wakes no pass (`waitForLegionWorkTimeEval`), and an event that commits
+ *  wakes one: a role event of WIDGETS-1, an issue neither of the two rows below lists. */
+const wakeEvalRefresher = () => writeRoleEvent(`${WIDGETS}-1`, "implementer", "70 minutes");
+
 // SLOW(>=2s): the eval refresher's pass for WIDGETS, a facts consumer's row, up to 75 s, then up to
 // 135 s from a close for the open Done page's Work time.
 test("the close of an issue the board never shows fills its Work time on an open Done with no reload and no other event", async ({
@@ -966,6 +971,7 @@ test("the close of an issue the board never shows fills its Work time on an open
   test.setTimeout(270_000);
   const daemon = await startFakeLegionDaemon();
   await seedLegionFactsFixture(daemon.url);
+  await wakeEvalRefresher();
   const context = await asUser(browser, "alice");
   try {
     await waitForLegionWorkTimeEval(WIDGETS);
@@ -991,6 +997,7 @@ test("the close of an issue the board never shows fills its Work time on an open
   test.setTimeout(270_000);
   const daemon = await startFakeLegionDaemon();
   await seedLegionFactsFixture(daemon.url);
+  await wakeEvalRefresher();
   const context = await asUser(browser, "alice");
   try {
     await waitForLegionWorkTimeEval(WIDGETS);

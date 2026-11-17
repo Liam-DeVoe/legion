@@ -818,7 +818,6 @@ test("a Board card draws the Legion fields the board route gives it and no slot 
   }
 });
 
-// SLOW(>=2s): a claim by a session with a long title, its card read at two widths.
 test("a claimed card's chip writes the session's whole title on lines inside the card, with the age and state under it", async ({
   browser,
 }) => {

@@ -695,6 +695,21 @@ export function BoardControlRow({
   );
 }
 
+/** The card the focus follows after a key move, until the move is drawn and settled
+ *  (`IssueBoard`'s `afterMove`). */
+interface MoveFollow {
+  readonly key: string;
+  readonly column: string;
+  /** The swimlane's `data-board-lane` key, or `null` outside a swimlane. */
+  readonly laneId: string | null;
+  /** The live region still has to read where the view's sort put the card. */
+  announce: boolean;
+  /** The node the follow focused last; `undefined` until the move is drawn. */
+  focused: HTMLElement | null | undefined;
+  /** The move's write and the listings' reads after it are done. */
+  settled: boolean;
+}
+
 /**
  * The Board: a layout of the current view. It draws every row the view lists (`rows`, in the
  * view's sort, so each column's cards are in that sort), in columns by status, or, in a project
@@ -852,8 +867,9 @@ export function IssueBoard({
       })
     );
   };
-  /** Takes a planned move: a refusal says why, and a move is written. */
-  const take = (plan: MovePlan | undefined) => {
+  /** Takes a planned move: a refusal says why, and a move is written. A move answers once its
+   *  write and the listings' reads after it are done. */
+  const take = (plan: MovePlan | undefined): Promise<void> | undefined => {
     if (plan === undefined) return;
     if (plan.kind === "refused") {
       setRefusal(plan.text);
@@ -861,26 +877,26 @@ export function IssueBoard({
       return;
     }
     setRefusal(undefined);
-    void move(plan.key, plan.change);
+    return move(plan.key, plan.change);
   };
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
     if (over === null) return;
     const key = String(active.id);
     const place = dropPlace(lines, key, String(over.id));
-    if (place !== undefined) take(planMove(lines, rules, key, place));
+    if (place !== undefined) void take(planMove(lines, rules, key, place));
   };
 
   // The card the focus follows once a key move has been drawn: a move into another column draws
   // the card again under it, so the old node cannot keep the focus, and a card moved into a rail,
   // or out of the view, has no node, so the focus lands on the column or rail. Where the view's
   // sort puts the card (`announce`), the live region reads its place once the move is drawn.
-  const afterMove = useRef<{
-    key: string;
-    column: string;
-    laneId: string | null;
-    announce: boolean;
-  } | null>(null);
+  // The follow holds until the write and the reads after it are done (`settled`). A view that
+  // lists done issues reads its open and its done issues apart, so a card moved out of Done can
+  // leave the page with one read and come back with the next. While the follow holds, a card
+  // drawn again takes back the focus that its old node left on the page's body, or that the
+  // follow put on its column while the card was not drawn.
+  const afterMove = useRef<MoveFollow | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `column`, scoped to `laneId` (`null` outside a
    *  swimlane). */
@@ -896,9 +912,12 @@ export function IssueBoard({
       .flatMap((line) => line.cells)
       .find((candidate) => candidate.items.some((item) => item.issue.key === pending.key));
     // Not drawn yet: the card still stands in the column it left.
-    if (cell !== undefined && cell.column.id !== pending.column) return;
-    afterMove.current = null;
+    if (cell !== undefined && cell.column.id !== pending.column) {
+      if (pending.settled) afterMove.current = null;
+      return;
+    }
     if (pending.announce) {
+      pending.announce = false;
       const index = cell?.items.findIndex((item) => item.issue.key === pending.key) ?? -1;
       setAnnouncement(
         announceMove(
@@ -909,10 +928,20 @@ export function IssueBoard({
         )
       );
     }
-    (
+    const target =
       boardNode(`[data-board-card="${pending.key}"]`) ??
-      boardNode(columnSelector(pending.column, pending.laneId))
-    )?.focus();
+      boardNode(columnSelector(pending.column, pending.laneId)) ??
+      null;
+    const active = document.activeElement;
+    if (
+      pending.focused === undefined ||
+      (target !== pending.focused &&
+        (active === null || active === document.body || active === pending.focused))
+    ) {
+      target?.focus();
+      pending.focused = target;
+    }
+    if (pending.settled) afterMove.current = null;
   });
   /** The line the keys act on: the swimlane holding the focus (by its `data-board-lane` key)
    *  while lanes are on, the Board's one line otherwise. */
@@ -993,19 +1022,25 @@ export function IssueBoard({
       lane: cell.lane,
       index: target.index,
     });
-    take(plan);
+    const moved = take(plan);
     if (plan?.kind !== "move") return;
     // The move writes the listing at once, so where the rank decides the place the card lands
     // is known now; elsewhere the view's sort puts it, which the drawn move tells.
     const { position } = plan;
     if (position !== undefined)
       setAnnouncement(announceMove(key, target.column, columnTitle(target.column, by), position));
-    afterMove.current = {
+    const follow: MoveFollow = {
       key,
       column: target.column,
       laneId,
       announce: position === undefined,
+      focused: undefined,
+      settled: false,
     };
+    afterMove.current = follow;
+    void moved?.then(() => {
+      follow.settled = true;
+    });
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
   /** Copies the focused card's key or `dispatch://` reference and announces which. */

@@ -994,6 +994,52 @@ test("a listing read asked for while a move is unanswered waits for the answer, 
   expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
 });
 
+// A view that lists done issues reads its open and its done issues apart. A card moved out of
+// Done leaves the page with the done read's answer while the open read is out, and comes back
+// with the open read's answer: the focus comes back to it.
+test("Shift+H out of Done on a view that lists done issues keeps the focus on the card through the reads after the move", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    issue("CORE-5", { rank: "e", status: "done", title: "Echo" }),
+    issue("CORE-6", { rank: "f", status: "retro", title: "Foxtrot" }),
+  ];
+  const { listing } = board(rows, "?layout=board&nofilter=1");
+  const region = await boardRegion();
+  const done = within(region).getByRole("region", { name: "Done" });
+  const echo = await within(done).findByRole("article", { name: "CORE-5 Echo" });
+  // Once the move is written, the open read waits for `openRead` and the done read answers.
+  const openRead = Promise.withResolvers<void>();
+  let written = false;
+  listing.mockImplementation(async (options = {}) => {
+    if (written && options.open) await openRead.promise;
+    return rows.filter(
+      (row) =>
+        (!options.open || row.status !== "done") &&
+        (options.status === undefined || options.status.includes(row.status))
+    );
+  });
+  const patch = answerIssuePatches().mockImplementation(async () => {
+    rows[0] = { ...(rows[0] as IssueSummary), closed_at: null, rank: "a", status: "retro" };
+    written = true;
+    return saved("CORE-5", { status: "retro" });
+  });
+  restores.push(() => patch.mockRestore());
+  act(() => echo.focus());
+  await user.keyboard("{Shift>}H{/Shift}");
+  expect(patch).toHaveBeenCalledWith(
+    "CORE-5",
+    { rank: { before: "CORE-6" }, status: "retro" },
+    keyedAttempt
+  );
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-6"]));
+  await act(async () => openRead.resolve());
+  const retro = within(region).getByRole("region", { name: "Retro" });
+  await waitFor(() => expect(cardKeys(retro)).toEqual(["CORE-5", "CORE-6"]));
+  await waitFor(() =>
+    expect(within(retro).getByRole("article", { name: "CORE-5 Echo" })).toHaveFocus()
+  );
+});
+
 /** The move hook alone, over a client that holds `open` as the open listing. */
 function renderMoves(open: IssueSummary[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
