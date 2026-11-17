@@ -1715,11 +1715,23 @@ function textBoxes(): Element[] {
   ];
 }
 
-/** Every option or button named `name`: what a reader picks from a list, however it is drawn. */
-function picks(name: RegExp): HTMLElement[] {
+/** The list a text box narrows: the element it names in `aria-controls`, else the list, dialog
+ *  or panel it sits in. Only that list's options count, never a control of the page behind it. */
+function listOf(box: Element): HTMLElement {
+  const id = box.getAttribute("aria-controls");
+  const list =
+    (id === null ? null : document.getElementById(id)) ??
+    box.closest('[role="listbox"], [role="dialog"], [data-anchored-panel]');
+  if (!(list instanceof HTMLElement)) throw new Error("the text box sits in no list");
+  return list;
+}
+
+/** Every option or button of `list` named `name`: what a reader picks from it, however it is
+ *  drawn. */
+function picks(list: HTMLElement, name: RegExp): HTMLElement[] {
   return [
-    ...screen.queryAllByRole("option", { name }),
-    ...screen.queryAllByRole("button", { name }),
+    ...within(list).queryAllByRole("option", { name }),
+    ...within(list).queryAllByRole("button", { name }),
   ];
 }
 
@@ -1756,11 +1768,12 @@ test("the List's Move to epic and Merge into another epic each hold a text box t
     await user.click(control);
     const own = textBoxes().filter((box) => !before.has(box));
     expect(own, `${name} holds no text box of its own`).toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
     await user.type(own[0] as HTMLElement, "Targ");
     await waitFor(() =>
-      expect(picks(/Rollout/), `"Targ" leaves Rollout in ${name}`).toHaveLength(0)
+      expect(picks(list, /Rollout/), `"Targ" leaves Rollout in ${name}`).toHaveLength(0)
     );
-    expect(picks(/Target/).length, `"Targ" takes Target out of ${name}`).toBeGreaterThan(0);
+    expect(picks(list, /Target/).length, `"Targ" takes Target out of ${name}`).toBeGreaterThan(0);
     await user.keyboard("{Escape}");
   }
 });
