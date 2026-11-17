@@ -1,26 +1,20 @@
 import type { Row } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { type KeymapScope, useKeymap } from "../features/shell/keymap";
+import type { KeymapActionId } from "../features/shell/keymap-catalogue";
+import { linkHref, openInNewTab } from "../features/shell/new-tab";
 import { closestMatching } from "../features/shell/roving";
 import { CONTROL } from "./control-names";
 
-/** One key a reader walks the table with, as the page that draws the table names it: the
- *  palette and the shortcut help read these words, so they are the caller's and not the
- *  table's. */
-export interface RowKeyBinding {
-  /** Unique within the scope: the project List's next row is `list-next`. */
-  readonly id: string;
-  /** In tinykeys syntax, e.g. `j`. */
-  readonly keys: string;
-  readonly label: string;
-}
-
-/** What the table's keys are called and where they apply. */
+/** What the table's keys are and where they apply. Each key is an action of the keymap's
+ *  catalogue, which gives its label and its keys: the palette and the shortcut help read the
+ *  catalogue's words, so they are the page's and not the table's. The lists of one scope share
+ *  one set of actions (the project List, the Priorities page and a priority's page). */
 export interface RowKeymap {
   /** The scope the bindings are registered in, which the page pushes while it is open. */
   readonly scope: KeymapScope;
-  readonly next: RowKeyBinding;
-  readonly previous: RowKeyBinding;
+  readonly next: KeymapActionId;
+  readonly previous: KeymapActionId;
   /** Where next and previous are answered: anywhere on the page while the table holds a row and
    *  the focus is in no other table (`page`, the default), for keys nothing else on the page
    *  answers, such as `j` and `k`; or only while the focus is in one of this table's own rows
@@ -30,22 +24,25 @@ export interface RowKeymap {
    *  rows and the main one from everywhere else. */
   readonly moveFrom?: "page" | "row";
   /** Opens the row in hand; the one binding the palette lists. */
-  readonly open: RowKeyBinding;
+  readonly open: KeymapActionId;
   /** Opens the row in hand from Enter, which only a focused row answers. */
-  readonly openOnEnter: RowKeyBinding;
+  readonly openOnEnter: KeymapActionId;
+  /** Opens the row in hand's link in a new tab. A table that names none registers no key for
+   *  it. */
+  readonly openInNewTab?: KeymapActionId;
   /** Marks the row in hand. A table that selects nothing names none, and no key is registered
    *  for it, so the shortcut help lists no key that does nothing. */
-  readonly select?: RowKeyBinding;
+  readonly select?: KeymapActionId;
 }
 
 /** Focuses the row whose id is `key`, or the element `selector` names inside it. */
 export type FocusRow = (key: string, selector?: string) => HTMLElement | null;
 
 /**
- * The keys a reader walks the table's rows with, under the ids and words the caller gives, the
- * same ids and palette rows the list they replace had: two keys move between rows, two open the
- * row in hand, and, in a table that selects, one marks it. A row the virtualizer has not drawn
- * yet is scrolled to first and focused when it lands.
+ * The keys a reader walks the table's rows with, as the actions the caller names: two keys move
+ * between rows, two open the row in hand, one opens it in a new tab where the caller names that
+ * action, and, in a table that selects, one marks it. A row the virtualizer has not drawn yet is
+ * scrolled to first and focused when it lands.
  *
  * It hands back that same way to a row (`FocusRow`), for whatever else has to put the focus on
  * one: the row now where it is drawn, and once it lands where it is not.
@@ -124,8 +121,8 @@ export function useRowKeymap<TData>({
       pending.selector === undefined ? row : row.querySelector<HTMLElement>(pending.selector);
     element?.focus({ preventScroll: true });
   });
-  const openFocusedRow = () =>
-    focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`)?.click();
+  const focusedLink = () => focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`) ?? null;
+  const openFocusedRow = () => focusedLink()?.click();
   // Where the moving keys apply (`RowKeymap.moveFrom`): one of this table's rows must hold the
   // focus for keys the page answers itself everywhere else; for the others the table need only
   // hold a row, and the focus be in no other table, whose own keys are its to answer.
@@ -142,40 +139,34 @@ export function useRowKeymap<TData>({
             displayRows.some(({ row }) => !row.getIsGrouped())
           );
         };
-  const { select } = keymap;
+  const { openInNewTab: openInNewTabAction, select } = keymap;
   useKeymap(keymap.scope, [
+    { action: keymap.next, run: () => moveFocus(1), when: canMove },
+    { action: keymap.previous, run: () => moveFocus(-1), when: canMove },
+    { action: keymap.open, run: openFocusedRow, when: () => focusedRow() !== null },
     {
-      ...keymap.next,
-      palette: false,
-      run: () => moveFocus(1),
-      when: canMove,
-    },
-    {
-      ...keymap.previous,
-      palette: false,
-      run: () => moveFocus(-1),
-      when: canMove,
-    },
-    {
-      ...keymap.open,
-      run: openFocusedRow,
-      when: () => focusedRow() !== null,
-    },
-    {
-      ...keymap.openOnEnter,
-      palette: false,
+      action: keymap.openOnEnter,
       run: openFocusedRow,
       when: () =>
         document.activeElement?.matches(`[${rowAttribute}]`) === true && focusedRow() !== null,
     },
+    ...(openInNewTabAction === undefined
+      ? []
+      : [
+          {
+            action: openInNewTabAction,
+            run: () => {
+              const href = linkHref(focusedLink());
+              if (href !== null) openInNewTab(href);
+            },
+            when: () => linkHref(focusedLink()) !== null,
+          },
+        ]),
     ...(select === undefined
       ? []
       : [
           {
-            // Selecting walks the list with the row in hand, as the moving keys do, so it is no
-            // palette row.
-            ...select,
-            palette: false,
+            action: select,
             run: () => {
               const key = focusedRow()?.getAttribute(rowAttribute);
               const row = key === null || key === undefined ? undefined : rowsById[key];

@@ -261,33 +261,16 @@ function ArchitectureTreeView({
   useKeymapScope("architecture");
   useKeymap("architecture", [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
+    { action: "architecture.next", run: () => rove(1) },
+    { action: "architecture.previous", run: () => rove(-1) },
     {
-      id: "next",
-      keys: "j",
-      label: "Next component",
-      palette: false,
-      run: () => rove(1),
-    },
-    {
-      id: "previous",
-      keys: "k",
-      label: "Previous component",
-      palette: false,
-      run: () => rove(-1),
-    },
-    {
-      id: "arrows",
-      keys: ["ArrowDown", "ArrowUp"],
-      label: "Next / previous component while one is focused",
+      action: "architecture.arrows",
       run: (event) => rove(event.key === "ArrowDown" ? 1 : -1),
       when: () => rowAround(document.activeElement) !== null,
     },
     {
-      // Both keys do the same thing, so the palette offers it; a row presses Enter.
-      id: "open",
-      keys: ["Enter", "o"],
-      label: "Open the focused component: its children, else its details",
-      palette: true,
+      // Both keys do the same thing, so the palette offers it.
+      action: "architecture.open",
       run: () => {
         const id = focusedRowId();
         if (id === undefined) {
@@ -304,27 +287,18 @@ function ArchitectureTreeView({
     {
       // Out of the palette: on a row with children `open` above already goes into them, and on
       // a leaf this row would do nothing.
-      id: "descend",
-      keys: ["l", "ArrowRight"],
-      label: "Into the focused component's children",
-      palette: false,
+      action: "architecture.descend",
       run: descend,
       when: () => rowAround(document.activeElement) !== null,
     },
     {
       // Both keys do the same thing, and its `when` needs no focused row, so it is a row.
-      id: "ascend",
-      keys: ["h", "ArrowLeft"],
-      label: "Up one level",
-      palette: true,
+      action: "architecture.ascend",
       run: ascend,
       when: () => level !== undefined,
     },
     {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the component row, then out",
+      action: "architecture.back",
       run: () => {
         const active = document.activeElement;
         const row = rowAround(active);

@@ -211,25 +211,19 @@ export function IssueHeader({
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
   useKeymap("issue", [
     {
-      id: "close",
-      keys: [],
-      label: "Close issue",
+      action: "issue.close",
       run: () => drafts.requestStatusSubmit("done"),
       // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
       // rendered at all; a row offered while the write is in flight would submit a second one.
       when: () => !isClosed && !updateIssue.isPending,
     },
     {
-      id: "reopen",
-      keys: [],
-      label: "Reopen issue",
+      action: "issue.reopen",
       run: () => drafts.requestStatusSubmit("backlog"),
       when: () => isClosed && !updateIssue.isPending,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
-      id: `set-p${level}`,
-      keys: [],
-      label: `Set priority P${level}`,
+      action: `issue.set-p${level}` as const,
       run: () => priorityWrite.submit(level),
       // The same condition as `PriorityEditor`'s `disabled` below.
       when: () => !(isClosed || updateIssue.isPending),

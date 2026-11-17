@@ -335,13 +335,17 @@ listTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    await expect(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
-    // `Enter` from the row opens it too, and `Open issue` is already that action's row.
+    // The project scope's row actions are one set whichever list draws them, so their labels
+    // name no list (INFRA-2160): the row is `Open` and its key, read whole, since `Open in a new
+    // tab` and `Open the inbox` begin with the same word.
+    const open = actions.getByRole("option", { name: /^Open\s*o$/ });
+    await expect(open).toHaveCount(1);
+    // `Enter` from the row opens it too, and `Open` is already that action's row.
     // Soft, so one run names every row that should not be there.
-    for (const absent of ["Next issue", "Previous issue", "Open the focused issue"]) {
+    for (const absent of ["Next row", "Previous row", "Open the focused row"]) {
       await expect.soft(actions.getByRole("option", { name: absent })).toHaveCount(0);
     }
-    await actions.getByRole("option", { name: "Open issue" }).click();
+    await open.click();
     await expect(page).toHaveURL(new RegExp(`/issues/${scene.issue}$`));
   }
 );

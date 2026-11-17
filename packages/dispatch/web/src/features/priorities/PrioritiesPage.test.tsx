@@ -630,21 +630,24 @@ test("the priorities table stacks its title's header in a box under 640 px", asy
 
 // INFRA-3135's review round 1, R10: the priorities table registered `x`, "Select or deselect the
 // priority", though the table selects nothing, so the shortcut help listed a key that did
-// nothing. It registers no select key, as the Delivery list does.
-test("the priorities table registers no select key, so the shortcut help lists no x for it", async () => {
+// nothing. It registers no select key, as the Delivery list does. The issue tables beside it
+// share the project scope's row actions (INFRA-2160), and their `x` selects their own rows, so
+// from a priority's row the help lists that key as not available.
+test("the priorities table registers no select key, so from its rows the shortcut help greys x", async () => {
   page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  expect(
-    appKeymap
-      .describe()
-      .filter((entry) => entry.id.startsWith("priorities-"))
-      .map((entry) => [entry.id, entry.keys])
-  ).toEqual([
-    ["priorities-next", ["j"]],
-    ["priorities-previous", ["k"]],
-    ["priorities-open", ["o"]],
-    ["priorities-open-enter", ["Enter"]],
-  ]);
+  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  await within(priorities).findByRole("row", { name: "P1 Legion works reliably first" });
+  act(() => rowsOf(priorities, "data-priority-row")[0]?.focus());
+  const described = appKeymap.describe().filter((entry) => entry.scope === "project");
+  expect(Object.fromEntries(described.map((entry) => [entry.id, entry.keys]))).toEqual({
+    next: ["j"],
+    open: ["o"],
+    "open-enter": ["Enter"],
+    previous: ["k"],
+    select: ["x"],
+  });
+  expect(described.find((entry) => entry.id === "select")?.enabled).toBe(false);
+  expect(described.find((entry) => entry.id === "open")?.enabled).toBe(true);
 });
 
 /** The rows `table` draws under `attribute`, in the order it draws them. */

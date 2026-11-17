@@ -21,6 +21,7 @@ export type UserPreference =
   | "project.issue-filters"
   | "project.issue-view"
   | "search.recents"
+  | "shell.keymap"
   | "shell.margin"
   | "shell.margin-width"
   | "shell.sidebar";

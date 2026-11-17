@@ -1,4 +1,13 @@
-import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+
+import {
+  type CatalogueScope,
+  catalogueEntry,
+  type KeymapActionId,
+  keysOfAction,
+  NO_PERSON_KEYS,
+  type PersonKeys,
+} from "./keymap-catalogue";
 
 /**
  * One keyboard registry for the SPA. Components register bindings under a scope
@@ -11,19 +20,15 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
  * character its key types, so a reader on AZERTY or Dvorak presses the letter a shortcut names
  * wherever it sits; on a Mac, one that holds `Alt` also matches by the key's position (`KeyM` for
  * `m`), because Option changes the character: `$mod+Alt+m` types `µ` there.
+ *
+ * Every page's binding names an action of the catalogue (`keymap-catalogue.ts`), which gives it
+ * its id, its label and its keys, the person's where they changed them (`keymap-keys.ts`); only
+ * a dialog's own Escape, the command bar's own `$mod+k` and tests write a binding out whole.
  */
 
-export type KeymapScope =
-  | "global"
-  | "dialog"
-  | "inbox"
-  | "project"
-  | "architecture"
-  | "board"
-  | "delivery"
-  | "issue"
-  | "document"
-  | "agents";
+/** A scope of the stack: each scope of the catalogue, and `dialog`, which every open dialog
+ *  pushes and which alone is consulted while it is on the stack. */
+export type KeymapScope = CatalogueScope | "dialog";
 
 export interface KeyBinding {
   /** Stable identifier, unique within the registering component. */
@@ -53,6 +58,20 @@ export interface KeyBinding {
    *  is its own key. Keys that walk a list with the row in hand set `false`, as does a second key
    *  for an action that already has a row; any other binding that sets it says why beside it. */
   palette?: boolean;
+  /** Tried before every scope, the `dialog` scope included, and whatever the focus is on: the
+   *  binding's `when` is its only guard. Only a press that completes one of its keys matches, so
+   *  such a binding starts no chord. It is for the `y` that copies a focused link's address, which
+   *  works on every page and in every dialog. */
+  beforeScopes?: boolean;
+}
+
+/** A binding that names an action of the catalogue: the action gives its id, its label, its
+ *  palette row and `inEditable`, and the person's keys or the defaults give its keys. */
+export interface ActionBinding {
+  action: KeymapActionId;
+  run: (event: KeyboardEvent) => void;
+  /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
+  when?: () => boolean;
 }
 
 /** A binding as `?` describes it: keys as typed, its scope, and whether it applies right now. */
@@ -79,9 +98,20 @@ const IS_MAC = navigator.userAgent.includes("Mac");
 export const MOD_KEY_LABEL = IS_MAC ? "⌘" : "Ctrl";
 /** How `Alt` is shown to the reader: the Option glyph on a Mac, `Alt` elsewhere. */
 export const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
-const CHORD_TIMEOUT_MS = 1000;
+/** How long a chord waits for its next key (`g` then `i`). */
+export const CHORD_TIMEOUT_MS = 1000;
 
-interface KeyCombo {
+/** A chord the reader has started: the keys typed so far (`"g"`), and each key that can follow
+ *  with the label of the binding it completes, innermost scope first. */
+export interface PendingChord {
+  readonly keys: string;
+  readonly next: readonly { readonly key: string; readonly label: string }[];
+}
+
+const NO_CHORD: PendingChord = { keys: "", next: [] };
+
+/** One press of a key as the registry reads it: `$mod+k` is `{ key: "k", mod: true, … }`. */
+export interface KeyCombo {
   alt: boolean;
   control: boolean;
   key: string;
@@ -104,6 +134,8 @@ interface Registration {
   binding: KeyBinding;
   chords: readonly (readonly KeyCombo[])[];
   scope: KeymapScope;
+  /** Each chord's steps as written (`["g", "i"]`), which the chord hint shows. */
+  steps: readonly (readonly string[])[];
 }
 
 const MODIFIER_KEYS: Record<string, true> = {
@@ -153,6 +185,17 @@ function parseCombo(text: string): KeyCombo {
   return combo;
 }
 
+/** The steps of one key as written: `"g i"` is `["g", "i"]`, a chord of two presses. */
+function stepsOf(keys: string): string[] {
+  return keys.trim().split(/\s+/);
+}
+
+/** The presses of one key as the registry matches them: `"g i"` is two. Throws on text that
+ *  names no key or an unknown modifier, as `register` does. */
+export function parseChord(keys: string): KeyCombo[] {
+  return stepsOf(keys).map(parseCombo);
+}
+
 function keysOf(binding: KeyBinding): readonly string[] {
   return typeof binding.keys === "string" ? [binding.keys] : binding.keys;
 }
@@ -188,7 +231,7 @@ function matchesCombo(combo: KeyCombo, press: KeyPress, isMac: boolean): boolean
 }
 
 /** Whether two combos can be produced by one key press (`$mod+k` overlaps `Control+k`). */
-function sameCombo(a: KeyCombo, b: KeyCombo): boolean {
+export function sameCombo(a: KeyCombo, b: KeyCombo): boolean {
   if (a.key.toLowerCase() !== b.key.toLowerCase() || a.alt !== b.alt || a.shift !== b.shift) {
     return false;
   }
@@ -198,7 +241,8 @@ function sameCombo(a: KeyCombo, b: KeyCombo): boolean {
   return a.control === b.control && a.meta === b.meta;
 }
 
-function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[]): boolean {
+/** Whether the presses of `shorter` begin `longer` (`g` begins `g i`). */
+export function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[]): boolean {
   return (
     shorter.length < longer.length &&
     shorter.every((combo, index) => sameCombo(combo, longer[index] as KeyCombo))
@@ -281,6 +325,8 @@ export interface Keymap {
    * `palette` is `true`, innermost scope first. Unset, `palette` is `false` for a binding with
    * several keys or one that fires in an editable (`KeyBinding.palette`). A row runs its binding
    * only if the binding is still registered and its `when()` still holds when the row is chosen.
+   * A binding several mounted lists register under one scope and id (the project row keys of
+   * `/priorities`) is one row, which runs the registration that applies when it is chosen.
    */
   actions(): KeymapAction[];
   /** Every registered binding with its `when()` evaluated now — the source for `?`. One component
@@ -288,8 +334,8 @@ export interface Keymap {
    *  documents), and they are one row, enabled when either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
   handleKeyDown(event: KeyboardEvent): void;
-  /** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
-  pending(): string;
+  /** The unfinished chord, or one with no keys; the same object until the chord changes. */
+  pending(): PendingChord;
   pushScope(scope: KeymapScope): () => void;
   register(scope: KeymapScope, bindings: readonly KeyBinding[]): () => void;
   subscribe(listener: () => void): () => void;
@@ -310,11 +356,62 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   const scopes: KeymapScope[] = [];
   const listeners = new Set<() => void>();
   let pending: KeyPress[] = [];
+  /** Whether the press that started the chord was the control's own (`isEditableTarget`), which
+   *  decides, as it does for that press, which bindings the hint lists as its next keys. */
+  let pendingEditable = false;
   let pendingTimer: number | undefined;
-  let pendingKeys = "";
+  let chord: PendingChord = NO_CHORD;
+
+  const matches = (combos: readonly KeyCombo[], presses: readonly KeyPress[]) =>
+    presses.every((press, index) => matchesCombo(combos[index] as KeyCombo, press, isMac));
+
+  /** The scopes a key is read through, outermost first. A modal owns the keyboard: nothing
+   *  beneath it fires, however the scopes are ordered. */
+  const consulted = (): readonly KeymapScope[] =>
+    scopes.includes(DIALOG_SCOPE) ? [DIALOG_SCOPE] : ["global", ...scopes];
+
+  /** The keys that can follow `presses`, over the scopes `resolve` reads, innermost first, one
+   *  entry for each next key: the innermost binding's label, as the innermost one would fire. */
+  const nextSteps = (presses: readonly KeyPress[], editable: boolean): PendingChord["next"] => {
+    const stack = consulted();
+    const next: { key: string; label: string }[] = [];
+    const listed = new Set<string>();
+    for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
+      for (const { binding, chords, scope, steps } of registrations) {
+        if (
+          scope !== stack[depth] ||
+          binding.beforeScopes === true ||
+          (editable && binding.inEditable !== true) ||
+          binding.when?.() === false
+        ) {
+          continue;
+        }
+        chords.forEach((combos, alternative) => {
+          const key = steps[alternative]?.[presses.length];
+          if (
+            key === undefined ||
+            combos.length <= presses.length ||
+            !matches(combos, presses) ||
+            listed.has(key)
+          ) {
+            return;
+          }
+          listed.add(key);
+          next.push({ key, label: binding.label });
+        });
+      }
+    }
+    return next;
+  };
 
   const notify = () => {
-    pendingKeys = pending.map((press) => press.key).join(" ");
+    chord =
+      pending.length === 0
+        ? NO_CHORD
+        : {
+            keys: pending.map((press) => press.key).join(" "),
+            next: nextSteps(pending, pendingEditable),
+          };
     for (const listener of listeners) {
       listener();
     }
@@ -359,24 +456,36 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 
   const resolve = (presses: readonly KeyPress[], editable: boolean): Resolution => {
-    // A modal owns the keyboard: nothing beneath it fires, however the scopes are ordered.
-    const stack: KeymapScope[] = scopes.includes(DIALOG_SCOPE)
-      ? [DIALOG_SCOPE]
-      : ["global", ...scopes];
+    // Before every scope: a binding that holds on every page and in every dialog, guarded by its
+    // `when` alone (`KeyBinding.beforeScopes`).
+    for (const registration of registrations) {
+      const { binding } = registration;
+      if (
+        binding.beforeScopes === true &&
+        registration.chords.some(
+          (combos) => combos.length === presses.length && matches(combos, presses)
+        ) &&
+        binding.when?.() !== false
+      ) {
+        return { exact: registration, partial: false };
+      }
+    }
+    const stack = consulted();
     for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
       const scope = stack[depth];
       let exact: Registration | undefined;
       let partial = false;
       for (const registration of registrations) {
         const { binding } = registration;
-        if (registration.scope !== scope || (editable && binding.inEditable !== true)) {
+        if (
+          registration.scope !== scope ||
+          binding.beforeScopes === true ||
+          (editable && binding.inEditable !== true)
+        ) {
           continue;
         }
         for (const chord of registration.chords) {
-          if (
-            chord.length < presses.length ||
-            !presses.every((press, index) => matchesCombo(chord[index] as KeyCombo, press, isMac))
-          ) {
+          if (chord.length < presses.length || !matches(chord, presses)) {
             continue;
           }
           if (chord.length > presses.length) {
@@ -409,16 +518,27 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         }
         seen.add(scope);
         const inScope: KeymapAction[] = [];
+        // The registrations each row stands for: one, or each list that registers the same
+        // action, of which the row runs the one that applies when it is chosen.
+        const rows = new Map<string, Registration[]>();
         for (const registration of registrations) {
           const { binding } = registration;
           const keys = keysOf(binding);
           if (
             registration.scope !== scope ||
+            binding.beforeScopes === true ||
             !(binding.palette ?? (keys.length <= 1 && binding.inEditable !== true)) ||
             binding.when?.() === false
           ) {
             continue;
           }
+          const same = rows.get(binding.id);
+          if (same !== undefined) {
+            same.push(registration);
+            continue;
+          }
+          const standsFor = [registration];
+          rows.set(binding.id, standsFor);
           inScope.push({
             id: binding.id,
             keys,
@@ -427,9 +547,13 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
             // may have gone (another writer reopened the issue) or its component unmounted (the
             // page fell to its error view), so the row asks again.
             run: () => {
-              if (registrations.includes(registration) && binding.when?.() !== false) {
-                binding.run(new KeyboardEvent("keydown", { key: keys[0] ?? "" }));
-              }
+              const live = standsFor.find(
+                (candidate) =>
+                  registrations.includes(candidate) && candidate.binding.when?.() !== false
+              );
+              live?.binding.run(
+                new KeyboardEvent("keydown", { key: keysOf(live.binding)[0] ?? "" })
+              );
             },
             scope,
           });
@@ -474,7 +598,10 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         altKey: event.altKey,
         code: event.code,
         ctrlKey: event.ctrlKey,
-        key: event.key,
+        // The space bar types `" "`, which no key text can hold (a chord splits on whitespace)
+        // and which would read as a key that holds its Shift already, as `?` does: as `Space` it
+        // has a name of its own, and Space and Shift+Space are two keys.
+        key: event.key === " " ? "Space" : event.key,
         metaKey: event.metaKey,
         shiftKey: event.shiftKey,
       };
@@ -496,6 +623,9 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         if (pendingTimer !== undefined) {
           unschedule(pendingTimer);
         }
+        if (presses.length === 1) {
+          pendingEditable = editable;
+        }
         pending = presses;
         pendingTimer = schedule(() => {
           pendingTimer = undefined;
@@ -507,7 +637,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       clearPending();
     },
     pending() {
-      return pendingKeys;
+      return chord;
     },
     pushScope(scope) {
       scopes.push(scope);
@@ -519,11 +649,10 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       };
     },
     register(scope, bindings) {
-      const incoming = bindings.map((binding) => ({
-        binding,
-        chords: keysOf(binding).map((keys) => keys.trim().split(/\s+/).map(parseCombo)),
-        scope,
-      }));
+      const incoming = bindings.map((binding) => {
+        const steps = keysOf(binding).map(stepsOf);
+        return { binding, chords: steps.map((chord) => chord.map(parseCombo)), scope, steps };
+      });
       checkPrefixConflicts(incoming);
       registrations.push(...incoming);
       return () => {
@@ -547,11 +676,51 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
 /** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own. */
 export const appKeymap = createKeymap({ strict: import.meta.env.DEV });
 
-/** Registers `bindings` under `scope` for the component's lifetime; closures stay current. */
-export function useKeymap(scope: KeymapScope, bindings: readonly KeyBinding[]): void {
-  const latest = useRef(bindings);
-  latest.current = bindings;
-  const signature = bindings.map((binding) => `${binding.id}=${keysOf(binding).join(",")}`).join();
+/** Who the keys are for: the signed-in login, and the keys they changed. `KeymapProvider` gives
+ *  it; with no provider (a unit test) nobody is signed in and every action takes its defaults. */
+export interface KeymapPerson {
+  readonly login: string | undefined;
+  readonly personKeys: PersonKeys;
+}
+
+export const KeymapPersonContext = createContext<KeymapPerson>({
+  login: undefined,
+  personKeys: NO_PERSON_KEYS,
+});
+
+/** The whole binding an action stands for, under `personKeys`' keys for it. */
+export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): KeyBinding {
+  const entry = catalogueEntry(binding.action);
+  return {
+    id: entry.id,
+    inEditable: entry.inEditable === true,
+    keys: keysOfAction(binding.action, personKeys),
+    label: entry.label,
+    palette: entry.palette,
+    run: binding.run,
+    when: binding.when,
+  };
+}
+
+/**
+ * Registers `bindings` under `scope` for the component's lifetime; closures stay current. Each
+ * binding names a catalogue action (`ActionBinding`), whose keys are the signed-in person's, so a
+ * change to them registers the bindings again. The registration scope is `scope` whatever the
+ * action's own: the Inbox's drawer registers the Inbox's actions, with the Inbox's keys, under
+ * `dialog`. A binding written out whole (`KeyBinding`) is a dialog's own Escape, the command
+ * bar's own `$mod+k`, or a test's.
+ */
+export function useKeymap(
+  scope: KeymapScope,
+  bindings: readonly (ActionBinding | KeyBinding)[]
+): void {
+  const { personKeys } = useContext(KeymapPersonContext);
+  const resolved = bindings.map((binding) =>
+    "action" in binding ? actionBinding(binding, personKeys) : binding
+  );
+  const latest = useRef(resolved);
+  latest.current = resolved;
+  const signature = resolved.map((binding) => `${binding.id}=${keysOf(binding).join(",")}`).join();
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `signature` stands in for `bindings`, whose closures are read through `latest`
   useLayoutEffect(() => {
@@ -569,7 +738,29 @@ export function useKeymapScope(scope: KeymapScope | null): void {
   useLayoutEffect(() => (scope === null ? undefined : appKeymap.pushScope(scope)), [scope]);
 }
 
-/** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
-export function usePendingChord(): string {
+/** The unfinished chord, and the keys that can follow it. */
+export function usePendingChord(): PendingChord {
   return useSyncExternalStore(appKeymap.subscribe, appKeymap.pending);
+}
+
+/**
+ * `keys` as `aria-keyshortcuts` writes them: `$mod+k` is `Control+K Meta+K`, a letter is upper
+ * case, and a key of two presses is left out, since the attribute names one press per key.
+ */
+export function ariaKeyshortcuts(keys: readonly string[]): string {
+  return keys
+    .map((key) => key.trim())
+    .filter((key) => !/\s/.test(key))
+    .flatMap((key) => {
+      const parts = key.split("+");
+      const last = parts.pop() ?? "";
+      const named = last.length === 1 ? last.toUpperCase() : last;
+      const modifiers = parts.map((part) => (part === "Ctrl" ? "Control" : part));
+      if (!modifiers.includes("$mod")) {
+        return [[...modifiers, named].join("+")];
+      }
+      const rest = modifiers.filter((part) => part !== "$mod");
+      return [["Control", ...rest, named].join("+"), ["Meta", ...rest, named].join("+")];
+    })
+    .join(" ");
 }

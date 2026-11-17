@@ -591,10 +591,7 @@ export function ProofDocument({
     page
       ? [
           {
-            id: "comment-on-selection",
-            inEditable: true,
-            keys: "$mod+Alt+m",
-            label: "Comment on selection",
+            action: "document.comment-on-selection",
             run: () => editorRef.current?.commentOnSelection(),
             when: () => {
               const view = editorRef.current?.view;

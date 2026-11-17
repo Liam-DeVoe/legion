@@ -294,10 +294,10 @@ test("the list registers no select key, so the shortcut help lists no x for it",
         .filter((entry) => entry.scope === "delivery")
         .map((entry) => [entry.id, entry.keys])
     ).toEqual([
-      ["delivery-next", ["ArrowDown"]],
-      ["delivery-previous", ["ArrowUp"]],
-      ["delivery-open", ["o"]],
-      ["delivery-open-enter", ["Enter"]],
+      ["next", ["ArrowDown"]],
+      ["previous", ["ArrowUp"]],
+      ["open", ["o"]],
+      ["open-enter", ["Enter"]],
     ]);
     // And on a focused row, `x` is the browser's.
     act(() => document.querySelector<HTMLElement>("[data-pr-row]")?.focus());

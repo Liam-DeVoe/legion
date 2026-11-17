@@ -52,6 +52,7 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { useActionKeys } from "../shell/keymap-keys";
 import { closestMatching } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
@@ -103,6 +104,27 @@ function cardAround(node: Element | null): HTMLElement | null {
 
 function columnAround(node: Element | null): HTMLElement | null {
   return closestMatching(node, COLUMN_SELECTOR);
+}
+
+/** What a screen reader hears of a draggable card: the keys that move the focused card, read
+ *  `Shift with J, K, H or L` while each is Shift and a letter, as they are by default, else each
+ *  as written, and the key of the shortcut help. Both are the person's keys (`useActionKeys`). */
+function dragInstructions(
+  moveKeys: readonly (string | undefined)[],
+  helpKey: string | undefined
+): string {
+  const keys = moveKeys.filter((key): key is string => key !== undefined);
+  const shifted = keys.every((key) => /^Shift\+[A-Za-z]$/.test(key));
+  const named = shifted ? keys.map((key) => key.slice("Shift+".length).toUpperCase()) : keys;
+  const listed =
+    named.length < 2
+      ? named.join("")
+      : `${named.slice(0, -1).join(", ")} or ${named[named.length - 1]}`;
+  const move =
+    keys.length === 0
+      ? "Focus a card"
+      : `Focus a card and press ${shifted ? "Shift with " : ""}${listed} to move it`;
+  return helpKey === undefined ? `${move}.` : `${move}; press ${helpKey} for every shortcut.`;
 }
 
 /**
@@ -609,62 +631,26 @@ export function IssueBoard({
   useKeymapScope("board");
   useKeymap("board", [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
-    { id: "next", keys: "j", label: "Next card", palette: false, run: () => rove("j") },
-    { id: "previous", keys: "k", label: "Previous card", palette: false, run: () => rove("k") },
-    { id: "column", keys: "l", label: "Next column", palette: false, run: () => rove("l") },
+    { action: "board.next", run: () => rove("j") },
+    { action: "board.previous", run: () => rove("k") },
+    { action: "board.column", run: () => rove("l") },
+    { action: "board.previous-column", run: () => rove("h") },
     {
-      id: "previous-column",
-      keys: "h",
-      label: "Previous column",
-      palette: false,
-      run: () => rove("h"),
-    },
-    {
-      id: "arrows-vertical",
-      keys: ["ArrowDown", "ArrowUp"],
-      label: "Next / previous card while one is focused",
+      action: "board.arrows-vertical",
       run: (event) => rove(event.key === "ArrowDown" ? "j" : "k"),
       when: focusedBoardNode,
     },
     {
-      id: "arrows-horizontal",
-      keys: ["ArrowRight", "ArrowLeft"],
-      label: "Next / previous column while one is focused",
+      action: "board.arrows-horizontal",
       run: (event) => rove(event.key === "ArrowRight" ? "l" : "h"),
       when: focusedBoardNode,
     },
+    { action: "board.move-down", run: () => move("down"), when: focusedCard },
+    { action: "board.move-up", run: () => move("up"), when: focusedCard },
+    { action: "board.move-next", run: () => move("next"), when: focusedCard },
+    { action: "board.move-previous", run: () => move("prev"), when: focusedCard },
     {
-      id: "move-down",
-      keys: "Shift+J",
-      label: "Move card down",
-      run: () => move("down"),
-      when: focusedCard,
-    },
-    {
-      id: "move-up",
-      keys: "Shift+K",
-      label: "Move card up",
-      run: () => move("up"),
-      when: focusedCard,
-    },
-    {
-      id: "move-next",
-      keys: "Shift+L",
-      label: "Move card to the next status",
-      run: () => move("next"),
-      when: focusedCard,
-    },
-    {
-      id: "move-previous",
-      keys: "Shift+H",
-      label: "Move card to the previous status",
-      run: () => move("prev"),
-      when: focusedCard,
-    },
-    {
-      id: "open",
-      keys: "o",
-      label: "Open issue",
+      action: "board.open",
       run: () =>
         cardAround(document.activeElement)?.querySelector<HTMLElement>(ISSUE_LINK)?.click(),
       when: focusedCard,
@@ -672,40 +658,20 @@ export function IssueBoard({
     {
       // Only from the card itself: Enter on the title link is the browser's own navigation. Out of
       // the palette, where `open` above is already the row for the same action.
-      id: "open-enter",
-      keys: "Enter",
-      label: "Open the focused card's issue",
-      palette: false,
+      action: "board.open-enter",
       run: () =>
         cardAround(document.activeElement)?.querySelector<HTMLElement>(ISSUE_LINK)?.click(),
       when: () => document.activeElement?.matches(CARD_SELECTOR) === true,
     },
     {
-      id: "priority",
-      keys: "p",
-      label: "Focus the card's priority",
+      action: "board.priority",
       run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
       when: focusedCard,
     },
+    { action: "board.copy-ref", run: () => copyFocusedCard("reference"), when: focusedCard },
+    { action: "board.copy-key", run: () => copyFocusedCard("key"), when: focusedCard },
     {
-      id: "copy-ref",
-      keys: "y",
-      label: "Copy the card's issue reference",
-      run: () => copyFocusedCard("reference"),
-      when: focusedCard,
-    },
-    {
-      id: "copy-key",
-      keys: "Shift+Y",
-      label: "Copy the card's issue key",
-      run: () => copyFocusedCard("key"),
-      when: focusedCard,
-    },
-    {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the card, then out",
+      action: "board.back",
       run: () => {
         const active = document.activeElement;
         const card = cardAround(active);
@@ -720,6 +686,15 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
+  const instructions = dragInstructions(
+    [
+      useActionKeys("board.move-down")[0],
+      useActionKeys("board.move-up")[0],
+      useActionKeys("board.move-previous")[0],
+      useActionKeys("board.move-next")[0],
+    ],
+    useActionKeys("global.help")[0]
+  );
   // One row holds the Board's search and filtering, above whatever the board itself is showing
   // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
   // controls that did it (INFRA-3135, R1). Nothing they can press here makes the header taller:
@@ -822,8 +797,7 @@ export function IssueBoard({
           <DndContext
             accessibility={{
               screenReaderInstructions: {
-                draggable:
-                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+                draggable: instructions,
               },
             }}
             collisionDetection={boardCollisionDetection}

@@ -28,6 +28,7 @@ import {
   parseIssuePath,
 } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { VerificationTab } from "../verification/VerificationTab";
@@ -141,21 +142,20 @@ function outsideInputsAndAskCards(): boolean {
   return !(document.activeElement instanceof HTMLInputElement) && outsideAskCard();
 }
 
-/** The tabs the chords reach, each through the tablist button `IssueTabs` renders for it. */
-const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
-  { keys: "t s", label: "Spec tab", tab: "spec" },
-  // `t v` is Activity and `t c` the Conversation, so Verification takes its checks' `k`; `t p`
-  // is free (`p` alone focuses the priority, which is a different scope of key).
-  { keys: "t k", label: "Verification tab", tab: "verification" },
-  { keys: "t p", label: "Plan tab", tab: "plan" },
-  { keys: "t c", label: "Conversation tab", tab: "conversation" },
-  { keys: "t h", label: "Children tab", tab: "children" },
-  { keys: "t a", label: "Artifacts tab", tab: "artifacts" },
-  // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
-  { keys: "t v", label: "Activity tab", tab: "activity" },
-  { keys: "t d", label: "Decisions tab", tab: "decisions" },
-  // `s k p c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
-  { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
+/** The tabs the chords reach, each through the tablist button `IssueTabs` renders for it. `t v`
+ *  is Activity and `t c` the Conversation, so Verification takes its checks' `t k`; `t a` is
+ *  Artifacts and `l` is the issue's label editor, so Activity takes `t v`; and with
+ *  `s k p c h a v d` taken, Collaborators, the last tab, takes `t o` (`keymap-catalogue.ts`). */
+const tabChords: readonly { action: KeymapActionId; tab: IssueTab }[] = [
+  { action: "issue.tab-spec", tab: "spec" },
+  { action: "issue.tab-verification", tab: "verification" },
+  { action: "issue.tab-plan", tab: "plan" },
+  { action: "issue.tab-conversation", tab: "conversation" },
+  { action: "issue.tab-children", tab: "children" },
+  { action: "issue.tab-artifacts", tab: "artifacts" },
+  { action: "issue.tab-activity", tab: "activity" },
+  { action: "issue.tab-decisions", tab: "decisions" },
+  { action: "issue.tab-collaborators", tab: "collaborators" },
 ];
 
 /** One of the two role-document tab panels, Verification and Plan. They differ only in the tab
@@ -263,46 +263,34 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   useKeymapScope("issue");
   useKeymap("issue", [
     {
-      id: "status",
-      keys: "s",
-      label: "Focus the status",
+      action: "issue.status",
       run: () => usableControl(STATUS_SELECT)?.focus(),
       when: () => usableControl(STATUS_SELECT) !== null,
     },
     {
-      id: "priority",
-      keys: "p",
-      label: "Focus the priority",
+      action: "issue.priority",
       run: () => usableControl(PRIORITY_SELECT)?.focus(),
       when: () => usableControl(PRIORITY_SELECT) !== null,
     },
     {
-      id: "set-priority",
-      keys: ["0", "1", "2", "3"],
-      label: "Set priority P0–P3",
+      action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
       when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
-      id: "labels",
-      keys: "l",
-      label: "Edit labels",
+      action: "issue.labels",
       run: () => usableControl(LABELS_TRIGGER)?.click(),
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
       // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
       // `onFocus` does not open the editor, so the key is offered exactly while it edits.
-      id: "title",
-      keys: "e",
-      label: "Edit the title",
+      action: "issue.title",
       run: () => usableControl(TITLE_HEADING)?.focus(),
       when: () => usableControl(TITLE_HEADING) !== null,
     },
     {
-      id: "pin",
-      keys: "Shift+P",
-      label: "Pin or unpin the issue",
+      action: "issue.pin",
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
@@ -311,20 +299,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
       // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
       // rows, the board's cards and the architecture rows.
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back out of the focused header control",
+      action: "issue.back",
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
         return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
       },
     },
-    ...tabChords.map(({ keys, label, tab }) => ({
-      id: `tab-${tab}`,
-      keys,
-      label,
+    ...tabChords.map(({ action, tab }) => ({
+      action,
       run: () => document.getElementById(tabButtonId("issue", tab))?.click(),
       when: () => document.getElementById(tabButtonId("issue", tab)) !== null,
     })),

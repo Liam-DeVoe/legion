@@ -1,12 +1,21 @@
 import { expect, test } from "bun:test";
+import { act, render } from "@testing-library/react";
+import { createElement } from "react";
 
+import { KeymapProvider } from "./KeymapProvider";
 import {
+  appKeymap,
+  ariaKeyshortcuts,
   createKeymap,
   DIALOG_SCOPE,
   type KeyBinding,
   type Keymap,
   PANEL_ATTRIBUTE,
+  useKeymap,
+  useKeymapScope,
 } from "./keymap";
+import { setActionKeys } from "./keymap-keys";
+import { userPreferenceStorageKey } from "./userPreference";
 
 interface Harness {
   advance: (ms: number) => void;
@@ -155,15 +164,15 @@ test("a chord fires within the timeout, shows its pending prefix, and expires af
   keymap.register("global", [inbox.definition]);
 
   expect(press("g")).toBe(true);
-  expect(keymap.pending()).toBe("g");
+  expect(keymap.pending().keys).toBe("g");
   advance(999);
   press("i");
   expect(inbox.fired()).toBe(1);
-  expect(keymap.pending()).toBe("");
+  expect(keymap.pending().keys).toBe("");
 
   press("g");
   advance(1000);
-  expect(keymap.pending()).toBe("");
+  expect(keymap.pending().keys).toBe("");
   expect(press("i")).toBe(false);
   expect(inbox.fired()).toBe(1);
 });
@@ -177,7 +186,7 @@ test("a key that does not continue the chord is read afresh on its own", () => {
   press("g");
   press("j");
   expect(next.fired()).toBe(1);
-  expect(keymap.pending()).toBe("");
+  expect(keymap.pending().keys).toBe("");
 });
 
 test("registering a strict prefix of an existing sequence throws in strict mode", () => {
@@ -608,4 +617,138 @@ test("rows within a scope read alphabetically, a lowercase word among capitalise
     "Go to project…",
     "Go to Settings",
   ]);
+});
+
+test("Space and Shift+Space are two keys, and the space bar presses Space", () => {
+  const { keymap, press } = harness();
+  const down = binding("scroll-down", "Space");
+  const up = binding("scroll-up", "Shift+Space");
+  keymap.register("inbox", [down.definition, up.definition]);
+  keymap.pushScope("inbox");
+
+  expect(press(" ")).toBe(true);
+  expect([down.fired(), up.fired()]).toEqual([1, 0]);
+  expect(press(" ", { shiftKey: true })).toBe(true);
+  expect([down.fired(), up.fired()]).toEqual([1, 1]);
+  // The space character itself names no key.
+  expect(() => keymap.register("inbox", [binding("space", " ").definition])).toThrow(/no key/);
+});
+
+test("a beforeScopes binding wins over the innermost scope and an open dialog, even in a field, until its when is false", () => {
+  const { keymap, press } = harness();
+  let onLink = true;
+  const copyLink = binding("copy-link", "y", { beforeScopes: true, when: () => onLink });
+  const copyRow = binding("copy-ref", "y");
+  const closeDialog = binding("close", "y");
+  keymap.register("global", [copyLink.definition]);
+  keymap.pushScope("inbox");
+  keymap.register("inbox", [copyRow.definition]);
+  keymap.register(DIALOG_SCOPE, [closeDialog.definition]);
+
+  expect(press("y")).toBe(true);
+  expect([copyLink.fired(), copyRow.fired()]).toEqual([1, 0]);
+  // Its `when` is its only guard: a field's focus does not hold it back.
+  expect(press("y", { target: document.createElement("input") })).toBe(true);
+  expect(copyLink.fired()).toBe(2);
+
+  const popDialog = keymap.pushScope(DIALOG_SCOPE);
+  expect(press("y")).toBe(true);
+  expect([copyLink.fired(), closeDialog.fired()]).toEqual([3, 0]);
+  popDialog();
+
+  onLink = false;
+  expect(press("y")).toBe(true);
+  expect([copyLink.fired(), copyRow.fired()]).toEqual([3, 1]);
+});
+
+test("a pending chord lists each key that can follow with its label, innermost scope first and once each", () => {
+  const { advance, keymap, press } = harness();
+  keymap.register("global", [
+    binding("go-inbox", "g i", { label: "Go to Inbox" }).definition,
+    binding("go-settings", "g s", { label: "Go to Settings" }).definition,
+    binding("go-documents", "g d", { label: "Go to Documents", when: () => false }).definition,
+  ]);
+  keymap.pushScope("inbox");
+  keymap.register("inbox", [
+    binding("scroll-top", "g g", { label: "Scroll to the top" }).definition,
+    binding("inbox-settings", "g s", { label: "Inbox settings" }).definition,
+  ]);
+
+  expect(keymap.pending()).toEqual({ keys: "", next: [] });
+  press("g");
+  expect(keymap.pending()).toEqual({
+    keys: "g",
+    next: [
+      { key: "g", label: "Scroll to the top" },
+      { key: "s", label: "Inbox settings" },
+      { key: "i", label: "Go to Inbox" },
+    ],
+  });
+  // One snapshot per chord, as `useSyncExternalStore` needs.
+  expect(keymap.pending()).toBe(keymap.pending());
+  advance(1000);
+  expect(keymap.pending()).toEqual({ keys: "", next: [] });
+
+  // While a dialog is open its scope is the only one a key is read through, and the hint's too.
+  keymap.register(DIALOG_SCOPE, [binding("dialog-go", "g x", { label: "Dialog step" }).definition]);
+  keymap.pushScope(DIALOG_SCOPE);
+  press("g");
+  expect(keymap.pending()).toEqual({ keys: "g", next: [{ key: "x", label: "Dialog step" }] });
+});
+
+test("actions() offers one row for an action several lists register, and it runs the one that applies", () => {
+  const { keymap } = harness();
+  let focused: "main" | "beside" = "beside";
+  const main = binding("open", "o", { label: "Open", when: () => focused === "main" });
+  const beside = binding("open", "o", { label: "Open", when: () => focused === "beside" });
+  keymap.register("project", [main.definition]);
+  keymap.register("project", [beside.definition]);
+  keymap.pushScope("project");
+
+  const rows = keymap.actions();
+  expect(rows.map((row) => [row.scope, row.id])).toEqual([["project", "open"]]);
+  rows[0]?.run();
+  expect([main.fired(), beside.fired()]).toEqual([0, 1]);
+
+  focused = "main";
+  keymap.actions()[0]?.run();
+  expect([main.fired(), beside.fired()]).toEqual([1, 1]);
+});
+
+test("aria-keyshortcuts names $mod as both modifiers, a letter in upper case, and no chord", () => {
+  expect(ariaKeyshortcuts(["$mod+k"])).toBe("Control+K Meta+K");
+  expect(ariaKeyshortcuts(["c"])).toBe("C");
+  expect(ariaKeyshortcuts(["b", "Shift+H", "g i", "Alt+Enter"])).toBe("B Shift+H Alt+Enter");
+  expect(ariaKeyshortcuts(["g g"])).toBe("");
+});
+
+test("a person's key for an action registers the binding again under that key", () => {
+  const stored = userPreferenceStorageKey("alice", "shell.keymap");
+  window.localStorage.removeItem(stored);
+  let snoozed = 0;
+  function Page(): null {
+    useKeymapScope("inbox");
+    useKeymap("inbox", [{ action: "inbox.snooze", run: () => (snoozed += 1) }]);
+    return null;
+  }
+  const snoozeKeys = () =>
+    appKeymap.describe().find((entry) => entry.scope === "inbox" && entry.id === "snooze")?.keys;
+  const press = (init: KeyboardEventInit) =>
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { cancelable: true, ...init }));
+    });
+  const view = render(createElement(KeymapProvider, { login: "alice" }, createElement(Page)));
+
+  try {
+    expect(snoozeKeys()).toEqual(["b", "h"]);
+    act(() => setActionKeys("alice", "inbox.snooze", ["Shift+B"]));
+    expect(snoozeKeys()).toEqual(["Shift+B"]);
+    press({ key: "h" });
+    expect(snoozed).toBe(0);
+    press({ key: "B", shiftKey: true });
+    expect(snoozed).toBe(1);
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(stored);
+  }
 });

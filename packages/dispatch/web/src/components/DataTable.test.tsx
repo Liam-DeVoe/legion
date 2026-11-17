@@ -59,17 +59,18 @@ const LAYOUT_COLUMNS: LayoutColumns = {
   rowAttribute: "data-deploy-row",
 };
 
-/** The caller's own words for its deploys, which the core reads: a scope of its own, the keys
- *  of the page that draws it, and the attributes its rows and links carry. */
+/** The caller's own words for its deploys, which the core reads: the scope its keys are
+ *  registered in, the actions of the page that draws it, and the attributes its rows and links
+ *  carry. */
 const DEPLOY_NAMES: DataTableNames = {
   groupAttribute: "data-deploy-group",
   keymap: {
-    next: { id: "deploys-next", keys: "j", label: "Next deploy" },
-    open: { id: "deploys-open", keys: "o", label: "Open deploy" },
-    openOnEnter: { id: "deploys-open-enter", keys: "Enter", label: "Open the focused deploy" },
-    previous: { id: "deploys-previous", keys: "k", label: "Previous deploy" },
+    next: "project.next",
+    open: "project.open",
+    openOnEnter: "project.open-enter",
+    previous: "project.previous",
     scope: "agents",
-    select: { id: "deploys-select", keys: "x", label: "Select or deselect the focused deploy" },
+    select: "project.select",
   },
   linkAttribute: "data-deploy-link",
   rowAttribute: "data-deploy-row",
@@ -809,16 +810,16 @@ const PRIORITY_LAYOUT: LayoutColumns = {
   sizes: { inFlight: 90, owner: 160, priority: 140, waiting: 90 },
 };
 
-/** That page's own words: its rows, its groups, its links and the keys that walk them. */
+/** That page's own words: its rows, its groups, its links and the actions that walk them. */
 const PRIORITY_NAMES: DataTableNames = {
   groupAttribute: "data-priority-group",
   keymap: {
-    next: { id: "priorities-next", keys: "j", label: "Next priority" },
-    open: { id: "priorities-open", keys: "o", label: "Open priority" },
-    openOnEnter: { id: "priorities-open-enter", keys: "Enter", label: "Open the focused priority" },
-    previous: { id: "priorities-previous", keys: "k", label: "Previous priority" },
+    next: "project.next",
+    open: "project.open",
+    openOnEnter: "project.open-enter",
+    previous: "project.previous",
     scope: "agents",
-    select: { id: "priorities-select", keys: "x", label: "Select or deselect the priority" },
+    select: "project.select",
   },
   linkAttribute: "data-priority-link",
   rowAttribute: "data-priority-row",

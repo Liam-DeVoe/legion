@@ -80,9 +80,7 @@ export function ProjectPage(): ReactNode {
   useKeymapScope("project");
   useKeymap("project", [
     {
-      id: "toggle-view",
-      keys: "v",
-      label: "Toggle List / Board",
+      action: "project.toggle-view",
       run: () => setIssueView(issueView === "list" ? "board" : "list"),
       when: () => route?.kind === "issues",
     },

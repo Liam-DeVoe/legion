@@ -170,34 +170,24 @@ export function useAgentsKeymap(
     // filter bar does not render at all - so the key falls through to the global binding instead
     // of doing nothing.
     {
-      id: "search",
-      keys: "/",
-      label: "Search agents",
+      action: "agents.search",
       run: () => searchInputRef.current?.focus(),
       when: () => searchInputRef.current !== null,
     },
     // Movement and marking walk the list with the row in hand; a palette row for either helps
     // nobody.
     {
-      id: "next",
-      keys: "j",
-      label: "Next agent",
-      palette: false,
+      action: "agents.next",
       run: () => step(1),
       when: () => navigation.items.some((item) => item.kind === "row"),
     },
     {
-      id: "previous",
-      keys: "k",
-      label: "Previous agent",
-      palette: false,
+      action: "agents.previous",
       run: () => step(-1),
       when: () => navigation.items.some((item) => item.kind === "row"),
     },
     {
-      id: "compose",
-      keys: "Enter",
-      label: "Message the focused agent",
+      action: "agents.compose",
       run: () =>
         inOpenRow((row) =>
           row.querySelector<HTMLTextAreaElement>(`${AGENT_COMPOSER_SELECTOR} textarea`)?.focus()
@@ -205,9 +195,7 @@ export function useAgentsKeymap(
       when: () => focusedAgentRow() !== null,
     },
     {
-      id: "issue-picker",
-      keys: "i",
-      label: "Pick an issue for the message",
+      action: "agents.issue-picker",
       // The Issue list takes focus itself once its issues land (`AgentMessageComposer.tsx`'s
       // `pickerTookFocus`), so the key that opens it leaves the reader in its text box, where the
       // arrows choose an issue and Escape is the list's own way back to the row. It opens rather
@@ -234,25 +222,17 @@ export function useAgentsKeymap(
       },
     },
     {
-      id: "pin",
-      keys: "Shift+P",
-      label: "Pin or unpin the focused agent",
+      action: "agents.pin",
       run: () => focusedAgentRow()?.querySelector<HTMLElement>("[data-agent-pin] button")?.click(),
       when: () => focusedAgentRow() !== null,
     },
     {
-      id: "select",
-      keys: "x",
-      label: "Select or deselect the focused agent",
-      palette: false,
+      action: "agents.select",
       run: () => focusedAgentRow()?.querySelector<HTMLElement>("[data-agent-select]")?.click(),
       when: () => focusedAgentRow() !== null,
     },
     {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Close the issue picker, or go back to the agent row",
+      action: "agents.back",
       run: leaveAgentComposer,
       // From inside the composer, and from the row itself while its picker is open - a list
       // opened before its issues came takes no focus, so the row is where `i` leaves the

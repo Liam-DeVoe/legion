@@ -43,17 +43,17 @@ const NOUN: RowNoun = {
   one: "priority",
 };
 /** The priorities table's own words, which the table core reads and never invents: its rows'
- *  attributes, and the keys that walk them under ids of their own, beside the issue tables'
- *  `list-*` keys on the same page. It is the page's main table, so `j` and `k` walk it from
- *  anywhere the focus is in no other table; each issue table beside it walks its own rows from
- *  one of them. It selects nothing, so it names no select key. */
+ *  attributes, and the project scope's row actions that walk them, which the issue tables on the
+ *  same page share. It is the page's main table, so `j` and `k` walk it from anywhere the focus
+ *  is in no other table; each issue table beside it walks its own rows from one of them. It
+ *  selects nothing, so it names no select key. */
 const NAMES: DataTableNames = {
   groupAttribute: PRIORITY_GROUP_ATTRIBUTE,
   keymap: {
-    next: { id: "priorities-next", keys: "j", label: "Next priority" },
-    open: { id: "priorities-open", keys: "o", label: "Open priority" },
-    openOnEnter: { id: "priorities-open-enter", keys: "Enter", label: "Open the focused priority" },
-    previous: { id: "priorities-previous", keys: "k", label: "Previous priority" },
+    next: "project.next",
+    open: "project.open",
+    openOnEnter: "project.open-enter",
+    previous: "project.previous",
     scope: "project",
   },
   linkAttribute: PRIORITY_LINK_ATTRIBUTE,

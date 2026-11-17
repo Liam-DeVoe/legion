@@ -79,17 +79,17 @@ const ACTION_WIDTH = 104;
 const ROW_CHECKBOX = 'input[type="checkbox"]';
 
 /** The List's own words, which the table core reads and never invents: the attributes its rows
- *  and groups carry, the link opening a row follows, and the keys that walk it, under the ids
- *  and labels the palette and the shortcut help have always shown. */
+ *  and groups carry, the link opening a row follows, and the project scope's row actions that
+ *  walk it, which every list of that scope shares. */
 const ISSUE_TABLE_NAMES: DataTableNames = {
   groupAttribute: ISSUE_GROUP_ATTRIBUTE,
   keymap: {
-    next: { id: "list-next", keys: "j", label: "Next issue" },
-    open: { id: "list-open", keys: "o", label: "Open issue" },
-    openOnEnter: { id: "list-open-enter", keys: "Enter", label: "Open the focused issue" },
-    previous: { id: "list-previous", keys: "k", label: "Previous issue" },
+    next: "project.next",
+    open: "project.open",
+    openOnEnter: "project.open-enter",
+    previous: "project.previous",
     scope: "project",
-    select: { id: "list-select", keys: "x", label: "Select or deselect the focused issue" },
+    select: "project.select",
   },
   linkAttribute: ISSUE_LINK_ATTRIBUTE,
   rowAttribute: ISSUE_ROW_ATTRIBUTE,

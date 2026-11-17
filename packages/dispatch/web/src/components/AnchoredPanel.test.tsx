@@ -11,20 +11,15 @@ import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { DisplayMenu } from "./DisplayMenu";
 import { MultiSelect } from "./MultiSelect";
 
-/** A page with keys of its own - `j` and ArrowDown, as a table's next row takes them - and its
- *  display menu, a real panel. Every key the page's binding takes is noted in `taken`. */
+/** A page with keys of its own - `j` and ArrowDown, as the Inbox's next row takes them - and its
+ *  display menu, a real panel. Every key the page's bindings take is noted in `taken`. */
 function Page({ taken }: { taken: string[] }) {
   const [open, setOpen] = useState(false);
   const [sort, setSort] = useState("newest");
   useKeymapScope("inbox");
   useKeymap("inbox", [
-    {
-      id: "next",
-      keys: ["j", "ArrowDown"],
-      label: "Next row",
-      palette: false,
-      run: (event) => taken.push(event.key),
-    },
+    { action: "inbox.next", run: (event) => taken.push(event.key) },
+    { action: "inbox.arrows", run: (event) => taken.push(event.key) },
   ]);
   return (
     <>

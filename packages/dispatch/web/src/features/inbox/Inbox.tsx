@@ -1215,14 +1215,10 @@ export function Inbox({
     }
     stepInMode(delta);
   };
-  /** What the keys act on, for the bindings' labels: the row the column is showing, or the row
-   *  holding the focus. */
-  const acted = paneShown ? "selected" : "focused";
-  /** When the arrows move, and what their label says of it: in the reading column the arrows
-   *  are the column's - a document scrolls, an option list moves - so they move the selection
-   *  only while the focus is in the list beside it. */
+  /** When the arrows move: in the reading column the arrows are the column's - a document
+   *  scrolls, an option list moves - so they move the selection only while the focus is in the
+   *  list beside it. */
   const arrowsMove = paneShown ? focusInList : () => focusedRow() !== null;
-  const arrowsWhen = paneShown ? "the focus is in the list" : "a row is focused";
   /** The row the keys act on: the one the column is showing, or the one holding the focus. */
   const handRow = (): InboxListRow | undefined => {
     const id = paneShown ? paneSelection.id : focusedRow()?.dataset.inboxRow;
@@ -1282,33 +1278,15 @@ export function Inbox({
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
     // With the reading column on, movement is the selection's: the column follows it, and the
     // focus stays where the reader left it in the list.
+    { action: "inbox.next", run: () => move(1), when: () => rows().length > 0 },
+    { action: "inbox.previous", run: () => move(-1), when: () => rows().length > 0 },
     {
-      id: "next",
-      keys: "j",
-      label: "Next row",
-      palette: false,
-      run: () => move(1),
-      when: () => rows().length > 0,
-    },
-    {
-      id: "previous",
-      keys: "k",
-      label: "Previous row",
-      palette: false,
-      run: () => move(-1),
-      when: () => rows().length > 0,
-    },
-    {
-      id: "arrows",
-      keys: ["ArrowDown", "ArrowUp"],
-      label: `Next / previous row while ${arrowsWhen}`,
+      action: "inbox.arrows",
       run: (event) => move(event.key === "ArrowDown" ? 1 : -1),
       when: arrowsMove,
     },
     {
-      id: "answer",
-      keys: "Enter",
-      label: `Answer the ${acted} ask`,
+      action: "inbox.answer",
       run: () => {
         // A decision block's compact card folds its answer box behind "Add a note or answer in
         // your own words"; Enter presses that disclosure, and the card lands the focus in the
@@ -1338,36 +1316,28 @@ export function Inbox({
           : inAnswerHand("[data-ask-answer]") !== null,
     },
     {
-      id: "option",
-      keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-      label: `Select option 1–9 of the ${acted} ask`,
+      // `0` is the tenth option.
+      action: "inbox.option",
       run: (event) => {
         const options = answerHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
-        options?.[Number(event.key) - 1]?.click();
+        options?.[event.key === "0" ? 9 : Number(event.key) - 1]?.click();
       },
       when: () => inAnswerHand("[data-ask-option]") !== null,
     },
     {
-      id: "open",
-      keys: "o",
-      label: "Open the row's issue, document or thread",
+      action: "inbox.open",
       run: () => inHand("[data-inbox-owner]")?.click(),
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
-      id: "copy-ref",
-      keys: "y",
       // An Agent row has no reference of its own - its thread is a message to a session - so
       // it draws no copy control and this stands down on it.
-      label: `Copy the ${acted} row's reference`,
+      action: "inbox.copy-ref",
       run: () => inHand(COPY_REF_SELECTOR)?.click(),
       when: () => inHand(COPY_REF_SELECTOR) !== null,
     },
     {
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the row, then clear the focused row",
+      action: "inbox.back",
       run: () => {
         // From the reading column, Escape is the way back to the row the reader came from: `l`
         // recorded that row, which is not the selected one whenever `j` moved the selection
@@ -1400,9 +1370,7 @@ export function Inbox({
       // The column is the other half of the page, and `l` is the step into it: the scroller
       // takes the focus, and the browser scrolls it on the arrow keys, Page Up, Page Down,
       // Space, Home and End from there.
-      id: "read-pane",
-      keys: "l",
-      label: "Move the focus into the reading pane",
+      action: "inbox.read-pane",
       run: () => {
         // The record Escape reads, written only where no record stands. It names the row the
         // reader came from - the one holding the focus, or the selected one where the focus is
@@ -1427,10 +1395,7 @@ export function Inbox({
     },
     {
       // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
-      id: "select",
-      keys: "x",
-      label: `Select or deselect the ${acted} row`,
-      palette: false,
+      action: "inbox.select",
       run: () => {
         const id = markableRow();
         if (id !== undefined) onMark(id);
@@ -1438,14 +1403,10 @@ export function Inbox({
       when: () => markableRow() !== undefined,
     },
     {
-      id: "dismiss",
-      keys: "e",
       // The row goes out of the Inbox, and in the Dismissed view back into it; the selection then
       // moves to the next row, as it does after a snooze. An Ask or an Approval row has no
       // Dismiss, so the key does nothing on one.
-      label: showDismissed
-        ? `Move the ${acted} thread back to the Inbox`
-        : `Dismiss the ${acted} thread`,
+      action: "inbox.dismiss",
       run: () => {
         const named = dismissableRow();
         if (named !== undefined) dismissRows([named]);
@@ -1455,10 +1416,9 @@ export function Inbox({
       when: () => dismissableRow() !== undefined && (!paneShown || outsideAskCard()),
     },
     {
-      id: "snooze",
-      keys: "h",
-      // One key for both: with rows marked it is the whole selection, otherwise the row in hand.
-      label: "Snooze the focused ask, or every selected ask",
+      // One action for both: with rows marked it is the whole selection, otherwise the row in
+      // hand.
+      action: "inbox.snooze",
       run: () => {
         if (selectedAsks.length === 0) {
           // The short row carries no Snooze of its own: the reading column's head does, for the
@@ -1479,10 +1439,7 @@ export function Inbox({
         (inHand("[data-inbox-snooze]") !== null && (!paneShown || outsideAskCard())),
     },
     {
-      id: "back-from-bulk",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the list from the bulk snooze picker",
+      action: "inbox.back-from-bulk",
       run: () => {
         // With every marked row gone there is no row to return to, so the bar itself is the
         // level out: it holds the count and the way to clear it.
@@ -1491,16 +1448,13 @@ export function Inbox({
       when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
     },
     {
-      id: "clear-selection",
-      keys: "Escape",
       // Escape is one level out, and the selection is the outermost thing a row press made:
       // `back` takes the reader off the row first, and this clears what they marked. It is
       // offered exactly while the bar's Clear is, a pick in flight and a refusal the reader has
       // since unticked the rows of included - the keyboard that raised them dismisses them. Not a
       // palette row: in the palette Escape closes the palette, so the row would name a key that
       // does something else there.
-      label: "Clear the selection",
-      palette: false,
+      action: "inbox.clear-selection",
       run: clearSelection,
       // A popover of the bar's takes Escape first: one press closes it, and dropping what the
       // reader marked at the same time would be two undos for one key.
@@ -1511,9 +1465,7 @@ export function Inbox({
       // the box itself a `search` input takes typed text (`keymap.ts`'s `TEXT_INPUT_TYPES`), so
       // the registry passes the key through and the reader types an `f` rather than re-focusing
       // what they are already in.
-      id: "search",
-      keys: "f",
-      label: "Search asks",
+      action: "inbox.search",
       run: () => searchRef.current?.focus(),
       when: () => searchRef.current !== null,
     },
@@ -1524,10 +1476,7 @@ export function Inbox({
       // and `back-from-bulk` both answer false there, and `clear-selection` is not `inEditable`
       // at all - and the drawer's own Close waits its turn, the Inbox's registration being the
       // first of the scope to match (`keymap.ts`'s `resolve`).
-      id: "leave-search",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back to the list from the search box",
+      action: "inbox.leave-search",
       run: () => (paneSelection.selectedRow() ?? rows()[0])?.focus(),
       when: () => searchRef.current !== null && document.activeElement === searchRef.current,
     },

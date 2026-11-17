@@ -175,14 +175,10 @@ const PR_TABLE_NAMES: DataTableNames = {
   groupAttribute: "data-pr-group",
   keymap: {
     moveFrom: "row",
-    next: { id: "delivery-next", keys: "ArrowDown", label: "Next pull request" },
-    open: { id: "delivery-open", keys: "o", label: "Open the pull request's details" },
-    openOnEnter: {
-      id: "delivery-open-enter",
-      keys: "Enter",
-      label: "Open the focused pull request",
-    },
-    previous: { id: "delivery-previous", keys: "ArrowUp", label: "Previous pull request" },
+    next: "delivery.next",
+    open: "delivery.open",
+    openOnEnter: "delivery.open-enter",
+    previous: "delivery.previous",
     scope: "delivery",
   },
   linkAttribute: PR_OPEN_ATTRIBUTE,

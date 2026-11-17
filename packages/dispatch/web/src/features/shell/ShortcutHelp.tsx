@@ -24,6 +24,8 @@ const KEY_GLYPHS: Record<string, string> = {
   ArrowRight: "→",
   ArrowUp: "↑",
   Escape: "Esc",
+  // The registry's own name for the space bar (`keymap.ts`), which reads as the key it names.
+  Space: "Space",
 };
 
 /** Each step of a chord as shown (`$mod+k` → `⌘+k`), keyed by its position so `g g` renders twice. */
@@ -182,17 +184,21 @@ export function ShortcutHelp({
 const kbdClass = `rounded px-1.5 py-0.5 font-mono text-xs font-medium ${kbdHint}`;
 
 /**
- * The keys that run a binding, as `?` and the palette both show them: `["1", …, "9"]` collapses
- * to `1 – 9`, other alternatives are listed with "or", and no keys renders nothing.
+ * The keys that run a binding, as `?` and the palette both show them: a run of single keys in a
+ * row (`["1", …, "9"]`, `["0", …, "3"]`) collapses to `1 – 9`, with a `0` after `9` read as the
+ * tenth (`1 – 9, 0`); other alternatives are listed with "or", and no keys renders nothing.
  */
 export function KeyHints({ keys }: { keys: readonly string[] }): ReactNode {
-  const first = keys[0];
-  const last = keys[keys.length - 1];
+  // The digits of a list of options take `0` after `9`, as the tenth.
+  const tenth = keys.length > 3 && keys[keys.length - 1] === "0" && keys[keys.length - 2] === "9";
+  const run = tenth ? keys.slice(0, -1) : keys;
+  const first = run[0];
+  const last = run[run.length - 1];
   const consecutive =
-    keys.length > 2 &&
+    run.length > 2 &&
     first !== undefined &&
     last !== undefined &&
-    keys.every(
+    run.every(
       (key, index) => key.length === 1 && key.charCodeAt(0) === first.charCodeAt(0) + index
     );
   if (consecutive) {
@@ -201,6 +207,12 @@ export function KeyHints({ keys }: { keys: readonly string[] }): ReactNode {
         <kbd className={kbdClass}>{first}</kbd>
         <span className={`text-xs ${textMutedOnSurface}`}>–</span>
         <kbd className={kbdClass}>{last}</kbd>
+        {tenth ? (
+          <>
+            <span className={`text-xs ${textMutedOnSurface}`}>,</span>
+            <kbd className={kbdClass}>0</kbd>
+          </>
+        ) : null}
       </span>
     );
   }
