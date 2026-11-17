@@ -35,8 +35,8 @@ export interface ResizeControl {
   readonly observed: () => readonly Element[];
   /** How many observers are live. */
   readonly live: () => number;
-  /** Every live observer reports a change, as the browser does after a box changed size. */
-  readonly resize: () => void;
+  /** Reports a change of `target` to its observers, or of every observed box when omitted. */
+  readonly resize: (target?: Element) => void;
   readonly restore: () => void;
 }
 
@@ -68,10 +68,12 @@ export function installResizeObserver(): ResizeControl {
   return {
     live: () => live.size,
     observed: () => [...live].flatMap((observer) => observer.targets),
-    resize: () => {
+    resize: (target?: Element) => {
       act(() => {
         for (const observer of [...live]) {
-          observer.callback([], observer);
+          if (target === undefined || observer.targets.includes(target)) {
+            observer.callback([], observer);
+          }
         }
       });
     },

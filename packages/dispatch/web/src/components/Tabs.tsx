@@ -102,9 +102,9 @@ export function Tabs<Id extends string>({
     revealTab(node);
   };
 
-  // The selected tab is revealed when it is chosen, and again whenever the tablist's box changes
-  // with no change of tab - the issue page's comment margin opening, a narrower window - which
-  // would otherwise leave it cut off at the edge or under the fade.
+  // Reveal the selected tab when it is chosen, when the list narrows (the comment margin opens
+  // or the window narrows), and when a tab's width changes (a live count grows). A preceding tab
+  // can move the selection under the fade without changing the list's or selected tab's width.
   useEffect(() => {
     const selected = tabRefs.current[activeTab];
     revealTab(selected);
@@ -114,6 +114,9 @@ export function Tabs<Id extends string>({
     }
     const sizes = new ResizeObserver(() => revealTab(selected));
     sizes.observe(list);
+    for (const tab of list.children) {
+      sizes.observe(tab);
+    }
     return () => sizes.disconnect();
   }, [activeTab]);
 

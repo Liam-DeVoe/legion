@@ -231,3 +231,48 @@ test("a selected tab the tablist narrows over is scrolled back clear of the trai
     sizes.restore();
   }
 });
+
+// A live artifact count can widen a tab without changing the tablist's own box. The selected
+// Activity tab after it must stay clear of the fade even though only Artifacts resized.
+test("a live count widening an earlier tab keeps the selected tab clear of the fade", () => {
+  const sizes = installResizeObserver();
+  const renderTabs = (count: number) => (
+    <Tabs
+      activeTab="activity"
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      onSelect={() => {}}
+      tabs={[
+        { count, id: "artifacts", label: "Artifacts" },
+        { id: "activity", label: "Activity" },
+        { id: "collaborators", label: "Collaborators" },
+      ]}
+    />
+  );
+  const view = render(renderTabs(9));
+
+  try {
+    const tablist = screen.getByRole("tablist", { name: "Issue detail" });
+    const artifacts = screen.getByRole("tab", { name: "Artifacts 9" });
+    const activity = screen.getByRole("tab", { name: "Activity" });
+    const box = { client: 300, scroll: 420 };
+    let activityLeft = 180;
+    layOutScrollBox(tablist, box);
+    tablist.getBoundingClientRect = () => rect(0, 300);
+    activity.getBoundingClientRect = () =>
+      rect(activityLeft - tablist.scrollLeft, activityLeft + 88 - tablist.scrollLeft);
+    sizes.resize();
+    expect(activity.getBoundingClientRect().right).toBe(268);
+
+    activityLeft += 8;
+    box.scroll += 8;
+    view.rerender(renderTabs(10));
+    // The list and Activity keep their dimensions; only the counted tab's width changed.
+    sizes.resize(artifacts);
+    expect(activity.getBoundingClientRect().right).toBe(268);
+    expect(tablist.scrollLeft).toBe(8);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
