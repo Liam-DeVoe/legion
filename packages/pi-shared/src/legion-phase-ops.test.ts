@@ -40,11 +40,16 @@ const REPORT = {
   handoffVersion: 2,
 };
 
+/** A daemon refusal as its route answers it: the status, the code and the sentence. */
+type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
+
 /** A runtime over a stub daemon answering the golden fixtures, recording each route it is sent
- * and each body it is posted. `state` is what `GET /legion/v1/state` answers. */
+ * and each body it is posted. `state` is what `GET /legion/v1/state` answers, and `ratingRefusal`,
+ * when given, what the daemon answers a completion that carries `planRating`. */
 function runtime(
   claim: ClaimCapability = implementer,
-  state: Record<string, unknown> = daemonFixture("state.json")
+  state: Record<string, unknown> = daemonFixture("state.json"),
+  ratingRefusal?: DaemonRefusal
 ) {
   const routes: string[] = [];
   const posted: Record<string, unknown>[] = [];
@@ -57,7 +62,20 @@ function runtime(
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     routes.push(route);
-    if (typeof init?.body === "string") posted.push(JSON.parse(init.body));
+    const body: Record<string, unknown> | undefined =
+      typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    if (body !== undefined) posted.push(body);
+    if (
+      route === "/legion/v1/handoff/complete" &&
+      ratingRefusal !== undefined &&
+      body !== undefined &&
+      "planRating" in body
+    ) {
+      return Response.json(
+        { code: ratingRefusal.code, error: ratingRefusal.error },
+        { status: ratingRefusal.status }
+      );
+    }
     return Response.json(answers[route] ?? {});
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
@@ -310,6 +328,67 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
   }
 });
 
+// Which completion ends the retro is the daemon's to say from phase.Of, never from the issue's
+// phase: the implementer's late completion of retro, once the issue has moved on to merging, still
+// ends the retro and takes its rating, and a completion of implementing that carries one is the
+// daemon's to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any
+// phase, since a filter on the record's phase would drop a rating the agent believes it gave.
+test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
+  const late = runtime(implementer, stateAtPhase("merging"));
+  const lateReason = "The reviewer's two rounds were the test step the plan had left out.";
+  await expect(
+    executePhaseOp(late.ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: 2,
+      plan_reason: lateReason,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(late.lookups).toEqual(["merging implementer"]);
+  expect(late.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Retro done.",
+    verdict: "",
+    ...REPORT,
+    planRating: 2,
+    planReason: lateReason,
+  });
+
+  const early = runtime(implementer, stateAtPhase("implementing"), {
+    status: 400,
+    code: "PLAN_RATING_UNEXPECTED",
+    error:
+      "this completion of phase implementing of LEGION-208 names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+  });
+  const earlyReason = "The plan named every file this round changed.";
+  await expect(
+    executePhaseOp(early.ops, {
+      op: "handoff_complete",
+      summary: "Implemented.",
+      plan_rating: 3,
+      plan_reason: earlyReason,
+    })
+  ).rejects.toThrow("400 PLAN_RATING_UNEXPECTED");
+  expect(early.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Implemented.",
+    verdict: "",
+    ...REPORT,
+    planRating: 3,
+    planReason: earlyReason,
+  });
+  // The same completion with no rating is taken, so the refusal above is the rating's.
+  await expect(
+    executePhaseOp(early.ops, { op: "handoff_complete", summary: "Implemented." })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(early.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Implemented.",
+    verdict: "",
+    ...REPORT,
+  });
+});
+
 // The description is where every host's agent reads what the completion that ends the retro
 // carries: the two fields, the scale, and the daemon's refusals of a rating.
 test("the description tells the agent that does the retro to rate the plan in its completion, and names the daemon's refusals of a rating", () => {
@@ -505,7 +584,7 @@ const NEXT_LOOK = "2026-09-29T09:00:00Z";
 function closedRuntime(
   claim: ClaimCapability,
   record: Record<string, unknown>,
-  refusal?: { readonly status: number; readonly code: string; readonly error: string }
+  refusal?: DaemonRefusal
 ) {
   const posted: Record<string, unknown>[] = [];
   const stub = (async (input, init) => {
