@@ -150,7 +150,7 @@ var scopedRowsSQL = strings.NewReplacer(
 // The classes the census and ProjectComplete name a row or a node by. missing is a row whose node
 // the store does not hold; unscoped a node holding neither a project nor parties; differs a node
 // holding another project, or other parties, than its row's; orphaned a live node of a kind whose
-// rows only its own creates write (orphanKinds) that no row stands behind.
+// rows only its own creates write (objectKinds) that no row stands behind.
 const (
 	classMissing  = "missing"
 	classUnscoped = "unscoped"
@@ -158,11 +158,19 @@ const (
 	classOrphaned = "orphaned"
 )
 
-// orphanKinds are the kinds the census reads the node side of too: an issue, a document, an ask
-// and a message, whose rows only their own creates write and only a document's removal deletes,
-// which states the node gone first. The store census reads that direction for a comment and a
-// block already (projections), so the project census reads it for these four alone.
-var orphanKinds = []string{graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage}
+// orphanKindList is the kinds the census reads the node side of too, as a SQL list: the kinds the
+// backfill writes a node for from their rows (objectKinds) - an issue, a document, an ask and a
+// message - whose rows only their own creates write and only a document's removal deletes, which
+// states the node gone first. The store census reads that direction for a comment and a block
+// already (projections), so the project census reads it for these alone. A kind added to
+// objectKinds is read both ways from that one list.
+var orphanKindList = func() string {
+	quoted := make([]string, len(objectKinds))
+	for index, kind := range objectKinds {
+		quoted[index] = "'" + kind.kind + "'"
+	}
+	return strings.Join(quoted, ", ")
+}()
 
 // rowClass is the class of one row of scopedRows against its node n, null for a complete one.
 const rowClass = `case
@@ -172,7 +180,7 @@ const rowClass = `case
 	end`
 
 // classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
-// a complete one, and every live node of an orphan kind that no row of scoped stands behind, as
+// a complete one, and every live node of an object kind that no row of scoped stands behind, as
 // orphaned, each with whether it is a row.
 var classedRows = `,
 	classed (kind, id, class, is_row) as (
@@ -182,7 +190,7 @@ var classedRows = `,
 		union all
 		select n.kind, n.id, '` + classOrphaned + `', false
 		from graph_nodes n
-		where n.kind in ('` + strings.Join(orphanKinds, "', '") + `') and n.state = '` + graphstore.StateLive + `'
+		where n.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateLive + `'
 		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
 	)`
 
