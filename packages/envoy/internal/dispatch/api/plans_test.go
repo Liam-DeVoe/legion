@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -283,6 +284,43 @@ func TestARatingIsTheDaemonsAlone(t *testing.T) {
 	if rated.Rating == nil || *rated.Rating != 4 || rated.RatingReason == nil || *rated.RatingReason != "The plan fit the work." {
 		t.Fatalf("the daemon's rating answers %s, want the retro rated 4 with its reason", stepJSON(t, rated))
 	}
+}
+
+// exactLogin is a sign-in that takes the person the X-Dispatch-User header names as written, where
+// the package's header identity lowercases it: so a person can carry a session's id, here the
+// daemon's, which no sign-in a deployment configures gives.
+type exactLogin struct{}
+
+func (exactLogin) Login(r *http.Request) (string, error) {
+	if login := r.Header.Get("X-Dispatch-User"); login != "" {
+		return login, nil
+	}
+	return "", identity.ErrNoIdentity
+}
+
+// The writer of an issue's records is the daemon's session, kind and id both: a signed-in person
+// whose login is legion-daemon:LEG is refused the plan write and the rating write 403 STEP_WRITER
+// with nothing written, where the session of that id writes both, which is the control.
+func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
+	issue := stepIssues(t, handler, "LEG", 1)[0]
+	writer := legionDaemonSessionPrefix + "LEG"
+	plan, retro := uuid.NewString(), uuid.NewString()
+	rating := with(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
+
+	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
+	requireStepRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
+	rated := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+retro+"/rating", rating, writer)
+	requireStepRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, codeStepWriter, writer, issue)
+	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
+		t.Fatalf("the refused writes left %d records, want none", len(steps))
+	}
+	if plans := readPlansOf(t, handler, issue); plans != 0 {
+		t.Fatalf("the refused writes left %d plan nodes, want none", plans)
+	}
+
+	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSession("LEG"), 1))
+	putRatingOK(t, handler, issue, retro, with(rating, map[string]any{"actor": daemonSession("LEG")}))
 }
 
 // Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
