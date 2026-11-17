@@ -441,50 +441,45 @@ describe("dispatch steps on the command line", () => {
   // a key no issue carries reads as an issue with no step, so it answers no project's 403 and no
   // issue's 404.
   test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
-    const refusals: readonly {
-      readonly status: string;
-      readonly answer: () => Response;
-      readonly printed: (url: string) => string;
-    }[] = [
-      {
-        status: "401",
-        answer: () =>
-          Response.json({ code: "UNAUTHORIZED", error: "invalid bearer token" }, { status: 401 }),
-        printed: () => "UNAUTHORIZED: invalid bearer token",
-      },
-      {
-        status: "500",
-        answer: () =>
-          Response.json({ code: "INTERNAL", error: "internal server error" }, { status: 500 }),
-        printed: () => "INTERNAL: internal server error",
-      },
-      {
-        status: "502 page",
-        answer: () =>
-          new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
-            status: 502,
-            statusText: "Bad Gateway",
-            headers: { "Content-Type": "text/html" },
-          }),
-        printed: (url) =>
-          `HTTP_502: GET ${url}${STEPS_PATH} answered 502 Bad Gateway with a body that is not ` +
-          `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
-          "rather than Dispatch's own answer, so a retry may succeed.",
-      },
-    ];
-    for (const { status, answer, printed } of refusals) {
-      const server = dispatchServing({ handler: answer });
-
+    /** The run against `server` exits 1, reads the steps route once, and prints `refusal` and no
+     *  steps; `label` names the case in each assertion's message. */
+    async function refused(server: FakeDispatchServer<unknown>, label: string, refusal: string) {
       const { code, stdout } = await run(server, ["steps", "--issue", "LEG-1"]);
 
-      expect(code, status).toBe(1);
+      expect(code, label).toBe(1);
       // The one request was the steps read, and the refusal is its answer.
       expect(
         server.reads.map((url) => url.pathname),
-        status
+        label
       ).toEqual([STEPS_PATH]);
-      expect(stdout, status).toContain(printed(server.url));
-      expect(stdout, status).not.toContain("steps in");
+      expect(stdout, label).toContain(refusal);
+      expect(stdout, label).not.toContain("steps in");
     }
+
+    // Dispatch's own refusals print as `messageFor` writes them: `<code>: <error>`.
+    for (const [status, code, error] of [
+      [401, "UNAUTHORIZED", "invalid bearer token"],
+      [500, "INTERNAL", "internal server error"],
+    ] as const) {
+      const server = dispatchServing({ handler: () => Response.json({ code, error }, { status }) });
+      await refused(server, String(status), `${code}: ${error}`);
+    }
+
+    // A page something in Dispatch's place answered, named as such with the URL it came from.
+    const page = dispatchServing({
+      handler: () =>
+        new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+          status: 502,
+          statusText: "Bad Gateway",
+          headers: { "Content-Type": "text/html" },
+        }),
+    });
+    await refused(
+      page,
+      "502 page",
+      `HTTP_502: GET ${page.url}${STEPS_PATH} answered 502 Bad Gateway with a body that is not ` +
+        `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
+        "rather than Dispatch's own answer, so a retry may succeed."
+    );
   });
 });
