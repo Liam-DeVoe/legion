@@ -254,6 +254,37 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 	}
 }
 
+// Only the daemon of the issue's project rates a retro, as only it writes the retro's record: a
+// person, an agent's session and the daemon of another project, each sending the rating the
+// daemon's own write lands with, are refused 403 STEP_WRITER, whether the retro's record exists or
+// not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
+// the control.
+func TestARatingIsTheDaemonsAlone(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := stepIssues(t, handler, "LEG", 1)[0]
+	retro := uuid.NewString()
+	putStepOK(t, handler, issue, retro, with(retroIdentity(daemonSession("LEG"), 1), map[string]any{"started_at": stepStart}))
+	rating := map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}
+
+	for _, id := range []string{retro, uuid.NewString()} {
+		path := "/api/v1/issues/" + issue + "/steps/" + id + "/rating"
+		person := dispatchRequest(t, handler, http.MethodPut, path, with(retroIdentity(nil, 1), rating), "alice")
+		requireStepRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+			refused := putRating(t, handler, issue, id, with(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
+			requireStepRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		}
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != retro || steps[0].Rating != nil || steps[0].RatingReason != nil {
+		t.Fatalf("the refused ratings left %+v, want the one retro %s, unrated", steps, retro)
+	}
+
+	rated := putRatingOK(t, handler, issue, retro, with(retroIdentity(daemonSession("LEG"), 1), rating))
+	if rated.Rating == nil || *rated.Rating != 4 || rated.RatingReason == nil || *rated.RatingReason != "The plan fit the work." {
+		t.Fatalf("the daemon's rating answers %s, want the retro rated 4 with its reason", stepJSON(t, rated))
+	}
+}
+
 // Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
 // rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A reason of
 // exactly 2,000 code points is taken, which is the control of the bound.
