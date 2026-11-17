@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -891,6 +892,12 @@ type HandoffComplete struct {
 	// on every other completion, and on a retro's from a plugin before that contract.
 	PlanRating int
 	PlanReason string
+	// ReturnTo is the step of the issue's running task that a failed step names as the one the
+	// task returns to (R7): the place of that step in the task, 1 for its first. The route takes
+	// it only on a completion whose verdict is fail, and holds it to 1 or above; which step it may
+	// name is the workflow's to judge against the task's steps. 0 on every other completion, which
+	// returns to the step the workflow reads from the steps' types.
+	ReturnTo int
 }
 
 func (HandoffComplete) isFact() {}
@@ -989,6 +996,41 @@ type GateRegistered struct {
 }
 
 func (GateRegistered) isFact() {}
+
+// PlanGiven is the plan the owner of an issue gave Legion with register_plan (api's
+// registerPlan): the blocks of one version of its plan document, as the route read them from
+// Dispatch at that version and held them to plan.Supported and plan.Validate, so a plan either
+// check refuses never reaches the workflow. Generation is the issue's generation the route read,
+// and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
+// issue's first step takes the newest plan its owner gave (C2-2). GivenBy is the claim of the
+// architect whose grant gave it, which is how the first step tells its owner's plan from an
+// earlier owner's.
+//
+// The workflow applies the rules of a later version (R16): it answers PLAN_REFUSED
+// (RunningTaskChanged), PLAN_VERSION_OLD or PLAN_DOCUMENT_CHANGED, and it leaves each of those
+// refusals unspent (Result.Unspent). The route names one registration by the issue, the
+// generation, the document and the version, so a version refused while its task ran is the same
+// fact when the owner gives it again after stop_task, and must apply then.
+type PlanGiven struct {
+	Issue      string
+	Generation uint64
+	Plan       plan.Plan
+	GivenBy    claim.Token
+}
+
+func (PlanGiven) isFact() {}
+
+// TaskStopped is the owner's stop_task of one task of a recorded issue (api's stopTask), by the
+// claim of the architect whose grant asked for it. The workflow stops the task in the fact's own
+// transaction, or answers TaskNotFound or TaskDone; a stop of a task already stopped changes
+// nothing and is no refusal. Each request is its own fact, so a task the owner stops, starts
+// again with a later version and stops once more is stopped twice.
+type TaskStopped struct {
+	Issue, Task string
+	By          claim.Token
+}
+
+func (TaskStopped) isFact() {}
 
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
 // the reason it gives: a human decided no change at the design gate, or the issue is moot.
@@ -1367,10 +1409,63 @@ func CommitScoped(ctx context.Context) bool {
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
+// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// its task where it has one, which the route writes beside the code; every other refusal is its
+// code and its sentence, and carries none.
 type Refusal struct {
 	Status  int
 	Code    string
 	Message string
+	Reasons []plan.Refusal
+}
+
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
+// cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
+// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
+// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+func PlanRefused(reasons []plan.Refusal) *Refusal {
+	texts := make([]string, len(reasons))
+	for i, reason := range reasons {
+		texts[i] = reason.Reason
+	}
+	return &Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + strings.Join(texts, " "), Reasons: reasons}
+}
+
+// RunningTaskChanged is the reason a later version of the plan is refused when it changes or
+// removes task, which is running: the owner stops it first (R16, B-3).
+func RunningTaskChanged(task string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
+}
+
+// PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
+// at or below held, the version in force: Legion takes only a later version.
+func PlanVersionOld(issue string, held, given int) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_VERSION_OLD", Message: fmt.Sprintf(
+		"the plan in force of %s is version %d, and Legion takes only a later version: version %d changed nothing.", issue, held, given)}
+}
+
+// PlanDocumentChanged is the 409 PLAN_DOCUMENT_CHANGED refusal of a version of another document
+// than artifact, the document of issue's plan in force.
+func PlanDocumentChanged(issue, artifact string) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_DOCUMENT_CHANGED", Message: fmt.Sprintf(
+		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
+}
+
+// TaskNotFound is the 404 TASK_NOT_FOUND refusal of stop_task for task, which the plan Legion
+// runs for issue does not hold; tasks are the ids that plan holds, none for an issue with no plan
+// rows.
+func TaskNotFound(issue, task string, tasks []string) *Refusal {
+	message := fmt.Sprintf("%s has no plan of tasks in Legion's record, so it has no task %s. This stop changed nothing.", issue, task)
+	if len(tasks) > 0 {
+		message = fmt.Sprintf("the plan Legion runs for %s has no task %s; its tasks are %s. This stop changed nothing.", issue, task, strings.Join(tasks, ", "))
+	}
+	return &Refusal{Status: 404, Code: "TASK_NOT_FOUND", Message: message}
+}
+
+// TaskDone is the 409 TASK_DONE refusal of stop_task for task of issue, which is done.
+func TaskDone(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s is done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of

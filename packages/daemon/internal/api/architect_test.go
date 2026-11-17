@@ -34,6 +34,8 @@ func TestArchitectFactRoutesRejectMissingGrantID(t *testing.T) {
 	h := newHarness(t)
 	for _, route := range []string{
 		"/legion/v1/gates/register",
+		"/legion/v1/plans/register",
+		"/legion/v1/tasks/stop",
 		"/legion/v1/waves/release",
 		"/legion/v1/phase/backward",
 		"/legion/v1/phase/retry",
@@ -95,8 +97,32 @@ type statusRecorder struct {
 	// for some children in a deployment; the listing still carries them unless listFails is set.
 	readFails map[string]error
 	listFails error
-	// reads is every issue and document read, in order: `issue:<key>` and `approval:<id>`.
+	// plans is each version of a plan document this fake knows, by planVersion(id, version), and
+	// planErr, when set, every such read's answer instead.
+	plans   map[string]dispatch.PlanDocument
+	planErr error
+	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
+	// `plan:<id>@<version>`.
 	reads []string
+}
+
+// planVersion keys statusRecorder.plans: one version of one document.
+func planVersion(artifactID string, version int) string {
+	return fmt.Sprintf("%s@%d", artifactID, version)
+}
+
+// PlanDocument answers Dispatch's read of one version of a document with its blocks: the version
+// the case gave, or Dispatch's 404 for one it did not.
+func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, version int) (dispatch.PlanDocument, error) {
+	r.reads = append(r.reads, "plan:"+planVersion(artifactID, version))
+	if r.planErr != nil {
+		return dispatch.PlanDocument{}, r.planErr
+	}
+	document, ok := r.plans[planVersion(artifactID, version)]
+	if !ok {
+		return dispatch.PlanDocument{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "version not found"}
+	}
+	return document, nil
 }
 
 // ListIssues answers Dispatch's project listing: every issue the fake knows, in key order, as the

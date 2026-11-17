@@ -190,8 +190,8 @@ func TestANewPluginMustRate(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	if got := pluginContractOf(t, h, implementer.token); got != PlanRatingContract {
-		t.Fatalf("the implementer's plugin declared contract %d, want PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+	if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
+		t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
 	}
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"}),

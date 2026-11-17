@@ -223,10 +223,12 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
 // Both routes say one sentence, because they refuse for one reason: a parent's head proves its
-// children's merged work, so nothing enters the workflow beneath a head already accepted.
-// operation is what the caller would do again once the ancestor has closed.
+// children's merged work, so nothing enters the workflow beneath a head already accepted. The
+// head is the one the last step of the ancestor's task passed, which is what record.Accepted
+// means for every plan (a plan with no reviewer step has no reviewed head). operation is what the
+// caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
+	return fmt.Sprintf("%s is beneath %s, whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
 		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
@@ -270,7 +272,7 @@ func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID strin
 		return
 	}
 	if result.Refusal != nil {
-		writeFailure(w, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		writeRefusal(w, result.Refusal)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -314,7 +316,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	approval, ok := s.documentOfIssue(w, r, artifactID, req.Issue)
+	approval, ok := s.documentOfIssue(w, r, artifactID, req.Issue, "register_gate")
 	if !ok {
 		return
 	}
@@ -426,10 +428,11 @@ func (s *server) issueSequence(w http.ResponseWriter, r *http.Request, issue str
 	return current.LastSeq, true
 }
 
-// documentOfIssue refuses a gate document the issue does not carry, as the shipped daemon does: an
-// already-approved document of any other issue would otherwise open this gate. A failed read
-// records nothing, so the architect's register_gate retries. It returns the approval it read.
-func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifactID, issue string) (dispatch.Approval, bool) {
+// documentOfIssue refuses a document the issue does not carry, as the shipped daemon does: an
+// already-approved document of any other issue would otherwise open this gate, or give this issue
+// another issue's plan. A failed read records nothing, so the architect's operation, which the
+// refusal names, retries. It returns the approval it read.
+func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifactID, issue, operation string) (dispatch.Approval, bool) {
 	if s.dispatch == nil {
 		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return dispatch.Approval{}, false
@@ -440,7 +443,7 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 		writeFailure(w, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return dispatch.Approval{}, false
 	case err != nil:
-		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", artifactID))
+		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry %s", artifactID, operation))
 		return dispatch.Approval{}, false
 	}
 	return approval, true
@@ -471,20 +474,36 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, tree, k
 		writeFailure(w, http.StatusConflict, "ISSUE_ALREADY_RELEASED", fmt.Sprintf("%s is %s; release_children releases only a triage, backlog, or icebox child", key, child.Status))
 		return dispatch.Issue{}, false, false
 	}
+	if _, ok := s.dispatchTreeMember(w, r, tree, key, read); !ok {
+		return dispatch.Issue{}, false, false
+	}
+	return child, write, true
+}
+
+// dispatchTreeMember is key as Dispatch shows it, when its Dispatch parent chain reaches tree,
+// the architect's: the membership of an issue the record cannot answer for, since it holds a
+// child only once the child is todo. It is the one walk release_children and register_plan make,
+// reading each issue through read, which answers its own failures. One whose chain ends, or comes
+// round on itself, before tree is answered 403 ISSUE_OUTSIDE_TREE.
+func (s *server) dispatchTreeMember(w http.ResponseWriter, r *http.Request, tree, key string, read issueReader) (dispatch.Issue, bool) {
+	issue, found := read(w, r, key)
+	if !found {
+		return dispatch.Issue{}, false
+	}
 	seen := map[string]bool{key: true}
-	for parent := child.Parent; parent != nil && !seen[*parent]; {
+	for parent := issue.Parent; parent != nil && !seen[*parent]; {
 		if *parent == tree {
-			return child, write, true
+			return issue, true
 		}
 		seen[*parent] = true
 		ancestor, found := read(w, r, *parent)
 		if !found {
-			return dispatch.Issue{}, false, false
+			return dispatch.Issue{}, false
 		}
 		parent = ancestor.Parent
 	}
 	writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, tree))
-	return dispatch.Issue{}, false, false
+	return dispatch.Issue{}, false
 }
 
 // maxChildReleaseAttempts and childReleaseBackoff bound release_children's retries of a todo child
@@ -773,8 +792,8 @@ type issueReader func(w http.ResponseWriter, r *http.Request, key string) (dispa
 // them, so every release_children naming one of them answered 502 and the child, already todo,
 // was never recorded. A release needs only what the listing carries: the status, the parent chain,
 // the blockers and the issue's sequence. An issue the listing does not carry either is a failed
-// read, answered 502 with both errors.
-func (s *server) cachedIssueReader() issueReader {
+// read, answered 502 with both errors and the operation, which retries.
+func (s *server) cachedIssueReader(operation string) issueReader {
 	seen := map[string]dispatch.Issue{}
 	var listed map[string]dispatch.IssueSummary
 	var listErr error
@@ -797,10 +816,10 @@ func (s *server) cachedIssueReader() issueReader {
 				if listErr != nil {
 					listing = fmt.Sprintf("failed too (%v)", listErr)
 				}
-				writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed (%v), and the project listing %s; retry release_children", key, err, listing))
+				writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed (%v), and the project listing %s; retry %s", key, err, listing, operation))
 				return dispatch.Issue{}, false
 			}
-			s.log.Warn("api: Dispatch's detail read of an issue failed, so release_children read it from the project listing", "issue", key, "error", err)
+			s.log.Warn("api: Dispatch's detail read of an issue failed, so the architect's operation read it from the project listing", "issue", key, "operation", operation, "error", err)
 			issue = summary.Issue()
 		}
 		seen[key] = issue
@@ -856,7 +875,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	})
 	// One wave's children share ancestors, and the walk to the tree root re-read each of them
 	// per child: the reads are cached for the life of this request.
-	read := s.cachedIssueReader()
+	read := s.cachedIssueReader("release_children")
 	children := make([]releasedChild, 0, len(req.Issues))
 	for _, issue := range req.Issues {
 		if !claim.IsIssueKey(issue) {
