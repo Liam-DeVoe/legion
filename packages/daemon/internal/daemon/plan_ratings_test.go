@@ -12,6 +12,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -122,7 +123,7 @@ func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 		// they are, so the live driver's check of the read script's PASS line meets them.
 		{issue: r.issues[0].key, title: r.issues[0].title, rating: 3, reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task.", failed: 1},
 		{issue: r.issues[2].key, title: r.issues[2].title, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
-		{issue: r.issues[1].key, title: r.issues[1].title, rating: 4, reason: "The plan fit the work.", failed: 0},
+		{issue: r.issues[1].key, title: r.issues[1].title, rating: 4, reason: "The plan fit the work as written.", failed: 0},
 	}
 	each := func(step func()) {
 		for _, w := range want {
@@ -255,7 +256,7 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s lists its rating on the record %s ended %v, want the retro's record %s ended %v", w.issue,
 				got.Ratings[0].StepID, got.Ratings[0].EndedAt, retro.ID, retro.EndedAt)
 		case got.FailedSteps != w.failed:
-			return fmt.Errorf("%s", failedStepsSay(w.issue, got.FailedSteps, w.failed))
+			return errors.New(failedStepsSay(w.issue, got.FailedSteps, w.failed))
 		}
 		started, ended := w.steps.span()
 		seconds := int64(ended.Sub(started) / time.Second)

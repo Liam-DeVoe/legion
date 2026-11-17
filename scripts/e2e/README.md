@@ -4962,7 +4962,7 @@ The live proof that each retro of an issue rates the plan the issue ran and that
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`step-records.sh`](#step-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
-A run took 53 s measured on a loaded host with a warm Go build cache, 17 s of it building the driver and 33 s the proof, which builds Dispatch first.
+A run takes two to five minutes, most of it building Dispatch and the driver; one took 53 s measured on a loaded host with a warm Go build cache, 17 s of it building the driver and 33 s the proof, which builds Dispatch first.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI and the read script out of.
 

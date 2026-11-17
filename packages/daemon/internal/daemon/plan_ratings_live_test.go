@@ -22,6 +22,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -373,7 +374,7 @@ func plansPrintedHold(project, out string, want []ratedWant) error {
 		case got.time != spent:
 			return fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.issue, got.time, spent, started, ended)
 		case got.failed != w.failed:
-			return fmt.Errorf("%s", failedStepsPrinted(w.issue, got.failed, w.failed))
+			return errors.New(failedStepsPrinted(w.issue, got.failed, w.failed))
 		}
 	}
 	return nil
