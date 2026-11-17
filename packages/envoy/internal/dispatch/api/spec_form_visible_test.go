@@ -113,6 +113,30 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 	})
 }
 
+// The red team's inputs of a form inside a longer word, through the approval request route: a
+// colour and the scope of a package open, and the number of a pull request and a handle alone are
+// still refused. A bare id names a record, and the refusal says so.
+func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireFormRows(t, tree, []formRow{
+		{name: "a colour of six digits and letters", spec: formRequirement("colour", "Dispatch stores the color `#12abcd`."),
+			reads: specform.KindStatement},
+		{name: "the scope of a package", spec: formRequirement("npm", "Dispatch installs `@types/node`."),
+			reads: specform.KindStatement},
+		{name: "the control: the number of a pull request", spec: formRequirement("number", "Legion merges each change, as `#12` says."),
+			want: []string{"statement number pull-request"}},
+		{name: "the control: a handle", spec: formRequirement("handle", "Dispatch asks `@legion` about each change."),
+			want: []string{"statement handle person"}},
+	})
+	const id = "12345678-1234-1234-1234-123456789abc"
+	issue := createFormIssue(t, tree.handler, tree.root, "A bare id", "# Spec\n\n"+formRequirement("id", "Dispatch stores the value `"+id+"`."))
+	response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+	const line = `- statement id in spec.md version 1: it names a record of Dispatch by its id: "` + id + `".`
+	if body := response.Body.String(); response.Code != http.StatusConflict || !strings.Contains(body, strings.ReplaceAll(line, `"`, `\"`)) {
+		t.Errorf("a bare id: status=%d body=%s, want 409 with the line %q", response.Code, body, line)
+	}
+}
+
 // unreadableMarkdown is markdown that today's parser refuses, as a version that an earlier release
 // stored outside the schema.
 const unreadableMarkdown = "<div>\nblock HTML\n</div>\n"
