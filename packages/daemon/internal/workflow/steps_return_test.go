@@ -129,11 +129,16 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) []r
 	return starts
 }
 
-// noticesOf is every notice of kind key's outbox holds, oldest first.
+// noticesOf is every notice of kind key's outbox holds, oldest first: the rows of key alone, so a
+// notice on another issue is not read as key's.
 func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeKind) []record.Notice {
 	t.Helper()
 	var notices []record.Notice
-	for _, payload := range noticeRows(t, pool) {
+	for _, row := range issueOutboxOf(t, pool, key, string(record.OutboxKindNotice)) {
+		payload, err := record.DecodeOutboxPayload(record.OutboxRow{ID: row.id, Kind: record.OutboxKindNotice, Issue: key, Payload: row.payload})
+		if err != nil {
+			t.Fatalf("decode notice row %d of %s: %v", row.id, key, err)
+		}
 		if notice, ok := payload.(record.Notice); ok && notice.Kind == kind {
 			notices = append(notices, notice)
 		}

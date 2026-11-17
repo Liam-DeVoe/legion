@@ -1522,9 +1522,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // so that an architect reads one rule wherever it reads of a park.
 const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
 
-// signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
-// retro and starts the implementer there, told the review's handoff and the pull request as the
-// approval told it before acceptance existed. Outside accepting it changes nothing and says so.
+// signOff is the architect's acceptance of the step before it: it moves the issue from accepting
+// to the task's next step, or to retro where the acceptance is the task's last step (the default
+// steps), and starts that step's role told the report of the step the owner accepted: the handoff
+// on the phases row of the role of the step before accepting, with the pull request. An issue with
+// no plan rows walks today's line, where that step is the review, so its retro is told the
+// review's handoff, as the approval told it before acceptance existed. Outside accepting it
+// changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
@@ -1551,7 +1555,11 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
 			issue.Key, strings.Join(open, ", "))), nil
 	}
-	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	accepted, err := e.acceptedRole(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1559,7 +1567,23 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", review, pr, "")
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
+}
+
+// acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
+// the acceptance's place on the task of its walk, by place and never by type, so the step after
+// the sign-off reads the report the owner read. An issue with no plan rows walks today's line,
+// where the review stands before accepting.
+func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return claim.RoleReviewer, err
+	}
+	place, ok := w.PlaceOf(phase.Accepting)
+	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
+		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", issue.Key, w.Task, w.Line)
+	}
+	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
 func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
