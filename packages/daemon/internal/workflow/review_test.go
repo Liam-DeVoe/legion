@@ -1868,7 +1868,8 @@ func TestAReviewAppReviewDecidesOnlyTheHeadItsFooterNames(t *testing.T) {
 // the head the record holds while the implementer's push to the next head is on its way, so the
 // approval arrives with its footer naming the head it read and a commit_id naming the head after
 // it. Recorded from the commit_id, the approval would stand the moment that next head arrived
-// and send the issue to accepting on code no review ever read.
+// and send the issue to accepting on code no review ever read. The commit the reviewer's next
+// round is told (record.PhaseRow.ReviewedHead) is the footer's head for the same reason.
 func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
@@ -1881,6 +1882,9 @@ func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
 	}
 	if got := reviewerDecision(t, pool); got == nil || got.State != "approved" || got.Head != headOne {
 		t.Fatalf("the reviewer's decision = %+v, want the approval recorded at %s, the head its footer names", got, headOne)
+	}
+	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
+		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s, the head its footer names, and not %s, its commit_id", got, headOne, headTwo)
 	}
 
 	apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})

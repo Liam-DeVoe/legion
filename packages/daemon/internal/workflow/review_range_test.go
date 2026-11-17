@@ -372,6 +372,27 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 	}
 }
 
+// The commit a later round names is the head the reviewer's own review names in its Legion footer,
+// never GitHub's commit_id for that review (reviewHead): GitHub moves a review's commit_id onto each
+// later head of the pull request, so round 1's request for changes here reads headOne by its footer
+// while its commit_id already names headTwo. A commit taken from the commit_id would hand round 2 a
+// range from a head the reviewer never read.
+func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testing.T) {
+	pool, _, apply := reviewRoundOne(t)
+	review := reviewAt(1, "changes_requested", headOne, reviewTestedAt)
+	review.CommitID = headTwo
+	apply("request-changes", review)
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after round 1's request for changes the issue is in %s, want implementing", got)
+	}
+	backToReviewing(t, apply, 2)
+	second := reviewerRow(t, pool).EntryTask
+	readsReviewingTask(t, "round 2", second, 2)
+	if !strings.Contains(second, reviewedPartOf(headOne)) || strings.Contains(second, headTwo) {
+		t.Fatalf("round 2's task = %q, want it to name %s, the head round 1's footer names, and not %s, its commit_id", second, headOne, headTwo)
+	}
+}
+
 // Every way back into reviewing that keeps the generation tells the reviewer the commit its last
 // deciding review read: a transition's start whichever move came before it (enter stores that
 // task, so a claim behind its entry is sent the same text), the retry of a held phase, each start
