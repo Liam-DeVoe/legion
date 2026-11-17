@@ -626,7 +626,6 @@ jobs:
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
               # testnats's Gate reserves its port with internal/testport.
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -1022,7 +1021,6 @@ jobs:
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
@@ -2632,7 +2630,6 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
               # component compiles that package.
@@ -2849,7 +2846,6 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -2882,7 +2878,6 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -2923,7 +2918,6 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -3018,7 +3012,6 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
-              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
