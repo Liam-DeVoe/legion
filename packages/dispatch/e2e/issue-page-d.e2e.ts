@@ -895,17 +895,23 @@ test("at 390 px a focus that enters the view row leaves a scrolled page where it
   });
 });
 
-// From an address that names a node (`#b-`), a pointer press on Spec and then on Decisions moves
-// to each view's address, one history entry each (decision 93 of INFRA-1196's parts). There, a
-// press whose mousedown took the focus out of the outline closed the body of the outline's row,
-// the page grew shorter under the pointer, and the press ended elsewhere and did nothing. The
-// outline is a later part's; this row holds what each press must do.
-test("from an address that names a node, a press on Spec and then Decisions moves to each view's address, one history entry each", async ({
+// From an address that names a node (`#b-`), a pointer press on Spec, then on Decisions, then on
+// Verification's count moves to each view's address, one history entry each, and leaves the
+// focus where it was (decision 93 of INFRA-1196's parts). There, a press whose mousedown took the
+// focus out of the outline closed the body of the outline's row, the page grew shorter under the
+// pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here the
+// page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
+// its button's `<label>`, whose own activation focuses the button at the click: with it, this
+// row fails on "a press on Verification's count took the focus".
+test("from an address that names a node, a press on Spec, on Decisions and on Verification's count moves to each view's address, one history entry each, and leaves the focus where it was", async ({
   browser,
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}#b-r1`);
     await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
+    const holder = page.getByRole("main");
+    await holder.focus();
+    await expect(holder, "the page's main took no focus").toBeFocused();
     const entries = () => page.evaluate(() => window.history.length);
     const before = await entries();
     await presetToggle(page, "spec").click();
@@ -913,11 +919,21 @@ test("from an address that names a node, a press on Spec and then Decisions move
       addressOf(key, "spec")
     );
     expect(await entries(), "a press on Spec added no history entry").toBe(before + 1);
+    await expect(holder, "a press on Spec took the focus").toBeFocused();
     await presetToggle(page, "decisions").click();
     await expect(page, "a press on Decisions did not move to Decisions' address").toHaveURL(
       addressOf(key, "decisions")
     );
     expect(await entries(), "a press on Decisions added no history entry").toBe(before + 2);
+    await expect(holder, "a press on Decisions took the focus").toBeFocused();
+    await presetCount(page, "verification").click();
+    await expect(page, "a press on Verification's count did not move to its address").toHaveURL(
+      addressOf(key, "verification")
+    );
+    expect(await entries(), "a press on Verification's count added no history entry").toBe(
+      before + 3
+    );
+    await expect(holder, "a press on Verification's count took the focus").toBeFocused();
   });
 });
 

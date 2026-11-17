@@ -121,7 +121,8 @@ test("a press on a view control leaves the focus where it is, and moves to the v
 });
 
 // A press on a control's signal, the `<label>` of its button, leaves the focus where it is too
-// (decision 93): a label takes no focus, so its mousedown would move the focus to the body.
+// (decision 93): a label takes no focus, so its mousedown would move the focus to the body, and
+// its own activation would focus the button at the click.
 test("a press on a view control's count leaves the focus where it is, and moves to the view's address", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubMatchMedia(false);
@@ -140,6 +141,7 @@ test("a press on a view control's count leaves the focus where it is, and moves 
     await user.pointer({ keys: "[MouseLeft>]", target: count });
     expect(document.activeElement, "the press's mousedown on the count took the focus").toBe(row);
     await user.pointer({ keys: "[/MouseLeft]", target: count });
+    expect(document.activeElement, "the press's click on the count took the focus").toBe(row);
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
       presetPath("CORE-1", "spec")
     );
