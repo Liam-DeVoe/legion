@@ -79,11 +79,11 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	// The kept answer is filed under what the caller sees beside the owner (keptViewOf): a
+	// The kept answer is filed under what the caller sees beside the owner (commentListViewOf): a
 	// mention or a delivery names a session, which the answer leaves out for a caller that does
 	// not see it (leaveOutHiddenCommentSessions), so an answer kept for one reader is handed only to
 	// a reader who sees what it saw. A reader that sees every object files under the owner alone.
-	key := listAnswerKeyFor(r, commentListRoute, name+keptViewOf(who), etag)
+	key := listAnswerKeyFor(r, commentListRoute, name+commentListViewOf(who), etag)
 	if s.listAnswers.answer(w, key) {
 		return
 	}
@@ -163,6 +163,25 @@ func ownerClause(listOwner owner, keyParam, viewerParam string) string {
 		return access.IssueProjectClause(keyParam, viewerParam)
 	}
 	return access.ItemOwnerClause("null::text", keyParam, viewerParam)
+}
+
+// commentListViewOf is the part of who's viewer a comment list's bytes turn on, which its kept
+// answer is filed under beside the owner. The comments, their reply blocks and their mentions and
+// deliveries are read as everyReader; the one read made for who is which sessions they name it
+// sees (leaveOutHiddenCommentSessions), and access.SessionClause decides that from the viewer's
+// session, whether it is open and what it sees, never from its person. So two people who agree on
+// those three share one kept list, where keptViewOf, which an event feed's backlink counts need,
+// would file each person apart. A reader that sees every object reads every session (R9) and files
+// under the owner alone, as keptViewOf does.
+func commentListViewOf(who model.Actor) string {
+	viewer := who.Viewer
+	switch {
+	case viewer == nil:
+		return "\x00closed"
+	case seesEveryObject(who):
+		return ""
+	}
+	return fmt.Sprintf("\x00%s\x00%t\x00%s", viewer.Session, viewer.Open, strings.Join(viewer.Sees, ","))
 }
 
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
