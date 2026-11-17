@@ -118,9 +118,11 @@ const (
 // A snapshot short of the bucket is missing claims that are in it, and each one it misses is a
 // restored holder that loses its grace and is released a session TTL early, so an incomplete scan
 // fails the caller, and only a complete one logs. A scan that delivers nothing for idle is one.
-func roleRevisions(kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
+// ctx is the scan's own (kvwatch.ScanExistingKeys): context.Background for every open but one
+// given a wait of its own (WithRequestWait).
+func roleRevisions(ctx context.Context, kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
 	revisions := map[string]uint64{}
-	scan, err := kvwatch.ScanExistingKeys(context.Background(), c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanExistingKeys(ctx, c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
 		revisions[entry.Key] = entry.Revision
 		return nil
 	}, jetstream.MetaOnly())

@@ -946,7 +946,13 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 // the end and arms the retry again, whose next attempt moves the watcher that ended. Here the
 // watch ends because the grant carries the bucket but not the consumer a watch of it creates, so
 // the bucket opens and the create request of its watcher's consumer is dropped.
+//
+// The open is late, by lateOpen on the row's clock: the grant comes only once the store's retry
+// has backed off past it, so the store's first attempt after the grant is at least lateOpen after
+// the grant. No wait of the row has a bound of its own, so however late the open, the row waits
+// for it; one that never opens fails at the shared wait's end.
 func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing.T) {
+	const lateOpen = 65 * time.Second
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
 	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
@@ -963,9 +969,25 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 	}
 	t.Cleanup(known.StopWatch)
 
+	// The retry's attempts are refused while the grant does not carry the bucket, and each refusal
+	// doubles the wait before the next (repairUntilStopped).
+	testwait.Until(t, fmt.Sprintf("the store's retry to back off to a wait of %s or more", lateOpen), func() ([]time.Time, bool) {
+		armed := timers.Armed()
+		if len(armed) > 0 && armed[0].Sub(timers.Now()) >= lateOpen {
+			return armed, true
+		}
+		if len(armed) > 0 {
+			timers.Set(armed[0])
+		}
+		return armed, false
+	})
+	granted := timers.Now()
 	grant.Grant(t, slices.DeleteFunc(knownBucketGrant(), func(subject string) bool {
 		return strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE.")
 	})...)
+	if armed := timers.Armed(); len(armed) == 0 || armed[0].Sub(granted) < lateOpen {
+		t.Fatalf("the store's next attempt after the grant is armed for %v from %v, want one %s or more after the grant", armed, granted, lateOpen)
+	}
 	repairUntil(t, timers, "the store to open the bucket", func() bool {
 		return known.watch() != nil
 	})

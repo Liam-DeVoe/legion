@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -70,6 +71,8 @@ type openOpts struct {
 	interestWatch  []kvwatch.Option
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
+	// requestWait is WithRequestWait's wait, zero when no option set one.
+	requestWait time.Duration
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -115,6 +118,24 @@ func WithInterestWatch(options ...kvwatch.Option) OpenOption {
 	return func(o *openOpts) { o.interestWatch = append(o.interestWatch, options...) }
 }
 
+// WithRequestWait sets every wait the registry's own bucket calls and its open make, in place of
+// the defaults: each JetStream request (the MaxWait of the JetStream context the buckets are
+// opened through, 10 s, which every bucket call waits out: bus.Bounded), and the open's scan of the
+// role bucket (roleRevisions), whose consumer create waits 5 s and whose next entry 10 s
+// (kvwatch.ScanIdleTimeout); the scan as a whole then waits d. A test that writes through a
+// registry of its own passes what its test binary's deadline leaves, so that no bound of the
+// store's own ends a write the test then waits for; no deployment sets it. Open refuses a d that
+// is not positive.
+func WithRequestWait(d time.Duration) OpenOption {
+	return func(o *openOpts) {
+		o.requestWait = d
+		if d <= 0 {
+			// Recorded as refused, so Open tells a d that is not positive from no option at all.
+			o.requestWait = -1
+		}
+	}
+}
+
 // LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
 // interest a registration names (LegacyTopicWarnings) or a stored row holds when it is read into a
 // session's consumer filter (CountStoredLegacyTopics), or a role a claim names (ClaimedRole). The
@@ -136,7 +157,21 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	for _, o := range options {
 		o(&opts)
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	requestWait, scanIdle := 10*time.Second, kvwatch.ScanIdleTimeout
+	scanCtx := context.Background()
+	switch {
+	case opts.requestWait < 0:
+		return nil, errors.New("open the interest registry: WithRequestWait was given a wait that is not positive")
+	case opts.requestWait > 0:
+		requestWait, scanIdle = opts.requestWait, opts.requestWait
+		// A scan whose context has a deadline creates its consumer within it rather than within
+		// the 5 s of the bucket handle's own request wait (bus.KeyValue.WatchKeys). The deadline is
+		// the wall clock's, as every JetStream request wait is: nats.go reads it off the context.
+		var cancel context.CancelFunc
+		scanCtx, cancel = context.WithTimeout(scanCtx, opts.requestWait)
+		defer cancel()
+	}
+	js, err := conn.JetStream(nats.MaxWait(requestWait))
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +183,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(roleKV, opts.clock, kvwatch.ScanIdleTimeout, opts.log)
+	restoredRoleRevisions, err := roleRevisions(scanCtx, roleKV, opts.clock, scanIdle, opts.log)
 	if err != nil {
 		return nil, err
 	}

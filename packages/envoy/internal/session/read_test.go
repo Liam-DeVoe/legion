@@ -578,12 +578,20 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 	unresponsive("after the read")
 }
 
+// sessionRowTTL is the session TTL the two rows below write under: a day, longer than the guard of
+// any test command (the longest, in .github/workflows, are about an hour). The registry dates a
+// row from the Created time the NATS server stamps on its revision (expiryFor), and the server
+// removes the row at the bucket's MaxAge, both on the machine's clock, so real time between a
+// row's write and its read adds to the age the row reads. A TTL no run reaches leaves that real
+// time no say in the verdict: only the clock's own moves age a row past it.
+const sessionRowTTL = 24 * time.Hour
+
 // A session bucket recreated with another TTL expires its rows by its own: the read of the new
 // bucket adopts its MaxAge.
 func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	client := setupNATS(t)
 	now := bucketClock()
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now))
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(sessionRowTTL), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -597,23 +605,25 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	if err := js.DeleteKeyValue(bus.SessionBucket); err != nil {
 		t.Fatalf("delete the session bucket: %v", err)
 	}
-	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 3 * time.Minute})
+	recreatedTTL := 3 * sessionRowTTL
+	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: recreatedTTL})
 	putRaw(t, recreated, "ses_long", SessionEntry{Port: 1, MachineID: "m1", UpdatedAt: time.Now().UnixMilli()})
 	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	testwait.Eventually(t, "observable state", func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
-	if got := r.TTL(); got != 3*time.Minute {
-		t.Fatalf("TTL after the recreate = %s, want the new bucket's 3m", got)
+	if got := r.TTL(); got != recreatedTTL {
+		t.Fatalf("TTL after the recreate = %s, want the new bucket's %s", got, recreatedTTL)
 	}
 
-	now.Advance(2 * time.Minute)
+	// Past the first bucket's TTL and inside the new one's, by the clock's moves alone.
+	now.Advance(2 * sessionRowTTL)
 	if _, err := r.Get("ses_long"); err != nil {
-		t.Fatalf("Get(ses_long) 2m after its write = %v, want it live under the new bucket's 3m TTL", err)
+		t.Fatalf("Get(ses_long) %s after its write = %v, want it live under the new bucket's %s TTL", 2*sessionRowTTL, err, recreatedTTL)
 	}
-	now.Advance(2 * time.Minute)
+	now.Advance(2 * sessionRowTTL)
 	if _, err := r.Get("ses_long"); !errors.Is(err, natsgo.ErrKeyNotFound) {
-		t.Fatalf("Get(ses_long) 4m after its write = %v, want it expired", err)
+		t.Fatalf("Get(ses_long) %s after its write = %v, want it expired past the new bucket's %s TTL", 4*sessionRowTTL, err, recreatedTTL)
 	}
 }
 
@@ -627,7 +637,7 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 func TestTheLeaderRefreshAnswersAsRefreshDoes(t *testing.T) {
 	client := setupNATS(t)
 	now := bucketClock()
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now))
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(sessionRowTTL), WithSessionClock(now))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -654,7 +664,7 @@ func TestTheLeaderRefreshAnswersAsRefreshDoes(t *testing.T) {
 		t.Errorf("Refresh(ses_missing) = %v, want %v: the two answer a session the bucket does not hold alike", err, natsgo.ErrKeyNotFound)
 	}
 
-	now.Advance(2 * time.Minute)
+	now.Advance(2 * sessionRowTTL)
 	if _, err := r.RefreshFromLeader(ctx, "ses_live"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Errorf("RefreshFromLeader(ses_live) past its deadline = %v, want %v", err, natsgo.ErrKeyNotFound)
 	}

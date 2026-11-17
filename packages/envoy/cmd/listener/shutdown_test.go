@@ -31,11 +31,22 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // forward and a role message arrives every 10 ms, so at the signal one forward is in its handler
 // and more are queued behind it. Each must reach the stream: the forward opens a reply
 // subscription for the stream's acknowledgement, which a connection that is already draining
-// refuses. The drain also
-// closes the session registry's KV watcher, which logs at ERROR if the registry still expects
-// it, and looks like a lost connection to the bus client, whose recovery would re-dial NATS.
-// Whether a goroutine logs before the exit is a race, so the test stops the real binary several
-// times.
+// refuses. The drain also closes the session registry's KV watcher, which logs at ERROR if the
+// registry still expects it, and looks like a lost connection to the bus client, whose recovery
+// would re-dial NATS. Whether a goroutine logs before the exit is a race, so the test stops the
+// real binary several times.
+//
+// One failure is not counted: a role forward whose window (roleForwardTimeout) ended before it was
+// published, which its line marks "window_ended_before_publish":true (finishRoleForward). The
+// window runs on the listener's own wall clock, which a loaded machine spends without the listener
+// running, so that failure says how the machine ran and not what the shutdown did. A drain cannot
+// cause it: a forward meets a connection before its publish only in ensureConnWithContext, which
+// serves a draining connection and refuses a stopped client at once, and in SubscribeSync, which
+// refuses a draining connection with an error of its own, counted here. A drain that holds a
+// forward after its publish fails it on its flush or its acknowledgement, with no mark, and is
+// counted. What this cannot see is a shutdown path that holds a forward before its publish, behind
+// a lock say: that forward would carry the mark. A change to the shutdown path or to
+// bus.Client.StartRequestStoredTo is read against this test for that case.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
@@ -98,15 +109,34 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 		close(stopTraffic)
 		<-trafficDone
 		holder.Close()
-		if !strings.Contains(listener.Output.String(), "envoy-listener shutdown complete") {
-			t.Fatalf("run %d: the listener did not finish its ordered shutdown:\n%s", run, listener.Output.String())
+		output := listener.Output.String()
+		if !strings.Contains(output, "envoy-listener shutdown complete") {
+			t.Fatalf("run %d: the listener did not finish its ordered shutdown:\n%s", run, output)
 		}
-		for _, line := range strings.Split(listener.Output.String(), "\n") {
-			if errorLine.MatchString(line) {
-				t.Fatalf("run %d: a SIGTERM shutdown logged an error: %s", run, line)
+		signal := strings.Index(output, shutdownSignalLine)
+		var counted []string
+		start := 0
+		for line := range strings.SplitSeq(output, "\n") {
+			lineStart := start
+			start += len(line) + 1
+			if !errorLine.MatchString(line) {
+				continue
 			}
+			side := "before the signal"
+			if signal >= 0 && lineStart > signal {
+				side = "after the signal"
+			}
+			if forwardWindowEndedBeforePublish(line) {
+				t.Logf("run %d: not counted, %s: %s", run, side, line)
+				continue
+			}
+			counted = append(counted, side+": "+line)
 		}
-		_, afterSignal, _ := strings.Cut(listener.Output.String(), "received signal, shutting down")
+		if len(counted) > 0 {
+			t.Fatalf("run %d: a SIGTERM shutdown logged an error:\n%s\nthe listener's output from 2s before its signal on:\n%s",
+				run, strings.Join(counted, "\n"), outputAroundSignal(output, signal))
+		}
+		_, afterSignal, _ := strings.Cut(output, shutdownSignalLine)
 		if strings.Contains(afterSignal, "envoy nats recovery attempt") {
 			t.Fatalf("run %d: the listener reconnected to NATS during its shutdown:\n%s", run, afterSignal)
 		}
@@ -114,6 +144,48 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 			t.Fatalf("run %d: no role message in flight at the signal reached the holder:\n%s", run, afterSignal)
 		}
 	}
+}
+
+// shutdownSignalLine is the message the listener logs when a signal begins its shutdown.
+const shutdownSignalLine = "received signal, shutting down"
+
+// forwardWindowEndedBeforePublish reports whether line is the listener's JSON record of a role
+// forward that failed because its window ended before it was published (finishRoleForward).
+func forwardWindowEndedBeforePublish(line string) bool {
+	var record struct {
+		Msg                      string `json:"msg"`
+		WindowEndedBeforePublish bool   `json:"window_ended_before_publish"`
+	}
+	return json.Unmarshal([]byte(line), &record) == nil && record.Msg == "listener role forward failed" && record.WindowEndedBeforePublish
+}
+
+// outputAroundSignal is the listener's output from the first JSON line whose time is no more than
+// 2 s before that of its signal line, which starts at or before offset signal, to the end: what a
+// failure of the shutdown shows of how the listener ran into its signal. Output with no signal
+// line, or none whose time can be read, is given whole.
+func outputAroundSignal(output string, signal int) string {
+	type timed struct {
+		Time time.Time `json:"time"`
+	}
+	if signal < 0 {
+		return output
+	}
+	lineStart := strings.LastIndexByte(output[:signal], '\n') + 1
+	signalLine, _, _ := strings.Cut(output[lineStart:], "\n")
+	var signalled timed
+	if json.Unmarshal([]byte(signalLine), &signalled) != nil || signalled.Time.IsZero() {
+		return output
+	}
+	from := signalled.Time.Add(-2 * time.Second)
+	start := 0
+	for line := range strings.SplitSeq(output, "\n") {
+		var record timed
+		if json.Unmarshal([]byte(line), &record) == nil && !record.Time.IsZero() && !record.Time.Before(from) {
+			return output[start:]
+		}
+		start += len(line) + 1
+	}
+	return output
 }
 
 // A replacement that waits out the old task's durable serves /v1 while it waits, so a SIGTERM there
@@ -348,15 +420,15 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
-// waitHealthy waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy", and kills the listener and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request has a
-// timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
-// answers 200 with "starting" from the moment the listener serves, before NATS connects and
-// before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
-// process without an ordered shutdown.
+// waitHealthy waits through the shared wait for the listener to log that it listens on its own
+// loopback port, then for /healthz there to report "healthy", and fails the test when it never
+// does. The socket the listener inherited is not readiness: the kernel queues connections on it
+// from before the process starts, so a request there waits rather than fails until the process
+// serves, and only its listening line says it does. Each request carries the shared wait's context
+// (testwait.Context), so one that waits on a process that does not answer ends where the wait
+// does, and no request has a bound of its own. /healthz answers 200 with "starting" from the
+// moment the listener serves, before NATS connects and before the listener installs its SIGTERM
+// handler, and a SIGTERM in that window kills the process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
 // its last output line, rather than being waited for until the test binary's own deadline: a
@@ -370,7 +442,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		_ = p.Cmd.Process.Kill()
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	ctx := testwait.Context(t)
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
 	answer := "none: no request to /healthz was answered"
 	// failIfExited ends the wait the moment the process is gone, which is the misreading this
@@ -388,7 +460,11 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		}
 	}
 	testwait.Until(t, "the listener to answer /healthz healthy", func() (string, bool) {
-		response, err := client.Get(url)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("build the /healthz request: %v", err)
+		}
+		response, err := http.DefaultClient.Do(request)
 		if err == nil {
 			var health struct {
 				Status string `json:"status"`

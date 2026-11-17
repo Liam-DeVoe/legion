@@ -3271,18 +3271,25 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 // not acknowledge storing it (bus.ErrForwardNotStored), or the forward never
 // left this process -- a raw nats.ErrTimeout is what the client's flush returns
 // while a reconnecting or stalled connection still buffers it. No forward draws
-// a receipt (startRoleForward), so none is reported receipt_timeout.
+// a receipt (startRoleForward), so none is reported receipt_timeout. Only a
+// forward whose window ended before it was published (bus.ErrWindowEndedBeforePublish)
+// carries "window_ended_before_publish":true on its line; the same text from a window
+// that ended after the publish carries no mark.
 func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *testing.T) {
 	cases := []struct {
 		name       string
 		forwardErr error
 		reason     string
 		logMessage string
+		// beforePublish is whether the line carries "window_ended_before_publish":true.
+		beforePublish bool
 	}{
-		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed"},
-		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed"},
+		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed", false},
+		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed", false},
+		{"a window that ended before the publish", fmt.Errorf("bus: window elapsed before the publish to \"agent.x\" was flushed: %w: %w", context.DeadlineExceeded, bus.ErrWindowEndedBeforePublish), "delivery_failed", "listener role forward failed", true},
+		{"a window that ended after the publish", errors.New(`bus: window elapsed before the publish to "agent.x" was flushed`), "delivery_failed", "listener role forward failed", false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3320,6 +3327,9 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 			}
 			if strings.Contains(logs, "receipt") {
 				t.Fatalf("a failed forward must not be logged as a receipt outcome:\n%s", logs)
+			}
+			if marked := strings.Contains(logs, `"window_ended_before_publish":true`); marked != tc.beforePublish {
+				t.Fatalf("the failure line carries the window_ended_before_publish mark: %v, want %v:\n%s", marked, tc.beforePublish, logs)
 			}
 		})
 	}
@@ -4403,6 +4413,120 @@ func TestRunSelfHealthMonitor_CountsADisconnectedProbeAfterARebuild(t *testing.T
 	testwait.Receive(t, "the monitor to return after terminating", done)
 	if got := rebuilds.Load(); got != 1 {
 		t.Fatalf("rebuilds = %d, want 1", got)
+	}
+}
+
+// TestRunSelfHealthMonitor_ARebuildThatFailsWhileDisconnectedIsADisconnectedFailure guards the
+// rebuild NATS drops under: nats.go's KeyValue refuses it ("requires at least server version") while
+// the connection reconnects, which is the outage and no fault of the listener's. Its failure is a
+// WARN and never an ERROR, the rebuild is not tried again while the connection stays down, and it
+// is the first of the disconnected failures, so a connection that never comes back ends the run
+// after exactly twenty of them: the rebuild's and nineteen probes.
+func TestRunSelfHealthMonitor_ARebuildThatFailsWhileDisconnectedIsADisconnectedFailure(t *testing.T) {
+	terminal := errors.New("interest watcher stopped")
+	outage := errors.New("interest kv: nats: outbound buffer limit exceeded")
+	var disconnected atomic.Bool
+	var disconnectedProbes, rebuilds atomic.Int32
+	probe := func() error {
+		if !disconnected.Load() {
+			return terminal
+		}
+		disconnectedProbes.Add(1)
+		return outage
+	}
+	rebuild := func() error {
+		rebuilds.Add(1)
+		disconnected.Store(true)
+		return errors.New("rewatch session cache: open session registry KV bucket: nats: key-value requires at least server version 2.6.2")
+	}
+	logs := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := clocktest.Held()
+	terminatedAt := make(chan int32, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSelfHealthMonitor(ctx, logging.NewWithWriter("test", logs), now, probe,
+			func(err error) bool { return errors.Is(err, terminal) },
+			func() bool { return !disconnected.Load() }, rebuild,
+			// A terminal bound well past twenty, so only the disconnected bound can end the run.
+			func() { terminatedAt <- disconnectedProbes.Load() }, selfHealthInterval, 100)
+	}()
+	var got int32
+	passUntil(t, now, "the monitor to terminate a disconnection that began under a rebuild", func() bool {
+		select {
+		case got = <-terminatedAt:
+			return true
+		default:
+			return false
+		}
+	})
+	testwait.Receive(t, "the monitor to return after terminating", done)
+	if want := int32(disconnectedFailureThreshold - 1); got != want {
+		t.Fatalf("the monitor terminated after the rebuild's failure and %d disconnected probes, want %d: the rebuild's failure is the first of the %d", got, want, disconnectedFailureThreshold)
+	}
+	if got := rebuilds.Load(); got != 1 {
+		t.Fatalf("rebuilds = %d, want 1: a disconnected client is never rebuilt", got)
+	}
+	var levels []string
+	for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+		var record struct {
+			Level string `json:"level"`
+			Msg   string `json:"msg"`
+		}
+		if json.Unmarshal([]byte(line), &record) == nil && record.Msg == "self-health rebuild failed" {
+			levels = append(levels, record.Level)
+		}
+	}
+	if !slices.Equal(levels, []string{"WARN"}) {
+		t.Fatalf("self-health rebuild failed was logged at %v, want once at WARN:\n%s", levels, logs.String())
+	}
+}
+
+// TestRunSelfHealthMonitor_ARebuildThatFailsWhileConnectedLogsAnError guards the other side: a
+// rebuild that fails while the connection is connected is the listener's own fault, an ERROR.
+func TestRunSelfHealthMonitor_ARebuildThatFailsWhileConnectedLogsAnError(t *testing.T) {
+	terminal := errors.New("interest watcher stopped")
+	logs := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := clocktest.Held()
+	terminated := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSelfHealthMonitor(ctx, logging.NewWithWriter("test", logs), now,
+			func() error { return terminal },
+			func(err error) bool { return errors.Is(err, terminal) },
+			func() bool { return true },
+			func() error {
+				return errors.New("rewatch session cache: open session registry KV bucket: bucket not found")
+			},
+			// One terminal failure ends the run, so the run holds exactly one rebuild.
+			func() { terminated <- struct{}{} }, selfHealthInterval, 1)
+	}()
+	passUntil(t, now, "the monitor to terminate after its one failed rebuild", func() bool {
+		select {
+		case <-terminated:
+			return true
+		default:
+			return false
+		}
+	})
+	testwait.Receive(t, "the monitor to return after terminating", done)
+	var levels []string
+	for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+		var record struct {
+			Level string `json:"level"`
+			Msg   string `json:"msg"`
+		}
+		if json.Unmarshal([]byte(line), &record) == nil && record.Msg == "self-health rebuild failed" {
+			levels = append(levels, record.Level)
+		}
+	}
+	if !slices.Equal(levels, []string{"ERROR"}) {
+		t.Fatalf("self-health rebuild failed was logged at %v, want once at ERROR:\n%s", levels, logs.String())
 	}
 }
 

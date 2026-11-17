@@ -66,6 +66,15 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 		role   = "reviewer"
 		holder = "ses_unanswered_holder"
 	)
+	// The budget ends the role read inside the send window, and the window ends inside one attempt
+	// of the caller (contracts.ListenerCallTimeout, envoy-client's own), so the 503 below reaches a
+	// caller whose attempt still waits for it. The fake clock shows the budget armed and the answer
+	// after it; how soon a loaded machine schedules that answer is no verdict, so the order of the
+	// three bounds is what this test holds the answer to.
+	if !(sendRequestBudget < publishDeliveryWindow && publishDeliveryWindow < contracts.ListenerCallTimeout) {
+		t.Fatalf("sendRequestBudget %s, publishDeliveryWindow %s, contracts.ListenerCallTimeout %s; want sendRequestBudget < publishDeliveryWindow < contracts.ListenerCallTimeout",
+			sendRequestBudget, publishDeliveryWindow, contracts.ListenerCallTimeout)
+	}
 	topic := contracts.RoleTopicPrefix + role
 	for _, tc := range []struct {
 		name       string
@@ -155,6 +164,12 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 		role   = "reviewer"
 		holder = "ses_lookup_unanswered_holder"
 	)
+	// The budget the lookup's claim read runs under ends inside one attempt of the caller
+	// (contracts.ListenerCallTimeout, envoy-client's own), so the 503 below reaches a caller whose
+	// attempt still waits for it, however late a loaded machine schedules it after the budget.
+	if sendRequestBudget >= contracts.ListenerCallTimeout {
+		t.Fatalf("sendRequestBudget %s, contracts.ListenerCallTimeout %s; want sendRequestBudget < contracts.ListenerCallTimeout", sendRequestBudget, contracts.ListenerCallTimeout)
+	}
 	for _, tc := range []struct {
 		name       string
 		stallGet   bool

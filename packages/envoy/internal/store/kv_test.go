@@ -3500,7 +3500,7 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 			}
 			done := make(chan scan, 1)
 			go func() {
-				rev, err := roleRevisions(handle, fake, idle, slog.Default())
+				rev, err := roleRevisions(context.Background(), handle, fake, idle, slog.Default())
 				done <- scan{rev, err}
 			}()
 			var got scan
@@ -3570,6 +3570,9 @@ type holdAfter struct {
 	armed  *atomic.Bool
 	budget int
 	hold   time.Duration
+	// ended is closed, once (end), when a hold has ended and before its bytes are sent on.
+	ended chan struct{}
+	end   *sync.Once
 
 	mu        sync.Mutex
 	forwarded int
@@ -3602,6 +3605,7 @@ func (h *holdAfter) release() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.released = true
+	h.end.Do(func() { close(h.ended) })
 	if len(h.held) > 0 {
 		_, _ = h.to.Write(h.held)
 		h.held = nil
@@ -3611,14 +3615,17 @@ func (h *holdAfter) release() {
 // stallingProxy forwards a NATS connection to target until the client creates the watcher named by
 // trigger and budget bytes of that watcher's scan have reached it, then holds the server's bytes
 // for hold and sends them on: a relayed link that goes quiet mid-scan and comes back. It returns
-// the URL to connect to.
-func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
+// the URL to connect to, and a channel closed once a hold has ended, before the held bytes are sent
+// on, so a client that read anything sent after the hold reads the channel closed.
+func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) (string, <-chan struct{}) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
+	ended := make(chan struct{})
+	var end sync.Once
 	go func() {
 		for {
 			client, err := listener.Accept()
@@ -3637,11 +3644,11 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 			}()
 			go func() {
 				defer func() { _ = client.Close() }()
-				_, _ = io.Copy(&holdAfter{to: client, armed: &armed, budget: budget, hold: hold}, server)
+				_, _ = io.Copy(&holdAfter{to: client, armed: &armed, budget: budget, hold: hold, ended: ended, end: &end}, server)
 			}()
 		}
 	}()
-	return "nats://" + listener.Addr().String()
+	return "nats://" + listener.Addr().String(), ended
 }
 
 // The listener's own failure, through real nats.go: a link that goes quiet partway through the
@@ -3704,7 +3711,8 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the test's NATS URL: %v", err)
 	}
-	proxy, err := url.Parse(stallingProxy(t, account.Host, "$JS.API.CONSUMER.CREATE.KV_"+bus.RoleClaimBucket, 16*1024, 13*time.Second))
+	stalledURL, _ := stallingProxy(t, account.Host, "$JS.API.CONSUMER.CREATE.KV_"+bus.RoleClaimBucket, 16*1024, 13*time.Second)
+	proxy, err := url.Parse(stalledURL)
 	if err != nil {
 		t.Fatalf("read the proxy's URL: %v", err)
 	}

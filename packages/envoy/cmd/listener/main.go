@@ -382,7 +382,9 @@ const selfHealthInterval = 30 * time.Second
 // count is its own, advanced only while connected reads false and reset the
 // moment it reads true again, so it never mixes with a transient failure that
 // happens while the client is connected (an unclassified JetStream timeout,
-// say), which keeps retrying under the unbounded path above.
+// say), which keeps retrying under the unbounded path above. A rebuild that fails while connected
+// reads false is a disconnected failure too, logged at WARN and counted as the first of that run;
+// one that fails while connected reads true stays an ERROR.
 //
 // Each pass waits interval on clk after the one before it ended: a timer re-armed after each
 // pass rather than a ticker, so a test hands a clocktest.Fake and moves it past each pass's wait
@@ -456,7 +458,18 @@ func runSelfHealthMonitor(
 					if ctx.Err() != nil {
 						return
 					}
-					logger.Error("self-health rebuild failed", slog.Int("consecutive", terminalFailures), slog.String("error", rebuildErr.Error()))
+					if readsDisconnected() {
+						// NATS dropped under the rebuild, which then fails for the reconnect alone
+						// (nats.go's KeyValue reads no server version while the connection is not
+						// connected, and refuses as if the server were too old): a WARN, and the
+						// first of this outage's disconnected failures, as the probe after a rebuild
+						// that started is below.
+						logger.Warn("self-health rebuild failed", slog.Int("consecutive", terminalFailures), slog.Bool("connected", false), slog.String("error", rebuildErr.Error()))
+						disconnectedFailures = 1
+						terminalFailures = 0
+					} else {
+						logger.Error("self-health rebuild failed", slog.Int("consecutive", terminalFailures), slog.String("error", rebuildErr.Error()))
+					}
 				} else {
 					logger.Info("self-health rebuild started", slog.Int("consecutive", terminalFailures))
 					// Whatever this probe reads, transient or terminal, the count keeps its
