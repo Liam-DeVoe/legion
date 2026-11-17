@@ -70,7 +70,8 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		t.Fatalf("DEMO, which names none, runs %+v, want today's line", got)
 	}
 	// A step's key names the agent that does it, and the steps of one key are one agent, so a
-	// key is taken; the key owner is the owner's alone, refused below on a role but acceptance.
+	// key is taken on a role but acceptance; the key owner on a role but acceptance, and any other
+	// key on acceptance, are refused below.
 	keyed, err := Load(writeConfigFile(t, defaultStepsFile("{default_steps: [implementer, reviewer:r]}")), noEnv)
 	if err != nil {
 		t.Fatalf("Load of a key: %v", err)
@@ -93,6 +94,8 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{name: "the key owner on a role but acceptance", value: "[implementer:owner, reviewer]",
 			refusal: "projects.ACME.default_steps: step 1 of task default names the key owner." + yet},
+		{name: "a key on acceptance but owner", value: "[implementer, acceptance:r]",
+			refusal: "projects.ACME.default_steps: step 2 of task default names the key r." + yet},
 		{name: "a word outside the grammar", value: "[implementer, Reviewer]",
 			refusal: `projects.ACME.default_steps: the step "Reviewer" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*`},
 		{name: "two steps in one entry", value: `["implementer reviewer"]`,

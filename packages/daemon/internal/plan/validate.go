@@ -55,10 +55,10 @@ func Validate(p Plan, d Deployment) []Refusal {
 
 // Supported is what this release does not carry out yet (C6): more than one task, a role block,
 // and, for each task, `needs`, `owner`, `part_of` and `merges`, the key owner on a role but
-// acceptance, acceptance with no key, a role named at two steps, steps in another order than
-// today's, and no implementer. Any other key is taken: it names the agent of its steps (AgentOf).
-// A task that names no steps runs the project's default steps, which the configuration loader
-// holds to these same checks, so none of its step causes apply.
+// acceptance, acceptance with a key but owner or with none, a role named at two steps, steps in
+// another order than today's, and no implementer. Any other key is taken: it names the agent of
+// its steps (AgentOf). A task that names no steps runs the project's default steps, which the
+// configuration loader holds to these same checks, so none of its step causes apply.
 func Supported(p Plan) []Refusal {
 	var refusals []Refusal
 	if len(p.Tasks) > 1 {
@@ -102,10 +102,12 @@ func taskReasons(t Task) []string {
 }
 
 // stepReasons is Supported's causes in the steps of t, in this order: each step that names the
-// key owner on a role but acceptance, or acceptance with no key, in step order; each role named at
-// two steps, at its first two; the first step that comes after a step later in today's order,
-// named with the latest such step before it; and no implementer. A role outside Legion's five has
-// no place in today's order, and Validate refuses it.
+// key owner on a role but acceptance, or acceptance with a key but owner or with none, in step
+// order; each role named at two steps, at its first two; the first step that comes after a step
+// later in today's order, named with the latest such step before it; and no implementer. The
+// owner does the accepting step in this release, so a key on it but owner would name an agent
+// Legion does not run it in. A role outside Legion's five has no place in today's order, and
+// Validate refuses it.
 func stepReasons(t Task) []string {
 	var keys, twice []string
 	firstAt := map[string]int{}
@@ -119,7 +121,8 @@ func stepReasons(t Task) []string {
 		switch {
 		case step.Role == "acceptance" && step.Key == "":
 			keys = append(keys, fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID))
-		case step.Key == "owner" && step.Role != "acceptance":
+		// The key owner and the role acceptance go together: either one without the other is refused.
+		case step.Key != "" && (step.Key == "owner") != (step.Role == "acceptance"):
 			keys = append(keys, fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key))
 		}
 		if _, seen := firstAt[step.Role]; !seen {
