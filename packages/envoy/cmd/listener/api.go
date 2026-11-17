@@ -3427,20 +3427,24 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// as a registration's consumer call is (refollow); the topics are out of the record
 		// already. envoy-client's retry removes them again and sets the filter; a caller whose
 		// retry finds them gone (Dispatch's unsubscribeSession) leaves the filter to the
-		// session's next registration.
+		// session's next registration. A first attempt that took the record's last topic
+		// deleted the record, and the retry finds none: the store answers that as nothing
+		// removed and no error (store.Registry.Remove), so the retry answers 200.
 		recordFollowedTopics(ctx, d, body.SessionID, logger)
 		if err := d.consumers.refollow(ctx, d, body.SessionID); err != nil {
 			writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
 			return
 		}
-		// removed is what the store took out of the record, not the topics the request named.
-		// The two differ over a role lane topic the record kept: a release that may not free
+		// removed is every topic the request named that the record no longer holds, with the
+		// other forms of them the record held (store.Registry.Remove), so a named topic the
+		// record never held is in it too. It differs from the request over a role lane topic the
+		// record kept: a release that may not free
 		// the claim leaves the lane topic standing (store.Registry.Remove), the interest half
 		// of a claim that still stands, and echoing the request would tell the client a topic
 		// was removed while the record still holds it. A deregistration, which names no topic
-		// and deletes the whole record, and a release whose every named topic was kept both
-		// answer the empty list, and the store's nil is written as that empty list rather than
-		// as null.
+		// and deletes the whole record, a release whose every named topic was kept, and a
+		// removal from a session the bucket holds no record for all answer the empty list, and
+		// the store's nil is written as that empty list rather than as null.
 		if removed == nil {
 			removed = []string{}
 		}

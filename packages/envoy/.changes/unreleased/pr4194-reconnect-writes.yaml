@@ -12,7 +12,9 @@ body: |-
   which is 3.5 s of the client's 5 s attempt. A route answers that error 503 with that reason,
   and a log line names it the same way. A registration whose consumer call failed so is answered
   that 503 inside the client's attempt, not `503 consumer_error` after it, and an unsubscribe is
-  answered that 503, not a 200 after the client's attempt. A bucket call whose deadline had
+  answered that 503, not a 200 after the client's attempt. When that unsubscribe took the last
+  topic of the session's record, its retry answers 200 with an empty `removed` list, not 500
+  `nats: key not found`. A bucket call whose deadline had
   already ended while the connection reconnects fails as
   `bus: NATS is reconnecting: context deadline exceeded`, not as a bare `context deadline exceeded`,
   so the session filter fence's log line names the reconnect. The known-session bucket's open

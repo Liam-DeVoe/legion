@@ -5041,11 +5041,12 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - `/v1/interests/unsubscribe` (POST)
 
-  Removes the topics it may remove and answers exactly those in `removed`, which is what left the record and never an echo of the request:
+  Removes the topics it may remove and answers in `removed` each named topic the record no longer holds, one it never held included, with the other forms of them it held:
   a role lane topic whose claim this release did not free stays in the record and is left out of `removed`, since one interest record serves every process running under one session id and that topic is the interest half of a claim that still stands, written there by the claim itself (`/v1/roles/set`), so a release from a process that does not hold the claim must not take away the half it may not free.
   No delivery rides on that topic: a role lane is not stream-captured, so it never enters a session's consumer filter (`sessionConsumerFilter`), and a role message reaches its holder's agent subject with the holder read off the claim (`resolveCoreRoleHolder`).
   What the record's role topics are read for is the session's own deregistration, which releases the claims they name (`store.Registry.Remove`, `releaseAllRoleClaims`), so a lane topic taken out from under the live holder would leave its standing claim with nothing in the record naming it.
-  A deregistration, which names no topic and deletes the whole record, and a release whose every named topic was kept both answer the empty list, and `removed` is never written as `null`.
+  A deregistration, which names no topic and deletes the whole record, a release whose every named topic was kept, and a removal from a session the bucket holds no record for all answer the empty list, and `removed` is never written as `null`.
+  A removal from a session with no record removes nothing and is no error (`store.Registry.Remove`), so the route answers it 200.
   It carries `client_instance_id`, the process handing the interests back, and that is what decides the role claims it frees: the claims naming that same process and no others (`store.RoleReleaseAuthority`).
   A release that names no process frees no claim that names one, and neither does any other process's instance — an absent instance is no match against a claim that names a process — while every topic it named that is not such a claim's lane is removed either way.
   A claim that names no process at all, one an earlier build wrote before its holder's first registration adopts it, is the carve-out: it keeps the rule it was written under and this session's own release frees it, whichever process asks, so no claim standing at the deploy waits out the role claim reaper.
@@ -5063,6 +5064,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A failure there is logged, and the plugin drops a frame no followed topic matches.
   A failure because NATS is reconnecting is answered the bus-outage `503` instead, after the record is written.
   envoy-client's retry removes the same topics again and sets the filter.
+  A first attempt that took the record's last topic deleted the record, so its retry finds no record and answers 200 with `removed` as `[]`.
   A caller whose retry finds the topics already gone, as Dispatch's `unsubscribeSession` does, calls the listener no more, so the filter waits for the session's next registration, and the plugin drops a frame no followed topic matches.
 
 - An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
@@ -5112,6 +5114,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   It is the one caller that forces: an operator clearing a session's interests states no process, and a release naming none frees nothing, so without the force this route could no longer free the roles of a client that has gone away.
   Its remaining limit, decided and left as it stands: a second process that resumed the session's id reaches this route too, since the binding above refuses only a token acting as another session, and closing that needs a credential naming the process rather than the session.
   A DELETE also sets the consumer filter of a session on consumer delivery to its agent subject alone, as `/v1/interests/unsubscribe` does.
+  That filter update runs after the record is deleted, and one that meets a NATS reconnect answers the bus-outage `503` that names `bus: NATS is reconnecting`, with `Retry-After: 1`, in place of the 204; the record stays deleted.
 
 - `/v1/registry/<session_id>` (GET)
 

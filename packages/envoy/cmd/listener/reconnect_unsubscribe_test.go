@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -69,6 +70,68 @@ func TestAnUnsubscribeThroughANATSReconnectFailsByName(t *testing.T) {
 	}
 }
 
+// consumerCallCutRig is a listener rig whose session-consumer connection alone goes through a
+// proxy the test can cut, so the bucket keeps answering while that connection reconnects.
+type consumerCallCutRig struct {
+	*sessionConsumerRig
+	proxy *testnats.Proxy
+}
+
+func newConsumerCallCutRig(t *testing.T) *consumerCallCutRig {
+	t.Helper()
+	_, uri := testnats.Start(t)
+	proxy := testnats.StartProxy(t, uri)
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := &consumerCallCutRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, proxy.URL()), proxy: proxy}
+	t.Cleanup(proxy.Restore)
+	return rig
+}
+
+// consumerCall is one call over the session-consumer connection: the info of sessionID's
+// consumer, bounded by 200 ms.
+func (rig *consumerCallCutRig) consumerCall(sessionID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := rig.deps.consumers.consumers.Info(ctx, sessionID)
+	return err
+}
+
+// cutAtNextFilterWrite makes the next filter write cut the proxy after it reads the stored row and
+// before it sends the call. The write then waits until the connection is reconnecting, which the
+// test reads through sessionID's consumer. It cuts once.
+func (rig *consumerCallCutRig) cutAtNextFilterWrite(t *testing.T, sessionID string) {
+	var cut sync.Once
+	rig.deps.consumers.afterStoredRowRead = func() {
+		cut.Do(func() {
+			rig.proxy.Cut()
+			waitFor(t, 3*time.Second, "the listener's session-consumer connection to start reconnecting", func() bool {
+				return errors.Is(rig.consumerCall(sessionID), bus.ErrReconnecting)
+			})
+		})
+	}
+}
+
+// restore brings the proxy back and waits until sessionID's consumer answers over the
+// session-consumer connection again.
+func (rig *consumerCallCutRig) restore(t *testing.T, sessionID string) {
+	t.Helper()
+	rig.proxy.Restore()
+	waitFor(t, 10*time.Second, "the listener's session-consumer connection to reconnect", func() bool {
+		return rig.consumerCall(sessionID) == nil
+	})
+}
+
+// serve answers one request through the listener's /v1 routes.
+func (rig *consumerCallCutRig) serve(method, path, body string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	rig.mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
+	return recorder
+}
+
 // An unsubscribe whose store work answers and whose consumer call meets a NATS reconnect fails by
 // name, and inside the client's own deadline, as a registration's consumer call does. The filter
 // update after the row is written (sessionDelivery.refollow) is the route's one consumer call, and
@@ -85,36 +148,12 @@ func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing
 		sessionID = "ses_unsubscribe_consumer_call"
 		topic     = "notifications.team.unsubscribe-consumer-call"
 	)
-	_, uri := testnats.Start(t)
-	proxy := testnats.StartProxy(t, uri)
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("connect the listener: %v", err)
-	}
-	t.Cleanup(client.Close)
-	rig := newSessionConsumerRigOn(t, client, proxy.URL())
+	rig := newConsumerCallCutRig(t)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
+	rig.cutAtNextFilterWrite(t, sessionID)
 
-	consumerCall := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
-		_, err := rig.deps.consumers.consumers.Info(ctx, sessionID)
-		return err
-	}
-	var cut sync.Once
-	rig.deps.consumers.afterStoredRowRead = func() {
-		cut.Do(func() {
-			proxy.Cut()
-			waitFor(t, 3*time.Second, "the listener's session-consumer connection to start reconnecting", func() bool {
-				return errors.Is(consumerCall(), bus.ErrReconnecting)
-			})
-		})
-	}
-	t.Cleanup(proxy.Restore)
-
-	recorder := httptest.NewRecorder()
 	started := time.Now()
-	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/unsubscribe", strings.NewReader(unsubscribeBody(t, sessionID, topic))))
+	recorder := rig.serve(http.MethodPost, "/v1/interests/unsubscribe", unsubscribeBody(t, sessionID, topic))
 	took := time.Since(started)
 	t.Logf("the unsubscribe whose consumer call met the reconnect answered %d %s after %s",
 		recorder.Code, strings.TrimSpace(recorder.Body.String()), took.Round(time.Millisecond))
@@ -127,5 +166,75 @@ func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing
 	}
 	if strings.Contains(rig.harness.logs.String(), reconnectBufferRefusal) {
 		t.Errorf("the listener logged %q, want the reconnect named instead", reconnectBufferRefusal)
+	}
+}
+
+// The retry of an unsubscribe that took every topic of the session's record answers 200. The
+// first attempt removes the topics, and the removal of the last one deletes the record
+// (store.Registry.Remove). Its filter update then meets a NATS reconnect, so the route answers
+// the bus-outage 503 after the record is gone. envoy-client retries a 5xx once with the same
+// request. The retry finds no record. A removal from a session the bucket holds no record for
+// removes nothing and is no error, so the route answers 200. Its removed list is empty, since no
+// topic left a record in that request.
+//
+// Before the store read an absent record as nothing to remove, the retry answered
+// 500 `nats: key not found` for a removal that did happen.
+func TestTheRetryOfAnUnsubscribeThatEmptiedTheRecordAnswers200(t *testing.T) {
+	const (
+		sessionID = "ses_unsubscribe_emptied_record"
+		topic     = "notifications.team.unsubscribe-emptied-record"
+	)
+	rig := newConsumerCallCutRig(t)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
+	read := rig.serve(http.MethodGet, "/v1/interests/"+sessionID, "")
+	if read.Code != http.StatusOK {
+		t.Fatalf("GET /v1/interests/%s answered %d %s, want 200", sessionID, read.Code, read.Body.String())
+	}
+	var record struct {
+		Topics []string `json:"topics"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &record); err != nil {
+		t.Fatalf("decode the record %s: %v", read.Body.String(), err)
+	}
+	// The record holds the session's own agent subject from every registration, so a removal
+	// that empties it names that subject too.
+	agentSubject := contracts.LegacyAgentSubject(sessionID)
+	if !slices.Contains(record.Topics, agentSubject) || !slices.Contains(record.Topics, topic) {
+		t.Fatalf("the record holds %v, want %s and %s among its topics", record.Topics, agentSubject, topic)
+	}
+	body := unsubscribeBody(t, sessionID, record.Topics...)
+
+	rig.cutAtNextFilterWrite(t, sessionID)
+	first := rig.serve(http.MethodPost, "/v1/interests/unsubscribe", body)
+	t.Logf("the unsubscribe of every topic whose consumer call met the reconnect answered %d %s",
+		first.Code, strings.TrimSpace(first.Body.String()))
+	if first.Code != http.StatusServiceUnavailable || !strings.Contains(first.Body.String(), reconnectingReason) ||
+		first.Header().Get("Retry-After") != "1" {
+		t.Fatalf("the first attempt answered %d %s (Retry-After %q), want 503 naming %q with Retry-After 1",
+			first.Code, first.Body.String(), first.Header().Get("Retry-After"), reconnectingReason)
+	}
+	if gone := rig.serve(http.MethodGet, "/v1/interests/"+sessionID, ""); gone.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/interests/%s after the first attempt answered %d %s, want 404: that attempt deleted the record",
+			sessionID, gone.Code, gone.Body.String())
+	}
+	rig.restore(t, sessionID)
+
+	retry := rig.serve(http.MethodPost, "/v1/interests/unsubscribe", body)
+	t.Logf("the retry once NATS was back answered %d %s", retry.Code, strings.TrimSpace(retry.Body.String()))
+	if retry.Code != http.StatusOK {
+		t.Fatalf("the retry answered %d %s, want 200: the first attempt removed every topic", retry.Code, retry.Body.String())
+	}
+	var answer struct {
+		Removed []string `json:"removed"`
+	}
+	if err := json.Unmarshal(retry.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the retry's answer %s: %v", retry.Body.String(), err)
+	}
+	if answer.Removed == nil || len(answer.Removed) != 0 {
+		t.Errorf("the retry answered removed %v (%s), want the empty list: no topic left a record in that request",
+			answer.Removed, retry.Body.String())
+	}
+	if gone := rig.serve(http.MethodGet, "/v1/interests/"+sessionID, ""); gone.Code != http.StatusNotFound {
+		t.Errorf("GET /v1/interests/%s after the retry answered %d %s, want 404", sessionID, gone.Code, gone.Body.String())
 	}
 }
