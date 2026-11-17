@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -49,20 +50,9 @@ func putPlan(t *testing.T, pool *store.Pool, write PlanWrite, at time.Time) Plan
 	return written
 }
 
-// tryPutPlan runs one plan write in a transaction of its own, commits it when the write is taken,
-// and rolls it back and answers the refusal when it is not.
+// tryPutPlan runs one plan write in a transaction of its own (committed).
 func tryPutPlan(pool *store.Pool, write PlanWrite, at time.Time) (Plan, error) {
-	ctx := context.Background()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return Plan{}, err
-	}
-	defer tx.Rollback(ctx)
-	written, err := PutPlan(ctx, tx, write, daemon, at)
-	if err != nil {
-		return Plan{}, err
-	}
-	return written, tx.Commit(ctx)
+	return committed(pool, func(ctx context.Context, tx pgx.Tx) (Plan, error) { return PutPlan(ctx, tx, write, daemon, at) })
 }
 
 // planText is a plan as one line, every field of it, so two plans compare whole and a difference
