@@ -738,12 +738,12 @@ export const embeddedPhoneMin = (id: string): number => {
  * The layout of an issue table another page draws, for `useTableLayout`: today's columns at
  * today's widths and never below today's minimums, with Updated and Closed hidden until a reader
  * shows them. Select, Priority, Key and Title stay pinned within 60% of a box 640 px wide or
- * wider, Title narrowing first; on a phone, where the key and the title are what identify a row,
- * Select, Key and Title stay pinned within 85% of the box, Key at its phone width and Title
- * taking what is left down to its phone minimum, so an edge of the next column shows the table
- * scrolls sideways. Every saved `dispatch.project-table.<key>` record was written for these
- * columns, whether its key is a project or the one key every table scoped to a priority shares
- * (`IssuesTable`).
+ * wider, Title narrowing first, from a width the reader dragged too (today's rule, R13); on a
+ * phone, where the key and the title are what identify a row, Select, Key and Title stay pinned
+ * within 85% of the box, Key at its phone width and Title taking what is left down to its phone
+ * minimum, so an edge of the next column shows the table scrolls sideways. Every saved
+ * `dispatch.project-table.<key>` record was written for these columns, whether its key is a
+ * project or the one key every table scoped to a priority shares (`IssuesTable`).
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   ids: EMBEDDED_IDS,
@@ -771,10 +771,12 @@ const viewLayouts = new Map<string, LayoutColumns>();
  * draws until the reader drags a column, and every other column hidden until the reader shows
  * it. Each column starts at the registry's width and never goes below its minimum with the
  * buttons in use (`touch`, `columnMinimums`). The pinned columns the view shows (Select,
- * Priority, Key and Title) stay within 60% of a box 640 px wide or wider, Title narrowing first.
- * On a phone Select and Key stay pinned, and Title takes the rest of the box down to its phone
- * minimum. Held per set of columns and button size, since the stored layout is read again
- * whenever the rules' identity changes.
+ * Priority, Key and Title) stay within 60% of a box 640 px wide or wider, Title narrowing first
+ * until the reader drags its width (R10): a Title the reader dragged is drawn at that width, and
+ * scrolls with the table where it would take the pins past their share. On a phone Select and
+ * Key stay pinned, and Title, which `IssuesTable` draws right after them, fills the rest of the
+ * box down to its phone minimum. Held per set of columns and button size, since the stored
+ * layout is read again whenever the rules' identity changes.
  */
 export function viewLayoutColumns(shown: readonly string[], touch: boolean): LayoutColumns {
   const name = `${shown.join(",")}|${touch}`;
@@ -802,6 +804,7 @@ export function viewLayoutColumns(shown: readonly string[], touch: boolean): Lay
           ({ id }) => id
         ),
         share: 0.6,
+        keepDragged: true,
       },
       phone: {
         columns: (["select", "key"] satisfies ColumnId[]).filter((id) => visible.has(id)),

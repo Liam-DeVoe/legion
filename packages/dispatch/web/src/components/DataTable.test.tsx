@@ -135,6 +135,7 @@ const NO_COUNTS: ReadonlyMap<string, number> = new Map();
 /** A caller of the core: it holds the view itself, as the issue table holds it in the URL. */
 function Deploys({
   columns = COLUMNS,
+  fixedColumns,
   groupSlot,
   grouping: initialGrouping = [],
   groupOrder,
@@ -152,6 +153,8 @@ function Deploys({
   trailingWidth,
 }: {
   columns?: ColumnDef<Deploy>[];
+  /** The columns this caller's order keeps in their place without pinning them. */
+  fixedColumns?: readonly string[];
   /** What this caller draws beside a group's heading, in place of the count of its deploys. */
   groupSlot?: ReactNode;
   grouping?: GroupingState;
@@ -182,7 +185,7 @@ function Deploys({
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize });
   const [openFilter, setOpenFilter] = useState<string>();
   const [rolledBack, setRolledBack] = useState<ReadonlySet<string>>(new Set());
-  const layout = useTableLayout(layoutKey, layoutColumns);
+  const layout = { ...useTableLayout(layoutKey, layoutColumns), fixedColumns };
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
     columns,
@@ -796,6 +799,32 @@ test("a column drag shuts the sort tooltip, and no hover opens one until the dro
   await user.unhover(sort("Region"));
   await user.hover(sort("Region"));
   expect(screen.getByRole("tooltip").textContent).toBe(`${SORT_HINT}; drag to move the column`);
+});
+
+// The caller that asked for it: the Issues tab on a phone, whose order keeps Title right after Key
+// without pinning it. A column the caller's order keeps in its place is not dragged, and its hint
+// names no drag, since no drag would move it; a column dropped onto it still moves before it.
+test("a column the caller's order keeps in place is not dragged and names no drag, and takes a drop", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys fixedColumns={["service"]} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const sort = (name: string) => within(table).getByRole("button", { name });
+  expect(sort("Service")).toHaveAttribute("draggable", "false");
+  expect(sort("Minutes")).toHaveAttribute("draggable", "true");
+  await user.hover(sort("Service"));
+  expect(screen.getByRole("tooltip").textContent).toBe(SORT_HINT);
+  await user.unhover(sort("Service"));
+
+  const service = within(table).getByRole("columnheader", { name: /Service/ });
+  fireEvent.dragStart(sort("Minutes"));
+  fireEvent.dragOver(service);
+  fireEvent.drop(service);
+  expect(
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.querySelector("button")?.textContent)
+  ).toEqual(["Deploy", "Minutes", "Service", "State", "Region"]);
 });
 
 test("a column's own control stands in its header beside the filter, outside the sort button", async () => {

@@ -1,7 +1,8 @@
 import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import * as dndCore from "@dnd-kit/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a column's drag and drop, which user-event has no form for.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -1016,10 +1017,8 @@ test("a stored width under an inherited name such as toString is dropped", () =>
   expect(readLayout(tableStorageKey("CORE"), ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
 });
 
-/** Each header cell of an issue table another page draws (the work under a priority), left to
- *  right, as `<its column's words> <width> <the offset a pinned cell is held at, or ->`, drawn
- *  with the scroll box `width` pixels wide. */
-async function headerLayout(width: number): Promise<string[]> {
+/** Gives the scroll box of an issue table `width` pixels, and every other element 100. */
+function boxWide(width: number): void {
   // On `Element.prototype`, which owns the method (see above).
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
@@ -1027,12 +1026,12 @@ async function headerLayout(width: number): Promise<string[]> {
     return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? width : 100, 40);
   });
   restores.push(() => rect.mockRestore());
-  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
-    listing: { advances: "ship-it" },
-    stateKey: "w",
-  });
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const head = screen.getByRole("table", { name: "Priority issues table" }).querySelector("thead");
+}
+
+/** Each header cell of the table named `name`, left to right, as `<its column's words> <width>
+ *  <the offset a pinned cell is held at, or ->`. */
+function headerCells(name: string): string[] {
+  const head = screen.getByRole("table", { name }).querySelector("thead");
   return [...(head?.querySelectorAll("th") ?? [])].map((cell) =>
     [
       (cell.textContent ?? "").replace(/[▲▼]|Filter$/g, "") || "-",
@@ -1040,6 +1039,18 @@ async function headerLayout(width: number): Promise<string[]> {
       cell.style.left || "-",
     ].join(" ")
   );
+}
+
+/** The header cells of an issue table another page draws (the work under a priority), drawn
+ *  with the scroll box `width` pixels wide. */
+async function headerLayout(width: number): Promise<string[]> {
+  boxWide(width);
+  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
+    listing: { advances: "ship-it" },
+    stateKey: "w",
+  });
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  return headerCells("Priority issues table");
 }
 
 /** The columns after the pinned ones, at the registry's widths, then the Start next column. */
@@ -1106,6 +1117,147 @@ test("a stored desktop width reaches an embedded table's header", async () => {
   const cells = await headerLayout(1400);
   expect(cells).toContain("Assignee 300px -");
   expect(cells).toContain("Status 132px -");
+});
+
+// R13: the priority pages keep today's rule. A Title the reader widened by 300 px would take the
+// pins past 60% of a 1400 px box, so it narrows by what they would pass it by, and stays pinned.
+test("an embedded table narrows a Title the reader widened to keep its pins within their share", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.priority-work",
+    JSON.stringify({ sizing: { title: 380 + 300 } })
+  );
+  expect(await headerLayout(1400)).toEqual([
+    "- 44px 0px",
+    "Priority 140px 44px",
+    "Key 108px 184px",
+    "Title 548px 292px",
+    "Queue 124px -",
+    ...UNPINNED_REST,
+  ]);
+});
+
+/** The header cells of the Issues tab's Open, in a project with no daemon, drawn with the
+ *  scroll box `width` pixels wide. */
+async function openHeaderLayout(width: number): Promise<string[]> {
+  boxWide(width);
+  table([issue("CORE-1")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  return headerCells("Project issues table");
+}
+
+// k12 (R10): on the Issues tab a Title the reader widened by 300 px is drawn at its stored width.
+// With it the pins would cover 980 px of a 1400 px box, past their 840, so Title scrolls with the
+// table after them rather than drawing narrower.
+test("on the Issues tab a Title the reader widened keeps its width, and scrolls past the pins' share", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({ sizing: { title: 380 + 300 } })
+  );
+  expect((await openHeaderLayout(1400)).slice(0, 5)).toEqual([
+    "- 44px 0px",
+    "Priority 132px 44px",
+    "Key 124px 176px",
+    "Title 680px -",
+    "Status 150px -",
+  ]);
+  expect(JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").sizing).toEqual({
+    title: 680,
+  });
+});
+
+// k12 (R10): on a phone Select and Key are pinned, and Title follows them, not pinned, and fills
+// the rest of the row: 99% of the box, whose two border pixels are not the rows'.
+test("on a 390 px phone the Issues tab pins Select and Key, and Title follows them and fills the row", async () => {
+  const [select, key, title, next] = await openHeaderLayout(390);
+  expect([select, key, next]).toEqual(["- 44px 0px", "Key 124px 44px", "Priority 132px -"]);
+  const [name, width, left] = (title ?? "").split(" ");
+  expect([name, left]).toEqual(["Title", "-"]);
+  expect(Number.parseFloat(width ?? "")).toBeCloseTo(390 * 0.99 - 44 - 124);
+});
+
+// k12 (R10): on a phone a header dropped onto the one after Title moves there, and one dropped
+// onto Title lands right after it, since Title stays after Key. The order drawn is the one
+// stored, so a reload draws it again.
+test("on a phone a header dropped after Title or onto Title moves there, and a reload keeps the order", async () => {
+  /** The words of the first six headers, left to right. */
+  const drawn = () =>
+    headerCells("Project issues table")
+      .slice(0, 6)
+      .map((cell) => cell.replace(/ \S+ \S+$/, ""));
+  await openHeaderLayout(390);
+  expect(drawn()).toEqual(["-", "Key", "Title", "Priority", "Status", "Created by"]);
+  const header = (name: RegExp) =>
+    within(screen.getByRole("table", { name: "Project issues table" })).getByRole("columnheader", {
+      name,
+    });
+  const drag = (dragged: RegExp, onto: RegExp) => {
+    const handle = header(dragged).querySelector('button[draggable="true"]');
+    if (handle === null) throw new Error(`The ${dragged} header has no drag handle`);
+    fireEvent.dragStart(handle);
+    fireEvent.dragOver(header(onto));
+    fireEvent.drop(header(onto));
+    fireEvent.dragEnd(handle);
+  };
+
+  drag(/^Status/, /^Priority/);
+  await waitFor(() =>
+    expect(drawn()).toEqual(["-", "Key", "Title", "Status", "Priority", "Created by"])
+  );
+  drag(/^Created by/, /^Title/);
+  const moved = ["-", "Key", "Title", "Created by", "Status", "Priority"];
+  await waitFor(() => expect(drawn()).toEqual(moved));
+  // Stored as drawn: Title after Key, the column dropped onto it right after it.
+  const stored = JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}");
+  expect(stored.order.slice(0, 6)).toEqual([
+    "select",
+    "key",
+    "title",
+    "author",
+    "status",
+    "priority",
+  ]);
+
+  // A reload: the page drawn again from what the browser kept.
+  for (const restore of restores.splice(0)) restore();
+  await openHeaderLayout(390);
+  expect(drawn()).toEqual(moved);
+});
+
+/** What every sortable header's tooltip says of its sort, and what a header that a drag moves
+ *  adds to it (`DataTable`). */
+const SORT_HINT = "Sort (shift-click to add a second sort)";
+const DRAG_HINT = `${SORT_HINT}; drag to move the column`;
+
+// R10: on a phone Title stays right after Key, so it is no drag handle and its sort hint says
+// nothing of a drag; Priority, after it, is dragged as before. On a desktop the rule is today's:
+// a Title the reader widened past the pins' share scrolls with the table and is dragged as any
+// other column there.
+test("on a phone Title is no drag handle and its hint names no drag, and on a desktop it is unchanged", async () => {
+  const user = userEvent.setup();
+  const sort = (name: string) =>
+    within(screen.getByRole("table", { name: "Project issues table" })).getByRole("button", {
+      name,
+    });
+  const hintOf = async (name: string) => {
+    await user.hover(sort(name));
+    const hint = screen.getByRole("tooltip").textContent;
+    await user.unhover(sort(name));
+    return hint;
+  };
+  await openHeaderLayout(390);
+  expect(sort("Title")).toHaveAttribute("draggable", "false");
+  expect(await hintOf("Title")).toBe(SORT_HINT);
+  expect(sort("Priority")).toHaveAttribute("draggable", "true");
+  expect(await hintOf("Priority")).toBe(DRAG_HINT);
+
+  for (const restore of restores.splice(0)) restore();
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({ sizing: { title: 380 + 300 } })
+  );
+  await openHeaderLayout(1400);
+  expect(sort("Title")).toHaveAttribute("draggable", "true");
+  expect(await hintOf("Title")).toBe(DRAG_HINT);
 });
 
 test("the Status filter counts Done once the closed issues are loaded", async () => {
@@ -2858,7 +3010,16 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
     // Whatever the change still draws after the card lands is counted too.
     await waitMs(200);
     return {
-      bodies: new Set(bodies.mock.calls.map(([props]) => props.issue.key)),
+      bodies: new Set(
+        bodies.mock.calls.map(([props]) => {
+          // The marker's props type names the route fields alone; a card body hands it the
+          // card's whole issue, whose key names the body.
+          const routed: object = props.issue;
+          if (!("key" in routed) || typeof routed.key !== "string")
+            throw new Error("A card body drew its route marker for an issue with no key");
+          return routed.key;
+        })
+      ),
       key,
       shells: new Set(shells.mock.calls.map(([options]) => String(options.id))),
     };

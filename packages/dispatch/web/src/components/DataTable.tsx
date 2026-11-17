@@ -440,6 +440,7 @@ const SORT_HINT = "Sort (shift-click to add a second sort)";
  *  that resizes it. */
 function TableHeaderCell<TData>({
   dragColumn,
+  fixed,
   header,
   openFilter,
   order,
@@ -450,6 +451,8 @@ function TableHeaderCell<TData>({
   stacked,
 }: {
   dragColumn: string | undefined;
+  /** Whether the caller's order keeps this column in its place (`layout.fixedColumns`). */
+  fixed: boolean;
   header: Header<TData, unknown>;
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
@@ -465,13 +468,16 @@ function TableHeaderCell<TData>({
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
+  // A pinned column is not dragged and takes no drop. One the caller's order keeps in its place
+  // is not dragged either, since no drag would move it, but a column may be dropped onto it.
+  const movable = !pinned && !fixed;
   // Every sortable header says how it sorts in the shared tooltip, on hover and on keyboard
   // focus, and a column that says how its value is taken (`meta.describe`, a measure's method)
   // says that first, with the sort hint as a second, muted line. The button carries no native
   // title, so two tooltips never show at once. A drag of any column closes it, and no hover
   // opens it until the drop.
   const describe = column.columnDef.meta?.describe;
-  const sortHint = pinned ? SORT_HINT : `${SORT_HINT}; drag to move the column`;
+  const sortHint = movable ? `${SORT_HINT}; drag to move the column` : SORT_HINT;
   const sortRef = useRef<HTMLButtonElement>(null);
   const tooltip = useTooltip({ paused: dragColumn !== undefined });
   const control = column.columnDef.meta?.headerControl;
@@ -513,7 +519,7 @@ function TableHeaderCell<TData>({
             <button
               {...tooltip.props}
               className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
-              draggable={!pinned}
+              draggable={movable}
               onClick={column.getToggleSortingHandler()}
               onDragEnd={() => setDragColumn(undefined)}
               onDragStart={() => setDragColumn(column.id)}
@@ -672,6 +678,7 @@ export function DataTable<Row>({
                   {group.headers.map((header) => (
                     <TableHeaderCell
                       dragColumn={dragColumn}
+                      fixed={layout.fixedColumns?.includes(header.column.id) ?? false}
                       header={header}
                       key={header.id}
                       openFilter={openFilter}

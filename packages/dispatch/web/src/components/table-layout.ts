@@ -17,18 +17,28 @@ import { readLayout, type StoredColumns, writeLayout } from "./table-storage";
 export interface LayoutPins {
   /** In a box 640 px wide or wider: these columns, left to right, within `share` of the box.
    *  Where they would cover more, `flexible` narrows first, down to its minimum, and then the
-   *  rightmost unpin one at a time. Their visibility is not the reader's, so none is stored. */
-  readonly wide: { readonly columns: readonly string[]; readonly share: number };
+   *  rightmost unpin one at a time. With `keepDragged`, a width the reader dragged `flexible` to
+   *  is the width it is drawn at: where the pins would then cover more than `share`, `flexible`
+   *  stops being pinned and scrolls with the table rather than narrowing, and then the rightmost
+   *  unpin as before. Their visibility is not the reader's, so none is stored. */
+  readonly wide: {
+    readonly columns: readonly string[];
+    readonly share: number;
+    readonly keepDragged?: boolean;
+  };
   /** In a narrower box, a phone's: these columns, left to right, within `share` of it. Each
-   *  column of `widths` is drawn at that width whatever the reader dragged, and `flexible` takes
-   *  what the others leave, between `flexibleMin` and its own width. */
+   *  column of `widths` is drawn at that width whatever the reader dragged. Where `flexible` is
+   *  one of these columns, it takes what the others leave, between `flexibleMin` and its own
+   *  width. Where it is not, it scrolls with the table and takes all that these columns leave of
+   *  `share`, down to `flexibleMin`, whatever its own width: drawn right after them, it fills the
+   *  rest of the row. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
     readonly widths: Readonly<Record<string, number>>;
     readonly flexibleMin: number;
   };
-  /** The pinned column that gives up width so the others fit. */
+  /** The column whose width gives way so the pins fit, by the rules above. */
   readonly flexible: string;
 }
 
@@ -56,6 +66,10 @@ export interface TableLayoutModel {
   readonly attachBox: (node: HTMLDivElement | null) => void;
   readonly boxHeight: number;
   readonly boxWidth: number;
+  /** The columns that keep their place in `order` without being pinned: none of them is dragged
+   *  elsewhere, and a column may still be dropped onto one. `useTableLayout` fixes none; a
+   *  caller whose order holds a column in place names it. */
+  readonly fixedColumns?: readonly string[];
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows and the columns pinned at its left. */
@@ -135,19 +149,25 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     const flexibleWidth = widths[flexible];
     if (boxWidth < 640) {
       Object.assign(widths, phone.widths);
-      if (flexibleWidth !== undefined)
+      if (flexibleWidth !== undefined) {
+        const others = phone.columns.filter((id) => id !== flexible);
+        const rest = boxWidth * phone.share - covered(others);
         widths[flexible] = Math.max(
           phone.flexibleMin,
-          Math.min(
-            flexibleWidth,
-            boxWidth * phone.share - covered(phone.columns.filter((id) => id !== flexible))
-          )
+          phone.columns.includes(flexible) ? Math.min(flexibleWidth, rest) : rest
         );
+      }
       return { sizing: widths, pinned: [...phone.columns] };
     }
     const budget = boxWidth * wide.share;
-    const pinned = [...wide.columns];
-    if (flexibleWidth !== undefined)
+    // A width the reader dragged stays as dragged where the caller keeps it (`keepDragged`): the
+    // flexible column then scrolls with the table, rather than narrowing to fit the share.
+    const kept = wide.keepDragged === true && sizing[flexible] !== undefined;
+    const pinned =
+      kept && covered(wide.columns) > budget
+        ? wide.columns.filter((id) => id !== flexible)
+        : [...wide.columns];
+    if (flexibleWidth !== undefined && !kept)
       widths[flexible] = Math.max(
         minimums[flexible] ?? 0,
         flexibleWidth - Math.max(0, covered(pinned) - budget)

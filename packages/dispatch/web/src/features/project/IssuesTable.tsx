@@ -567,13 +567,27 @@ function IssuesTab({ label, project }: { label: string | undefined; project: str
   );
 }
 
+/** The columns the Issues tab draws first on a phone: Select and Key, which it pins, and Title,
+ *  which scrolls with the table and fills the rest of the row (R10, `viewLayoutColumns`). */
+const PHONE_LEAD: readonly string[] = ["select", "key", "title"];
+
+/** `ids` as a phone draws them: `PHONE_LEAD` first, then every other column in its order. */
+const phoneOrder = (ids: readonly string[]): string[] => [
+  ...PHONE_LEAD,
+  ...ids.filter((id) => !PHONE_LEAD.includes(id)),
+];
+
+/** The one column of `PHONE_LEAD` a phone does not pin, which no drag moves from after Key. */
+const PHONE_FIXED: readonly string[] = ["title"];
+
 /**
  * The table of one view of the Issues tab, laid out by the view's columns: the address's `cols=`
  * for this load, else the view's own, with no board-fed column in a project with no daemon.
  * Its widths and order are kept under the view's key (`viewLayoutKey`); its column visibility
  * too, except while `cols=` is in the address, which holds for that load and writes nothing: a
  * change of columns then writes `cols=`. Until the reader drags a width, the columns are fitted
- * to the box (`fitViewWidths`); on a phone Title follows Select and Key.
+ * to the box (`fitViewWidths`); on a phone Title follows Select and Key, whatever the reader
+ * drags (`phoneOrder`).
  */
 function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): ReactNode {
   const address = useTableAddress(PROJECT_GRAMMAR);
@@ -610,10 +624,14 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
       : { ...Object.fromEntries(rules.ids.map((id) => [id, shown.has(id)])), ...unfed };
   const drawn = stored.order.length > 0 ? stored.order : rules.ids;
   const phone = stored.boxWidth < 640;
-  const pinnedOnPhone = ["select", "key", "title"];
-  const order = phone
-    ? [...pinnedOnPhone, ...drawn.filter((id) => !pinnedOnPhone.includes(id))]
-    : stored.order;
+  const order = phone ? phoneOrder(drawn) : stored.order;
+  // A header dropped on a phone keeps Select, Key and Title first, and what is stored is the
+  // order drawn, so a reload draws it again (R10). The core puts a dropped column before the
+  // header it lands on: one dropped onto Title lands right after it once Title is put back after
+  // Key, and one dropped onto another header moves among the columns after Title. Title itself
+  // is not dragged there (`fixedColumns`).
+  const setPhoneOrder: TableLayoutModel["setOrder"] = (next) =>
+    stored.setOrder(phoneOrder(typeof next === "function" ? next(order) : next));
   const writeCols: TableLayoutModel["setVisibility"] = (next) => {
     const resolved = typeof next === "function" ? next(visibility) : next;
     const ids = rules.ids.filter((id) => id !== "select" && resolved[id] !== false);
@@ -625,6 +643,8 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
   const layout: TableLayoutModel = {
     ...stored,
     order,
+    setOrder: phone ? setPhoneOrder : stored.setOrder,
+    fixedColumns: phone ? PHONE_FIXED : undefined,
     responsive:
       Object.keys(stored.sizing).length > 0 || phone
         ? stored.responsive
