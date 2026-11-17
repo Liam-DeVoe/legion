@@ -66,14 +66,7 @@ var (
 // be reversed first.
 func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 	above, _ := embeddedMigrationsAboveThePhaseEntry(t)
-	described, _ := phaseEntryList(t)
-	var missing []string
-	for _, name := range above {
-		if !slices.Contains(described, name) {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
+	if missing := phaseEntryList(t).undescribed(above); len(missing) > 0 {
 		t.Errorf("%s's list of the migrations recorded above %s describes no %s: give each an entry "+
 			"beside the one it belongs with, opening on its name, alone or joined by \"and\" to the others "+
 			"the entry speaks for, saying what it adds or changes and what the phase entry's block does to "+
@@ -87,18 +80,14 @@ func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 // block has nothing to do with, or misspells one it has.
 func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 	above, all := embeddedMigrationsAboveThePhaseEntry(t)
-	_, named := phaseEntryList(t)
-	slices.Sort(named)
-	for _, name := range slices.Compact(named) {
-		switch {
-		case slices.Contains(above, name):
-		case slices.Contains(all, name):
+	for _, name := range phaseEntryList(t).strays(above) {
+		if slices.Contains(all, name) {
 			t.Errorf("%s's list of the migrations recorded above %s names %s, which is not above it",
 				wayBackGuide, phaseEntryMigration, name)
-		default:
-			t.Errorf("%s's list of the migrations recorded above %s names %s, and the daemon embeds no "+
-				"migration of that name", wayBackGuide, phaseEntryMigration, name)
+			continue
 		}
+		t.Errorf("%s's list of the migrations recorded above %s names %s, and the daemon embeds no "+
+			"migration of that name", wayBackGuide, phaseEntryMigration, name)
 	}
 }
 
@@ -151,15 +140,15 @@ func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 			"20990101000001_seen adds a column.\n",
 			[]string{"20990101000001_seen"}, nil},
 	} {
-		described, named, err := readPhaseEntryList(list.shape, list.before+opening+list.entries+end)
+		listing, err := readPhaseEntryList(list.shape, list.before+opening+list.entries+end)
 		if !errors.Is(err, list.err) {
 			t.Errorf("%s: reading the list answers the error %v, want %v: %q", list.shape, err, list.err,
 				list.before+list.entries)
 			continue
 		}
-		if !slices.Equal(described, list.want) || !slices.Equal(named, list.want) {
-			t.Errorf("%s: the list describes %v and names %v, want %v for both: %q", list.shape, described,
-				named, list.want, list.entries)
+		if !slices.Equal(listing.described, list.want) || !slices.Equal(listing.named, list.want) {
+			t.Errorf("%s: the list describes %v and names %v, want %v for both: %q", list.shape,
+				listing.described, listing.named, list.want, list.entries)
 		}
 	}
 }
@@ -171,7 +160,10 @@ func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 // so it describes nothing, while the list still names it and the other test still holds that name
 // to the embedded set: a name after the entry's predicate, one after ", and" in a later clause or
 // in parentheses, and a name that stands as another's reference. The cases are the shapes the
-// guide's entries take, and those mentions in passing.
+// guide's entries take, and those mentions in passing. Each case also runs the guide tests' two
+// checks over its list: where a list names a migration only in passing, the forward check finds
+// that migration undescribed among every name the list carries, and the reverse check finds it
+// outside the described ones, so a check that read the other's names fails here.
 func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntry(t *testing.T) {
 	const (
 		opening = phaseEntryListOpening + "\n"
@@ -209,15 +201,23 @@ func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntry(t *testing.T) {
 			"20990101000001_alone, of 20990101000002_passing, adds a column.",
 			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
 	} {
-		described, named, err := readPhaseEntryList(list.shape, opening+list.entry+"\n"+end)
+		listing, err := readPhaseEntryList(list.shape, opening+list.entry+"\n"+end)
 		if err != nil {
 			t.Errorf("%s: %v", list.shape, err)
 			continue
 		}
-		if want := append(slices.Clone(list.described), list.mentions...); !slices.Equal(described, list.described) ||
-			!slices.Equal(named, want) {
+		want := append(slices.Clone(list.described), list.mentions...)
+		if !slices.Equal(listing.described, list.described) || !slices.Equal(listing.named, want) {
 			t.Errorf("%s: the list describes %v and names %v, want %v described and %v named: %q", list.shape,
-				described, named, list.described, want, list.entry)
+				listing.described, listing.named, list.described, want, list.entry)
+		}
+		if missing := listing.undescribed(want); !slices.Equal(missing, list.mentions) {
+			t.Errorf("%s: the forward check finds %v of %v undescribed, want %v: %q", list.shape, missing, want,
+				list.mentions, list.entry)
+		}
+		if strays := listing.strays(list.described); !slices.Equal(strays, list.mentions) {
+			t.Errorf("%s: the reverse check finds %v outside %v, want %v: %q", list.shape, strays,
+				list.described, list.mentions, list.entry)
 		}
 	}
 }
@@ -245,15 +245,45 @@ func embeddedMigrationsAboveThePhaseEntry(t *testing.T) (above, all []string) {
 	return all[at+1:], all
 }
 
-// phaseEntryList is what the list in the guide describes and names (readPhaseEntryList). A guide
-// it cannot read the list of stops the test.
-func phaseEntryList(t *testing.T) (described, named []string) {
+// phaseEntryList is the list in the guide (readPhaseEntryList). A guide it cannot read the list of
+// stops the test.
+func phaseEntryList(t *testing.T) phaseEntryListing {
 	t.Helper()
-	described, named, err := readPhaseEntryList(wayBackGuide, shippedText(t, wayBackGuide))
+	listing, err := readPhaseEntryList(wayBackGuide, shippedText(t, wayBackGuide))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return described, named
+	return listing
+}
+
+// phaseEntryListing is the list as a reader sees it: the migrations its entries describe, and
+// every migration name it carries, the described ones among them. Each guide test reads it only
+// through the method that is its check, so neither reads the other's names.
+type phaseEntryListing struct{ described, named []string }
+
+// undescribed is every migration of above that no entry of the list describes, in above's order:
+// what TestTheGuideNamesEveryMigrationAboveThePhaseEntry reports.
+func (l phaseEntryListing) undescribed(above []string) []string {
+	var missing []string
+	for _, name := range above {
+		if !slices.Contains(l.described, name) {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// strays is every name the list carries that above does not hold, sorted, each once: what
+// TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations reports.
+func (l phaseEntryListing) strays(above []string) []string {
+	var strays []string
+	for _, name := range l.named {
+		if !slices.Contains(above, name) {
+			strays = append(strays, name)
+		}
+	}
+	slices.Sort(strays)
+	return slices.Compact(strays)
 }
 
 // errHidden is why a check refuses a line it reads the guide by: only an HTML comment holds it.
@@ -267,7 +297,7 @@ var errHidden = errors.New("only an HTML comment holds it, and the rendered guid
 // TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes. A sentence or line that only
 // an HTML comment holds is refused as hidden (errHidden), a comment opened before the sentence
 // among them: that comment hides the sentence and whatever of the list it runs over.
-func readPhaseEntryList(name, text string) (described, named []string, err error) {
+func readPhaseEntryList(name, text string) (phaseEntryListing, error) {
 	written, lines := strings.Split(text, "\n"), strings.Split(visibleMarkdown(text), "\n")
 	start := -1
 	for i, line := range lines {
@@ -275,39 +305,40 @@ func readPhaseEntryList(name, text string) (described, named []string, err error
 			continue
 		}
 		if start >= 0 {
-			return nil, nil, fmt.Errorf("%s opens the list of the migrations above %s twice, at lines %d and %d",
-				name, phaseEntryMigration, start+1, i+1)
+			return phaseEntryListing{}, fmt.Errorf("%s opens the list of the migrations above %s twice, at "+
+				"lines %d and %d", name, phaseEntryMigration, start+1, i+1)
 		}
 		start = i
 	}
 	if start < 0 && slices.Contains(written, phaseEntryListOpening) {
-		return nil, nil, fmt.Errorf("%s's line %q, which opens the list of the migrations recorded above %s: %w",
-			name, phaseEntryListOpening, phaseEntryMigration, errHidden)
+		return phaseEntryListing{}, fmt.Errorf("%s's line %q, which opens the list of the migrations "+
+			"recorded above %s: %w", name, phaseEntryListOpening, phaseEntryMigration, errHidden)
 	}
 	if start < 0 {
-		return nil, nil, fmt.Errorf("%s carries no line %q: that sentence, which carries no count and no "+
-			"contract number, opens the list of the migrations recorded above %s after that migration's way back",
-			name, phaseEntryListOpening, phaseEntryMigration)
+		return phaseEntryListing{}, fmt.Errorf("%s carries no line %q: that sentence, which carries no "+
+			"count and no contract number, opens the list of the migrations recorded above %s after that "+
+			"migration's way back", name, phaseEntryListOpening, phaseEntryMigration)
 	}
 	isEnd := func(line string) bool { return strings.HasPrefix(line, phaseEntryListEnd) }
 	end := slices.IndexFunc(lines[start+1:], isEnd)
 	if end < 0 && slices.ContainsFunc(written[start+1:], isEnd) {
-		return nil, nil, fmt.Errorf("%s's line opening %q after line %d, which ends the list of the migrations "+
-			"above %s: %w", name, phaseEntryListEnd, start+1, phaseEntryMigration, errHidden)
+		return phaseEntryListing{}, fmt.Errorf("%s's line opening %q after line %d, which ends the list of "+
+			"the migrations above %s: %w", name, phaseEntryListEnd, start+1, phaseEntryMigration, errHidden)
 	}
 	if end < 0 {
-		return nil, nil, fmt.Errorf("%s carries no line opening %q after line %d, which ends the list of the "+
-			"migrations above %s", name, phaseEntryListEnd, start+1, phaseEntryMigration)
+		return phaseEntryListing{}, fmt.Errorf("%s carries no line opening %q after line %d, which ends the "+
+			"list of the migrations above %s", name, phaseEntryListEnd, start+1, phaseEntryMigration)
 	}
+	var listing phaseEntryListing
 	visible := strings.Join(lines[start+1:start+1+end], "\n")
-	named = migrationNameInGuide.FindAllString(visible, -1)
-	if len(named) == 0 {
-		return nil, nil, fmt.Errorf("%s's list after line %d names no migration", name, start+1)
+	listing.named = migrationNameInGuide.FindAllString(visible, -1)
+	if len(listing.named) == 0 {
+		return phaseEntryListing{}, fmt.Errorf("%s's list after line %d names no migration", name, start+1)
 	}
 	for _, entry := range strings.Split(visible, "\n") {
-		described = append(described, entrySubjects(strings.TrimLeft(entry, " \t"))...)
+		listing.described = append(listing.described, entrySubjects(strings.TrimLeft(entry, " \t"))...)
 	}
-	return described, named, nil
+	return listing, nil
 }
 
 // entrySubjects is the migrations entry opens on, in order (entrySubject): the first opens the
