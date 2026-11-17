@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -35,15 +34,27 @@ func defaultPlan(id, issue string, generation int64) PlanWrite {
 // putPlan writes one plan in a transaction of its own and commits it, as the route does.
 func putPlan(t *testing.T, pool *store.Pool, write PlanWrite, at time.Time) Plan {
 	t.Helper()
-	var written Plan
-	if err := tryWrite(pool, func(tx pgx.Tx) error {
-		var err error
-		written, err = PutPlan(context.Background(), tx, write, daemon, at)
-		return err
-	}); err != nil {
+	written, err := tryPutPlan(pool, write, at)
+	if err != nil {
 		t.Fatalf("write plan %s: %v", write.ID, err)
 	}
 	return written
+}
+
+// tryPutPlan runs one plan write in a transaction of its own, commits it when the write is taken,
+// and rolls it back and answers the refusal when it is not.
+func tryPutPlan(pool *store.Pool, write PlanWrite, at time.Time) (Plan, error) {
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Plan{}, err
+	}
+	defer tx.Rollback(ctx)
+	written, err := PutPlan(ctx, tx, write, daemon, at)
+	if err != nil {
+		return Plan{}, err
+	}
+	return written, tx.Commit(ctx)
 }
 
 // planText is a plan as one line, so two plans compare whole and a difference prints whole.
@@ -193,10 +204,7 @@ func TestAPlanWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			write := defaultPlan(uuid.NewString(), "LEG-1", 1)
 			change(&write)
-			err := tryWrite(pool, func(tx pgx.Tx) error {
-				_, err := PutPlan(context.Background(), tx, write, daemon, minute(0))
-				return err
-			})
+			_, err := tryPutPlan(pool, write, minute(0))
 			if !errors.Is(err, ErrPlanInput) {
 				t.Fatalf("the write answered %v, want %v", err, ErrPlanInput)
 			}
@@ -217,10 +225,7 @@ func TestAPlanIDOfAnotherIssueIsRefused(t *testing.T) {
 	putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(0))
 	before := wholeLog(t, pool)
 
-	err := tryWrite(pool, func(tx pgx.Tx) error {
-		_, err := PutPlan(context.Background(), tx, defaultPlan(id, "LEG-2", 1), daemon, minute(1))
-		return err
-	})
+	_, err := tryPutPlan(pool, defaultPlan(id, "LEG-2", 1), minute(1))
 	if !errors.Is(err, ErrPlanOtherIssue) || !strings.Contains(err.Error(), "LEG-1") || !strings.Contains(err.Error(), "LEG-2") {
 		t.Fatalf("the write answered %v, want %v naming LEG-1 and LEG-2", err, ErrPlanOtherIssue)
 	}

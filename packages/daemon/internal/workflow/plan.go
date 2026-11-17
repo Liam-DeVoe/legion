@@ -89,7 +89,7 @@ func defaultPlan(issue record.Issue) record.PlanRecord {
 // so the end and the rating merge in either order. A record key that is no issue key writes nothing
 // (recordsSteps).
 func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating int, reason string) error {
-	place, step, role, typ, _ := stepOf(phase.Retro)
+	place, role, typ, _ := stepOf(phase.Retro)
 	if !recordsSteps(issue) {
 		return nil
 	}
@@ -97,7 +97,7 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, step, role, typ, start.Agent, start.Starts)
+	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
 	write.Rating, write.RatingReason = new(rating), new(reason)
 	return e.enqueue(ctx, tx, issue.Key, write)
 }

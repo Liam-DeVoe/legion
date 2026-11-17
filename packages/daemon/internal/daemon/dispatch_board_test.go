@@ -25,9 +25,9 @@ const liveRepo = "acme/widgets"
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
 // never came from one it cannot see, serves the handoff records a step seeds (handoff), which a
 // phase completion names and the daemon reads back, and takes the record of each step the daemon
-// writes (putStep), the rating a retro gave the plan (putRating) and the plan of each run (putPlan),
-// as Dispatch's routes take them. Anything else is a call a live proof does not expect, and fails
-// the test as workflowConfig's stand-in does.
+// writes (putStep), the rating a retro gave the plan (putRating) and the plan of each run (putPlan)
+// from the daemon's own session alone, as Dispatch's routes take them. Anything else is a call a
+// live proof does not expect, and fails the test as workflowConfig's stand-in does.
 type liveDispatch struct {
 	t       *testing.T
 	project string
@@ -40,8 +40,9 @@ type liveDispatch struct {
 	lists bool
 	mu    sync.Mutex
 	// issues is each issue as this board holds it, the daemon's writes applied.
-	issues   map[string]liveDispatchIssue
-	posted   []liveDispatchWrite
+	issues map[string]liveDispatchIssue
+	posted []liveDispatchWrite
+	// handoffs is each seeded handoff record by its id, as GET /api/v1/handoffs/{id} answers it.
 	handoffs map[string]map[string]any
 	// steps is each step record the daemon wrote, by its id, its fields as the writes left them;
 	// stepOrder is the ids in the order of their first write.

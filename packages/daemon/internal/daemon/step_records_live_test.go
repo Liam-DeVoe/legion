@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,7 +41,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -57,8 +55,6 @@ type stepRecordsLive struct {
 	root    string
 	cliHome string
 	reader  string
-	// failed is the id of the failed review's record, which the read's control deletes.
-	failed string
 }
 
 // TestStepRecordsLive drives the proof's steps against one booted daemon and one Dispatch, over
@@ -77,43 +73,18 @@ func TestStepRecordsLive(t *testing.T) {
 }
 
 // newStepRecordsLive is the run a live driver of the walk makes around its steps: the checkout its
-// script runs from, the broker the script names (or a skip naming script), bun on PATH, the walk's
-// rig over issues issues on a Dispatch this checkout builds, the person's CLI home, and a personal
-// token named reader minted for the person, which every read of the CLI carries.
+// script runs from and bun on PATH (liveCLICheckout), the broker the script names (or a skip
+// naming script), the walk's rig over issues issues on a Dispatch this checkout builds, the
+// person's CLI home, and a personal token named reader minted for the person, which every read of
+// the CLI carries.
 func newStepRecordsLive(t *testing.T, script string, issues int, reader string) *stepRecordsLive {
 	t.Helper()
 	fixtureenv.Live(t)
-	root := liveCheckout(t)
+	root := liveCLICheckout(t)
 	proof := newLiveProof(t, script)
-	requireBun(t)
 	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues), root: root, cliHome: t.TempDir()}
 	l.mintReader(reader)
 	return l
-}
-
-// liveCheckout is the checkout the proof's script runs from, whose packages/envoy the driver builds
-// Dispatch from and whose packages/envoy-client holds the CLI: testbuild.RootEnv, which the script
-// exports, since the driver binary runs from the caller's directory, not the package's. Unset (a
-// plain `go test -tags e2e`, which runs in the package directory), it is four directories up.
-func liveCheckout(t *testing.T) string {
-	t.Helper()
-	root := os.Getenv(testbuild.RootEnv)
-	if root == "" {
-		root = filepath.Join("..", "..", "..", "..")
-	}
-	root, err := filepath.Abs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return root
-}
-
-// requireBun fails the run when bun, which the dispatch CLI runs under, is not on PATH.
-func requireBun(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
 }
 
 // mintReader has Dispatch mint a personal token, named name, for the person who set the run's
@@ -182,8 +153,8 @@ func (l *stepRecordsLive) outage() {
 	var last error
 	var lines []stepLine
 	if !testwait.Holds(within, 2*time.Second, func() bool {
-		var output string
-		if output, code = l.steps(); code != 0 {
+		output, code := l.steps()
+		if code != 0 {
 			last = fmt.Errorf("exit %d: %s", code, output)
 			return false
 		}
@@ -211,14 +182,7 @@ func (l *stepRecordsLive) outage() {
 // record missing.
 func (l *stepRecordsLive) readByIssue() {
 	t := l.t
-	out, code := l.steps()
-	if code != 0 {
-		t.Fatalf("`dispatch steps --issue %s` exited %d: %s", l.key, code, out)
-	}
-	printed, err := parseSteps(l.key, out)
-	if err == nil {
-		err = holdsTen(printed)
-	}
+	out, err := l.stepsHoldTen("as the person")
 	if err != nil {
 		t.Fatalf("`dispatch steps --issue %s` printed\n%s\nand the read does not hold the walk: %v", l.key, out, err)
 	}
@@ -231,20 +195,13 @@ func (l *stepRecordsLive) readByIssue() {
 	if err != nil {
 		t.Fatalf("read the steps of %s: %v", l.key, err)
 	}
-	l.failed = read.find("step", 4, 1).ID
-	if l.failed == "" {
+	failed := read.find("step", 4, 1).ID
+	if failed == "" {
 		t.Fatalf("GET /api/v1/issues/%s/steps holds no record of step 4 attempt 1", l.key)
 	}
-	l.deleteStepRecord(l.failed)
-	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", l.failed)
-	out, code = l.steps()
-	if code != 0 {
-		t.Fatalf("control: `dispatch steps --issue %s` after the delete exited %d: %s", l.key, code, out)
-	}
-	printed, err = parseSteps(l.key, out)
-	if err == nil {
-		err = holdsTen(printed)
-	}
+	l.deleteStepRecord(failed)
+	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", failed)
+	out, err = l.stepsHoldTen("in the control, after the delete,")
 	if err == nil {
 		t.Fatalf("control: the parse of `dispatch steps --issue %s` passed with the failed review's record deleted:\n%s", l.key, out)
 	}
@@ -294,62 +251,41 @@ func (l *stepRecordsLive) writerRefused() {
 	l.note("control: the same body with the daemon's own credential as %s: %d; the read holds record %s", daemon, status, id)
 }
 
-// steps runs `dispatch steps --issue <KEY>` as the person and returns both streams and its exit
-// code.
+// steps runs `dispatch steps --issue <KEY>` as the person, with the personal token Dispatch minted
+// for that person, and returns what it printed on stdout, then on stderr, and its exit code.
 func (l *stepRecordsLive) steps() (string, int) {
 	l.t.Helper()
 	return l.cli("steps", "--issue", l.key)
 }
 
-// cli runs the dispatch CLI with args as the person and returns both streams and its exit code.
+// cli runs the dispatch CLI with args in the person's shell and returns what it printed on stdout,
+// then on stderr, and its exit code.
 func (l *stepRecordsLive) cli(args ...string) (string, int) {
 	l.t.Helper()
-	command := exec.Command("bun", append([]string{filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
-	command.Env = l.personsShell(os.Getenv("PATH"))
-	return l.run(command, "dispatch "+strings.Join(args, " "))
+	out, code := l.personsShell().bun(nil, filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), args...)
+	return string(out.stdout) + string(out.stderr), code
 }
 
-// personsShell is the environment of a person's own shell running dispatch by hand, on path: the
-// host and a session of their own, the server and their personal token. Nothing else of the
-// caller's environment reaches it, and its home, configuration file (absent) and session state
-// are the run's own.
-func (l *stepRecordsLive) personsShell(path string) []string {
-	l.t.Helper()
-	if err := os.MkdirAll(filepath.Join(l.cliHome, "home"), 0o700); err != nil {
-		l.t.Fatal(err)
-	}
-	return []string{
-		"PATH=" + path,
-		"HOME=" + filepath.Join(l.cliHome, "home"),
-		"TMPDIR=" + l.cliHome,
-		"XDG_CONFIG_HOME=" + filepath.Join(l.cliHome, "config"),
-		"XDG_STATE_HOME=" + filepath.Join(l.cliHome, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(l.cliHome, "cache"),
-		"ENVOY_CONFIG_FILE=" + filepath.Join(l.cliHome, "envoy.json"),
-		"DISPATCH_STATE_DIR=" + filepath.Join(l.cliHome, "dispatch-state"),
-		"DISPATCH_HOST=omp",
-		"DISPATCH_SESSION_ID=" + stepRecordsReaderSession,
-		"DISPATCH_URL=" + l.dispatch.base,
-		"DISPATCH_TOKEN=" + l.reader,
-	}
+// personsShell is the shell of a person running dispatch by hand: the reader's own session, the
+// run's Dispatch and the personal token Dispatch minted for that person, under the run's CLI home.
+func (l *stepRecordsLive) personsShell() cliShell {
+	return cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
 }
 
-// run runs command, named what, in the person's directory and returns both streams and its exit
-// code.
-func (l *stepRecordsLive) run(command *exec.Cmd, what string) (string, int) {
+// stepsHoldTen runs `dispatch steps --issue <KEY>` as the person, failing the test when the
+// command fails (when says at which point of the proof it ran), and answers what it printed and
+// whether that is the walk's ten runs (holdsTen).
+func (l *stepRecordsLive) stepsHoldTen(when string) (string, error) {
 	l.t.Helper()
-	command.Dir = l.cliHome
-	var output bytes.Buffer
-	command.Stdout, command.Stderr = &output, &output
-	code := 0
-	if err := command.Run(); err != nil {
-		exit, ok := err.(*exec.ExitError)
-		if !ok {
-			l.t.Fatalf("run `%s`: %v", what, err)
-		}
-		code = exit.ExitCode()
+	out, code := l.steps()
+	if code != 0 {
+		l.t.Fatalf("`dispatch steps --issue %s` %s exited %d: %s", l.key, when, code, out)
 	}
-	return output.String(), code
+	printed, err := parseSteps(l.key, out)
+	if err != nil {
+		return out, err
+	}
+	return out, holdsTen(printed)
 }
 
 // putStep sends body to PUT /api/v1/issues/<KEY>/steps/<id> with bearer and returns Dispatch's
@@ -447,11 +383,7 @@ func holdsTen(printed stepsPrinted) error {
 // hold no other run. The error names the first run that is missing or wrong as lineName spells it.
 func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 	for _, w := range want {
-		got, name := findLine(lines, w), lineName(w)
-		typ := w.typ
-		if typ == "" {
-			typ = "-"
-		}
+		got, name, typ := findLine(lines, w), lineName(w), printedType(w)
 		switch {
 		case got.text == "":
 			return fmt.Errorf("no line of %s", name)
@@ -479,12 +411,17 @@ func findLine(lines []stepLine, w stepWant) stepLine {
 	return stepLine{}
 }
 
+// printedType is w's type as the command prints it: `-` for the retro and the merge, which have
+// none.
+func printedType(w stepWant) string {
+	if w.typ == "" {
+		return "-"
+	}
+	return w.typ
+}
+
 // lineName spells w as the command prints its leading fields, then its result: `4 step reviewer
 // review attempt 1 … failed`.
 func lineName(w stepWant) string {
-	typ := w.typ
-	if typ == "" {
-		typ = "-"
-	}
-	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, typ, w.attempt, w.result)
+	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, printedType(w), w.attempt, w.result)
 }

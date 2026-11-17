@@ -82,7 +82,10 @@ const protocolVersion = 2
 // the caller's context and by the RPC timeout, whichever ends first.
 type Conn struct {
 	// seq is the order the listener registered the connection in (Sequence).
-	seq        uint64
+	seq uint64
+	// generation is the launch the connection's hello was registered for (Hello.Generation),
+	// which each Answered it reads carries.
+	generation uint64
 	claim      claim.Token
 	nc         net.Conn
 	writer     *shimwire.Writer
@@ -547,8 +550,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			c.log.Warn("worker-stream: an extension of the worker's Oh My Pi failed", "claim", c.claim,
 				"extension", event.ExtensionPath, "event", event.Event, "error", event.Error)
 		case "message_end":
-			if answered, ok := answeredBy(frame.JSON); ok {
-				answered.Claim = c.claim
+			if answered, ok := c.answeredBy(frame.JSON); ok {
+				answered.Claim, answered.Generation = c.claim, c.generation
 				c.events.push(answered)
 			}
 		}
@@ -584,7 +587,14 @@ const syntheticModel = "<synthetic>"
 // whose message.model is set and is not syntheticModel. A user's message, a tool's result and a
 // message no model wrote answer nothing, and neither does a frame that is not the shape Oh My Pi
 // writes (internal/testbin's omp frames, omp://rpc.md).
-func answeredBy(raw json.RawMessage) (Answered, bool) {
+//
+// Nor does a message whose provider or model holds U+0000: no store can keep that character
+// (PostgreSQL's text and jsonb refuse it), and the model an answer names is written into the
+// record of the step it served, in the transaction that ends the step, which would fail with it.
+// This is the one place a frame becomes an Answered, so every reader after it holds a storable
+// model; the frame is dropped with one line naming the claim and the field, never its text, and
+// the step's record names no model from it, as for an agent that named none.
+func (c *Conn) answeredBy(raw json.RawMessage) (Answered, bool) {
 	var frame struct {
 		Message struct {
 			Role     string `json:"role"`
@@ -597,6 +607,18 @@ func answeredBy(raw json.RawMessage) (Answered, bool) {
 	}
 	m := frame.Message
 	if m.Role != "assistant" || m.Model == "" || m.Model == syntheticModel {
+		return Answered{}, false
+	}
+	var unstorable []string
+	if strings.ContainsRune(m.Provider, 0) {
+		unstorable = append(unstorable, "message.provider")
+	}
+	if strings.ContainsRune(m.Model, 0) {
+		unstorable = append(unstorable, "message.model")
+	}
+	if len(unstorable) > 0 {
+		c.log.Warn("worker-stream: dropped the model a message_end named: it holds U+0000, which no store can keep",
+			"claim", c.claim, "field", strings.Join(unstorable, " and "))
 		return Answered{}, false
 	}
 	return Answered{Provider: m.Provider, Model: m.Model}, true

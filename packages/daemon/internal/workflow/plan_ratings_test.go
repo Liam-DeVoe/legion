@@ -36,9 +36,9 @@ func TestStepOfReadsTheDefaultSteps(t *testing.T) {
 		if !ok {
 			t.Fatalf("the default step %q names a role that works no phase", step)
 		}
-		place, n, got, _, ok := stepOf(at)
-		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || n != i+1 || got != role {
-			t.Errorf("stepOf(%s) = %+v, step %d, role %q, ok %v; want %+v, step %d, role %q", at, place, n, got, ok, want, i+1, role)
+		place, got, _, ok := stepOf(at)
+		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || got != role {
+			t.Errorf("stepOf(%s) = %+v, role %q, ok %v; want %+v, role %q", at, place, got, ok, want, role)
 		}
 	}
 
@@ -219,10 +219,10 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 				t.Fatalf("the rating = %+v (rating %v, reason %v), want %+v on the retro's record %s", rating, deref(rating.Rating),
 					deref(rating.RatingReason), want, end.ID)
 			}
-			if wantID := StepID(root.Key, 1, "default", "retro", 0, 1); rating.ID != wantID {
+			if wantID := StepID(root.Key, 1, record.StepPlace{Task: "default", Kind: "retro"}, 1); rating.ID != wantID {
 				t.Fatalf("the rating's id = %s, want %s, the first run of the retro", rating.ID, wantID)
 			}
-			if rating.Agent != token(t, root.Key, claim.RoleImplementer) {
+			if rating.Agent != treeRoleToken(t, root.Key, claim.RoleImplementer) {
 				t.Fatalf("the rating names the agent %q, want the implementer's claim, which started the retro", rating.Agent)
 			}
 		})
@@ -267,11 +267,11 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 			rated = append(rated, write)
 		}
 	}
-	agent := token(t, root.Key, claim.RoleImplementer)
+	agent := treeRoleToken(t, root.Key, claim.RoleImplementer)
 	want := []record.StepRecord{
-		{ID: StepID(root.Key, 3, "default", "retro", 0, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
+		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
 			Generation: 3, Rating: new(2), RatingReason: new("The plan put the tests after the review.")},
-		{ID: StepID(root.Key, 3, "default", "retro", 0, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
+		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
 			Generation: 3, Rating: new(4), RatingReason: new("The plan left the migration to its last step.")},
 	}
 	if len(ends) != 2 || len(rated) != 2 {

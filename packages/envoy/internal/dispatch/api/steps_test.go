@@ -63,8 +63,8 @@ func implementerEnd(actor map[string]any, result string, at time.Time) map[strin
 	return body
 }
 
-// with is body with the fields of more set over it, and body itself unchanged.
-func with(body map[string]any, more map[string]any) map[string]any {
+// withStepFields is the step body with the fields of more set over it, and body itself unchanged.
+func withStepFields(body map[string]any, more map[string]any) map[string]any {
 	merged := maps.Clone(body)
 	maps.Copy(merged, more)
 	return merged
@@ -107,25 +107,6 @@ func stepsOf(t *testing.T, handler http.Handler, issue string) []model.StepRecor
 	return steps
 }
 
-// stepIssues makes project and count issues in it, as a person does, and answers their keys.
-func stepIssues(t *testing.T, handler http.Handler, project string, count int) []string {
-	t.Helper()
-	createTestProject(t, handler, project)
-	keys := make([]string, count)
-	for index := range keys {
-		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-			"project": project, "title": "A run of steps " + strconv.Itoa(index+1),
-		}, "alice")
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create an issue in %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-		keys[index] = decodeBody[struct {
-			Key string `json:"key"`
-		}](t, created).Key
-	}
-	return keys
-}
-
 // requireStepRefusal fails unless response is status with code, its message naming each of words.
 func requireStepRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, status int, code string, words ...string) {
 	t.Helper()
@@ -156,7 +137,7 @@ func stepJSON(t *testing.T, step model.StepRecord) string {
 // record as the read lists it.
 func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
 
 	started := putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
@@ -189,11 +170,73 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 	}
 }
 
+// A run's session, its report and its generation reach the store from the body and come back from
+// it as written: the write's answer and the read carry the session the first write named, the
+// report in its canonical spelling and generation 2, beside its attempt 1 and the place it
+// returned to.
+func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	id, report := uuid.NewString(), uuid.NewString()
+	identity := withStepFields(stepIdentity(daemonSession("LEG")), map[string]any{"generation": 2})
+	putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart, "session": "ses_implementer_run",
+	}))
+	ended := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+		"result": "failed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5",
+		"session": "ses_a_later_session", "report": strings.ToUpper(report), "returned_to": 1,
+	}))
+
+	returned := 1
+	want := model.StepRecord{
+		ID: id, Issue: issue, Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Session: "ses_implementer_run",
+		Model: "anthropic/claude-opus-5", Generation: 2, Attempt: 1, StartedAt: &stepStart,
+		EndedAt: &stepEnd, Result: "failed", ReturnedTo: &returned, Report: &report,
+	}
+	if got := stepJSON(t, ended); got != stepJSON(t, want) {
+		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, stepJSON(t, want))
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || stepJSON(t, steps[0]) != stepJSON(t, want) {
+		t.Fatalf("the read lists %+v, want the one record\n%s", steps, stepJSON(t, want))
+	}
+}
+
+// A second run of one step answers attempt 2, on its start and on its end, and the end's answer is
+// the record as the read lists it; the first run still reads attempt 1.
+func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	daemon := daemonSession("LEG")
+	first, second := uuid.NewString(), uuid.NewString()
+	putStepOK(t, handler, issue, first, implementerStart(daemon))
+	putStepOK(t, handler, issue, first, implementerEnd(daemon, "stopped", stepEnd))
+
+	againStart, againEnd := stepEnd.Add(time.Minute), stepEnd.Add(time.Hour)
+	started := putStepOK(t, handler, issue, second, withStepFields(implementerStart(daemon), map[string]any{"started_at": againStart}))
+	if started.Attempt != 2 || started.Generation != 1 {
+		t.Fatalf("the second run's start answers %s, want attempt 2 of generation 1", stepJSON(t, started))
+	}
+	ended := putStepOK(t, handler, issue, second, implementerEnd(daemon, "passed", againEnd))
+	want := model.StepRecord{
+		ID: second, Issue: issue, Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Model: "anthropic/claude-opus-5",
+		Generation: 1, Attempt: 2, StartedAt: &againStart, EndedAt: &againEnd, Result: "passed",
+	}
+	if got := stepJSON(t, ended); got != stepJSON(t, want) {
+		t.Fatalf("the second run's end answers\n%s\nwant\n%s", got, stepJSON(t, want))
+	}
+	steps := stepsOf(t, handler, issue)
+	if len(steps) != 2 || steps[0].ID != first || steps[0].Attempt != 1 || stepJSON(t, steps[1]) != stepJSON(t, want) {
+		t.Fatalf("the read lists %+v, want the first run at attempt 1 and then\n%s", steps, stepJSON(t, want))
+	}
+}
+
 // The read answers each task once, in the order of its first step, with its steps in the order
 // they ran.
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	run := func(task string, place int, at time.Time) string {
 		id := uuid.NewString()
@@ -224,7 +267,7 @@ func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 // another project and an agent's session are each refused, and that daemon's write lands.
 func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	path := "/api/v1/issues/" + issue + "/steps/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), implementerStart(nil), "alice")
@@ -248,7 +291,7 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 // role writes, is refused there.
 func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
 
 	assertRefusedOnClosedIssue(t, "a handoff", postHandoff(t, handler, issue, "implement", `{}`))
@@ -270,7 +313,7 @@ func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 // such code.
 func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 	handler := newTestHandler(t)
-	stepIssues(t, handler, "LEG", 1)
+	createTestIssue(t, handler, "LEG", "A run of steps")
 
 	missing := putStep(t, handler, "LEG-999", uuid.NewString(), implementerStart(daemonSession("LEG")))
 	requireStepRefusal(t, "a write to LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
@@ -299,7 +342,7 @@ func TestAnUnknownIssueReadsAsItsHandoffsRead(t *testing.T) {
 // A step write appends no event to its issue, whose activity a handoff moves.
 func TestAStepWriteAppendsNoEvent(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	before := issueEventTypes(t, handler, issue)
 
 	id := uuid.NewString()
@@ -321,25 +364,46 @@ func TestAStepWriteAppendsNoEvent(t *testing.T) {
 // decode is the package's own 400; none is a 500, and none writes a record.
 func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	start := implementerStart(daemon)
-	noRole := maps.Clone(start)
-	delete(noRole, "role")
+	without := func(field string) map[string]any {
+		body := maps.Clone(start)
+		delete(body, field)
+		return body
+	}
 
 	for _, row := range []struct {
 		name, id string
 		body     map[string]any
 		field    string
 	}{
-		{"a kind that is no kind", "", with(start, map[string]any{"kind": "phase"}), "kind"},
-		{"a result that is no result", "", with(start, map[string]any{"result": "done", "ended_at": stepEnd}), "result"},
-		{"an end with no result", "", with(start, map[string]any{"ended_at": stepEnd}), "ended_at"},
-		{"a step returned to by a run that passed", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
-		{"a first write with no role", "", noRole, "role"},
-		{"a report that is no uuid", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
-		{"a task that is no task id", "", with(start, map[string]any{"task": "Default"}), "task"},
+		{"a kind that is no kind", "", withStepFields(start, map[string]any{"kind": "phase"}), "kind"},
+		{"a result that is no result", "", withStepFields(start, map[string]any{"result": "done", "ended_at": stepEnd}), "result"},
+		{"an end with no result", "", withStepFields(start, map[string]any{"ended_at": stepEnd}), "ended_at"},
+		{"a result with no end", "", withStepFields(start, map[string]any{"result": "passed"}), "result"},
+		{"a step returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
+		{"a retro returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
+		{"a first write with no task", "", without("task"), "task"},
+		{"a first write with no kind", "", without("kind"), "kind"},
+		{"a first write with no step", "", without("step"), "step"},
+		{"a first write with no role", "", without("role"), "role"},
+		{"a first write with no generation", "", without("generation"), "generation"},
+		{"a generation that is no run", "", withStepFields(start, map[string]any{"generation": 0}), "generation"},
+		{"a place below 0", "", withStepFields(start, map[string]any{"step": -1}), "step"},
+		{"a step of kind step at place 0", "", withStepFields(start, map[string]any{"step": 0}), "step"},
+		{"a retro at a step's place", "", withStepFields(start, map[string]any{"kind": "retro"}), "step"},
+		{"a role that is no role", "", withStepFields(start, map[string]any{"role": "Implementer"}), "role"},
+		{"a type that is no type", "", withStepFields(start, map[string]any{"type": "Review"}), "type"},
+		{"a retro with a type", "", withStepFields(start, map[string]any{"kind": "retro", "step": 0}), "type"},
+		{"a merge with a type", "", withStepFields(start, map[string]any{"kind": "merge", "step": 0, "role": "merger"}), "type"},
+		{"a report that is no uuid", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
+		{"a task that is no task id", "", withStepFields(start, map[string]any{"task": "Default"}), "task"},
 		{"an id that is no uuid", "not-a-uuid", start, "id"},
+		{"a start before the UTC year range", "", withStepFields(start, map[string]any{"started_at": "0000-01-01T00:00:00+01:00"}), "started_at"},
+		{"a start after the UTC year range", "", withStepFields(start, map[string]any{"started_at": "9999-12-31T23:59:59-01:00"}), "started_at"},
+		{"an end before the UTC year range", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": "0000-01-01T00:00:00+01:00"}), "ended_at"},
+		{"an end after the UTC year range", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": "9999-12-31T23:59:59-01:00"}), "ended_at"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := cmp.Or(row.id, uuid.NewString())
@@ -365,14 +429,42 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	}
 }
 
+// Normalizing an offset must keep a moment readable at either end of the JSON timestamp range.
+func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	for _, row := range []struct{ input, want string }{
+		{"0000-01-01T01:00:00+01:00", "0000-01-01T00:00:00Z"},
+		{"9999-12-31T22:59:59-01:00", "9999-12-31T23:59:59Z"},
+	} {
+		id := uuid.NewString()
+		written := putStepOK(t, handler, issue, id, withStepFields(implementerStart(daemonSession("LEG")), map[string]any{"started_at": row.input}))
+		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
+			t.Fatalf("the write of %s answers %s, want start %s", row.input, stepJSON(t, written), row.want)
+		}
+		found := false
+		for _, step := range stepsOf(t, handler, issue) {
+			if step.ID == id {
+				found = true
+				if step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
+					t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("the read does not list the run %s", id)
+		}
+	}
+}
+
 // The start and the end of one new run, sent at once, both land, and the record holds the fields
 // of each: the second write waits for the first and reads what it wrote.
 func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
-	start := with(stepIdentity(daemon), map[string]any{"agent": "legion-leg-leg-1-implementer", "started_at": stepStart})
-	end := with(stepIdentity(daemon), map[string]any{"result": "passed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5"})
+	start := implementerStart(daemon)
+	end := implementerEnd(daemon, "passed", stepEnd)
 
 	const rounds = 20
 	ids := make([]string, rounds)
@@ -427,7 +519,7 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 // A second end of one run lands and changes nothing: the run keeps its first end.
 func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
 	putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
 	putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "stopped", stepEnd))
@@ -441,10 +533,57 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	}
 }
 
+// A backward move to the retro returns to place 0, not to no place. Both delivery orders and a
+// later end keep that first return destination in the write's answer and in the issue's read.
+func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	for _, endFirst := range []bool{false, true} {
+		t.Run(strconv.FormatBool(endFirst), func(t *testing.T) {
+			id := uuid.NewString()
+			identity := map[string]any{
+				"actor": daemonSession("LEG"), "task": "default", "step": 0, "kind": "merge",
+				"role": "merger", "type": "", "agent": "legion-leg-leg-1-merger", "generation": 1,
+			}
+			start := withStepFields(identity, map[string]any{"started_at": stepStart})
+			end := withStepFields(identity, map[string]any{"ended_at": stepEnd, "result": "failed", "returned_to": 0})
+			if !endFirst {
+				started := putStepOK(t, handler, issue, id, start)
+				if started.ReturnedTo != nil {
+					t.Fatalf("a start returned to %v, want no destination", started.ReturnedTo)
+				}
+			}
+			ended := putStepOK(t, handler, issue, id, end)
+			if ended.ReturnedTo == nil || *ended.ReturnedTo != 0 {
+				t.Fatalf("the end answers %s, want returned_to 0, not null", stepJSON(t, ended))
+			}
+			if endFirst {
+				putStepOK(t, handler, issue, id, start)
+			}
+			again := putStepOK(t, handler, issue, id, withStepFields(end, map[string]any{"returned_to": 2}))
+			if again.ReturnedTo == nil || *again.ReturnedTo != 0 {
+				t.Fatalf("the later end answers %s, want the first return to place 0", stepJSON(t, again))
+			}
+			for _, step := range stepsOf(t, handler, issue) {
+				if step.ID == id {
+					if step.ReturnedTo == nil || *step.ReturnedTo != 0 {
+						t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
+					}
+					return
+				}
+			}
+			t.Fatalf("the read does not list the run %s", id)
+		})
+	}
+}
+
 // An id the record of one issue holds is refused to a write that names another issue.
 func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 2)
+	issues := []string{
+		createTestIssue(t, handler, "LEG", "A run of steps"),
+		createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Another run of steps"}, "alice").Key,
+	}
 	id := uuid.NewString()
 	putStepOK(t, handler, issues[0], id, implementerStart(daemonSession("LEG")))
 

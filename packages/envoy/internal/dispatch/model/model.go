@@ -3120,11 +3120,11 @@ type HandoffRecordedEventPayload struct {
 // made), Session the claim's session and Model `<provider>/<model>`, each "" where the daemon
 // knew none. Generation is the issue's run, and Attempt, which no write stores, the place of this
 // run among the issue's runs of the same task, step and kind, from 1. Result is passed, failed or
-// stopped, "" while the run still runs; ReturnedTo is the step a failed or stopped run returned
-// its task to, and Report the handoff its ending role named, each null where the run has none.
-// Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did the
-// retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+// stopped, "" while the run still runs; ReturnedTo is the place a failed or stopped run returned
+// its task to, 0 being the retro's and the merge's place, and Report the handoff its ending role
+// named, each null where the run has none. Rating and RatingReason are a retro's alone: the
+// rating, 1 to 5, that the agent that did the retro gave the plan the issue ran, and its reason,
+// each null where the record holds none (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -3140,7 +3140,7 @@ type StepRecord struct {
 	Attempt      int        `json:"attempt"`
 	StartedAt    *time.Time `json:"started_at"`
 	EndedAt      *time.Time `json:"ended_at"`
-	Result       string     `json:"result"`
+	Result       string     `json:"result" enum:",passed,failed,stopped"`
 	ReturnedTo   *int       `json:"returned_to"`
 	Report       *string    `json:"report"`
 	Rating       *int       `json:"rating"`

@@ -217,14 +217,21 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
+// The kinds and the lanes named here are this test's own, the oracle, and the kinds are read from
+// the outbox's own lanes (OutboxLanes): a lane added there with its kinds and not named here fails
+// both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindStepRecord, OutboxKindPlanRecord}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
+	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
+		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
+	}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim, LaneRecord} {
+	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -267,8 +274,8 @@ func TestTheRecordLaneRunsTheStepAndThePlanRecordsAlone(t *testing.T) {
 const stepRecordID = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
 
 // Dispatch writes each field of a record once and keeps every field the write leaves out (the step
-// write of Dispatch's route), so an omitted field and a field written empty are two different
-// writes: a start that sent the model as "" would keep the end's model off the record for good.
+// write of Dispatch's route), so an omitted time and a zero one are two different writes: a zero
+// started_at would stand on the record for good, and a returned_to of 0 is a return to the retro.
 // The row has to carry that difference through Postgres: a start with no session, no model and no
 // end decodes with each of them still absent, and a retro's type, which is "", and its place, 0,
 // are still written. Only the write that rates a retro carries a rating and its reason, which every
@@ -277,7 +284,7 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 	started := time.Date(2026, 11, 16, 23, 0, 0, 123456789, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-1", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	returnedTo, rating, reason := 2, 4, "The plan fit the work."
+	returnedTo, retro, rating, reason := 2, 0, 4, "The plan fit the work."
 	for _, tc := range []struct {
 		name    string
 		record  StepRecord
@@ -312,6 +319,14 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 				Agent: "legion-leg-leg-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason},
 			absent:  []string{"session", "model", "started_at", "ended_at", "result", "returned_to", "report"},
 			present: map[string]string{"rating": "4", "rating_reason": `"The plan fit the work."`, "type": `""`, "step": "0"},
+		},
+		{
+			name: "the end of a merge that moved back to the retro, whose place it returned to is 0",
+			record: StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
+				Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
+				Result: &result, ReturnedTo: &retro},
+			absent:  []string{"started_at", "report", "rating", "rating_reason"},
+			present: map[string]string{"step": "0", "returned_to": "0"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

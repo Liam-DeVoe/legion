@@ -1247,6 +1247,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
+	s.awaitStreamOf(r.Context(), grant.Claim)
 	s.applyFact(w, r, requestFactID("phase/backward"),
 		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
 }
@@ -1289,6 +1290,7 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.architectOwns(w, r, grant, recorded, "sign_off") {
 		return
 	}
+	s.awaitStreamOf(r.Context(), grant.Claim)
 	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue}, SignOffResponse{})
 }
 

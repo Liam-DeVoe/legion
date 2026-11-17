@@ -17,6 +17,7 @@ import {
   inboxQuery,
   inboxThreadsQuery,
   issueQuery,
+  issueStepsQuery,
   myRepliesCountQuery,
   prioritiesQuery,
   priorityHistoryQuery,
@@ -150,7 +151,7 @@ const READS = {
     key: blockQuery("dispatch://CORE-1/spec#b-outro").queryKey,
   },
   // Another issue's step records, which the Steps tab of CORE-9 reads.
-  otherSteps: { key: ["issue", "CORE-9", "steps"] },
+  otherSteps: { key: issueStepsQuery("CORE-9").queryKey },
   parent: { key: issueQuery("CORE-0").queryKey },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
@@ -197,7 +198,7 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
   // The Steps tab's read of CORE-1's step records.
-  steps: { key: ["issue", "CORE-1", "steps"] },
+  steps: { key: issueStepsQuery("CORE-1").queryKey },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
   // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
   // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an

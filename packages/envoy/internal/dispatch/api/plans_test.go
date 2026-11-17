@@ -110,10 +110,10 @@ func recordRuns(t *testing.T, handler http.Handler, project, issue string, runs 
 			"role": each.role, "generation": 1,
 		}
 		if each.started != nil {
-			putStepOK(t, handler, issue, ids[index], with(body, map[string]any{"started_at": *each.started}))
+			putStepOK(t, handler, issue, ids[index], withStepFields(body, map[string]any{"started_at": *each.started}))
 		}
 		if each.ended != nil {
-			end := with(body, map[string]any{"result": each.result, "ended_at": *each.ended})
+			end := withStepFields(body, map[string]any{"result": each.result, "ended_at": *each.ended})
 			if each.result == "failed" {
 				end["returned_to"] = 2
 			}
@@ -127,7 +127,7 @@ func recordRuns(t *testing.T, handler http.Handler, project, issue string, runs 
 // the retro's completion carried.
 func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, generation, rating int, reason string) {
 	t.Helper()
-	putRatingOK(t, handler, issue, id, with(retroIdentity(daemonSession(project), generation),
+	putRatingOK(t, handler, issue, id, withStepFields(retroIdentity(daemonSession(project), generation),
 		map[string]any{"rating": rating, "rating_reason": reason}))
 }
 
@@ -138,7 +138,7 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 // last end is 30.7 seconds past a whole minute, so its time is whole seconds, cut, not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 3)
+	issues := createListedIssues(t, handler, "LEG", 3)
 	reviewed, fitted, running := issues[0], issues[1], issues[2]
 	daemon := daemonSession("LEG")
 	fittedSteps := []string{"planner", "implementer", "acceptance:owner"}
@@ -162,7 +162,7 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	rateRetro(t, handler, "LEG", reviewed, reviewedRetro, 1, 4, "The tester found the bug.")
 	closeIssue(t, handler, reviewed)
 
-	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, with(defaultPlanBody(daemon, 1), map[string]any{
+	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
 		"tasks": []map[string]any{{"id": "default", "steps": fittedSteps}},
 	}))
 	runs = recordRuns(t, handler, "LEG", fitted,
@@ -194,8 +194,8 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		failed         int
 		started, ended time.Time
 	}{
-		{read.Issues[0], "A run of steps 2", fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
-		{read.Issues[1], "A run of steps 1", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
+		{read.Issues[0], "LEG listed issue 1", fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
+		{read.Issues[1], "LEG listed issue 0", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
 	} {
 		issue := want.issue
 		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
@@ -247,27 +247,27 @@ func issueClosedAt(t *testing.T, handler http.Handler, key string) time.Time {
 // one is written without it.
 func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	rating := map[string]any{"rating": 3, "rating_reason": "The plan was late."}
 
-	step := putRating(t, handler, issue, uuid.NewString(), with(stepIdentity(daemon), rating))
+	step := putRating(t, handler, issue, uuid.NewString(), withStepFields(stepIdentity(daemon), rating))
 	requireStepRefusal(t, "a rating of a step", step, http.StatusBadRequest, codeStepInput, "rating")
-	merge := putRating(t, handler, issue, uuid.NewString(), with(retroIdentity(daemon, 1), with(rating, map[string]any{"kind": "merge"})))
+	merge := putRating(t, handler, issue, uuid.NewString(), withStepFields(retroIdentity(daemon, 1), withStepFields(rating, map[string]any{"kind": "merge"})))
 	requireStepRefusal(t, "a rating of a merge", merge, http.StatusBadRequest, codeStepInput, "rating")
 	held := uuid.NewString()
 	putStepOK(t, handler, issue, held, implementerStart(daemon))
-	asRetro := putRating(t, handler, issue, held, with(retroIdentity(daemon, 1), rating))
+	asRetro := putRating(t, handler, issue, held, withStepFields(retroIdentity(daemon, 1), rating))
 	requireStepRefusal(t, "a rating of a record held as a step", asRetro, http.StatusBadRequest, codeStepInput, "rating")
 
 	unrated := uuid.NewString()
-	written := putStepOK(t, handler, issue, unrated, with(retroIdentity(daemon, 1), with(rating, map[string]any{"started_at": stepStart})))
+	written := putStepOK(t, handler, issue, unrated, withStepFields(retroIdentity(daemon, 1), withStepFields(rating, map[string]any{"started_at": stepStart})))
 	if written.Rating != nil || written.RatingReason != nil {
 		t.Fatalf("the step write answers rating %v %v, want none: a rating has a route of its own", written.Rating, written.RatingReason)
 	}
 
 	retro := uuid.NewString()
-	rated := putRatingOK(t, handler, issue, retro, with(retroIdentity(daemon, 1), rating))
+	rated := putRatingOK(t, handler, issue, retro, withStepFields(retroIdentity(daemon, 1), rating))
 	if rated.Kind != "retro" || rated.Rating == nil || *rated.Rating != 3 || rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
 		t.Fatalf("the rating answers %s, want the retro rated 3 with its reason", stepJSON(t, rated))
 	}
@@ -292,17 +292,17 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 // the control.
 func TestARatingIsTheDaemonsAlone(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := uuid.NewString()
-	putStepOK(t, handler, issue, retro, with(retroIdentity(daemonSession("LEG"), 1), map[string]any{"started_at": stepStart}))
+	putStepOK(t, handler, issue, retro, withStepFields(retroIdentity(daemonSession("LEG"), 1), map[string]any{"started_at": stepStart}))
 	rating := map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}
 
 	for _, id := range []string{retro, uuid.NewString()} {
 		path := "/api/v1/issues/" + issue + "/steps/" + id + "/rating"
-		person := dispatchRequest(t, handler, http.MethodPut, path, with(retroIdentity(nil, 1), rating), "alice")
+		person := dispatchRequest(t, handler, http.MethodPut, path, withStepFields(retroIdentity(nil, 1), rating), "alice")
 		requireStepRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
 		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
-			refused := putRating(t, handler, issue, id, with(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
+			refused := putRating(t, handler, issue, id, withStepFields(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
 			requireStepRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
 		}
 	}
@@ -310,7 +310,7 @@ func TestARatingIsTheDaemonsAlone(t *testing.T) {
 		t.Fatalf("the refused ratings left %+v, want the one retro %s, unrated", steps, retro)
 	}
 
-	rated := putRatingOK(t, handler, issue, retro, with(retroIdentity(daemonSession("LEG"), 1), rating))
+	rated := putRatingOK(t, handler, issue, retro, withStepFields(retroIdentity(daemonSession("LEG"), 1), rating))
 	if rated.Rating == nil || *rated.Rating != 4 || rated.RatingReason == nil || *rated.RatingReason != "The plan fit the work." {
 		t.Fatalf("the daemon's rating answers %s, want the retro rated 4 with its reason", stepJSON(t, rated))
 	}
@@ -333,10 +333,10 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 // with nothing written, where the session of that id writes both, which is the control.
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	writer := legionDaemonSessionPrefix + "LEG"
 	plan, retro := uuid.NewString(), uuid.NewString()
-	rating := with(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
+	rating := withStepFields(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
 
 	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
 	requireStepRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
@@ -350,7 +350,7 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	}
 
 	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSession("LEG"), 1))
-	putRatingOK(t, handler, issue, retro, with(rating, map[string]any{"actor": daemonSession("LEG")}))
+	putRatingOK(t, handler, issue, retro, withStepFields(rating, map[string]any{"actor": daemonSession("LEG")}))
 }
 
 // workflowRows counts the rows of the workflow store's two tables, which every plan write and
@@ -396,7 +396,7 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	}{
 		{"plan", "/api/v1/issues/" + issue + "/plans/" + uuid.NewString(), defaultPlanBody(daemon, 1)},
 		{"rating", "/api/v1/issues/" + issue + "/steps/" + uuid.NewString() + "/rating",
-			with(retroIdentity(daemon, 1), map[string]any{"rating": 3, "rating_reason": "The plan was late."})},
+			withStepFields(retroIdentity(daemon, 1), map[string]any{"rating": 3, "rating_reason": "The plan was late."})},
 	} {
 		before := workflowRows(t, rig.database)
 		refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
@@ -418,23 +418,23 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 // taken, which is the control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSession("LEG"), 1)
-	noReason := with(retro, map[string]any{"rating": 3})
-	noRating := with(retro, map[string]any{"rating_reason": "Why."})
+	noReason := withStepFields(retro, map[string]any{"rating": 3})
+	noRating := withStepFields(retro, map[string]any{"rating_reason": "Why."})
 
 	for _, row := range []struct {
 		name  string
 		body  map[string]any
 		field string
 	}{
-		{"a rating of 0", with(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating"},
-		{"a rating of 6", with(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
+		{"a rating of 0", withStepFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating"},
+		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
 		{"no rating", noRating, "rating"},
 		{"neither a rating nor a reason", retro, "rating"},
 		{"no reason", noReason, "rating_reason"},
-		{"a blank reason", with(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
-		{"a reason of 2,001 code points", with(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
+		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
+		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.field)
@@ -446,7 +446,7 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	if written := putStepOK(t, handler, issue, uuid.NewString(), retro); written.Kind != "retro" || written.Rating != nil {
 		t.Fatalf("the step route answers %s for the retro's identity alone, want the retro with no rating", stepJSON(t, written))
 	}
-	longest := putRatingOK(t, handler, issue, uuid.NewString(), with(retro, map[string]any{"rating": 1, "rating_reason": strings.Repeat("é", 2000)}))
+	longest := putRatingOK(t, handler, issue, uuid.NewString(), withStepFields(retro, map[string]any{"rating": 1, "rating_reason": strings.Repeat("é", 2000)}))
 	if longest.RatingReason == nil || len([]rune(*longest.RatingReason)) != 2000 {
 		t.Fatalf("a reason of 2,000 code points answers %s, want it whole", stepJSON(t, longest))
 	}
@@ -458,17 +458,17 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 // the NUL taken out lands, which is the control.
 func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSession("LEG"), 1)
 	id := uuid.NewString()
 
-	refused := putRating(t, handler, issue, id, with(retro, map[string]any{"rating": 3, "rating_reason": "The plan\x00 was late."}))
+	refused := putRating(t, handler, issue, id, withStepFields(retro, map[string]any{"rating": 3, "rating_reason": "The plan\x00 was late."}))
 	requireStepRefusal(t, "a reason holding a NUL", refused, http.StatusBadRequest, "NUL_CHARACTER",
 		"rating_reason holds a NUL character (U+0000) at character 9, which Dispatch cannot store")
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused rating left %d records, want none", len(steps))
 	}
-	if rated := putRatingOK(t, handler, issue, id, with(retro, map[string]any{"rating": 3, "rating_reason": "The plan was late."})); rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
+	if rated := putRatingOK(t, handler, issue, id, withStepFields(retro, map[string]any{"rating": 3, "rating_reason": "The plan was late."})); rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
 		t.Fatalf("the rating with no NUL answers %s, want its reason", stepJSON(t, rated))
 	}
 }
@@ -481,7 +481,7 @@ func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
 // with the NUL taken out lands, which is the control.
 func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	awaitBackgroundWrites(t, served)
 	daemon := `{"kind":"session","id":"legion-daemon:LEG"`
 	for _, route := range []struct {
@@ -521,16 +521,16 @@ func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
 // for one retro land in either order.
 func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	id := uuid.NewString()
 
 	rateRetro(t, handler, "LEG", issue, id, 1, 2, "The plan skipped the tests.")
-	again := putRatingOK(t, handler, issue, id, with(retroIdentity(daemon, 1), map[string]any{"rating": 5, "rating_reason": "Changed my mind."}))
+	again := putRatingOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, 1), map[string]any{"rating": 5, "rating_reason": "Changed my mind."}))
 	if again.Rating == nil || *again.Rating != 2 || *again.RatingReason != "The plan skipped the tests." {
 		t.Fatalf("a second rating answers %s, want the first, 2", stepJSON(t, again))
 	}
-	ended := putStepOK(t, handler, issue, id, with(retroIdentity(daemon, 1), map[string]any{"result": "passed", "ended_at": at(3)}))
+	ended := putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, 1), map[string]any{"result": "passed", "ended_at": at(3)}))
 	if ended.Result != "passed" || ended.Rating == nil || *ended.Rating != 2 {
 		t.Fatalf("the retro's end after its rating answers %s, want the end beside the rating", stepJSON(t, ended))
 	}
@@ -542,7 +542,7 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 // was written after it, and both ratings, in the order the retros ran.
 func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	document, version := uuid.NewString(), 3
 	owners := model.PlanRecord{ID: uuid.NewString(), Issue: issue, Generation: 2, Source: "owner", ArtifactID: &document, Version: &version,
@@ -563,8 +563,8 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 		reason  string
 	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}} {
 		id := uuid.NewString()
-		putStepOK(t, handler, issue, id, with(retroIdentity(daemon, generation), map[string]any{"started_at": retro.started}))
-		putStepOK(t, handler, issue, id, with(retroIdentity(daemon, generation), map[string]any{"result": "passed", "ended_at": retro.started.Add(time.Minute)}))
+		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"started_at": retro.started}))
+		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"result": "passed", "ended_at": retro.started.Add(time.Minute)}))
 		rateRetro(t, handler, "LEG", issue, id, generation, retro.rating, retro.reason)
 	}
 	closeIssue(t, handler, issue)
@@ -589,7 +589,7 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 // the issue's time starts at the earliest start the records hold.
 func TestAnUnknownStartCountsNoTime(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
 		run{"step", "planner", 1, nil, new(at(5)), "passed"},
 		run{"step", "implementer", 2, new(at(10)), new(at(30)), "passed"},
@@ -617,7 +617,7 @@ func TestAnUnknownStartCountsNoTime(t *testing.T) {
 // the difference would be negative, and the start and the end as the records hold them.
 func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
 		run{"step", "planner", 1, nil, new(at(5)), "passed"},
 		run{"step", "implementer", 2, new(at(10)), nil, ""},
@@ -642,7 +642,7 @@ func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
 // each as null or empty on the wire, which is what Dispatch holds of it.
 func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LEG/plans", nil, "alice")
@@ -660,7 +660,7 @@ func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 // an empty list.
 func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
 	handler := newTestHandler(t)
-	stepIssues(t, handler, "LEG", 1)
+	createTestIssue(t, handler, "LEG", "A run of steps")
 
 	missing := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/NOPE/plans", nil, "alice")
 	requireStepRefusal(t, "the plans of NOPE", missing, http.StatusNotFound, "PROJECT_NOT_FOUND")
@@ -693,7 +693,7 @@ func readPlanKeys(t *testing.T, handler http.Handler, project, query string) []s
 // comparison onto the close itself.
 func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
 	closed := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
 	if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", issue, closed); err != nil {
@@ -728,7 +728,7 @@ func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 // appends no event and answers the plan as it stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 2)
+	issues := createListedIssues(t, handler, "LEG", 2)
 	issue, closed := issues[0], issues[1]
 	path := "/api/v1/issues/" + issue + "/plans/"
 
@@ -759,7 +759,7 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 // holds is 409 PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 2)
+	issues := createListedIssues(t, handler, "LEG", 2)
 	daemon := daemonSession("LEG")
 	plan := defaultPlanBody(daemon, 1)
 	noSource := maps.Clone(plan)
@@ -770,14 +770,14 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 		body  map[string]any
 		field string
 	}{
-		{"a source that is no source", with(plan, map[string]any{"source": "mine"}), "source"},
+		{"a source that is no source", withStepFields(plan, map[string]any{"source": "mine"}), "source"},
 		{"no source", noSource, "source"},
-		{"no task", with(plan, map[string]any{"tasks": []any{}}), "tasks"},
-		{"a task with no steps", with(plan, map[string]any{"tasks": []map[string]any{{"id": "default"}}}), "steps"},
-		{"a task id that is no task id", with(plan, map[string]any{"tasks": []map[string]any{{"id": "Default", "steps": []string{"planner"}}}}), "task"},
-		{"a step that is no step", with(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"Planner"}}}}), "steps"},
-		{"a generation of 0", with(plan, map[string]any{"generation": 0}), "generation"},
-		{"an owner's plan with no document", with(plan, map[string]any{"source": "owner", "version": 2}), "artifact_id"},
+		{"no task", withStepFields(plan, map[string]any{"tasks": []any{}}), "tasks"},
+		{"a task with no steps", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default"}}}), "steps"},
+		{"a task id that is no task id", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "Default", "steps": []string{"planner"}}}}), "task"},
+		{"a step that is no step", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"Planner"}}}}), "steps"},
+		{"a generation of 0", withStepFields(plan, map[string]any{"generation": 0}), "generation"},
+		{"an owner's plan with no document", withStepFields(plan, map[string]any{"source": "owner", "version": 2}), "artifact_id"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			response := putPlanRecord(t, handler, issues[0], uuid.NewString(), row.body)
@@ -807,9 +807,9 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 // source the store gains and a tag lacks fails here rather than in a client the schema refuses it to.
 func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	response := putPlanRecord(t, handler, issue, uuid.NewString(),
-		with(defaultPlanBody(daemonSession("LEG"), 1), map[string]any{"source": "no-such-source"}))
+		withStepFields(defaultPlanBody(daemonSession("LEG"), 1), map[string]any{"source": "no-such-source"}))
 	refusal := decodeBody[refusalAnswer](t, response)
 	_, listed, named := strings.Cut(refusal.Error, "one of ")
 	if response.Code != http.StatusBadRequest || refusal.Code != codePlanInput || !named {

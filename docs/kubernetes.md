@@ -1972,29 +1972,40 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that records each step
 
-This release adds one outbox kind, `step_record`, and one table, `step_starts`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+This release adds one outbox kind, `step_record`, and the table `step_starts` with what its rollback keeps; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the two merge-queue kinds among its kinds, and its version stands above `20261114031356_merge_queue_removal`, so it writes the list last on any database.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
-Run this with the daemon stopped, before the earlier image is pinned:
-
-```sql
--- The writes of the issues' step records onto Dispatch.
-delete from outbox where kind = 'step_record';
-```
-
-Each deleted row costs one write of one record: Dispatch shows that step without the start or the end the row carried, and nothing else of the issue changes.
+The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
-It waits through the rollback and writes its record at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks.
+Nor does such a row hold an issue's pod: the earlier release's idle check counts only the kinds it names (`idleWaitingKinds` in `store/idle.go`).
+Each row waits through the rollback and writes its start or its end at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks, so none of them is lost.
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
-The table `step_starts` (`20261117004117_step_starts`) stays in place, and the rollback needs no statement for it: an earlier release names it in no statement, so that release boots with the table and its rows there.
-It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`).
-What a rollback and a roll forward cost is the record of each step that started under the earlier release, which writes no start and raises no count.
-At the roll forward, the end of such a step reads the count of its place's last run under this release: where that run had ended, the end writes nothing and the step has no record;
-where that run was still open at the rollback, the end ends that run's record, with the moment and the result of the later run.
+The table `step_starts` (`20261117004117_step_starts`) stays in place: an earlier release names it in no statement, so that release boots with the table and its rows there.
+It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
+An earlier release starts and ends steps and counts none of them, so the rollback keeps what the roll forward needs to tell the runs this release counted from the ones it did not.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+insert into step_starts_rollback (issue, tree, witness, taken_at)
+select key, tree, step_run_witness(key, tree), now() from issues
+where key in (select issue from step_starts)
+on conflict (issue) do nothing;
+delete from schema_version where version = 20261117064152;
+```
+
+The `insert` keeps, for each issue with a counted step, the moment of the rollback and what this release ends or starts a step on (`step_run_witness`, whose definition and reasons stand in the header of `20261117004117_step_starts`): the phase the issue stands in, its generation, its implementer's pass, the generation of its tree's root, and whether that root lingers while the issue stands outside merging.
+A second run before any roll forward keeps what the first kept.
+The `delete` re-arms `20261117064152_step_starts_roll_forward`, so the newer image's `Migrate` applies it again at the roll forward, before the daemon serves; where that file carries another identifier in the release you roll back from, use that one.
+
+The roll forward reads each issue again, and each row of an issue the earlier release moved reads `uncounted` from then on; every other row stands as it was.
+A step that was running at the rollback on such an issue ended under the earlier release, which wrote no end, so the roll forward ends its record `stopped`, at the moment of the rollback, when Legion stopped recording it: the moment it really ended is nowhere to be read, and a record with no end would read `running` for good.
+A step the earlier release started gets a record of its own when it ends under this release: the count after its place's last, or 0 where its place has no row, with the agent its start would have named and the start time its role's entry records (`upgradedStart` in `internal/workflow/steps.go`).
+A step running at the rollback on an issue the earlier release did not move is still the step this release counted, and its end ends the record its start wrote.
+What the rollback costs is the record of each step that both starts and ends under the earlier release, and the true end of each step running at the rollback that ends under it.
 
 #### Rolling back the release that rates each plan
 
@@ -2477,7 +2488,7 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-A rollback of the release that rates each plan to any release before it, either of these two included, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), and a rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
+A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), and a rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2584,7 +2595,7 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-The migrations recorded above this one at contract 146 are these.
+The migrations recorded above this one are these.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
 20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
 20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
@@ -2592,7 +2603,8 @@ The migrations recorded above this one at contract 146 are these.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
-20261117004117_step_starts adds the table `step_starts` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement.
+20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement.
+20261117064152_step_starts_roll_forward writes `step_starts` and `step_starts_rollback` alone and touches none of the six either, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses both first.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
@@ -3736,6 +3748,11 @@ Every role can write the whole issue volume, and the roles share the pod's netwo
 
 The issue's roles trust one another's writes to the volume as they did when each ran in a container of its own.
 The namespaces keep a role's tokens and private files out of a sibling's own reads, and no further.
+One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
+Each role's session is registered bound to that role's own key: the thumbprint of the key the role's shim names at its hello, which the daemon sends with every write of the registration.
+The broker refuses a trade for a session proved with any other key, so a sibling role that holds the pod's exchange token and its own key is refused another role's session.
+Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
+That closes a direct mint only: the roles of one issue are no boundary against code a sibling plants in another role's process, which then runs with that role's key as it runs with that role's tokens ([Trust model](#trust-model-the-provisioning-token) lists what a plant reaches).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the bundle holds a directory for (one of the project's) and the role's App is installed on that repository;
 git in the shared clone asks the same helper it asked before, and every other host is left to the configuration files.
 The `legion` in the helper resolves on the PATH of whichever process runs git.
@@ -4022,6 +4039,7 @@ So the runtime compares a role's addresses with what it hands now on every evalu
 - **The secrets broker's enrollment**, for a role that enrolls, is read from the pod spec at the same point:
   the `agent-secrets-token` volume's projection of the broker's token (its audience, expiry and path) and the role's own key directory, which a generation of the role started now runs against.
   Like the stream, both are fixed for the pod's life, so turning `runtime.kubernetes.agent_secrets` on, or changing its `audience` or `token_expiry_seconds`, leaves every running workflow role holding a pod that lacks them.
+  Where the block names an `exchange_audience`, the `agent-secrets-exchange` volume's projection of the exchange token (its audience, expiry and path) is read the same way, and a pod that lacks it, or projects another audience, has drifted for its update round as an enrollment that lacks its token has.
 
 - **The other five** are read from a record on the issue Sandbox (`addresses.go`).
   Before it sends a generation's start command, the daemon merge-patches the role's own annotation, `legion.dev/addresses-<role>`, with the generation and, for each of the five, its variable, its name and the sha256 of its whole value.
@@ -6233,6 +6251,7 @@ each issue's pod (every role of it alike) and the image probe's.
   every draw records it.
   `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every issue role where the block names none: a launch of a role the list leaves out loads none of this experiment's overlays or instructions while its unit keeps the arm it drew (the operator's and the role's own overlays, and other experiments' arms that reach it, still apply), so an experiment can leave the roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what it changes.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own disk.
   Neither file key is required:
@@ -6273,7 +6292,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
 
 - **What a role of a drawn unit is given.**
-  Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into, in the order the project's file declares the experiments, which outrank both.
+  Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into whose experiment reaches its role (`roles`), in the order the project's file declares the experiments, which outrank both.
   Its system prompt, the file its one `--append-system-prompt` names, ends with each such arm's `instructions`, in that same order, after the deployment's own.
   The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
   The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
@@ -6382,6 +6401,48 @@ each issue's pod (every role of it alike) and the image probe's.
   So the enrollment can stay live until the pod is replaced, at the latest when its issue closes, plus one lease (`BROKER_LEASE_SECONDS`).
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
+
+- **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
+  Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
+  The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
+  The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
+  it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
+  Set, the volume's name, its mount path and the two variables are Legion's: a `runtime.kubernetes.pod.env` that sets either variable, a `runtime.kubernetes.pod.volumes` entry named `agent-secrets-exchange`, or a `volume_mounts` path at, under or above `/var/run/legion/agent-secrets-exchange` is refused at boot and by `legion start --check-config`, naming the entry, and a launch spec that sets either variable is refused as one setting any variable the runtime sets itself.
+  Unset, no pod carries the token, no role is told either variable, and the name, the path and both variables stay the operator's (the variables a launch spec's too), so a deployment that never sets it runs exactly as before the key existed.
+  The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
+  Turning the key off replaces no pod: the next generation of each role is told no identity, though its pod still mounts the token until it is replaced.
+
+  - With the key set, the daemon also registers each role's session for the pod it runs in, which the broker's exchange requires of a pod whose account's exchange entry fixes no session: it posts the pod's own token for the broker's audience (the one the shim's hello carries, or the one the shim reads again), the session name and the thumbprint of the role's own key (the one its shim's hello names) to the broker's `POST /v1/oauth/exchange/pod-sessions`, under its own ServiceAccount token as the bearer, the credential that route's class checks.
+
+  - Every registration is made at or after the role's shim hello, with that hello's thumbprint, and never before it: none is sent for a role whose hello has not arrived or names no thumbprint.
+
+  - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
+
+  - The registration needs a broker that binds it to the key and orders it by generation: a broker before this release refuses the `thumbprint` and `generation` fields as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
+    Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
+
+  - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
+    a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
+    and a role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
+
+  - The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
+
+  - When a role's process ends, the daemon waits for that registration's write in flight to be answered, up to the RPC timeout, before its next process writes its own, so the session ends bound to the new process's key.
+
+  - Every write also sends the claim's launch generation, which rises with every launch of the claim and is stored with the claim, so no two processes send the same one and it survives a daemon restart.
+    The broker writes a registration only when the generation sent is at least the one it holds, and answers the registration it holds, so a late write of an earlier process, one the wait above gave up on, cannot put that process's key back.
+    An answer at a later generation than the daemon sent ends that registration's writes, and the daemon logs it at error level, naming the pod, the session and both generations: as a later process's registration when the answered generation is at most the claim's current one, and as a registration this daemon never made when it is above it, since no process of the claim reached that generation (another claim registered the session id, or another service login wrote it).
+
+  - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
+    that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
+
+  - Any other refusal is logged and not written again for that process.
+    So is an answer that registered another pod or another key than the daemon named: the broker answers the pod uid it read from the token (`pod_uid`) and the key the registration is bound to (`thumbprint`), and the daemon logs the pod, the session and both values and stops writing that registration.
+
+  - Unset, the daemon makes no registration call.
+
+  - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
+    Which session a role registers is still its agent's word until t-e-54 (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.

@@ -114,6 +114,17 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		"status", answer.answered(), "code", answer.code)
 }
 
+// awaitStreamOf waits for token's claim's machine to have handled what the worker stream read
+// before this request (Options.AwaitStream), nothing where the daemon gave no such wait. A route
+// whose fact ends the requesting agent's own step calls it just before it applies the fact: the
+// agent's answer and its request reach the daemon apart, and the record of the step names the
+// model of the answer its machine has handled.
+func (s *server) awaitStreamOf(ctx context.Context, token claim.Token) {
+	if s.awaitStream != nil {
+		s.awaitStream(ctx, token)
+	}
+}
+
 // completionAnswer is the writer answerCompletion answers through: it keeps the first status
 // written and the code writeFailure tells it of the refusal it writes (noteRefusal), which the
 // route's line names. It has no Write of its own, so the body goes to the wrapped writer as
@@ -405,6 +416,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if req.PlanRating != nil {
 		rating = &intake.PlanRating{Score: *req.PlanRating, Reason: *req.PlanReason}
 	}
+	s.awaitStreamOf(r.Context(), grant.Claim)
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating}, s.handlers...)

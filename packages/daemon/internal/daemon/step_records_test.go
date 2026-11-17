@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,9 +37,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -53,6 +56,21 @@ const (
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
 	stepRecordsWait = 2 * time.Minute
 )
+
+// stepRecordsTen is the walk's ten records, as a walk to done with one failed review leaves them:
+// each of the task default; the failed review returns the issue to step 2, implementing.
+var stepRecordsTen = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
+	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+}
 
 // v-records, the read by issue: one issue walks to done with one failed review, and the read of the
 // issue lists its ten steps, each with its role, type, agent, attempt, start, end and result, and
@@ -162,20 +180,6 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 	}
 }
 
-// stepRecordsTen is the ten records of a walk whose first review requests changes.
-var stepRecordsTen = []stepWant{
-	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
-	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
-	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-}
-
 // stepRecordsSeven is the seven records of a walk whose first review approves.
 var stepRecordsSeven = []stepWant{
 	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
@@ -185,6 +189,183 @@ var stepRecordsSeven = []stepWant{
 	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
 	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
 	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+}
+
+// A rollback of this release and its roll forward, through the whole daemon and the store it
+// left. The walk stops with Dispatch down and the review sent back, so the implementer's second
+// run is open and the outbox holds the issue's step records and its other writes unsent, beside a
+// count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
+// the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
+// every outbox row and every count stands after it as it stood before. The earlier release then
+// moves the issue as its own transitions leave the store, to testing with the tester's entry
+// raised again, and the newer image boots, its Migrate applying the roll forward. The walk ends at
+// done, and the read holds the implementer's run that the earlier release ended stopped at the
+// moment of the rollback under the id its start wrote, the tester's run that release started as a
+// record of its own at the next count, started when its entry was raised, and the tester's run this
+// release counted under its own id.
+func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
+	r := newStepRecordsRig(t)
+	r.plan()
+	r.implement()
+	r.test()
+	r.dispatch.stop()
+	r.review("CHANGES_REQUESTED", phase.Implementing)
+	// The implementer's second run: its pane holds the task the review sent back, and no turn of it
+	// reaches this release.
+	implementer := r.worker(claim.RoleImplementer)
+	implementer.receive()
+	r.d.stop()
+
+	outbox, starts := r.storeRows(stepRecordsOutboxRows), r.storeRows(stepRecordsStartRows)
+	var stepRows, otherRows int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) filter (where kind = $1), count(*) filter (where kind <> $1) from outbox`,
+		string(record.OutboxKindStepRecord)).Scan(&stepRows, &otherRows); err != nil {
+		t.Fatalf("count the outbox's rows: %v", err)
+	}
+	if stepRows == 0 || otherRows == 0 || !slices.ContainsFunc(starts, func(row string) bool {
+		return strings.Contains(row, `"place":2`) && strings.Contains(row, `"starts":2`) && strings.Contains(row, `"run":"open"`)
+	}) {
+		t.Fatalf("at the rollback the outbox holds %d step records and %d other rows and step_starts holds %q; want both kinds of row unsent and implementing's second start open, or the way back runs over nothing it could lose",
+			stepRows, otherRows, starts)
+	}
+	rollBackFrom := r.databaseNow()
+	r.rollBackStepRecords()
+	rollBackTo := r.databaseNow()
+	if after := r.storeRows(stepRecordsOutboxRows); !slices.Equal(after, outbox) {
+		t.Fatalf("the way back changed the outbox:\nbefore %q\nafter  %q", outbox, after)
+	}
+	if after := r.storeRows(stepRecordsStartRows); !slices.Equal(after, starts) {
+		t.Fatalf("the way back changed step_starts:\nbefore %q\nafter  %q", starts, after)
+	}
+
+	// The earlier release: the implementer works that task and completes, which ends its turn,
+	// moves the issue to testing and raises the tester's entry, whose run it starts and counts
+	// nowhere.
+	implementer.endTurnUnseen()
+	earlierStart := time.Now().UTC().Truncate(time.Millisecond)
+	r.exec(`update issues set phase = 'testing' where key = $1`, r.key)
+	r.exec(`update phases set entry = entry + 1, entry_raised_at = $2 where issue = $1 and role = 'tester'`, r.key, earlierStart)
+	r.dispatch.start()
+	rebindHeldPorts(t, &r.cfg)
+	r.boot()
+	for _, c := range r.claims {
+		c.reconnect()
+	}
+	// No delivery of the earlier release stands in the store, so the tester's claim still serves
+	// the entry it confirmed before the rollback, and the boot's admission sends it the task of the
+	// entry its row names (workflow's SendOwedEntry), which the tester works. That send starts no
+	// run: only a raise of the entry does (workflow's enter).
+	tester := r.worker(claim.RoleTester)
+	tester.take()
+	r.finish(tester, "test", testCompletion, phase.Reviewing)
+	r.review("APPROVED", phase.Accepting)
+	r.accept()
+	r.retro()
+	r.merge()
+
+	want := []stepWant{
+		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+		{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "stopped", noAgentRead: true},
+		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+		{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
+		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
+		{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
+		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+	}
+	var read stepRecordsRead
+	r.waitSteps("the walk's records across the rollback", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	id := func(step int, count int64) string {
+		return workflow.StepID(r.key, 1, record.StepPlace{Task: "default", Kind: "step", Place: step}, count)
+	}
+	if ended := read.find("step", 2, 2); ended.ID != id(2, 2) || ended.Agent != string(r.token(claim.RoleImplementer)) ||
+		ended.EndedAt.Before(rollBackFrom.Truncate(time.Second)) || ended.EndedAt.After(rollBackTo) {
+		t.Fatalf("the implementer's run open at the rollback reads %+v (ended %v), want the record %s its start wrote, the implementer's, stopped at the rollback, between %s and %s",
+			ended, ended.EndedAt, id(2, 2), rollBackFrom, rollBackTo)
+	}
+	if counted := read.find("step", 3, 1); counted.ID != id(3, 1) {
+		t.Fatalf("the tester's run this release counted reads %+v, want its own record %s", counted, id(3, 1))
+	}
+	if earlier := read.find("step", 3, 2); earlier.ID != id(3, 2) || earlier.Agent != string(r.token(claim.RoleTester)) ||
+		!earlier.StartedAt.Equal(earlierStart) {
+		t.Fatalf("the tester's run the earlier release started reads %+v (started %v), want the record %s of the next count, the tester's, started at %s",
+			earlier, earlier.StartedAt, id(3, 2), earlierStart)
+	}
+}
+
+const (
+	// stepRecordsOutboxRows is every row of the daemon's outbox, whole, in its order.
+	stepRecordsOutboxRows = `select row_to_json(o)::text from outbox o order by id`
+	// stepRecordsStartRows is every row of step_starts, whole, in its key's order.
+	stepRecordsStartRows = `select row_to_json(s)::text from step_starts s order by issue, task, kind, place`
+	// stepRecordsRollForward is the version of the migration whose header carries the step records'
+	// way back, which the way back re-arms and the newer image's Migrate applies again.
+	stepRecordsRollForward = 20261117064152
+)
+
+// storeRows is each row query answers on the daemon's store, as text.
+func (r *stepRecordsRig) storeRows(query string) []string {
+	r.t.Helper()
+	rows, err := r.st.Pool().Query(context.Background(), query)
+	if err != nil {
+		r.t.Fatalf("%s: %v", query, err)
+	}
+	all, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("%s: %v", query, err)
+	}
+	return all
+}
+
+// exec runs one statement with args on the daemon's store, as the earlier release's writes land.
+func (r *stepRecordsRig) exec(statement string, args ...any) {
+	r.t.Helper()
+	if _, err := r.st.Pool().Exec(context.Background(), statement, args...); err != nil {
+		r.t.Fatalf("%s: %v", statement, err)
+	}
+}
+
+// databaseNow is the store's clock, which the way back stamps the rollback's moment with.
+func (r *stepRecordsRig) databaseNow() time.Time {
+	r.t.Helper()
+	var now time.Time
+	if err := r.st.Pool().QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		r.t.Fatalf("read the store's clock: %v", err)
+	}
+	return now
+}
+
+// rollBackStepRecords runs the way back the roll forward's migration carries in its header, from
+// its insert into step_starts_rollback to the delete of its own version row, as an operator runs it
+// with the daemon stopped.
+func (r *stepRecordsRig) rollBackStepRecords() {
+	t := r.t
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	mark := fmt.Sprintf("-- delete from schema_version where version = %d;", stepRecordsRollForward)
+	for _, migration := range all {
+		if migration.Version != stepRecordsRollForward {
+			continue
+		}
+		var block []string
+		for _, line := range strings.Split(migration.SQL, "\n") {
+			if block == nil && !strings.HasPrefix(line, "-- insert into step_starts_rollback") {
+				continue
+			}
+			block = append(block, strings.TrimPrefix(line, "-- "))
+			if line == mark {
+				r.exec(strings.Join(block, "\n"))
+				return
+			}
+		}
+		t.Fatalf("%s carries no way back from its insert into step_starts_rollback to %q", migration.Name, mark)
+	}
+	t.Fatalf("no embedded migration has version %d, the step records' roll forward", stepRecordsRollForward)
 }
 
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,
@@ -539,13 +720,19 @@ func (r *stepRecordsRig) merge() {
 // waitPhase waits for the issue to stand in want.
 func (r *stepRecordsRig) waitPhase(want phase.Phase) {
 	r.t.Helper()
+	r.waitPhaseOf(r.key, want)
+}
+
+// waitPhaseOf waits for issue to stand in want.
+func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
+	r.t.Helper()
 	var last string
 	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
-		issue, ok := r.d.state().Issues[r.key]
-		last = string(issue.Phase)
+		got, ok := r.d.state().Issues[issue]
+		last = string(got.Phase)
 		return ok && last == string(want)
 	}) {
-		r.t.Fatalf("%s stands in %q, want %s", r.key, last, want)
+		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
 	}
 }
 
@@ -562,16 +749,14 @@ func (r *stepRecordsRig) token(role claim.Role) claim.Token {
 // awaitLaunch waits for the running daemon to launch token's claim.
 func (r *stepRecordsRig) awaitLaunch(token claim.Token) {
 	r.t.Helper()
-	if !testwait.Holds(stepRecordsWait, 50*time.Millisecond, func() bool {
+	testwait.WithinPolling(r.t, stepRecordsWait, 50*time.Millisecond, "the daemon's launch of "+string(token), func() bool {
 		for _, call := range r.rt.Calls() {
 			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
 				return true
 			}
 		}
 		return false
-	}) {
-		r.t.Fatalf("the daemon did not launch %s", token)
-	}
+	})
 }
 
 // person sends one request to Dispatch as the run's person, through the identity header the
@@ -644,11 +829,15 @@ func (r *stepRecordsRig) send(request *http.Request) (int, []byte) {
 	return response.StatusCode, answer
 }
 
-// readSteps is GET /api/v1/issues/{key}/steps as a person of the project reads it, or the error
-// that the read met.
-func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) {
+// readSteps is GET /api/v1/issues/{key}/steps of the walk's issue as a person of the project reads
+// it, or the error that the read met.
+func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) { return r.readStepsOf(r.key) }
+
+// readStepsOf is GET /api/v1/issues/{issue}/steps as a person of the project reads it, or the
+// error that the read met.
+func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
 	var read stepRecordsRead
-	if err := r.personRead("/api/v1/issues/"+r.key+"/steps", &read); err != nil {
+	if err := r.personRead("/api/v1/issues/"+issue+"/steps", &read); err != nil {
 		return stepRecordsRead{}, err
 	}
 	return read, nil
@@ -775,11 +964,15 @@ type stepWant struct {
 	step, attempt     int
 	role, typ, result string
 	returnedTo        *int
+	// noAgentRead is a record whose end the roll forward of a rollback wrote: the daemon read no
+	// agent for it, and its start names none, so it holds no session and no model.
+	noAgentRead bool
 }
 
 // stepsHold says whether read holds exactly the records of want, each of the task default, ended,
 // with its role, type, agent, start, end, result and return, and each of kind step with its session
-// and the model that answered it; the error names the first record that is missing or wrong.
+// and the model that answered it, or with neither where the roll forward wrote its end
+// (noAgentRead); the error names the first record that is missing or wrong.
 func stepsHold(read stepRecordsRead, want []stepWant) error {
 	for _, w := range want {
 		got := read.find(w.kind, w.step, w.attempt)
@@ -793,7 +986,9 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 			return fmt.Errorf("%s started %v, ended %v with result %q; want a start, an end and %q", name, got.StartedAt, got.EndedAt, got.Result, w.result)
 		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
 			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
-		case w.kind == "step" && (got.Session == "" || got.Model != stepRecordsModel):
+		case w.noAgentRead && (got.Session != "" || got.Model != ""):
+			return fmt.Errorf("%s names session %q and model %q, want neither: no agent was read for its end", name, got.Session, got.Model)
+		case w.kind == "step" && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
 			return fmt.Errorf("%s names session %q and model %q, want its agent's session and %s", name, got.Session, got.Model, stepRecordsModel)
 		}
 	}
@@ -927,15 +1122,32 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 // turn's start shows the claim working, the answer before it has been read too.
 func (c *stepClaimant) take() {
 	c.r.t.Helper()
-	var prompt shimwire.Prompt
-	select {
-	case prompt = <-c.prompts:
-	case <-time.After(stepRecordsWait):
-		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
-	}
+	prompt := c.receive()
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
+}
+
+// receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
+// and holds until a turn works it.
+func (c *stepClaimant) receive() shimwire.Prompt {
+	c.r.t.Helper()
+	select {
+	case prompt := <-c.prompts:
+		return prompt
+	case <-time.After(stepRecordsWait):
+		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
+		return shimwire.Prompt{}
+	}
+}
+
+// endTurnUnseen ends every turn a prompt started with no daemon of this release there to read it,
+// as the earlier release runs the agent after a rollback: the pane holds no open turn when its
+// shim next connects, so the daemon's state probe finds it idle.
+func (c *stepClaimant) endTurnUnseen() {
+	c.mu.Lock()
+	c.open = nil
+	c.mu.Unlock()
 }
 
 // ownTurn is a turn of the agent's own in which its model answers: it returns once the claim is
@@ -1099,4 +1311,270 @@ func (g *stepRecordsGitHub) pullRequest(number int) string {
 	}
 	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
 		number, state, merged, "merge-"+stepRecordsHead, mergeable, g.branches[number], stepRecordsHead)
+}
+
+// v-records on a member of a tree: a child's acceptance is its tree's work, so the record of its
+// step 5 names the architect of the tree's root, with the session that architect's claim holds and
+// the model that answered it, and never an architect of the child's own, whom no claim serves. The
+// child stands in reviewing under the walk's root, on a pull request of its own; a person's
+// approval moves it to accepting, and the root's architect signs it off through its own route.
+func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
+	r := newStepRecordsRig(t)
+	child, number := r.seedChildInReviewing()
+	r.reviews++
+	payload, err := json.Marshal(map[string]string{
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "APPROVED",
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "the child's round",
+		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number), "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
+	r.waitPhaseOf(child, phase.Accepting)
+	architect := r.worker(claim.RoleArchitect)
+	architect.ownTurn()
+	if status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(), "issue": child}, false); status != http.StatusOK {
+		t.Fatalf("the tree architect's sign-off of %s = %d %s, want 200", child, status, body)
+	}
+	r.waitPhaseOf(child, phase.Retro)
+	own, err := claim.NewToken(r.project, child, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := r.token(claim.RoleArchitect)
+	var last error
+	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
+		read, err := r.readStepsOf(child)
+		if err != nil {
+			last = err
+			return false
+		}
+		got := read.find("step", 5, 1)
+		switch {
+		case got.ID == "":
+			last = fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
+		case got.Role != "acceptance" || got.EndedAt == nil || got.Result != "passed":
+			last = fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
+		case got.Agent != string(tree) || got.Agent == string(own):
+			last = fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
+		case got.Session != architect.session || got.Model != stepRecordsModel:
+			last = fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
+		default:
+			last = nil
+		}
+		return last == nil
+	}) {
+		t.Fatalf("the child's acceptance never reached Dispatch as the tree architect's: %v", last)
+	}
+}
+
+// seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
+// daemon's store in reviewing at generation 1, on an open pull request of its own at
+// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
+	t := r.t
+	t.Helper()
+	var created struct {
+		Key     string `json:"key"`
+		Rank    string `json:"rank"`
+		LastSeq int64  `json:"last_seq"`
+	}
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child the tree's architect accepts"}, http.StatusCreated, &created)
+	number := r.number + 1
+	parent := r.key
+	ctx := context.Background()
+	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := r.records.PutIssue(ctx, tx, record.Issue{
+			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
+			Title: "A child the tree's architect accepts", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
+			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
+		}); err != nil {
+			return err
+		}
+		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
+			State: record.PullRequestOpen, Issue: created.Key, Repo: liveRepo, Number: number, Branch: "legion/" + created.Key,
+			HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{},
+		})
+	}); err != nil {
+		t.Fatalf("seed %s: %v", created.Key, err)
+	}
+	return created.Key, number
+}
+
+// A model whose name holds U+0000 is a name no store can hold: PostgreSQL's text and jsonb, the
+// daemon's outbox payload and Dispatch's record among them, refuse that character. The planner's
+// model answers with one and the planner completes: the completion moves the issue on, and the
+// record of planning reaches Dispatch ended, with the planner's session and no model, as for an
+// agent that named none.
+func TestAModelHoldingANulIsNotKept(t *testing.T) {
+	r := newStepRecordsRig(t)
+	planner := r.worker(claim.RolePlanner)
+	planner.takeAnswering("stand-in/mo\x00del")
+	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	r.waitSteps("the end of planning", func(got stepRecordsRead) error {
+		switch found := got.find("step", 1, 1); {
+		case found.ID == "" || found.EndedAt == nil || found.Result != "passed":
+			return fmt.Errorf("planning reads %+v, want it ended passed", found)
+		case found.Session != planner.session || found.Model != "":
+			return fmt.Errorf("planning names session %q and model %q, want %q and no model", found.Session, found.Model, planner.session)
+		}
+		return nil
+	})
+}
+
+// takeAnswering is take with the agent's model answering as model, provider and model as Oh My
+// Pi's message_end names them.
+func (c *stepClaimant) takeAnswering(model string) {
+	c.r.t.Helper()
+	prompt := c.receive()
+	c.answerWith(model)
+	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+	c.waitState(supervise.StateWorking)
+}
+
+// answerWith is the agent's model answering as model, `<provider>/<model>`, which Oh My Pi's
+// message_end names as message.provider and message.model.
+func (c *stepClaimant) answerWith(model string) {
+	t := c.r.t
+	t.Helper()
+	provider, name, _ := strings.Cut(model, "/")
+	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
+}
+
+// v-records, whose record is whose: each role's agent answers with a model of its own, and the
+// implementer, the tester and the reviewer with another on each later attempt, so a record that
+// took another claim's session or model, or an earlier attempt's model, names the wrong one. The
+// read names, for each of the walk's ten records, the claim token of its agent, that claim's
+// session and the model that answered it last; the merger the merge launches never registers, so
+// the merge names its token and no session and no model. A step that runs names no session yet:
+// its end names the session and the model together.
+func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
+	r := newStepRecordsRig(t)
+	planner := r.worker(claim.RolePlanner)
+	planner.takeAnswering("stand-in/planner")
+	r.waitSteps("the start of planning", func(got stepRecordsRead) error {
+		switch found := got.find("step", 1, 1); {
+		case found.ID == "" || found.StartedAt == nil:
+			return errors.New("no started record of planning")
+		case found.Session != "" || found.Model != "":
+			return fmt.Errorf("planning, still running, names session %q and model %q, want neither", found.Session, found.Model)
+		}
+		return nil
+	})
+	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	implement := func(model string) {
+		c := r.worker(claim.RoleImplementer)
+		c.takeAnswering(model)
+		r.finish(c, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Testing)
+	}
+	test := func(model string) {
+		c := r.worker(claim.RoleTester)
+		c.takeAnswering(model)
+		r.finish(c, "test", testCompletion, phase.Reviewing)
+	}
+	implement("stand-in/implementer")
+	test("stand-in/tester")
+	r.reviewAnswering("stand-in/reviewer", "CHANGES_REQUESTED", phase.Implementing)
+	implement("stand-in/implementer-2")
+	test("stand-in/tester-2")
+	r.reviewAnswering("stand-in/reviewer-2", "APPROVED", phase.Accepting)
+	r.acceptAnswering("stand-in/architect")
+	retro := r.worker(claim.RoleImplementer)
+	retro.takeAnswering("stand-in/implementer-3")
+	r.finish(retro, "", r.retroCompletion(4, "The plan fit the work."), phase.Merging)
+	r.merge()
+
+	own := func(role claim.Role, model string) stepOwner {
+		c := r.claims[r.token(role)]
+		return stepOwner{agent: string(c.token), session: c.session, model: model}
+	}
+	// Index for index with stepRecordsTen.
+	owners := []stepOwner{
+		own(claim.RolePlanner, "stand-in/planner"),
+		own(claim.RoleImplementer, "stand-in/implementer"),
+		own(claim.RoleImplementer, "stand-in/implementer-2"),
+		own(claim.RoleTester, "stand-in/tester"),
+		own(claim.RoleTester, "stand-in/tester-2"),
+		own(claim.RoleReviewer, "stand-in/reviewer"),
+		own(claim.RoleReviewer, "stand-in/reviewer-2"),
+		own(claim.RoleArchitect, "stand-in/architect"),
+		own(claim.RoleImplementer, "stand-in/implementer-3"),
+		{agent: string(r.token(claim.RoleMerger))},
+	}
+	r.waitSteps("the ten records of the walk, each its own agent's", func(got stepRecordsRead) error {
+		return stepsOwnedBy(got, stepRecordsTen, owners)
+	})
+}
+
+// stepOwner is whose a record is: the claim token of its agent, that claim's session and the
+// model that answered it.
+type stepOwner struct {
+	agent, session, model string
+}
+
+// stepsOwnedBy says whether read holds exactly the records of want, each of the task default,
+// ended with its result and its return, and named for its owner, owners[i] for want[i]: its
+// agent, session and model exactly; the error names the first record that is missing or wrong.
+func stepsOwnedBy(read stepRecordsRead, want []stepWant, owners []stepOwner) error {
+	for i, w := range want {
+		got, owner := read.find(w.kind, w.step, w.attempt), owners[i]
+		name := fmt.Sprintf("%s %d attempt %d", w.kind, w.step, w.attempt)
+		switch {
+		case got.ID == "":
+			return fmt.Errorf("the read holds no record of %s", name)
+		case got.Task != "default" || got.Role != w.role || got.EndedAt == nil || got.Result != w.result:
+			return fmt.Errorf("%s is task %q, role %q, ended %v with %q; want task default, role %q, ended with %q", name, got.Task, got.Role, got.EndedAt, got.Result, w.role, w.result)
+		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
+			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
+		case got.Agent != owner.agent || got.Session != owner.session || got.Model != owner.model:
+			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, owner.agent, owner.session, owner.model)
+		}
+	}
+	if got := len(read.records()); got != len(want) {
+		return fmt.Errorf("the read holds %d records, want %d", got, len(want))
+	}
+	return nil
+}
+
+// reviewAnswering is review with the reviewer's model answering as model.
+func (r *stepRecordsRig) reviewAnswering(model, state string, next phase.Phase) {
+	t := r.t
+	t.Helper()
+	c := r.worker(claim.RoleReviewer)
+	c.takeAnswering(model)
+	c.endTurn()
+	r.reviews++
+	payload, err := json.Marshal(map[string]string{
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "state": state,
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
+		"review_id": strconv.Itoa(r.number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
+	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", r.number, r.reviews), string(payload))
+	r.waitPhase(next)
+}
+
+// acceptAnswering is accept with the architect's model answering as model.
+func (r *stepRecordsRig) acceptAnswering(model string) {
+	t := r.t
+	t.Helper()
+	c := r.worker(claim.RoleArchitect)
+	c.send(shimwire.AgentStart{})
+	c.waitState(supervise.StateWorking)
+	c.answerWith(model)
+	c.send(shimwire.AgentEnd{})
+	c.waitState(supervise.StateIdle)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": r.key}, false)
+	if status != http.StatusOK {
+		t.Fatalf("the architect's sign-off = %d %s, want 200", status, body)
+	}
+	r.waitPhase(phase.Retro)
 }

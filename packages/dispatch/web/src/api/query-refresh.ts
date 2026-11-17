@@ -1,4 +1,4 @@
-import type { Query, QueryClient, QueryKey } from "@tanstack/react-query";
+import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { ApiError } from "./client";
 
@@ -61,12 +61,14 @@ interface DeferredCheck {
 // Per QueryClient, keyed by query hash: when each query's last fetch began (from the cache's
 // `fetch` action), the moment each owed refresh was asked for, the timer that will start a
 // refresh the interval holds back, and the checks waiting for the response of a fetch that is out
-// (a first load or a refetch) to land. Every entry of a hash leaves when its query is removed.
+// (a first load or a refetch) to land. Every entry of a hash leaves when its query is removed,
+// but for `heard`, the listeners `onRefresh` registered, which their owners remove.
 interface SchedulerState {
   readonly started: Map<string, number>;
   readonly owed: Map<string, number>;
   readonly timers: Map<string, number>;
   readonly deferred: Map<string, DeferredCheck>;
+  readonly heard: Map<string, Set<() => void>>;
 }
 
 const schedulers = new WeakMap<QueryClient, SchedulerState>();
@@ -78,6 +80,7 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
   }
   const state: SchedulerState = {
     deferred: new Map(),
+    heard: new Map(),
     owed: new Map(),
     started: new Map(),
     timers: new Map(),
@@ -142,6 +145,31 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
  */
 export function trackQueryFetches(queryClient: QueryClient): void {
   schedulerFor(queryClient);
+}
+
+/**
+ * Calls `listener` each time a refresh reaches the query `queryKey` names exactly - an event the
+ * feed refreshes it on, or a refresh of the whole cache - until the returned function is called.
+ * It is for an owner that reads on its own terms and must hear each such refresh, which the
+ * query's state cannot tell it: a query already marked stale takes the mark again with no change
+ * to announce. The Steps tab's catch-up is that owner (`features/steps/StepsTab.tsx`).
+ */
+export function onRefresh(
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  listener: () => void
+): () => void {
+  const heard = schedulerFor(queryClient).heard;
+  const hash = hashKey(queryKey);
+  const listeners = heard.get(hash) ?? new Set<() => void>();
+  heard.set(hash, listeners);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && heard.get(hash) === listeners) {
+      heard.delete(hash);
+    }
+  };
 }
 
 /** Marks a query stale and, while something renders it or a fetch of it is out, records that it
@@ -259,5 +287,8 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
     }
     owe(state, query, requestedAt);
     drive(state, queryClient, query.queryHash);
+    for (const listener of [...(state.heard.get(query.queryHash) ?? [])]) {
+      listener();
+    }
   }
 }

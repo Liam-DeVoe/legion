@@ -81,10 +81,11 @@ type DesignGateDocument struct {
 // StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:
 // every identity field of the step, written whatever its value, and each field the write may not
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
-// leaves out, so an empty value written where nil was meant would stand for good. It mirrors the
-// record's own StepRecord, because this package imports no record of the daemon's. Rating and
-// RatingReason are the rating a retro gave the plan, which only the record's rating route takes
-// (HTTPClient.PutStep sends a write naming a rating there) and every other write leaves out.
+// leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
+// because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
+// StepRecord, because this package imports no record of the daemon's. Rating and RatingReason are
+// the rating a retro gave the plan, which only the record's rating route takes (HTTPClient.PutStep
+// sends a write naming a rating there) and every other write leaves out.
 type StepWrite struct {
 	Task         string     `json:"task"`
 	Step         int        `json:"step"`

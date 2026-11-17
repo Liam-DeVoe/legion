@@ -819,6 +819,12 @@ type Deps struct {
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
 	Secrets Enroller
+	// Registrar keeps each process's pod registered at the secrets broker to trade under the
+	// claim's session (ensureRegistered). nil — every deployment that names no
+	// `runtime.kubernetes.agent_secrets.exchange_audience` — registers nothing, and pins and logs
+	// no hello's key (helloKey). It reads the pod token the shim's hello carried, so it does
+	// nothing without Secrets.
+	Registrar Registrar
 	// Identity is the git identity a role's commits carry on issue: its App's bot, minted for the
 	// owner of the repository the issue works. A phase task hands it to the agent's working copy
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
@@ -1372,6 +1378,17 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
+	// registration is the pod-session registration this machine keeps written for the claim's
+	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
+	// writes it again at its shim's first hello to the new daemon.
+	registration *podRegistration
+	// helloKey is the thumbprint the first hello of the claim's current incarnation named, which
+	// every registration of that incarnation is bound to (ensureRegistered); a later hello of the
+	// same incarnation naming another key is logged and changes nothing. A machine with no
+	// Registrar pins none and logs none, since it keeps no registration for a key to be bound to.
+	// Memory only, like registration: a restored claim pins the key its shim's first hello to the
+	// new daemon names.
+	helloKey helloKey
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
 	// goroutines counts sends whose outcome has not been handled yet; idle wakes Wait.
@@ -1502,6 +1519,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		}
 		m.identity = &heldIdentity{incarnation: m.claim.Locator.Incarnation, AgentSecretsIdentity: identity}
 		m.enrollmentSent = false
+		if m.deps.Registrar != nil {
+			m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
+		}
 	}
 	dropped := m.dropWakeFor(ev)
 	if err := m.runParkedLaunchNow(ctx, ev); err != nil {
@@ -2068,9 +2088,9 @@ func (m *Machine) Wait() {
 }
 
 // fence applies the checks an event carries the fields for: the incarnation an observation is
-// about, the generation of a hello or a prompt outcome or a request, the session a request comes
-// from, the delivery a turn or a refusal or a timer names, and the arming a timer came from. It
-// reports whether the event goes on to the table.
+// about, the generation of a hello or an answer or a prompt outcome or a request, the session a
+// request comes from, the delivery a turn or a refusal or a timer names, and the arming a timer
+// came from. It reports whether the event goes on to the table.
 //
 // A hello and a registration are the two events that move a launch on (helloed, register), and a
 // live claim past launching records its process. So neither reaches the table while the claim is
@@ -2099,6 +2119,15 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 		}
 		if m.launchRecordsNoProcess() {
 			m.dropStale("StreamHello", "process", fmt.Sprint(ev.Generation), "none")
+			return false, nil
+		}
+	case StreamAnswered:
+		// One launch registers one session, and a registration reaches the machine on its HTTP
+		// request, not behind the stream's queue: an answer of a launch the claim has left can
+		// arrive after the next launch registered its session, and would name a model that never
+		// served that session.
+		if ev.Generation != m.claim.Generation {
+			m.dropStale("StreamAnswered", "generation", fmt.Sprint(ev.Generation), fmt.Sprint(m.claim.Generation))
 			return false, nil
 		}
 	case StreamTurnStart:
@@ -3047,7 +3076,8 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
-	m.identity, m.enrollmentSent = nil, false
+	m.identity, m.enrollmentSent, m.helloKey = nil, false, helloKey{}
+	m.stopRegistration()
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}

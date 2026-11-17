@@ -262,10 +262,16 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	go func() {
 		defer s.feeding.Done()
 		for {
-			ev, ok := queue.take()
+			item, ok := queue.take()
 			if !ok {
 				return
 			}
+			if item.drained != nil {
+				// Every event posted before the mark is handled: its asker may go on.
+				close(item.drained)
+				continue
+			}
+			ev := item.ev
 			ended := m.TurnsEnded()
 			if err := m.Handle(working, ev); err != nil {
 				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
@@ -324,6 +330,75 @@ func (s *supervisor) post(token claim.Token, ev supervise.Event) {
 		return
 	}
 	m.inbox.put(ev)
+}
+
+// drained puts the stream's mark (stream.Drained) in token's inbox behind every event posted to it
+// before, and the machine's feeder closes done once it has handled them (add). A claim the daemon
+// does not supervise, or supervision that is stopping, has nothing left to handle: done is closed
+// at once.
+func (s *supervisor) drained(token claim.Token, done chan<- struct{}) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.machines[token]
+	if s.stopped || !ok {
+		close(done)
+		return
+	}
+	m.inbox.mark(done)
+}
+
+// pump hands each worker-stream event to its claim's machine, in the order the stream queued
+// them, until the stream ends: a mark an agent's request queued (stream.Drained) goes behind the
+// events posted before it (supervisor.drained), and every other event is the machine's own
+// (superviseEvent).
+func (s *supervision) pump() {
+	for ev := range s.stream.Events() {
+		if mark, ok := ev.(stream.Drained); ok {
+			s.supervisor.drained(mark.Claim, mark.Done)
+			continue
+		}
+		mapped, err := superviseEvent(ev)
+		if err != nil {
+			s.log.Error("worker stream: an event no machine can take", "error", err)
+			continue
+		}
+		s.supervisor.post(claimOf(mapped), mapped)
+	}
+}
+
+// streamDrainBound bounds how long an agent's request waits for its claim's machine
+// (supervision.awaitStream).
+const streamDrainBound = 5 * time.Second
+
+// awaitStream is awaitStreamWithin at streamDrainBound: what an agent's own request — a
+// completion, a sign-off, a move back — waits for before its fact applies (api.Options.AwaitStream).
+func (s *supervision) awaitStream(ctx context.Context, token claim.Token) {
+	s.awaitStreamWithin(ctx, token, streamDrainBound)
+}
+
+// awaitStreamWithin waits until token's machine has handled every worker-stream event the stream
+// had queued when it was called (stream.Listener.Drain), or until bound or ctx ends first. The
+// agent's frames and its HTTP request reach the daemon apart, and the request is applied at once
+// while its frames wait behind the claim's machine, so a completion would end its step reading
+// the model of an answer older than the one the stream already read (workflow's endStep,
+// supervise's LastAnswer). A frame the stream has not queued yet is not waited for. A wait that
+// runs out its bound says so in one line naming the claim and how long it waited, and the request
+// goes on.
+func (s *supervision) awaitStreamWithin(ctx context.Context, token claim.Token, bound time.Duration) {
+	if s.stream == nil {
+		return
+	}
+	started := time.Now()
+	done := s.stream.Drain(token)
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-timer.C:
+		s.log.Warn("supervise: an agent's request waited out its bound for the claim's machine to handle what the stream read before it, and goes on",
+			"claim", token, "waited", time.Since(started).Round(time.Millisecond))
+	}
 }
 
 // count is how many claims the daemon supervises. It waits on no lock a decision holds.
@@ -449,7 +524,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		if ev.Provider != "" {
 			model = ev.Provider + "/" + ev.Model
 		}
-		return supervise.StreamAnswered{Claim: ev.Claim, Model: model}, nil
+		return supervise.StreamAnswered{Claim: ev.Claim, Model: model, Generation: ev.Generation}, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}
@@ -505,52 +580,83 @@ func knownClaims(claims []supervise.Claim) []runtime.Known {
 
 // inbox is one machine's queue of events: unbounded, so neither pump ever waits on a machine that
 // is deciding — the worker stream's own queue is unbounded for the same reason — and in order,
-// so a claim sees its events as its sources reported them.
+// so a claim sees its events as its sources reported them. It also holds the stream's marks
+// (drained), in the same order.
 type inbox struct {
 	mu     sync.Mutex
-	events []supervise.Event
+	items  []inboxItem
 	closed bool
 	wake   chan struct{}
+}
+
+// inboxItem is an event for the machine, or a mark whose drained channel the machine's feeder
+// closes once it has handled every event before it.
+type inboxItem struct {
+	ev      supervise.Event
+	drained chan<- struct{}
 }
 
 func newInbox() *inbox { return &inbox{wake: make(chan struct{}, 1)} }
 
 func (b *inbox) put(ev supervise.Event) {
 	b.mu.Lock()
-	b.events = append(b.events, ev)
+	b.items = append(b.items, inboxItem{ev: ev})
 	b.mu.Unlock()
+	b.signal()
+}
+
+// mark puts done behind every event put before it. An inbox already closed hands its machine
+// nothing more, so done is closed at once.
+func (b *inbox) mark(done chan<- struct{}) {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		close(done)
+		return
+	}
+	b.items = append(b.items, inboxItem{drained: done})
+	b.mu.Unlock()
+	b.signal()
+}
+
+func (b *inbox) signal() {
 	select {
 	case b.wake <- struct{}{}:
 	default:
 	}
 }
 
-// take is the next event, waiting for one; false once the inbox is closed, whatever it still
+// take is the next item, waiting for one; false once the inbox is closed, whatever it still
 // holds.
-func (b *inbox) take() (supervise.Event, bool) {
+func (b *inbox) take() (inboxItem, bool) {
 	for {
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
-			return nil, false
+			return inboxItem{}, false
 		}
-		if len(b.events) > 0 {
-			ev := b.events[0]
-			b.events = b.events[1:]
+		if len(b.items) > 0 {
+			item := b.items[0]
+			b.items = b.items[1:]
 			b.mu.Unlock()
-			return ev, true
+			return item, true
 		}
 		b.mu.Unlock()
 		<-b.wake
 	}
 }
 
+// close ends the inbox. A mark it still holds is closed, since no event before it will be
+// handled now and its asker waits for nothing more.
 func (b *inbox) close() {
 	b.mu.Lock()
 	b.closed = true
-	b.mu.Unlock()
-	select {
-	case b.wake <- struct{}{}:
-	default:
+	for _, item := range b.items {
+		if item.drained != nil {
+			close(item.drained)
+		}
 	}
+	b.items = nil
+	b.mu.Unlock()
+	b.signal()
 }

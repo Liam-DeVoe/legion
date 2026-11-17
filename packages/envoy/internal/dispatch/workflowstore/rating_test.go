@@ -1,14 +1,12 @@
 package workflowstore
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -90,10 +88,7 @@ func TestARatingWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			write := rated(retroOf(uuid.NewString()), 3, "A reason.")
 			change(&write)
-			err := tryWrite(pool, func(tx pgx.Tx) error {
-				_, err := PutStep(context.Background(), tx, write, daemon, minute(0))
-				return err
-			})
+			_, err := tryPut(pool, write, minute(0))
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("the write answered %v, want %v", err, ErrStepInput)
 			}
@@ -120,10 +115,7 @@ func TestARatingOnARecordHeldAsAStepIsRefused(t *testing.T) {
 	put(t, pool, startOf(implementer(id), minute(0)), minute(0))
 	before := wholeLog(t, pool)
 
-	err := tryWrite(pool, func(tx pgx.Tx) error {
-		_, err := PutStep(context.Background(), tx, rated(retroOf(id), 3, "A reason."), daemon, minute(1))
-		return err
-	})
+	_, err := tryPut(pool, rated(retroOf(id), 3, "A reason."), minute(1))
 	if !errors.Is(err, ErrStepInput) || !strings.Contains(err.Error(), "rating") {
 		t.Fatalf("a rating of a record held as a step answered %v, want %v naming rating", err, ErrStepInput)
 	}

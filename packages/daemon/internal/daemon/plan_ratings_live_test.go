@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -177,9 +176,9 @@ func (l *planRatingsLive) readScript(issue string) (string, int) {
 	if err := os.WriteFile(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
-	command := exec.Command("bash", filepath.Join(l.root, "scripts", "e2e", "plan-ratings-read.sh"), l.cfg.Project, issue)
-	command.Env = l.personsShell(bin + string(os.PathListSeparator) + os.Getenv("PATH"))
-	return l.run(command, "scripts/e2e/plan-ratings-read.sh "+l.cfg.Project+" "+issue)
+	out, code := l.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},
+		"bash", filepath.Join(l.root, "scripts", "e2e", "plan-ratings-read.sh"), l.cfg.Project, issue)
+	return string(out.stdout) + string(out.stderr), code
 }
 
 // lastLine is the last line of out.

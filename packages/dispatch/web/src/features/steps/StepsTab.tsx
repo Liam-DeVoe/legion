@@ -1,9 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode } from "react";
+import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Fragment, type ReactNode, useEffect, useState } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
+import { onRefresh } from "../../api/query-refresh";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
+import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import {
   badgeMed,
   borderDefault,
@@ -111,9 +113,10 @@ function Identifier({ value }: { value: string }): ReactNode {
   });
 }
 
-/** How the run ended, or that it runs: a failed or stopped run that sent its task back names the
- *  step it sent it to, and a result this build has no word for shows the server's own. `step 2`
- *  stays whole, as the times do, so a narrow column never leaves the number on a line alone. */
+/** How the run ended, or that it runs: a failed or stopped run that sent its task back names
+ *  where it sent it (`StepEnd.returnedTo`), and a result this build has no word for shows the
+ *  server's own. `step 2` stays whole, as the times do, so a narrow column never leaves the
+ *  number on a line alone. A state `StepEnd` adds fails to compile until it is drawn here. */
 function Result({ row }: { row: StepRow }): ReactNode {
   switch (row.state) {
     case "running":
@@ -137,81 +140,138 @@ function Result({ row }: { row: StepRow }): ReactNode {
           </span>
           {row.returnedTo === null ? null : (
             <span className={textMutedOnSurface}>
-              , returned to <span className="whitespace-nowrap">step {row.returnedTo}</span>
+              , returned to <span className="whitespace-nowrap">{row.returnedTo}</span>
             </span>
           )}
         </>
       );
   }
+  return row satisfies never;
 }
 
 /** One task's runs, one row each, in the order the server read them. */
 function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
+  const tableFade = useScrollFadeTrailing();
   return (
     <section className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
-      {/* `relative` keeps the scrolled table's cells inside this box, as the Settings tables do
-          (`features/settings/classes.ts`); the table scrolls sideways where the page is narrower
-          than its columns. */}
-      <div className={`relative overflow-x-auto rounded-xl border ${card}`}>
-        <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
-          <thead
-            className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
-          >
-            <tr>
-              {COLUMNS.map((column) => (
-                <th
-                  className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
-                  key={column}
-                  scope="col"
-                >
-                  {column}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
-                <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
-                  {row.label}
-                </Cell>
-                <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
-                <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
-                  {row.type === "" ? NONE : row.type}
-                </Cell>
-                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                  <Identifier value={row.agent} />
-                </Cell>
-                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                  <Identifier value={row.model} />
-                </Cell>
-                <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
-                <Cell className={textMutedOnSurface}>
-                  <Time at={row.started} />
-                </Cell>
-                <Cell className={textMutedOnSurface}>
-                  <Time at={row.ended} />
-                </Cell>
-                <Cell className={textPrimaryOnSurface}>
-                  <Result row={row} />
-                </Cell>
+      {/* The table scrolls sideways inside the card where the page is narrower than its columns
+          (a phone), and while columns lie past the card's edge it wears the trailing fade the
+          tablist and the details rail wear, so the cut column reads as more to scroll rather than
+          as clipped text. The scroll box sits inside the card so the fade masks the table and not
+          the card's border; `overflow-hidden` keeps the scrolled rows inside the card's rounded
+          corners. */}
+      <div className={`overflow-hidden rounded-xl border ${card}`}>
+        <div className={`overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
+          <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
+            <thead
+              className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
+            >
+              <tr>
+                {COLUMNS.map((column) => (
+                  <th
+                    className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
+                    key={column}
+                    scope="col"
+                  >
+                    {column}
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
+                  <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
+                    {row.label}
+                  </Cell>
+                  <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
+                  <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
+                    {row.type === "" ? NONE : row.type}
+                  </Cell>
+                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                    <Identifier value={row.agent} />
+                  </Cell>
+                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                    <Identifier value={row.model} />
+                  </Cell>
+                  <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
+                  <Cell className={textMutedOnSurface}>
+                    <Time at={row.started} />
+                  </Cell>
+                  <Cell className={textMutedOnSurface}>
+                    <Time at={row.ended} />
+                  </Cell>
+                  <Cell className={textPrimaryOnSurface}>
+                    <Result row={row} />
+                  </Cell>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );
 }
 
+/** When the shown tab reads again after a catch-up starts, in ms from the start; it also reads at
+ *  once. A step record leaves the daemon on an outbox lane of its own, which neither waits for
+ *  the issue's events nor sends one, so the event that starts a catch-up can reach the page before
+ *  its record. A write that lane fails waits at most 64 s before it is tried again, so the list
+ *  covers a record that needed one or two retries. A record later than the last read shows at the
+ *  next start. */
+const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as const;
+
+/**
+ * Reads the issue's records through `refetch` at once and at each of `CATCH_UP_READS_MS` after
+ * every start: the tab shown, the page shown again, and each refresh the event feed asks of this
+ * read - an event of the issue that comes with a phase moving (`changesSteps` in
+ * `api/event-refresh.ts`), or a refresh of the whole cache. A start replaces the catch-up running,
+ * so a tab holds one list of timers at most; a tab not shown, or a hidden page, reads nothing and
+ * holds no timer. A read never cancels one already out, as the event feed's never does.
+ */
+function useCatchUp(
+  issueKey: string,
+  shown: boolean,
+  refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>
+): void {
+  const queryClient = useQueryClient();
+  const [visible, setVisible] = useState(() => focusManager.isFocused());
+  useEffect(() => focusManager.subscribe(setVisible), []);
+  useEffect(() => {
+    if (!shown || !visible) {
+      return;
+    }
+    let timers: number[] = [];
+    const read = () => void refetch({ cancelRefetch: false });
+    const start = () => {
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+      read();
+      timers = CATCH_UP_READS_MS.map((ms) => window.setTimeout(read, ms));
+    };
+    start();
+    const stopHearing = onRefresh(queryClient, issueStepsQuery(issueKey).queryKey, start);
+    return () => {
+      stopHearing();
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [issueKey, queryClient, refetch, shown, visible]);
+}
+
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
  * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them.
+ * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
+ * and only through its catch-up (`useCatchUp`), so the query fetches nothing on its own.
  */
-export function StepsTab({ issueKey }: { issueKey: string }): ReactNode {
-  const query = useQuery(issueStepsQuery(issueKey));
+export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
+  const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false });
+  useCatchUp(issueKey, active, query.refetch);
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading steps…</p>;
   }

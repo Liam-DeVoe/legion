@@ -361,8 +361,8 @@ func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.
 
 // Oh My Pi's message_end names the model that answered under message.provider and
 // message.model, also after a fallback moved the turn to another model: that frame becomes one
-// Answered event. A user's message and a message no model wrote (`<synthetic>`) name no model
-// that answered, and push nothing.
+// Answered event, at the generation the connection's hello was registered for. A user's message
+// and a message no model wrote (`<synthetic>`) name no model that answered, and push nothing.
 func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
@@ -371,7 +371,7 @@ func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"anthropic","model":""}}`)})
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
 	p.conn.Close()
-	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model"}
+	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}
 	if got := h.next(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %#v, want %#v: the user's and the synthetic message name no model that answered", got, want)
 	}
@@ -380,6 +380,40 @@ func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	}
 	if rest := h.stop(); len(rest) != 0 {
 		t.Fatalf("further events = %#v, want none", rest)
+	}
+}
+
+// A provider or a model holding U+0000 names no model any store can keep: PostgreSQL's text and
+// jsonb refuse that character, and the model an answer names is written into the record of the
+// step it served. Such a frame is no Answered, and the stream says so in one line naming the claim
+// and the field, never the text; the next answer is read as before.
+func TestAMessageEndNamingAModelNoStoreTakesIsNoAnswer(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"secret\u0000model"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"secret\u0000provider","model":"second-model"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
+	p.conn.Close()
+	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}
+	if got := h.next(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v, want %#v: a model or a provider holding U+0000 answers nothing", got, want)
+	}
+	if got := h.next(); got != (Closed{Claim: testClaim}) {
+		t.Fatalf("event after the answer = %#v, want the close", got)
+	}
+	h.stop()
+	var dropped []string
+	for _, line := range h.logs.Lines() {
+		if strings.Contains(line, "secret") {
+			t.Errorf("a log line quotes the text a frame named: %q", line)
+		}
+		if strings.HasPrefix(line, "worker-stream: dropped the model a message_end named") {
+			dropped = append(dropped, line)
+		}
+	}
+	if len(dropped) != 2 || !strings.Contains(dropped[0], "claim="+string(testClaim)) || !strings.Contains(dropped[0], "field=message.model") ||
+		!strings.Contains(dropped[1], "claim="+string(testClaim)) || !strings.Contains(dropped[1], "field=message.provider") {
+		t.Fatalf("the lines naming the dropped models = %q, want one naming the claim and message.model, then one naming the claim and message.provider", dropped)
 	}
 }
 

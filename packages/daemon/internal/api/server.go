@@ -72,6 +72,11 @@ type Options struct {
 	ConsumerLag func(ctx context.Context) []intake.ConsumerLag
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
+	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
+	// the daemon had read when it was called (the daemon's awaitStream). A route that applies an
+	// agent's own request ending the agent's step calls it first, so the record of that step names
+	// the model whose answer the stream read ahead of the request. Nil waits for nothing.
+	AwaitStream func(ctx context.Context, token claim.Token)
 	// PodUpdateRounds answers what the daemon's last pod-update sweep decided, which the claim
 	// listing carries beside the claims (the daemon's podUpdateRoundsView). Nil answers the zero
 	// record, which says the daemon has not swept yet: a deployment that serves the route with no
@@ -296,6 +301,8 @@ type server struct {
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
+	// awaitStream is Options.AwaitStream (awaitStreamOf).
+	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -387,6 +394,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
+		awaitStream:        opts.AwaitStream,
 		podUpdateRounds:    opts.PodUpdateRounds,
 		bootTokens:         opts.BootTokens,
 		project:            opts.Project,

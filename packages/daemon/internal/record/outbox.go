@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -127,6 +128,13 @@ func LaneOf(kind OutboxKind) OutboxLane {
 // LaneKinds is the kinds lane runs, in a fixed order; nil for a lane that is not one.
 func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
+}
+
+// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
+// a reader that needs every lane, or every kind, takes them from here rather than from a list of
+// its own, which a new lane would leave short.
+func OutboxLanes() []OutboxLane {
+	return slices.Sorted(maps.Keys(laneKinds))
 }
 
 // LaneKey names one lane of one issue.
@@ -1066,12 +1074,13 @@ func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGates
 // issue. Each other field is a field of the route's body under the same name.
 //
 // Dispatch writes each field once and keeps every field a write leaves out, so the start and the
-// end merge in either order and a write that runs again changes nothing. That makes a field left
-// out and a field written empty two different writes: a start that wrote the model as "" would
-// keep the end's model off the record for good. So every write carries the identity of the step
-// (task, step, kind, role, type, agent and generation), the empty type of a retro or a merge and
-// the place 0 of either included, and each field a write may not know yet is a pointer, nil for
-// one the write leaves to the other.
+// end merge in either order and a write that runs again changes nothing. Every write carries the
+// identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
+// retro or a merge and the place 0 of either included, and each field a write may not know yet is
+// a pointer, nil for one the write leaves to the other. The route takes a text field sent as "" as
+// left out, so for a text field the pointer only says what the write knows; for a time and for
+// ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
+// Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
 type StepRecord struct {
 	ID         string     `json:"id"`
 	Task       string     `json:"task"`
@@ -1816,6 +1825,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
 		}
+	case MergeQueueRemoval:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
+		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These three it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
@@ -1840,10 +1853,6 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case PlanRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
-		}
-	case MergeQueueRemoval:
-		if value.Number < 1 || value.Head == "" {
-			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)

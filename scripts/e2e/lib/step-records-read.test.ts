@@ -155,12 +155,39 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(1);
   });
 
-  test("a step of kind step with no model fails, exit 1; the retro and the merge need none", () => {
+  test("a merge with no agent that never ended fails, exit 1: no agent waives no end", () => {
+    const { code, stdout } = read(
+      changed(/ merge merger /, (line) =>
+        line
+          .replace("legion-infra-infra-42-merger", "-")
+          .replace(/ \S+ passed$/, " running running")
+      )
+    );
+    expect(stdout).toContain(
+      "FAIL: the record never ended: default 0 merge merger - attempt 1 - - 2026-11-20T11:11:00Z running running"
+    );
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(1);
+  });
+
+  test("a step of kind step with no model fails, exit 1, naming it", () => {
     const { code, stdout } = read(
       changed(/ 1 step planner /, (line) => line.replace("anthropic/claude-opus-5", "-"))
     );
     expect(stdout).toContain("FAIL: the step names no model: default 1 step planner planning");
     expect(code).toBe(1);
+  });
+
+  test("a retro with no model passes, exit 0: only a record of kind step must name one", () => {
+    const { code, stdout } = read(
+      changed(/ retro implementer /, (line) => line.replace("anthropic/claude-opus-5", "-"))
+    );
+    expect(stdout).toContain(
+      "default 0 retro implementer - attempt 1 legion-infra-infra-42-implementer - "
+    );
+    expect(stdout).not.toContain("FAIL");
+    expect(stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(code).toBe(0);
   });
 
   test("a read that fails is UNKNOWN, exit 2, with what the command said", () => {
@@ -187,6 +214,28 @@ describe("step-records-read.sh", () => {
       "UNKNOWN: the header says 11 records and 10 lines of runs follow it"
     );
     expect(short.code).toBe(2);
+  });
+
+  test("an answer with a line that is no run is UNKNOWN, exit 2, even when the count holds", () => {
+    const { code, stdout } = read(
+      `${key}: 11 steps in 1 tasks\n${whole.slice(1).join("\n")}\nwarning: the server is slow\n`
+    );
+    expect(stdout).toContain("UNKNOWN: the line is no run: warning: the server is slow");
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(2);
+  });
+
+  test("no dispatch command on PATH is UNKNOWN, exit 2, naming what is missing", () => {
+    // The PATH the script gets holds no directory, so bash is named by the path this one finds.
+    const bash = Bun.which("bash");
+    if (bash === null) throw new Error("no bash on this test's PATH");
+    const result = Bun.spawnSync([bash, script, key], {
+      env: { PATH: join(dir, "no-such-directory"), HOME: dir },
+    });
+    expect(result.stdout.toString()).toContain(
+      "UNKNOWN: no dispatch command is on PATH, so nothing was read"
+    );
+    expect(result.exitCode).toBe(2);
   });
 
   test("no issue, two issues or a malformed key is refused, exit 2, reading nothing", () => {

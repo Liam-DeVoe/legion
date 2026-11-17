@@ -38,9 +38,11 @@ var (
 //
 // The write that finds no node makes it, whichever of the two it is, and states the `part_of`
 // relation to the issue; it must name the step's whole identity (task, kind, step, role and
-// generation), or it is refused ErrStepInput and writes nothing. The write that sets the report
-// states the `reports` relation to that handoff. A rating is judged against the kind the node
-// holds, not the one the write names, so a run made as a step never takes one.
+// generation), or it is refused ErrStepInput and writes nothing. A write that names a type for a
+// node of kind retro or merge is refused ErrStepInput too, since neither has one. The write that
+// sets the report states the `reports` relation to that handoff. A type and a rating are judged
+// against the kind the node holds, not the one the write names, so a run made as a step never
+// takes a rating.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -55,7 +57,7 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		kind: KindStep, id: id, issue: write.Issue, stated: stated, makes: len(missing) == 0,
 		writer: writer, at: at,
 		check: func(held map[string]json.RawMessage) error {
-			if write.Rating == nil {
+			if write.Type == nil && write.Rating == nil {
 				return nil
 			}
 			var kind string
@@ -64,7 +66,12 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 					return fmt.Errorf("decode the kind of step %s: %w", id, err)
 				}
 			}
-			if kind != "" && kind != StepKindRetro {
+			if write.Type != nil {
+				if err := typeOfKind(kind, *write.Type); err != nil {
+					return err
+				}
+			}
+			if write.Rating != nil && kind != "" && kind != StepKindRetro {
 				return inputError("rating is the rating a retro gives its plan, and step %s is a run of kind %s", id, kind)
 			}
 			return nil
@@ -223,8 +230,8 @@ type attribute struct {
 
 // attributes checks every field the write states against its form and answers the write's id in
 // its canonical spelling with the fields it states, in one order whatever order they were given
-// in. A text field that is empty states nothing, and a ReturnedTo of 0 states nothing; a rating
-// and its reason are stated together, of a retro, or neither is.
+// in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it; a
+// rating and its reason are stated together, of a retro, or neither is.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
@@ -245,12 +252,17 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	number := func(name string, value int64) {
 		stated = append(stated, attribute{name, value, strconv.FormatInt(value, 10)})
 	}
-	moment := func(name string, value *time.Time) {
+	moment := func(name string, value *time.Time) error {
 		if value == nil {
-			return
+			return nil
 		}
-		formatted := value.UTC().Format(time.RFC3339Nano)
+		utc := value.UTC()
+		if year := utc.Year(); year < 0 || year > 9999 {
+			return inputError("%s cannot be represented in UTC: its year must be between 0 and 9999", name)
+		}
+		formatted := utc.Format(time.RFC3339Nano)
 		stated = append(stated, attribute{name, formatted, formatted})
+		return nil
 	}
 
 	text(AttributeProject, write.Project)
@@ -282,13 +294,19 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if role := text(AttributeRole, write.Role); role != "" && !roleForm.MatchString(role) {
 		return "", nil, inputError("role %q is not a role: a lowercase letter, then lowercase letters, digits and hyphens, at most 32", role)
 	}
-	if typ := text(AttributeType, write.Type); typ != "" && !roleForm.MatchString(typ) {
+	typ := text(AttributeType, write.Type)
+	if typ != "" && !roleForm.MatchString(typ) {
 		return "", nil, inputError("type %q is not a type of work: a lowercase letter, then lowercase letters, digits and hyphens, at most 32, or empty", typ)
+	}
+	if err := typeOfKind(kind, typ); err != nil {
+		return "", nil, err
 	}
 	text(AttributeAgent, write.Agent)
 	text(AttributeSession, write.Session)
 	text(AttributeModel, write.Model)
-	moment(AttributeStartedAt, write.StartedAt)
+	if err := moment(AttributeStartedAt, write.StartedAt); err != nil {
+		return "", nil, err
+	}
 
 	result := text(AttributeResult, write.Result)
 	if result != "" && !slices.Contains(stepResults, result) {
@@ -300,8 +318,10 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		}
 		return "", nil, inputError("result %s is written with ended_at, the moment the run ended, and this write names none", result)
 	}
-	moment(AttributeEndedAt, write.EndedAt)
-	if write.ReturnedTo != nil && *write.ReturnedTo != 0 {
+	if err := moment(AttributeEndedAt, write.EndedAt); err != nil {
+		return "", nil, err
+	}
+	if write.ReturnedTo != nil {
 		returned := *write.ReturnedTo
 		if returned < 0 {
 			return "", nil, inputError("returned_to %d is no place of a step", returned)
@@ -378,6 +398,15 @@ func (write StepWrite) missingIdentity() []string {
 	return missing
 }
 
+// typeOfKind refuses a type for a run of kind retro or merge: no plan names either, so neither
+// has a type, as neither has a place but 0.
+func typeOfKind(kind, typ string) error {
+	if typ != "" && kind != "" && kind != StepKindStep {
+		return inputError("type %q is no type of a %s: no plan names it, so it has none", typ, kind)
+	}
+	return nil
+}
+
 func inputError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrStepInput, fmt.Sprintf(format, args...))
 }
@@ -429,7 +458,7 @@ type stepAttributes struct {
 	StartedAt    *time.Time `json:"started_at"`
 	EndedAt      *time.Time `json:"ended_at"`
 	Result       string     `json:"result"`
-	ReturnedTo   int        `json:"returned_to"`
+	ReturnedTo   *int       `json:"returned_to"`
 	Report       string     `json:"report"`
 	Rating       int        `json:"rating"`
 	RatingReason string     `json:"rating_reason"`

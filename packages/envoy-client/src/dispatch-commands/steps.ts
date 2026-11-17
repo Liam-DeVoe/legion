@@ -9,7 +9,6 @@ function orDash(value: string | null): string {
 /** One run of a step: where it stands in its task, who ran it on which model, and how it ended.
  *  A run that has not ended holds no end and no result, and prints `running` for both. */
 function stepLine(record: StepRecord): string {
-  const ended = record.ended_at !== null;
   return [
     record.task,
     record.step,
@@ -21,8 +20,8 @@ function stepLine(record: StepRecord): string {
     orDash(record.agent),
     orDash(record.model),
     orDash(record.started_at),
-    ended ? record.ended_at : "running",
-    ended ? orDash(record.result) : "running",
+    record.ended_at ?? "running",
+    record.ended_at === null ? "running" : orDash(record.result),
   ].join(" ");
 }
 
