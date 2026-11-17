@@ -675,7 +675,11 @@ shares, which is then often a sibling's commit; retro, the merger, a left phase 
 record and every other phase report the commit the workspace stands on, `@-`, and so does an
 implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
-`handoffVersion`, `commit` and `wakeAt` where they apply). A
+`handoffVersion`, `commit`, `wakeAt`, `planRating` and `planReason` where they apply).
+The completion that ends the retro carries the agent's rating of the plan, `plan_rating` and
+`plan_reason`, sent as `planRating` and `planReason`: the plugin refuses one without the other,
+posting nothing, and sends the two as given on any completion, since which completion ends the
+retro is the daemon's to say (`PLAN_RATING_UNEXPECTED`, `PLAN_RATING_REQUIRED`). A
 report on a look of a closed issue's production check is the one call that finds neither: the
 operation reads the daemon's state first, and a call on an issue in `done` whose
 `check` is open is a check report, posted with its `verdict` (`pass`, `pending` or `fail`, required
