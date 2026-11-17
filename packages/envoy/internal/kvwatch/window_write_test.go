@@ -307,7 +307,7 @@ func TestAReadAfterAStaleWatchWasDiscardedKeepsItsWindowWrite(t *testing.T) {
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the Rewatch onto the new bucket: %v", err)
 	}
 	eventually(t, "the new bucket's read to complete", func() bool { return len(cache.completions()) == 2 })
@@ -338,7 +338,7 @@ func TestAReadAfterAStaleWatchWasDiscardedKeepsItsWindowWrite(t *testing.T) {
 			t.Errorf("the write of %s into the copy came to outcome %d, want Applied (%d)", writtenInTheWindow, outcome, kvwatch.Applied)
 		}
 	})
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the Rewatch whose window holds the write: %v", err)
 	}
 	eventually(t, "the Rewatch's read to complete", cache.targetDone)
@@ -378,7 +378,7 @@ func TestReadsOfARestoredSnapshotRemoveARowTheSnapshotLacks(t *testing.T) {
 		t.Fatalf("create the bucket: %v", err)
 	}
 	kv := wrap(t, conn, legacy)
-	original, err := kv.ReadStreamState()
+	original, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		t.Fatalf("read the bucket's stream: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestReadsOfARestoredSnapshotRemoveARowTheSnapshotLacks(t *testing.T) {
 		t.Fatalf("delete the bucket: %v", err)
 	}
 	restoreStream(t, conn, stream, snap)
-	restored, err := handle.ReadStreamState()
+	restored, err := handle.ReadStreamState(context.Background())
 	if err != nil || !restored.Created.Equal(original.Created) || restored.LastSeq >= 2 {
 		t.Fatalf("the restored stream reads %+v, %v; want the original creation time %v and a last sequence below the copy's row at 2",
 			restored, err, original.Created)

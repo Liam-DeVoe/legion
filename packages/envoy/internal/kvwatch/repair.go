@@ -1,6 +1,7 @@
 package kvwatch
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -104,7 +105,7 @@ func (w *Watcher) reread(generation uint64, cause string) {
 	if !due {
 		return
 	}
-	err := w.watch(kv, generation)
+	err := w.watch(context.Background(), kv, generation)
 	if err == nil {
 		return
 	}
