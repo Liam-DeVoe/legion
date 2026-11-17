@@ -311,9 +311,10 @@ func issuePlanText(issue IssuePlan) string {
 
 // The read of a project lists each issue of it that is done and closed, newest close first, with
 // its plan, the rating of its retro, the first start and the last end of its records and its
-// count of failed steps of kind step, all in one statement. An issue still open, an issue of
-// another project and a record of another issue are not read into it; a finished issue Legion
-// never ran is listed with no plan, no rating, no time and no failed step.
+// count of failed steps of kind step, all in one statement: a failed retro and a failed merge are
+// no failed step. An issue still open, an issue of another project and a record of another issue
+// are not read into it; a finished issue Legion never ran is listed with no plan, no rating, no
+// time and no failed step.
 func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closedFirst, closedSecond, closedThird := t0.Add(time.Hour), t0.Add(2*time.Hour), t0.Add(3*time.Hour)
@@ -327,8 +328,11 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 
 	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
 	stepRun(t, pool, "LEG-1", StepKindStep, "planner", 1, 1, new(minute(0)), new(minute(5)), ResultPassed)
+	stepRun(t, pool, "LEG-1", StepKindStep, "tester", 3, 1, new(minute(6)), new(minute(9)), ResultFailed)
 	stepRun(t, pool, "LEG-1", StepKindStep, "reviewer", 4, 1, new(minute(10)), new(minute(15)), ResultFailed)
+	stepRun(t, pool, "LEG-1", StepKindRetro, "implementer", 0, 1, new(minute(16)), new(minute(18)), ResultFailed)
 	retroOne := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 4, "The tester found the bug.")
+	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(25)), ResultFailed)
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(30)), ResultPassed)
 
 	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-2", 1), minute(60))
@@ -356,7 +360,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 			StartedAt: new(minute(60)), EndedAt: new(minute(75)), FailedSteps: 0},
 		{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closedSecond, Plan: plan,
 			Ratings:   []Rating{{Rating: 4, Reason: "The tester found the bug.", StepID: retroOne, EndedAt: new(minute(22))}},
-			StartedAt: new(minute(0)), EndedAt: new(minute(30)), FailedSteps: 1},
+			StartedAt: new(minute(0)), EndedAt: new(minute(30)), FailedSteps: 2},
 		{Issue: "LEG-4", Title: "Title of LEG-4", ClosedAt: closedFirst, Ratings: []Rating{}},
 	}
 	got := make([]string, len(read))
