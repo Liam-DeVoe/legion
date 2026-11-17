@@ -15,10 +15,10 @@ import { nodesInOrder } from "../tree-keys";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
- * The one seam between today's reads and the Decisions view (dispatch://INFRA-3937 R8): it turns
- * the decisions read, the issue's asks, its comments and the decisions document's blocks into the
- * view's parts, so no other file of the view names a read. The part that draws the model's own
- * entries (dispatch://INFRA-1150's `entries`) replaces this module and leaves the view as it is.
+ * The one seam between today's reads and the Decisions view: it turns the decisions read, the
+ * issue's asks, its comments and the decisions document's blocks into the view's parts, so no
+ * other file of the view names a read. Once the server's decisions model gives the view its
+ * entries, that model's read replaces this module and leaves the view as it is.
  *
  * The reads are the ones the page's tree is built from: the three reads the tree reads, under
  * the keys `useIssueTree.ts` reads them by, and the decisions document's blocks under the tree's
@@ -29,18 +29,19 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * decision whose words hold its quote. A read that holds no decisions, or that has not answered
  * yet, gives no decision and no error: the view draws the questions alone.
  *
- * The view draws four parts (dispatch://INFRA-1196 R2). A decision another person made is no
- * part of its own: it stands under the reader's decisions, with that person's name on its row,
- * so G's `others` is put in `yours`, newest first, and `others` is left empty.
+ * The view draws four parts. A decision another person made is no part of its own: it stands
+ * under the reader's decisions, with that person's name on its row, so the model's `others` is
+ * put in `yours`, newest first, and `others` is left empty.
  *
  * The seam says too whether those reads hold their answers (`readsHeld`), which the outline's
- * keys read (`useTreeKeymap.ts`). Until they do, a view with no question or no decision to go to
- * may be one whose questions and decisions have not arrived, so `q` and `w` with nowhere to go
- * say nothing rather than that there is none, as the outline's keys do (`slots/body.tsx`).
+ * keys (`useTreeKeymap.ts`) and the body's empty line read. Until they do, a view with no
+ * question or no decision to go to may be one whose questions and decisions have not arrived,
+ * so `q` and `w` with nowhere to go say nothing rather than that there is none, and the body
+ * draws no line that the issue holds nothing, as the outline does (`slots/body.tsx`).
  */
 
 /** The Decisions view's parts, and whether the reads they come from hold their answers. */
-export interface DecisionsEntries extends DecisionsParts {
+interface DecisionsEntries extends DecisionsParts {
   /** Whether the decisions read, the asks, the comments and, where the issue has a decisions
    *  document, that document's blocks each hold an answer. A read that failed holds none. */
   readonly readsHeld: boolean;

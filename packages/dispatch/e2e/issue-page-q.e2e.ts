@@ -46,7 +46,7 @@ import {
 import { expect, test } from "./test";
 
 /**
- * Part Q's rows of the new issue page (dispatch://INFRA-3937, part Q of dispatch://INFRA-1196):
+ * The browser rows of the new issue page that read one of its views:
  * the Decisions view - the open questions, the decisions that wait for the reader's review with
  * Keep and Change, the reader's own decisions, and the agents' other decisions folded at the
  * foot - read on the real stack. Each row turns the new page on for its reader through D's
@@ -54,7 +54,7 @@ import { expect, test } from "./test";
  * `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
  * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this part's `e2e/issue-page-q.ts`.
  *
- * Six rows, each under the title its check names (`verification.md` of dispatch://INFRA-3937):
+ * Six rows, each under the title of the check it answers:
  *
  * - **c-groups**, three rows that come from the checkpoint's `e2e/issue-layout.e2e.ts`: "the
  *   Decisions filter draws its four parts and quotes the person's answer"; "only a decision
@@ -81,10 +81,10 @@ import { expect, test } from "./test";
 const VIOLET = "rgb(124, 58, 237)";
 const PAPER = "rgb(255, 255, 255)";
 
-// c-decisions. Clause by clause, at 1440 px and at 390 px. What waits on dispatch://INFRA-1150
+// c-decisions. Clause by clause, at 1440 px and at 390 px. What waits on the decisions model
 // and is not read here: an agent decision's author (`decided_by`), its level of uncertainty and
 // its reason, the reading under an agent's decision, and the `shaped` tuple itself (today's tie
-// is a decision block's link to a spec block). What waits on dispatch://INFRA-1253: the
+// is a decision block's link to a spec block). What waits on the conversion of issues: the
 // unconverted issue, `?view=decisions`, and "the page makes no request to /decisions".
 // SLOW(>=2s): the whole issue seeded with three more writes, the view loaded and read at two
 // widths with a focus and the foot's unfolding waited on each time, then the outline loaded.
@@ -265,8 +265,8 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
   });
 });
 
-// c-review-list (R35). What waits on dispatch://INFRA-1150: the `shaped` tuple itself; today's
-// tie is a decision block's link to a block of the spec.
+// c-review-list, the rule for what waits on the reader's review. What waits on the decisions
+// model: the `shaped` tuple itself; today's tie is a decision block's link to a block of the spec.
 // SLOW(>=2s): a seeded issue whose view is loaded and read at two widths with the foot's
 // unfolding waited on each time, then the outline loaded with two rows focused.
 test("only a decision that changed a statement waits for review @phone", async ({ browser }) => {
@@ -479,7 +479,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
   });
 });
 
-// c-keep (R6, R7 and R35 of dispatch://INFRA-1196, and its keyboard): Keep and Change stand on
+// c-keep (Keep, Change, where they leave the focus, and their keys): Keep and Change stand on
 // each decision that waits for the reader's review before any focus, in the decisions' violet,
 // and on no other row. Keep moves the decision to the reader's own as kept by her, the server
 // holds the Keep, and the focus goes on to the next decision that waits, where `Shift+C` opens
@@ -695,7 +695,7 @@ async function expectTdReachesTheList(page: Page, key: string, at: string): Prom
     .toEqual({ inList: true, onScreen: true });
 }
 
-// c-layout (R1, R4, R5 and R8 of dispatch://INFRA-1196 under the view, rulings 1, 4 and 5): the
+// c-layout (the outline's layout and its six-line cut, kept under this view): the
 // checkpoint's c-row walk of the Decisions view. Every row the view draws, the foot's included,
 // reads G's layout and groups: one left edge, the kind's tag after the first line, the group's
 // place, no "Author unknown" in a group, the colours of a link in a node's words, which the

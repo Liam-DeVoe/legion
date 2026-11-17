@@ -54,8 +54,8 @@ const HEADED = ["open_questions", "review", "yours"] as const satisfies readonly
 const NOTHING = (): void => {};
 
 /**
- * The Decisions filter's body (dispatch://INFRA-1196 R2, R9, R22, R35, the picture
- * `page-v3-decisions-1440.png`, the prototype's `.decs`).
+ * The Decisions filter's body, drawn as the picture `page-v3-decisions-1440.png` and the
+ * prototype's `.decs` draw it.
  *
  * It is one list in four parts, each under its own heading and in this order: the open
  * questions; the decisions that wait for the reader's review, each with Keep and Change; the
@@ -106,7 +106,8 @@ export function DecisionsFilterBody({
   /** Each artifact of the issue by its slug, which is how a decision names the document a Keep
    *  is written against (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
-  /** What the page says where the issue holds no ask and no decision the filter draws. */
+  /** What the page says where the issue holds no ask and no decision the filter draws, once
+   *  the reads behind the list hold their answers. */
   emptyLine: string;
   /** Whether the page takes Escape from a row before the list is left: a filter by words to
    *  clear or a view to turn off comes first in the key table's order
@@ -202,14 +203,14 @@ export function DecisionsFilterBody({
   );
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
-  // of Keep or a send of Change arms it, and only three things let it go: a move to another
-  // row, the focus leaving the list, and the decision leaving the review list. The press is no
-  // review of its own: the decision leaving the review list moves the focus on only where it
-  // then stands kept by the reader or with their change, so a write the server refused moves
-  // nothing, and it does not let the press go either. So where the reader stays on the row
-  // after a refused Keep, their own Keep or Change of that decision made elsewhere, in another
-  // tab say, then moves the focus on, as it should: the decision left the review list by their
-  // own review.
+  // of Keep or a send of Change arms it, and only these let it go: a move to another row, the
+  // focus leaving the list or going to the foot's control (`footFocused`), and the decision
+  // leaving the review list. The press is no review of its own: the decision leaving the review
+  // list moves the focus on only where it then stands kept by the reader or with their change,
+  // so a write the server refused moves nothing, and it does not let the press go either. So
+  // where the reader stays on the row after a refused Keep, their own Keep or Change of that
+  // decision made elsewhere, in another tab say, then moves the focus on, as it should: the
+  // decision left the review list by their own review.
   const ownReview = useRef<string | undefined>(undefined);
   const takeFocus = useCallback(
     (entry: DecisionsEntry | NamedEntry) => {
@@ -642,8 +643,12 @@ export function DecisionsFilterBody({
         </div>
       )}
       {/* The issue holds no question and no decision the view draws. The node an address
-          names is no entry of the list, so its row and this line are drawn together. */}
-      {parts.open_questions.length === 0 &&
+          names is no entry of the list, so its row and this line are drawn together. Until the
+          reads behind the list hold their answers, a list with nothing in it may be one whose
+          entries have not arrived, so no line says the issue holds nothing, as the outline
+          draws none then (`slots/body.tsx`). */}
+      {parts.readsHeld &&
+      parts.open_questions.length === 0 &&
       parts.review.length === 0 &&
       parts.yours.length === 0 &&
       parts.agents.length === 0 ? (

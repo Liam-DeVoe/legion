@@ -7,7 +7,7 @@ import { issuePage, presetRow } from "./issue-page";
 import { longWords, READER } from "./issue-page-g";
 
 /**
- * How part Q's rows read the Decisions view of the new issue page (dispatch://INFRA-1196 part Q,
+ * How the Decisions view's browser rows read it on the new issue page (the rows are in
  * `e2e/issue-page-q.e2e.ts`): the readers that D's `e2e/issue-page.ts`, G's `e2e/issue-page-g.ts`
  * and I's `e2e/issue-page-i.ts` do not hold (decision 2 of the parts). No later part changes this
  * file; a later part's rows import from it.

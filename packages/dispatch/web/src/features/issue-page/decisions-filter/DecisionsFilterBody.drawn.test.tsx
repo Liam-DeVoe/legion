@@ -8,7 +8,12 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { ApiError, api } from "../../../api/client";
 import type { Actor, ArtifactText, Comment, Decision, DecisionKeep } from "../../../api/types";
-import { pageFocusedRow, pageInkText, pageOwnWordsRule } from "../../../theme/classes";
+import {
+  pageFocusedRow,
+  pageInkText,
+  pageOwnWordsRule,
+  pageStateText,
+} from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -53,13 +58,12 @@ import {
 import type { DecisionsAsk } from "./decisions-parts";
 
 /**
- * What the Decisions filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R2,
- * R9, R22, R35). Which entry stands in which part is the model's, read in
- * `decisions-parts.test.ts`; these rows read the drawing: the four parts under their headings,
- * the words each state reads, Keep and Change on the review list alone, the person's answer
- * character for character, and where the focus goes. How a row is laid out and where a long
- * question is cut are the browser's to say, which no DOM of a unit test lays out, so the
- * browser suite's c-row, c-decisions and c-review-list read them.
+ * What the Decisions filter's body draws, read as a reader reads it. Which entry stands in which
+ * part is the model's, read in `decisions-parts.test.ts`; these rows read the drawing: the four
+ * parts under their headings, the words each state reads, Keep and Change on the review list
+ * alone, the person's answer character for character, and where the focus goes. How a row is
+ * laid out and where a long question is cut are the browser's to say, which no DOM of a unit
+ * test lays out, so the browser suite's c-row, c-decisions and c-review-list read them.
  */
 
 /** The page's line for an issue the view draws nothing for, which the slot hands the body. */
@@ -214,8 +218,8 @@ function decisionsText(made: readonly Decision[]): string {
 }
 
 /** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
- *  decisions read of `made` as the cache holds them. `comments` null leaves the comments out of
- *  the cache, as before that read answers. */
+ *  decisions read of `made` as the cache holds them. `comments` or `made` null leaves that read
+ *  out of the cache, as before it answers. */
 function renderBody(
   {
     asks = [],
@@ -226,7 +230,7 @@ function renderBody(
     asks?: DecisionsAsk[];
     children: TreeNode[];
     comments?: Comment[] | null;
-    made?: Decision[];
+    made?: Decision[] | null;
   },
   props: BodyProps = {},
   {
@@ -241,7 +245,7 @@ function renderBody(
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   // The reads the page's tree is built from, under the keys it reads them by.
-  client.setQueryData(["decisions", KEY], decisionsRead(made));
+  if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made));
   client.setQueryData(["asks", KEY], asks);
   if (comments !== null) client.setQueryData(["comments", KEY], comments);
   // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
@@ -464,6 +468,15 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   expect(tree.hasAttribute("aria-owns")).toBe(false);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+  // The state's colour follows the list, not the tree: a decision of the review list says it
+  // waits in the decisions' violet, and one of the foot, which no one is asked to review, in
+  // grey. The colour is on the box that holds the state's word and its shape.
+  const stateBox = (id: string) =>
+    rowOf(view, id).querySelector("[data-node-margin] [data-node-state]")?.parentElement;
+  expect({
+    foot: stateBox(D("minor"))?.classList.contains(pageStateText.quiet),
+    review: stateBox(D("second"))?.classList.contains(pageStateText.decision),
+  }).toEqual({ foot: true, review: true });
   expect(foot.getAttribute("aria-expanded")).toBe("true");
   expect(words(foot)).toBe(`▾ 2 ${DECISIONS_WORDS.agents_many}`);
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
@@ -494,7 +507,7 @@ test("the foot's heading agrees with how many decisions it holds", () => {
 
 // R2: a part that holds nothing is not drawn, and an issue that holds no ask and no decision
 // says so in the page's one line for that.
-test("a part that holds nothing is not drawn, and an empty issue says so once", () => {
+test("a part that holds nothing is not drawn, and an empty issue says so once", async () => {
   const some = renderBody({ children: [openAsk("q-open")] });
   expect(
     [...some.container.querySelectorAll("[data-decisions-part]")].map((part) =>
@@ -509,6 +522,25 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   expect(none.getByText(EMPTY_LINE)).toBeTruthy();
   // The outline's tree is still on the page, as it is under every filter.
   expect(none.getByRole("tree", { name: CONTROL_LABELS.tree })).toBeTruthy();
+  none.unmount();
+
+  // The decisions read the mount starts never answers. Until it does, an issue with no open
+  // question may be one whose decisions have not arrived, so no line says it holds nothing.
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockReturnValue(
+    Promise.withResolvers<never>().promise
+  );
+  try {
+    const cold = renderBody({ children: [statement("s1")], made: null });
+    await act(() => Promise.resolve());
+    expect(getIssueDecisions).toHaveBeenCalledTimes(1);
+    expect(cold.queryByText(EMPTY_LINE)).toBeNull();
+    // Its answer, which holds no decision, comes into the cache, and the line is drawn.
+    await act(async () => cold.client.setQueryData(["decisions", KEY], decisionsRead([])));
+    expect(cold.getByText(EMPTY_LINE)).toBeTruthy();
+    cold.unmount();
+  } finally {
+    getIssueDecisions.mockRestore();
+  }
 });
 
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
@@ -1004,7 +1036,7 @@ test("a focused row says Author unknown for a decision with no author, and gives
   const planner: Actor = {
     id: "session-planner",
     kind: "session",
-    origin: { session_title: "Legion planner · INFRA-1" },
+    origin: { session_title: "Legion planner · CORE-1" },
   };
   const view = renderBody({
     children: [
@@ -1026,7 +1058,7 @@ test("a focused row says Author unknown for a decision with no author, and gives
   await act(async () => asked.focus());
   expect(words(asked.querySelector("[data-node-margin] [data-node-author]"))).toBe("planner");
   expect(words(asked.querySelector("[data-node-body] [data-node-author-title]"))).toBe(
-    "Legion planner · INFRA-1"
+    "Legion planner · CORE-1"
   );
   // The whole title is the body's alone: the margin names the agent by its role's word.
   expect(asked.querySelector("[data-node-margin] [data-node-author-title]")).toBeNull();

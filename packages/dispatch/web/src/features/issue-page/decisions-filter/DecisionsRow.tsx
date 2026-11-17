@@ -54,8 +54,8 @@ interface RowPerson {
 }
 
 /**
- * One row of the Decisions filter (dispatch://INFRA-1196 R2, R9, R34, R35, the prototype's
- * `.dcard`: "outline lines, the same as the conversation's").
+ * One row of the Decisions filter, drawn as the prototype's `.dcard` is: "outline lines, the
+ * same as the conversation's".
  *
  * It is a row of the outline, laid out by the outline's own classes (`NODE_ROW_LAYOUT`) and
  * read by the same marks (`[data-node-row]`, `[data-node-content]`, `[data-node-margin]`): its
@@ -370,15 +370,14 @@ export function DecisionsRow({
           )}
         </div>
         {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
-            state: the token `entryStanding` reads for the row's mark and the panel's facts too.
-            So a decision shows its standing with the reader, not the tree's state, "Kept by"
-            with the keeper this list holds, and the unsure word, which no other entry says. A
-            decision waits on the reader where it is an entry of the review list, which draws
-            its state in the decisions' violet (R35: "one rule decides the list and a second
-            rule decides the mark on a row"); an ask waits as the conversation says. The node an
-            address names stands in no state here and is drawn for its context: in its grey,
-            with no reader's ink on its author, and a child issue by its key, as the outline's
-            row draws one. */}
+            state: the token of the one reading `entryStanding` gives the row and the panel alike.
+            So a decision shows its standing with the reader, not the tree's state, and "Kept
+            by" with the keeper this list holds. A decision waits on the reader where it is an
+            entry of the review list, which draws its state in the decisions' violet: one rule
+            decides the list, and a second decides the mark on a row. An ask waits as the
+            conversation says. The node an address names stands in no state here and is drawn
+            for its context: in its grey, with no reader's ink on its author, and a child issue
+            by its key, as the outline's row draws one. */}
         <RowMargin
           author={author}
           context={tone === "context"}
@@ -386,7 +385,6 @@ export function DecisionsRow({
             ...node,
             keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
             state: standing?.token,
-            unsure: entry.kind === "decision" ? node.unsure : undefined,
             waiting: entry.kind === "decision" ? review : node.waiting,
           }}
           tabStops={false}
