@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+import document from "../schemas/dispatch-openapi.json";
 import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
   ARTIFACT_STORED_TEXT_RULE,
@@ -9,9 +10,13 @@ import {
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
+  NODE_VISIBILITIES,
+  POINTER_ACTIONS,
+  POINTER_KINDS,
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
+  WRITABLE_NODE_STATES,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
 
@@ -648,6 +653,38 @@ describe("dispatchToolSpecs", () => {
     expect(refusal(partial)).toEqual([
       "recording a result needs role, commit. Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it.",
     ]);
+  });
+
+  // A retarget names the far end the pointer moves from, and no other action names one; the
+  // refusal is the one rule, whichever half of it the call broke.
+  test("dispatch_pointer takes from with a retarget alone, and refuses a call that breaks either half", () => {
+    const schema = schemaFor("dispatch_pointer");
+    const retarget: Record<string, unknown> = validCalls.dispatch_pointer;
+    const { from: _from, ...withoutFrom } = retarget;
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rule =
+      "from goes with action retarget, and a retarget names it: the far end the node's pointer is at now.";
+
+    expect(schema.safeParse(retarget).success).toBe(true);
+    expect(schema.safeParse({ ...withoutFrom, action: "append" }).success).toBe(true);
+    expect(refusal(withoutFrom)).toEqual([rule]);
+    expect(refusal({ ...retarget, action: "append" })).toEqual([rule]);
+    expect(refusal({ ...retarget, action: "retract" })).toEqual([rule]);
+  });
+
+  // Each list is typed from the generated contract, so a value the server does not take fails
+  // the type check; this holds the other half, that no list leaves out a value the server's
+  // document takes.
+  test("the reasoning tools' lists hold every value the server's document takes", () => {
+    const schemas = document.components.schemas;
+    const sorted = (values: readonly string[]) => [...values].sort();
+    expect(sorted(NODE_VISIBILITIES)).toEqual(sorted(schemas.GraphNode.properties.visibility.enum));
+    expect(sorted(POINTER_KINDS)).toEqual(sorted(schemas.PointerInput.properties.kind.enum));
+    expect(sorted(POINTER_ACTIONS)).toEqual(sorted(schemas.PointerInput.properties.action.enum));
+    expect(sorted(WRITABLE_NODE_STATES)).toEqual(
+      sorted(schemas.NodeStateInput.properties.state.enum)
+    );
   });
 
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {

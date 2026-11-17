@@ -49,16 +49,12 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT DEV_SIGNIN_LOGIN
-require_commands curl jq sed
+require_commands cmp curl jq sed
 read_bearer
 
 readonly driver=node-author.sh
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
-# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
-# authenticates must name it (enforceCookieOrigin).
-base_host="${base#*://}"
-readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 # The two people: the one DEV_SIGNIN_LOGIN names, and bob.
@@ -72,8 +68,6 @@ stamp="$(date +%s)-$$"
 readonly stamp
 # The one session every bearer write and every personal token's write names in its body.
 readonly session="node-author-$stamp"
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
-readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 # A lens id nobody ever wrote: the address whose answer an author-only lens is held to.
 readonly missing="00000000-0000-4000-8000-000000000000"
 
@@ -81,21 +75,10 @@ work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 key=""
-# The id of the personal token each person minted, by login, which cleanup revokes.
-declare -A minted=()
 cleanup() {
-  local code=$? login
-  for login in "${!minted[@]}"; do
-    request "cookie:$login" DELETE "/api/v1/me/agent-tokens/$(q "${minted[$login]}")"
-    [[ "$status" == 2?? ]] ||
-      printf '%s: could not revoke the token %s minted: HTTP %s: %s\n' "$driver" "$login" "$status" "$(body)" >&2
-  done
-  if [[ -n "$key" ]]; then
-    request agent PATCH "/api/v1/issues/$key" \
-      "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] ||
-      printf '%s: could not close %s: HTTP %s: %s\n' "$driver" "$key" "$status" "$(body)" >&2
-  fi
+  local code=$?
+  revoke_tokens
+  [[ -z "$key" ]] || close_issue "$key"
   rm -rf "$work"
   exit "$code"
 }
@@ -103,45 +86,11 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, the shared bearer in $work/auth;
-# `cookie:<login>`, the session cookie the dev sign-in left in $work/jar.<login> and the dashboard's
-# origin, which the server requires of every write a cookie authenticates; or `token:<login>`, the
-# personal token that person minted, in $work/auth.<login>. No token reaches an argument list. The
-# answer's body goes to $work/body and its HTTP status to $status.
-request() {
-  local -a auth data=()
-  case "$1" in
-    cookie:*) auth=(-b "$work/jar.${1#cookie:}" -H "Origin: $origin") ;;
-    token:*) auth=(-H "@$work/auth.${1#token:}") ;;
-    *) auth=(-H "@$work/auth") ;;
-  esac
-  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
-  status="$(curl -sS --max-time 60 -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
-    "$base$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# actor: the session the bearer's and the personal tokens' writes name.
-actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
-
 # lens_write VISIBILITY [ACTOR]: the body of a pre-mortem on the spec at VISIBILITY, naming ACTOR
 # where one is given.
 lens_write() {
   jq -cn --arg on "$spec" --arg v "$1" --arg a "${2:-}" \
     '{on: $on, kind: "pre-mortem", visibility: $v} + (if $a == "" then {} else {actor: ($a | fromjson)} end)'
-}
-
-# invoke SECTION WHAT AS BODY: AS invokes the lens BODY names (POST /api/v1/issues/{key}/lenses) and
-# the answer is 201. It sets $lens to the lens's address and $lens_id to its uuid, and keeps the
-# answer in $work/invoked.
-invoke() {
-  request "$3" POST "/api/v1/issues/$key/lenses" "$4"
-  want_status 201 "$1" "$2"
-  cp "$work/body" "$work/invoked"
-  lens="$(jq -er '.address' "$work/invoked")" || fail "$1" "$2" "no address: $(body)"
-  lens_id="$(jq -er '.id' "$work/invoked")" || fail "$1" "$2" "no id: $(body)"
-  [[ "$lens" == "dispatch://lens/$lens_id" ]] ||
-    fail "$1" "$2" "the lens answers the address $lens, want dispatch://lens/$lens_id"
-  pass "$1" "$2 ($lens)"
 }
 
 # lenses_on AS ADDRESS: AS reads GET /api/v1/lenses?on=ADDRESS, the answer left as it came.
@@ -153,32 +102,6 @@ spec_lenses() {
   lenses_on "$3" "$spec"
   want_status 200 "$1" "$2"
   jq -c '[.lenses[].address]' "$work/body" >"$4" || fail "$1" "$2" "unreadable: $(body)"
-}
-
-# sign_in LOGIN: signs LOGIN in through the dev sign-in route, keeping the cookie in $work/jar.LOGIN.
-sign_in() {
-  status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar.$1" \
-    "$base/auth/_dev/signin?login=$(q "$1")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-  want_status 302 setup "dev sign-in as $1"
-  grep -q $'\tdsession\t' "$work/jar.$1" || fail setup "dev sign-in as $1" "the answer set no session cookie"
-  pass setup "signed in as $1"
-}
-
-# mint_token LOGIN: LOGIN's cookie mints a personal token with a name and no scopes, so it holds
-# that person's own scopes; its plaintext, the answer's `token`, goes to $work/auth.LOGIN as the
-# header request sends, and its id to minted[LOGIN]. The answer, which holds the plaintext, is
-# cleared once read, so no failure message prints it.
-mint_token() {
-  local plaintext scopes
-  request "cookie:$1" POST /api/v1/me/agent-tokens "$(jq -cn --arg n "node-author $1 $stamp" '{name: $n}')"
-  want_status 201 setup "mint a personal token for $1"
-  plaintext="$(jq -er '.token | select(type == "string" and . != "")' "$work/body")" ||
-    fail setup "mint a personal token for $1" "the answer holds no token"
-  minted[$1]="$(jq -er '.id' "$work/body")" || fail setup "mint a personal token for $1" "the answer holds no id"
-  scopes="$(jq -c '.scopes' "$work/body")"
-  printf 'Authorization: Bearer %s\n' "$plaintext" >"$work/auth.$1"
-  : >"$work/body"
-  pass setup "minted a personal token for $1 with no scopes asked for; it holds $scopes"
 }
 
 # read_back SECTION WHAT AS ADDRESS LOGIN: AS reads the lens ADDRESS at its address and finds it,
@@ -214,18 +137,12 @@ as_nobody() {
 
 # --- the catalogue ------------------------------------------------------------------------------
 
-request agent GET /api/v1/schema/blocks
-want_status 200 "$driver" "read the catalogue"
-held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
-  "$work/body")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
-[[ "$held" == "$seeded_kinds" ]] ||
-  fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
-pass "$driver" "the catalogue holds its ten kinds"
+seeded_catalogue
 
 # --- setup --------------------------------------------------------------------------------------
 
-sign_in "$first"
-sign_in "$second"
+sign_in setup "$first"
+sign_in setup "$second"
 
 request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
   '{project: $p, title: "Node author check", force: true, actor: $a,

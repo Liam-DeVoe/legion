@@ -77,10 +77,11 @@
 # BASELINE_SHA (lib-baseline.sh's: the base commit; while a branch this child builds on is unmerged,
 # a commit holding every such branch), DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which
 # serves and runs backfill-graph-store, census, lens-kind-add and erase, default
-# $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE (lib-baseline.sh's checkout). It starts the
-# three fakes run-server.sh needs, and every server, and stops each when it exits, also when a check
-# fails, so the run can drop its database. Each unmet input is exit 2. No BASELINE_BINARY is read:
-# the base is always built here and stamped with its commit.
+# $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE (lib-baseline.sh's checkout). It starts the two
+# fakes run-server.sh needs, the fake Envoy and the fake GitHub, and every server (lib-processes.sh),
+# and stops each when it exits, also when a check fails, so the run can drop its database. Each
+# unmet input is exit 2. No BASELINE_BINARY is read: the base is always built here and stamped with
+# its commit.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` and the script exits 1. The first PASS line after this head's
@@ -105,8 +106,8 @@ Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/infra_1950_census?sslmode=dis
 USAGE
 }
 
-# shellcheck source-path=SCRIPTDIR source=lib-baseline.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib-baseline.sh"
+# shellcheck source-path=SCRIPTDIR source=lib-processes.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-processes.sh"
 require_env DATABASE_URL
 require_commands bun curl git go jq openssl psql python3 tar
 
@@ -114,15 +115,8 @@ readonly driver=node-visibility-census.sh
 # shellcheck disable=SC2153,SC2031 # the caller's DATABASE_URL, checked by name above, not a server's
 # Not readonly: lib-baseline.sh's baseline_boot takes a local of this name.
 database_url="$DATABASE_URL"
-# shellcheck disable=SC2031 # the TMPDIR lib.sh's `cli` exports is its own; this one is the caller's
-server_bin="${DISPATCH_E2E_SERVER_BIN:-${TMPDIR:-/tmp}/bin/envoy-dispatch}"
-[[ "$server_bin" == /* ]] || server_bin="$PWD/$server_bin"
-readonly server_bin
-[[ -x "$server_bin" ]] || {
-  printf 'DISPATCH_E2E_SERVER_BIN names %s, which is not an executable file\n' "$server_bin" >&2
-  usage
-  exit 2
-}
+require_local_database
+require_server_bin
 [[ -z "${BASELINE_BINARY:-}" ]] || {
   printf 'BASELINE_BINARY is set: this driver builds the base itself, stamped with its commit\n' >&2
   usage
@@ -133,8 +127,6 @@ readonly server_bin
 readonly token=e2e-token
 # shellcheck disable=SC2034 # read by lib-baseline.sh's baseline_start
 DISPATCH_TOKEN="$token"
-e2e_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly e2e_dir
 # The tree this driver is part of, whose sources G greps and whose migrations M reads.
 tree="$(cd -- "$e2e_dir/../../.." && pwd)"
 readonly tree
@@ -146,14 +138,12 @@ readonly session="census-$stamp"
 readonly carol_session="census-carol-$stamp"
 readonly bearer_session="census-bearer-lens-$stamp"
 readonly project=CENSUS
-# The two seeded people, the person of the identity table, and the login one character from hers.
+# The two seeded people, the person of the identity table, and karol, a login one character from
+# hers, who must stay a person of his own.
 readonly alice=alice bob=bob carol=carol twin=karol
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
-readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 readonly added_kind="census-$stamp"
-# How long a process gets to print the line that says it listens, and how long each of the two
-# waits below may take: the owed block versions, and the older build's sweep.
-readonly listen_limit=180
+# How long each of the two waits below may take: the owed block versions, and the older build's
+# sweep.
 readonly wait_limit=600
 # The words of the requirement edited under a run, before the edit and after it.
 readonly edited_from="The words of this requirement are edited under a run."
@@ -162,27 +152,9 @@ readonly edited_to="The words of this requirement were edited under a run."
 work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
-pids=()
-server_pid=""
-# stop_pid PID: ends the process PID, with SIGKILL for one that does not go on SIGTERM within ten
-# seconds, and reaps it.
-stop_pid() {
-  local waited=0
-  kill -TERM "$1" 2>/dev/null || return 0
-  while kill -0 "$1" 2>/dev/null && [[ "$waited" -lt 20 ]]; do
-    sleep 0.5
-    waited=$((waited + 1))
-  done
-  kill -KILL "$1" 2>/dev/null || true
-  wait "$1" 2>/dev/null || true
-}
 cleanup() {
   local code=$?
-  local pid
-  [[ -z "$server_pid" ]] || stop_pid "$server_pid"
-  for pid in "${pids[@]}"; do
-    stop_pid "$pid"
-  done
+  stop_processes
   baseline_stop
   rm -rf "$work"
   exit "$code"
@@ -191,89 +163,11 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# fail_with_log SECTION WHAT OBSERVED LOG: fail, with the last lines of LOG after OBSERVED.
-fail_with_log() {
-  fail "$1" "$2" "$3; the last lines of its log: $(tail -n 20 "$4" 2>/dev/null)"
-}
-
-# psql_run SECTION WHAT ARGS…: psql against the run's database, stopping at the first error, its
-# output in $work/psql.out. psql runs without PGHOSTADDR, which libpq would otherwise connect to in
-# place of the DSN's host.
-psql_run() {
-  local section="$1" what="$2"
-  shift 2
-  env -u PGHOSTADDR psql "$database_url" -X -q -At -v ON_ERROR_STOP=1 "$@" >"$work/psql.out" 2>&1 ||
-    fail "$section" "$what" "psql: $(<"$work/psql.out")"
-}
-
-# with_vars SECTION WHAT SQL NAME=VALUE…: runs SQL with each NAME bound as a psql variable (read as
-# :'NAME'), its one value in $answer. The SQL is read from stdin, where psql substitutes a variable.
-with_vars() {
-  local section="$1" what="$2" sql="$3" pair
-  shift 3
-  local -a vars=()
-  for pair in "$@"; do
-    vars+=(-v "$pair")
-  done
-  answer="$(env -u PGHOSTADDR psql "$database_url" -X -q -At -v ON_ERROR_STOP=1 "${vars[@]}" <<<"$sql" 2>"$work/psql")" ||
-    fail "$section" "$what" "psql: $(<"$work/psql")"
-}
-
-# want_value SECTION WHAT WANT SQL: the one value SQL reads is WANT.
-want_value() {
-  query "$1" "$2" "$4"
-  [[ "$answer" == "$3" ]] || fail "$1" "$2" "read '$answer', want '$3' (from: $4)"
-  pass "$1" "$2"
-}
-
-# await_line SECTION WHAT PID LOG PATTERN: waits for PATTERN in LOG while PID lives, for up to
-# $listen_limit seconds, and sets $line to the first line holding it.
-await_line() {
-  local waited=0
-  until line="$(grep -m 1 -E "$5" "$4" 2>/dev/null)"; do
-    kill -0 "$3" 2>/dev/null || fail_with_log "$1" "$2" "the process stopped before it printed /$5/" "$4"
-    [[ "$waited" -lt $((listen_limit * 2)) ]] ||
-      fail_with_log "$1" "$2" "no line /$5/ after $listen_limit s" "$4"
-    sleep 0.5
-    waited=$((waited + 1))
-  done
-}
-
-# start_fake NAME FILE: starts the fake e2e/FILE on a port the OS chooses, which its own line
-# reports, and sets $fake_port to it.
-start_fake() {
-  env -u FAKE_ENVOY_PORT -u FAKE_GITHUB_PORT -u FAKE_BROKER_PORT -u FAKE_EMBEDDER_PORT \
-    -u DISPATCH_E2E_STACKS -u DISPATCH_E2E_STACK_COUNT -u DATABASE_URL \
-    bun "$e2e_dir/$2" >"$work/$1.log" 2>&1 &
-  pids+=("$!")
-  await_line setup "start the $1" "$!" "$work/$1.log" "listener on 127\.0\.0\.1:[0-9]+"
-  fake_port="${line##*:}"
-  [[ "$fake_port" =~ ^[0-9]+$ ]] || fail setup "start the $1" "its line reads: $line"
-  printf '%s: the %s listens on 127.0.0.1:%s\n' "$driver" "$1" "$fake_port"
-}
-
-# boot_server SECTION NAME BINARY: starts BINARY with e2e/run-server.sh over the run's database, on
-# a port the kernel chooses and held-port.py holds until the server serves on it, with the dev
-# sign-in key lib-baseline.sh gave the base build, so every server of the run signs cookies with one
-# key. It sets $server_pid and $base, the server's address.
-boot_server() {
-  env -u DISPATCH_E2E_PORT -u DISPATCH_E2E_PROCESSES -u DISPATCH_E2E_SIGNIN -u DISPATCH_E2E_LISTEN_FROM \
-    DATABASE_URL="$database_url" FAKE_ENVOY_PORT="$envoy_port" FAKE_GITHUB_PORT="$github_port" \
-    FAKE_BROKER_PORT="$broker_port" DISPATCH_E2E_SERVER_BIN="$3" \
-    DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY="$baseline_signin_key" \
-    bash "$e2e_dir/run-server.sh" >"$work/$2.log" 2>&1 &
-  server_pid="$!"
-  await_line "$1" "start $2" "$server_pid" "$work/$2.log" 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]+'
-  [[ "$line" =~ addr=(127\.0\.0\.1:[0-9]+) ]] || fail_with_log "$1" "start $2" "its line names no address: $line" "$work/$2.log"
-  base="http://${BASH_REMATCH[1]}"
-  printf '%s: %s, %s, serves %s (pid %s)\n' "$driver" "$2" "$3" "$base" "$server_pid"
-}
-
 # stop_server SECTION WHAT: stops the server this driver started last, which deletes its row of
 # server_processes as its drain ends, and reads that no process of the run is registered then, so
 # the next server is the only one serving the database.
 stop_server() {
-  stop_pid "$server_pid"
+  baseline_stop_pid "$server_pid"
   server_pid=""
   want_value "$1" "$2: server_processes holds no row once it stopped" 0 "select count(*) from server_processes"
 }
@@ -283,36 +177,6 @@ registered_commit() {
   query "$1" "$2" "select count(*) || '|' || coalesce(min(commit), '') from server_processes"
   [[ "$answer" == 1\|* ]] || fail "$1" "$2" "server_processes holds '$answer', want one row"
   answer="${answer#1|}"
-}
-
-# request AS METHOD PATH [JSON [RUN]]: sends METHOD PATH as AS: `agent`, the shared bearer in
-# $work/auth, or `cookie:<login>`, the session cookie the dev sign-in left in $work/jar.<login> and
-# the server's origin, which the server requires of every write a cookie authenticates. RUN names a
-# run of the command bar in the Dispatch-Going-Run header. The answer's body goes to $work/body and
-# its HTTP status to $status.
-request() {
-  local -a auth data=() going=()
-  case "$1" in
-    cookie:*) auth=(-b "$work/jar.${1#cookie:}" -H "Origin: $base") ;;
-    *) auth=(-H "@$work/auth") ;;
-  esac
-  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
-  [[ $# -lt 5 ]] || going=(-H "Dispatch-Going-Run: $5")
-  status="$(curl -sS --max-time 60 -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" "${going[@]}" \
-    "$base$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# actor: the session every write on the shared bearer acts for.
-actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
-
-# sign_in SECTION LOGIN: signs LOGIN in through the dev sign-in route of the server serving now,
-# keeping the cookie in $work/jar.LOGIN.
-sign_in() {
-  status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar.$2" \
-    "$base/auth/_dev/signin?login=$(q "$2")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-  want_status 302 "$1" "dev sign-in as $2"
-  grep -q $'\tdsession\t' "$work/jar.$2" || fail "$1" "dev sign-in as $2" "the answer set no session cookie"
-  pass "$1" "signed in as $2 at $base"
 }
 
 # ask SECTION LOGIN WORDS: LOGIN's cookie asks the command bar WORDS of the project, and the answer
@@ -416,15 +280,14 @@ census_kind() {
   c_node_differences="${BASH_REMATCH[4]//,/}"
 }
 
-# census_zero SECTION NAME KIND [ANY]: the census NAME read KIND at zero differences in both
-# directions, having checked more than zero rows of it unless ANY is given; a kind that checked no
-# row fails, named.
+# census_zero SECTION NAME KIND: the census NAME read KIND at zero differences in both directions,
+# having checked more than zero rows of it; a kind that checked no row fails, named.
 census_zero() {
   census_kind "$work/census.$2" "$3" || fail "$1" "the census reads the kind $3" "no line of it in: $(<"$work/census.$2")"
   [[ "$c_row_differences" == 0 && "$c_node_differences" == 0 ]] ||
     fail "$1" "the census reads $3 at zero differences" \
       "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
-  [[ -n "${4:-}" || "$c_rows" -gt 0 ]] ||
+  [[ "$c_rows" -gt 0 ]] ||
     fail "$1" "the census checked more than zero rows of the kind $3" "it checked $c_rows rows of $3, so it proves nothing of it"
   pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_nodes node(s)"
 }
@@ -493,20 +356,10 @@ readonly against_inventory_jq='
 
 # --- inputs -------------------------------------------------------------------------------------
 
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/?]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) ;;
-  *)
-    printf 'DATABASE_URL names the host %s, which is not this machine: the servers'"'"' dev sign-in refuses it, and this driver writes rows of its store\n' "$host" >&2
-    exit 2
-    ;;
-esac
 query setup "read the run's database before any server starts" \
   "select count(*) from information_schema.tables where table_schema = 'public'"
 [[ "$answer" == 0 ]] || fail setup "the run's database is empty before any server starts" "it holds $answer tables"
-pass setup "the run's database ($host) held no table before any server started"
+pass setup "the run's database ($database_host) held no table before any server started"
 
 # The identity table. A person wrote these rows, and no code the server runs produces them: each
 # names a form going_requests.author can hold, the node the run's authored_by must name, and the
@@ -521,16 +374,9 @@ identities=(
   'a login one character from hers, which must stay a person of its own|{"kind": "user", "id": "karol"}|person:karol|karol'
 )
 readonly identities
-[[ "$twin" != "$carol" && "${#twin}" == "${#carol}" ]] ||
-  fail setup "two logins one character apart" "$carol and $twin"
 pass setup "the identity table holds ${#identities[@]} forms: four of $carol and one of $twin, one character from her"
 
-start_fake "fake Envoy" fake-envoy.ts
-readonly envoy_port="$fake_port"
-start_fake "fake GitHub" fake-github.ts
-readonly github_port="$fake_port"
-start_fake "fake secrets broker" fake-broker.ts
-readonly broker_port="$fake_port"
+start_fakes
 
 # --- B1: the base build, its three runs, the hand-written row, the identity table, the inventory -
 
@@ -541,15 +387,16 @@ registered_commit B1 "read the base build's row of server_processes"
   fail B1 "the base build registers the commit it was built from" "server_processes names '$answer', want $baseline_commit"
 pass B1 "the base build serves $base, stamped with commit $baseline_commit, which its row of server_processes names"
 fleet_reads B1 "$baseline_commit"
-query B1 "read the base build's schema_migrations high-water mark" "select coalesce(max(version), 0) from schema_migrations"
-readonly base_mark="$answer"
+base_mark="$(baseline_high_water "$database_url")" ||
+  fail B1 "read the base build's schema_migrations high-water mark" "psql refused it"
+readonly base_mark
 [[ "$base_mark" =~ ^[0-9]+$ && "$base_mark" -gt 0 ]] ||
   fail B1 "the base build ran its own migrations over the empty database" "schema_migrations reads '$base_mark'"
 pass B1 "the base build migrated the empty database to $base_mark"
 
-sign_in B1 "$alice"
-sign_in B1 "$bob"
-sign_in B1 "$carol"
+sign_in B1 "$alice" " at $base"
+sign_in B1 "$bob" " at $base"
+sign_in B1 "$carol" " at $base"
 request agent POST /api/v1/projects "$(jq -cn --arg k "$project" --arg l "$alice" --argjson a "$(actor)" \
   '{key: $k, name: "Census check", default_assignee: $l, actor: $a}')"
 want_status 201 B1 "create the project $project"
@@ -653,13 +500,7 @@ pass B1 "kept the inventory of $inventory_size runs, each its id, author, words 
 # --- H1: this head over the same database, its migrations and backfill, against the inventory ----
 
 boot_server H1 "this head's server" "$server_bin"
-request agent GET /api/v1/schema/blocks
-want_status 200 "$driver" "read the catalogue"
-cp "$work/body" "$work/catalogue.json"
-held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
-  "$work/catalogue.json")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
-[[ "$held" == "$seeded_kinds" ]] || fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
-pass "$driver" "the catalogue holds its ten kinds"
+seeded_catalogue
 
 registered_commit H1 "read this head's row of server_processes"
 readonly head_commit="$answer"
@@ -702,8 +543,8 @@ pass H1 "the store holds no interaction node the inventory lacks"
 
 # --- H2: this build's writes ----------------------------------------------------------------------
 
-sign_in H2 "$alice"
-sign_in H2 "$bob"
+sign_in H2 "$alice" " at $base"
+sign_in H2 "$bob" " at $base"
 seed="$(jq -c '{lens_kind: [.lens_kinds[].id], constraint: [.lens_kinds[].sources[].ref | ltrimstr("dispatch://constraint/")],
   constrained_by: [.lens_kinds[] | .id as $k | .sources[] | "lens_kind:\($k) constrained_by constraint:\(.ref | ltrimstr("dispatch://constraint/"))"]}' \
   "$work/catalogue.json")" || fail H2 "read the migration's seed out of the catalogue" "unreadable: $(<"$work/catalogue.json")"
@@ -848,7 +689,7 @@ registered_commit B2 "read the base build's row of server_processes"
   fail B2 "the base build serves the database again, stamped with its commit" "its row names '$answer', want $baseline_commit"
 pass B2 "the base build serves the database again at $base, stamped with $baseline_commit"
 fleet_reads B2 "$baseline_commit"
-sign_in B2 "$alice"
+sign_in B2 "$alice" " at $base"
 ask B2 "$alice" "What did the census read?"
 readonly run_new="$asked"
 read_stream B2 "$alice" "$run_new"
@@ -996,7 +837,7 @@ pass H3 "the store and the going tables still hold the $(jq 'length' "$work/inve
 # and her risk to overtaken, and the census below counts each among the nodes of its kind and
 # reads zero differences.
 readonly finding_store="${finding_node/\#b-/#}"
-sign_in H3 "$alice"
+sign_in H3 "$alice" " at $base"
 move_state H3 "$premortem" "lens/$premortem_id" live proposed
 move_state H3 "$finding" "$finding_store" live proposed
 move_state H3 "$finding" "$finding_store" proposed settled
@@ -1137,9 +978,11 @@ named_in() {
     [[ ! "${path,,}" =~ $name_pattern ]] || hits+=("$name")
   done
 }
-mkdir -p "$work/planted/packages/envoy"
-cp -R "$tree/packages/envoy/cmd" "$tree/packages/envoy/scripts" "$work/planted/packages/envoy/" ||
-  fail G "copy packages/envoy/cmd and packages/envoy/scripts under $work/planted" "cp failed"
+mkdir -p "$work/planted/packages/envoy/cmd"
+cp -R "$tree/packages/envoy/cmd/dispatch" "$work/planted/packages/envoy/cmd/" ||
+  fail G "copy packages/envoy/cmd/dispatch and packages/envoy/scripts under $work/planted" "cp failed"
+cp -R "$tree/packages/envoy/scripts" "$work/planted/packages/envoy/" ||
+  fail G "copy packages/envoy/cmd/dispatch and packages/envoy/scripts under $work/planted" "cp failed"
 printf '#!/usr/bin/env bash\n# Rebuilds the lens nodes from a projection: planted for the grep below.\n' \
   >"$work/planted/packages/envoy/scripts/rebuild-lens.sh"
 printf 'G: the pattern, over each name'"'"'s last path element in lower case: %s\n' "$name_pattern"
@@ -1160,8 +1003,8 @@ pass G "no subcommand and no file of packages/envoy/cmd/dispatch or packages/env
 
 # --- P: the predicate's sets, against the store's own -------------------------------------------
 
-sign_in P "$alice"
-sign_in P "$bob"
+sign_in P "$alice" " at $base"
+sign_in P "$bob" " at $base"
 # Every node of this child's kinds the store holds present, its address, and whether the store's
 # columns alone admit it to :'person': a node at project, or one reserved for its author whose
 # made_by names that person - the person a credential proves for a lens, a finding, a risk and a
