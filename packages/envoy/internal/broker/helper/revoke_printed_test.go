@@ -28,12 +28,7 @@ import (
 // reason.
 func TestARevokeThatCannotReachTheBrokerPrintsNoID(t *testing.T) {
 	const typed = "hunter2pw-enrollment-id-7b31"
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := "http://" + listener.Addr().String()
-	listener.Close()
+	closed := closedBroker(t)
 	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +43,136 @@ func TestARevokeThatCannotReachTheBrokerPrintsNoID(t *testing.T) {
 	if !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Errorf("the revoke's error = %v, want it to unwrap to the refused connection", err)
 	}
+}
+
+// TestARevokeAnsweredWithBrokenHTTPPrintsNoID: a broker, or something between it and the helper,
+// that answers a revoke with a status line HTTP cannot read makes net/http's error quote the
+// request URL, the typed id in it, and the broker client's own error names that URL as Call
+// prints it. The revoke's route, with the id left out, is all that prints of it: the class of
+// the failure under it must not carry the URL back. Control: the route and the class print.
+func TestARevokeAnsweredWithBrokenHTTPPrintsNoID(t *testing.T) {
+	const typed = "hunter2pw-typed-enrollment-tn7"
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := brokenHTTPBroker(t)
+	b := &Broker{URL: brokeraddr.New(address)}
+	t.Cleanup(b.Close)
+	err = b.revokeUnder(context.Background(), &brokerclient.Authority{Key: key, CredentialID: "cred-1"}, nil, typed)
+	if err == nil {
+		t.Fatal("the revoke took a status line HTTP cannot read")
+	}
+	wantNamedNotPrinted(t, "the revoke's error", err.Error(), []string{address, "/v1/enrollments/", "the request failed"}, typed)
+}
+
+// TestNoLineMadeFromARevokesFailurePrintsItsID: a revoke that failed names its route with the id
+// left out (brokeraddr.Address.Named), and every line made from that failure keeps the id out:
+// Error and Cause again beside the helper's own address, another clean one and one that carries
+// a credential, Class, BrokerAnswer, Words, a wrap with %w, and the helper's relays of it, the
+// unenroll-session-key answer (UNENROLL_FAILED, or UNENROLL_OUTCOME_UNKNOWN through
+// mayHaveReachedCause). Error over the failure prints the failure as it is or its route line,
+// never the URL beneath; Class prints the failure's class alone. It holds for a broker that
+// refuses the connection and for one that answers a status line HTTP cannot read. Control: every
+// line names the route and the class.
+func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
+	const typed = "hunter2pw-typed-walk-3c9"
+	credentialed := brokeraddr.New("http://" + "walkuser" + ":" + "hunter2pwADDR" + "@127.0.0.1:1")
+	for _, row := range []struct {
+		name, address, class, code string
+	}{
+		{"a refused connection", closedBroker(t), "connection refused", CodeUnenrollFailed},
+		{"a status line HTTP cannot read", brokenHTTPBroker(t), "the request failed", CodeUnenrollUnknown},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			key, err := proof.NewKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority := &brokerclient.Authority{Key: key, CredentialID: "cred-1"}
+			b := &Broker{URL: brokeraddr.New(row.address), SignIns: &stubSignIns{authority: authority}}
+			t.Cleanup(b.Close)
+			failed := b.revokeUnder(context.Background(), authority, nil, typed)
+			if failed == nil {
+				t.Fatal("the revoke did not fail")
+			}
+			route := http.MethodDelete + " " + row.address + "/v1/enrollments/(the enrollment id, not printed): "
+			wantNamedNotPrinted(t, "the revoke's error", failed.Error(), []string{route, row.class}, typed)
+			addresses := map[string]brokeraddr.Address{
+				"the helper's address":                 b.URL,
+				"another clean address":                brokeraddr.New("https://other-broker.example"),
+				"an address that carries a credential": credentialed,
+			}
+			for _, err := range []error{failed, fmt.Errorf("unenroll: %w", failed)} {
+				printed := map[string]string{}
+				for name, a := range addresses {
+					line := a.Error(err).Error()
+					if line != err.Error() && line != failed.Error() {
+						t.Errorf("Error beside %s of %q = %q, want it as it is or its route line", name, err, line)
+					}
+					printed["Error beside "+name] = line
+					printed["Cause beside "+name] = a.Cause(err).Error()
+				}
+				if class := redact.Class(err).Error(); class != row.class {
+					t.Errorf("Class of %q = %q, want %q", err, class, row.class)
+				}
+				printed["Class"] = redact.Class(err).Error()
+				if re, ok := redact.BrokerAnswer(err); ok {
+					t.Errorf("BrokerAnswer of %q found %v", err, re)
+				}
+				for what, text := range printed {
+					wantNamedNotPrinted(t, what, text, []string{row.class}, typed, "hunter2pwADDR")
+					for name, a := range addresses {
+						wantNamedNotPrinted(t, "Words beside "+name+" of "+what, a.Words(text), nil, typed, "hunter2pwADDR")
+					}
+				}
+			}
+			resp := (&Server{Broker: b}).unenrollSessionKey(context.Background(), typed)
+			if resp.OK || resp.Code != row.code {
+				t.Errorf("unenroll-session-key answered OK %t, code %q; want code %q", resp.OK, resp.Code, row.code)
+			}
+			wantNamedNotPrinted(t, "the unenroll-session-key answer", resp.Error, []string{route, row.class}, typed)
+			wantNamedNotPrinted(t, "mayHaveReachedCause", mayHaveReachedCause(failed), []string{route, row.class}, typed)
+		})
+	}
+}
+
+// closedBroker is the address of a port nothing listens on: a connection to it is refused.
+func closedBroker(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := "http://" + listener.Addr().String()
+	listener.Close()
+	return address
+}
+
+// brokenHTTPBroker is the address of a server that answers every request with a status line HTTP
+// cannot read, so net/http's error quotes the request URL.
+func brokenHTTPBroker(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 4096)
+				_, _ = conn.Read(buf)
+				_, _ = conn.Write([]byte("HTTP/1.1 not-a-status\r\nContent-Length: 0\r\n\r\n"))
+			}()
+		}
+	}()
+	return "http://" + listener.Addr().String()
 }
 
 // TestAnAnswerUnderClassIsNotTheBrokersRefusal: oauthBrokerError makes a BrokerError, which

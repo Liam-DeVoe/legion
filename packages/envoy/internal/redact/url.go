@@ -16,7 +16,9 @@
 // field of an OAuth answer ever prints: an answer that carries an error_uri, or one with no error
 // code (whose text is the response body x/oauth2 kept), prints as the failure's class alone, "the
 // broker answered HTTP <n>", as every answer does where its text may not print; Error puts the
-// *url.Error's operation and URL, through Call, before it.
+// *url.Error's operation and URL, through Call, before it, or the caller's own name for the call
+// (Named). A class is fixed text alone: no Cause, Class or later Error of such an error prints the
+// line that names its call, so no URL, path or id reaches a line made from it.
 package redact
 
 import (
@@ -190,8 +192,10 @@ func callClean(base, callURL string) bool {
 // the broker wrote them (trustedAnswer). Otherwise no text of err is printed: the error's text
 // names only the class of the failure (a URL that did not parse, failed name resolution, a refused
 // connection, a timeout, a TLS failure, an HTTP status, or a request that failed otherwise), found
-// on err itself, and the *url.Error's operation with its URL through Call. It unwraps to err, so
-// errors.Is and errors.As still classify the failure.
+// on err itself, and the *url.Error's operation with its URL through Call. A call already named,
+// by Error or by a caller's own words for it (Named), keeps that name: its URL is not named again,
+// so a part of it that Named left out does not come back. It unwraps to err, so errors.Is and
+// errors.As still classify the failure.
 func Error(err error, raw string) error {
 	if err == nil {
 		return nil
@@ -201,11 +205,41 @@ func Error(err error, raw string) error {
 		return err
 	}
 	text := class(err, "the broker")
-	if ue != nil {
-		text = ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text
+	var named *called
+	switch {
+	case errors.As(err, &named):
+		return &called{named.text, &classified{text, err}}
+	case ue != nil:
+		// The call's line names the URL as Call prints it; the class under it stays URL-free, so
+		// Cause, Class, or a later Error, of this error prints the class and never this line's URL.
+		return &called{ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text, &classified{text, err}}
 	}
 	return &classified{text, err}
 }
+
+// Named is err, from a request built from raw, named in the caller's own words rather than by its
+// URL: name, ": " and Cause's text of err. It is for a request URL that ends in what a caller
+// typed, such as an id the broker never issued, which Call prints as part of a plain path. Error
+// over the result prints this line again, never the URL under it, and Cause and Class print the
+// failure's class alone. It unwraps to err, so errors.Is and errors.As still classify the failure.
+// Named(nil, raw, name) is nil.
+func Named(err error, raw, name string) error {
+	if err == nil {
+		return nil
+	}
+	return &called{name + ": " + Cause(err, raw).Error(), &classified{class(err, "the broker"), err}}
+}
+
+// called is a line that names a failed call: its operation and URL as Call prints it (Error), or
+// a caller's own words for it (Named), over the failure's class. class() reads the class beneath
+// it, never this line, and Error over it prints this line rather than name the URL again.
+type called struct {
+	text string
+	err  error
+}
+
+func (c *called) Error() string { return c.text }
+func (c *called) Unwrap() error { return c.err }
 
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
 // the error the *url.Error wraps when Error would return err unchanged, and the class alone,
@@ -287,7 +321,10 @@ func trustedAnswer(err error) bool {
 	return ok && re.ErrorCode != "" && re.ErrorURI == ""
 }
 
-// classified is an error whose text is its class alone.
+// classified is an error whose text is its class alone: fixed text naming the kind of failure,
+// which Error, Cause, Class and File make and Masked takes from its caller, and never a URL, a
+// path, an id or other detail of a request. class() reads it as the failure's class, so text that
+// named a call here would print again in every line made from the error; that text is a called.
 type classified struct {
 	text string
 	err  error
@@ -297,9 +334,10 @@ func (c *classified) Error() string { return c.text }
 func (c *classified) Unwrap() error { return c.err }
 
 // class names the kind of failure err is, in fixed text; server is who answered an HTTP status,
-// "the broker" for Error and Cause and "the server" for Class. A failure Class or Masked already
-// put in words keeps those words: they name the server that answered, which another server's
-// answer under them would otherwise lend the broker's name.
+// "the broker" for Error and Cause and "the server" for Class. A failure Error, Cause, Class,
+// Masked or File already put in words (a classified) keeps those words: they name the server that
+// answered, which another server's answer under them would otherwise lend the broker's name. A
+// call's line (a called) is not one: only the class beneath it is read.
 func class(err error, server string) string {
 	var ue *url.Error
 	var dns *net.DNSError

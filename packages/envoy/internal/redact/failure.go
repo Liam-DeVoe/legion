@@ -19,15 +19,17 @@ import (
 // and x/oauth2 keeps the body of an answer, so a server a setting names - the metadata server,
 // Google's token services, a sign-in issuer - is reported by its class, beside the server as the
 // message itself names it. An OAuth answer's class carries its error code where that code is a
-// registered one (answerCodes), which this package spells, never the server. It unwraps to err,
-// so errors.Is and errors.As still classify it.
+// registered one (answerCodes), which this package spells, never the server; a failure already put
+// in words (a classified) keeps those words alone, with no code added to them again. It unwraps to
+// err, so errors.Is and errors.As still classify it.
 func Class(err error) error {
 	if err == nil {
 		return nil
 	}
 	text := class(err, "the server")
+	var worded *classified
 	var re *oauth2.RetrieveError
-	if errors.As(err, &re) && re.Response != nil && answerCodes[re.ErrorCode] {
+	if !errors.As(err, &worded) && errors.As(err, &re) && re.Response != nil && answerCodes[re.ErrorCode] {
 		text += " " + re.ErrorCode
 	}
 	return &classified{text, err}
@@ -35,7 +37,10 @@ func Class(err error) error {
 
 // Masked is err printed as text alone: for a failure a caller has already put in words it may
 // print - a status its transport recorded, fixed text - where err's own text quotes what it may
-// not. It unwraps to err, so errors.Is and errors.As still classify it. Masked(nil, text) is nil.
+// not. text is a class: fixed words naming the kind of failure, never a URL, a path, an id or
+// other detail of a request, since every Error, Cause and Class over the result prints text as the
+// failure's class, in lines of their own. It unwraps to err, so errors.Is and errors.As still
+// classify it. Masked(nil, text) is nil.
 func Masked(err error, text string) error {
 	if err == nil {
 		return nil
@@ -45,14 +50,14 @@ func Masked(err error, text string) error {
 
 // BrokerAnswer is the OAuth error answer (*oauth2.RetrieveError) err holds as the broker's own: the
 // first one Unwrap reaches, as errors.As walks err's tree, on no branch through an error Class,
-// Masked, Error or Cause made. Those hold another server's answer, or one whose text they have
-// already withheld, and keep it reachable so errors.As still classifies the failure; a printer
-// that took that answer's words for the broker's would print the very text they withheld. A
-// printer of the broker's own refusals - its code and its error_description, which print whole
+// Masked, File, Error, Cause or Named made. Those hold another server's answer, or one whose text
+// they have already withheld, and keep it reachable so errors.As still classifies the failure; a
+// printer that took that answer's words for the broker's would print the very text they withheld.
+// A printer of the broker's own refusals - its code and its error_description, which print whole
 // (trustedAnswer) - reads the answer through this function, never through errors.As.
 func BrokerAnswer(err error) (*oauth2.RetrieveError, bool) {
 	switch e := err.(type) {
-	case nil, *classified:
+	case nil, *classified, *called:
 		return nil, false
 	case *oauth2.RetrieveError:
 		return e, true

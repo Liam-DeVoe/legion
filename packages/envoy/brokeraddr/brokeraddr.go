@@ -50,7 +50,7 @@ func New(raw string) Address {
 // answers out of every output - a log field, an error's text, a line on stderr - since printing
 // it is the leak this type exists to prevent: a message names the address through the Address
 // itself, a request URL built from it through Call, and that request's error through Error or
-// Cause.
+// Cause, or through Named where the URL ends in what a caller typed.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""
@@ -106,3 +106,8 @@ func (a Address) Error(err error) error { return redact.Error(err, a.Raw()) }
 // Cause is redact.Cause with the address as the base: Error without net/http's *url.Error wrapper,
 // for a message that names the call itself.
 func (a Address) Cause(err error) error { return redact.Cause(err, a.Raw()) }
+
+// Named is redact.Named with the address as the base: err, from a request built from Raw, named
+// by name, the caller's own words for the call, for a request URL that ends in what a caller typed.
+// Neither Error nor Cause of the result names that URL again.
+func (a Address) Named(err error, name string) error { return redact.Named(err, a.Raw(), name) }
