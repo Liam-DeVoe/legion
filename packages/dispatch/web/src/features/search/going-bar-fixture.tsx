@@ -107,7 +107,8 @@ export function spyOnGoingBar(): GoingBarSpies {
 }
 
 /** The bar, open over a project's issue list. `onCommit` is called as each render of the bar
- *  reaches the page, in the commit itself: before any effect of that render runs. */
+ *  reaches the page, in the commit itself: after its layout effects and before any useEffect of
+ *  that render runs. */
 export function renderBar(onCommit?: () => void): { unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const palette = <SearchPalette onClose={() => {}} open />;

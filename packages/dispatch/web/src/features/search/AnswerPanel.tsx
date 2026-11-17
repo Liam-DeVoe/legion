@@ -95,7 +95,7 @@ function AnswerBody({
   readonly answer: GoingAnswer;
   readonly stale: boolean;
 }): ReactNode {
-  const answering = !answerSettled(answer);
+  const stopped = stale && !answerSettled(answer);
   // An answer that ended citing nothing rests on no source of Dispatch's; one the model wrote no
   // text for says that instead, and its end frame's count of nothing says nothing more.
   const restsOnNothing = answer.end !== undefined && answer.end.items === 0 && !answer.none;
@@ -111,13 +111,13 @@ function AnswerBody({
       {stale ? (
         <p className={`mb-2 ${noteClassName}`} data-testid="going-answer-stale" role="status">
           Answer to your earlier words: “{answer.words}”
-          {answering ? ", stopped before it finished" : null}
+          {stopped ? ", stopped before it finished" : null}
         </p>
       ) : null}
       <div
         className={stale ? `rounded-lg border border-dashed px-3 py-2 ${borderStrong}` : undefined}
       >
-        {answering && answer.text === "" ? (
+        {!answerSettled(answer) && answer.text === "" ? (
           <p className={noteClassName} data-testid="going-answer-status" role="status">
             Answering…
           </p>

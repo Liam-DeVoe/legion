@@ -1,12 +1,13 @@
-import { afterEach, beforeEach, expect, jest, type Mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { GOING_ERROR_ANSWER_FAILED } from "@legion/contracts";
-import { screen, waitFor, within } from "@testing-library/react";
+import { focusManager } from "@tanstack/react-query";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
-import type { api } from "../../api/client";
+import { api } from "../../api/client";
 import type { GoingEvent } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -186,10 +187,10 @@ test("one more letter keeps the answer on the screen as the earlier words', with
   }
 });
 
-test("the render the next letter makes already draws the answer typed past, marked as the earlier words', before any effect of that render runs", async () => {
+test("the render the next letter makes already draws the answer typed past, marked as the earlier words', before any useEffect of that render runs", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
-  // What each render of the bar showed as it reached the page, before any of its effects ran:
+  // What each render of the bar showed as it reached the page, before any of its useEffects ran:
   // the words in the box, and the panel's state, text and mark.
   const commits: { readonly box: string; readonly panel: string }[] = [];
   const bar = renderBar(() => {
@@ -363,6 +364,70 @@ test("emptying the box lets the kept answer go for good, and so does closing the
     expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
   } finally {
     reopened.unmount();
+  }
+});
+
+/** Asks `astrolabe`, draws its first words, and types one more letter: the panel keeps that
+ *  answer as the earlier words' while the next run has nothing of its own. */
+async function keepAnAnswer(user: UserEvent): Promise<void> {
+  await type(user, "astrolabe");
+  await tick(pauseRest);
+  await waitFor(() => expect(streams).toHaveLength(1));
+  streams[0]?.send({ data: { text: "The first answer" }, event: "text" });
+  await waitFor(() =>
+    expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The first answer")
+  );
+  await user.keyboard("s");
+  await expectKeptFor("astrolabe");
+}
+
+test("the project chip asking the same words of another project lets the kept answer go", async () => {
+  await warmMarkdownRenderer();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      gated_steps: [],
+      key: "DEMO",
+      name: "Demo",
+      open_asks: 0,
+    },
+  ]);
+  const user = userOnFakeClock();
+  const bar = renderBar();
+
+  try {
+    await keepAnAnswer(user);
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(await screen.findByRole("button", { name: "DEMO" }));
+    await screen.findByRole("button", { name: "Remove Project DEMO" });
+    expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+    listProjects.mockRestore();
+  }
+});
+
+test("the bar no longer answering, with the same words in the box, lets the kept answer go", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+
+  try {
+    await keepAnAnswer(user);
+
+    // This Dispatch stops answering, and the bar reads so as the tab comes back, a minute on.
+    goingCapability.mockResolvedValue(UNCONFIGURED_CAPABILITY);
+    jest.setSystemTime(Date.now() + 60_000);
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await screen.findByTestId("going-cannot-answer");
+    expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
+  } finally {
+    focusManager.setFocused(undefined);
+    bar.unmount();
   }
 });
 

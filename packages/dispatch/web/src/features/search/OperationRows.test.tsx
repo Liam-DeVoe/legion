@@ -1069,6 +1069,84 @@ test("after one invocation landed and another was refused for the setting, the n
   }
 });
 
+/** Picks DEMO on the bar's project chip, which asks the same words of that project: another
+ *  run, whose stream is handed `frames` once it opens. */
+async function askOfAnotherProject(user: UserEvent, ...frames: GoingEvent[]): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Project" }));
+  await user.click(await screen.findByRole("button", { name: "DEMO" }));
+  await tick(MEANING_PAUSE_MS);
+  await waitFor(() => expect(streams).toHaveLength(2));
+  act(() => {
+    for (const frame of frames) streams[1]?.send(frame);
+  });
+}
+
+/** The one project the bar's project chip offers. */
+function spyOnProjects(): Mock<typeof api.listProjects> {
+  return spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      gated_steps: [],
+      key: "DEMO",
+      name: "Demo",
+      open_asks: 0,
+    },
+  ]);
+}
+
+// A fill step and a confirm step ask about the writes of the run they opened for. A chip change
+// with the same words makes another run current, so the step closes, and the next run's proposal
+// opens none: a Confirm or a Run would send that run's writes, with the fills typed for this one.
+test("a confirm step closes and sends nothing once a chip change makes another run of the same words current", async () => {
+  settings.mockResolvedValue({ confirm_writes: true });
+  const projects = spyOnProjects();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    await submit(user);
+    await screen.findByTestId("going-confirm-step");
+
+    await askOfAnotherProject(user, decision(true, ["dispatch_issue_update"]), proposal, ended);
+
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    expect(screen.queryByTestId("going-confirm-step")).not.toBeInTheDocument();
+    await tick(1000);
+    expect(written).not.toHaveBeenCalled();
+  } finally {
+    bar.unmount();
+    projects.mockRestore();
+  }
+});
+
+test("a fill step closes and sends nothing once a chip change makes another run of the same words current", async () => {
+  const projects = spyOnProjects();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_follow"]), follows, ended);
+    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
+    await submit(user);
+    await user.type(
+      await screen.findByRole("textbox", { name: "Fill the session for ask-1" }),
+      "Planner"
+    );
+
+    await askOfAnotherProject(user, decision(true, ["dispatch_follow"]), follows, ended);
+
+    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
+    expect(screen.queryByTestId("going-operation-fill")).not.toBeInTheDocument();
+    await tick(1000);
+    expect(written).not.toHaveBeenCalled();
+  } finally {
+    bar.unmount();
+    projects.mockRestore();
+  }
+});
+
 test("a new issue the run made is the issue its write names, with no read of it that could fail", async () => {
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue({
     label: "",

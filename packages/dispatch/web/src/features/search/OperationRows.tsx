@@ -79,19 +79,23 @@ interface Wanted {
  * proposal offered nothing to run for, or one whose every invocation names an item neither the
  * page nor the words named, which runs only when the person picks it (`picks`). Nothing submitted
  * is no state at all, and so is a submit that had nothing to run (`idle`); once a write has gone,
- * its lines say the rest.
+ * its lines say the rest. The fill step and the confirm step ask about the writes of the run they
+ * opened for (`runId`), and are idle once another run is current.
  */
 type Stage =
   | ({ readonly kind: "preparing"; readonly words: string } & Wanted)
-  | ({ readonly kind: "filling"; readonly words: string; readonly action: string } & Omit<
-      Wanted,
-      "action"
-    >)
+  | ({
+      readonly kind: "filling";
+      readonly words: string;
+      readonly action: string;
+      readonly runId: string;
+    } & Omit<Wanted, "action">)
   | {
       readonly kind: "confirming";
       readonly words: string;
       readonly action: string;
       readonly fills: Fills;
+      readonly runId: string;
     }
   | { readonly kind: "unoffered"; readonly words: string; readonly action: string }
   | { readonly kind: "picks"; readonly words: string; readonly action: string }
@@ -229,11 +233,14 @@ function nextStep(
       fills: wanted.fills,
       kind: "filling",
       picked: wanted.picked,
+      runId: answer.runId,
       words,
     };
   if (wanted.approved === "auto") {
     if (confirmWrites === undefined) return { ...wanted, action, kind: "preparing", words };
-    if (confirmWrites) return { action, fills: wanted.fills, kind: "confirming", words };
+    if (confirmWrites) {
+      return { action, fills: wanted.fills, kind: "confirming", runId: answer.runId, words };
+    }
   }
   return {
     action,
@@ -325,7 +332,13 @@ export function useGoingOperations({
   // kept when a later read of it fails - the refusal that set it showed it is on (`goingWrite`).
   const confirmWrites =
     settings.isError && settings.data === undefined ? false : settings.data?.confirm_writes;
-  const [stage, setStage] = useWordsState<Stage>(words);
+  const [held, setStage] = useWordsState<Stage>(words);
+  // A fill step or a confirm step of a run that is no longer current - a chip change asked the
+  // same words again - is idle: it closes, and sends nothing of the run now current.
+  const stage: Stage | undefined =
+    (held?.kind === "filling" || held?.kind === "confirming") && held.runId !== runId
+      ? { kind: "idle", words }
+      : held;
   const turn = useTurn(runId);
   // The lines of the turn that count as run: every one but a write Dispatch refused because the
   // person's setting asks first, which is still theirs to run - their next press asks first
