@@ -159,6 +159,10 @@ type Record struct {
 	// Line is the 1-based number of the line a record of an added line is, in the pushed
 	// commit's version of File, and 0 for a record of a path.
 	Line int
+	// Commit is the full sha of the pushed commit a record is of (pushRecords), and "" for a
+	// record of anything else: a ref name, a gh call, a text. The knives pass reads it to leave
+	// out a commit a remote-tracking ref holds (Guard.knives).
+	Commit string
 }
 
 // RefRecord is the record of a ref name, the whole of what the daemon's branch create has to

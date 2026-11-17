@@ -32,6 +32,10 @@ type Refusal struct {
 	// number in its entry's list, never the term (knivesLines). A refusal by the shared check
 	// carries that check's own report instead, which is the only account of it anyone gets.
 	Lines []string
+	// Advice is what the refused writer can do about the refusal, printed on a line of its own
+	// after the report, and "" where the check has nothing to add. Only the knives pass sets it
+	// (knivesAdvice), and it names no repository and no term.
+	Advice string
 }
 
 func (r *Refusal) Error() string {
@@ -43,6 +47,10 @@ func (r *Refusal) Error() string {
 	for _, line := range r.Lines {
 		b.WriteString("\n  ")
 		b.WriteString(line)
+	}
+	if r.Advice != "" {
+		b.WriteString("\n")
+		b.WriteString(r.Advice)
 	}
 	return b.String()
 }

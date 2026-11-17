@@ -110,8 +110,9 @@ func PushName(remote string) string {
 // the repository as its working directory. Then, for a destination GitHub reports public, two
 // passes read the push's records (pushRecords): this repository's own private-name rules, and,
 // over the records of the files the push adds, the forbidden lists of the knives registry entries
-// that name the push's destination (Guard.knives). A refusal of the rules is the answer before
-// any registry is read.
+// that name the push's destination (Guard.knives), which reads no commit a remote-tracking ref of
+// the repository holds, an upstream's included: a clone that has not fetched its upstream refuses
+// upstream's lines. A refusal of the rules is the answer before any registry is read.
 //
 // The third pass is the check knives makes before a push to a fork, `knives audit`, which was a
 // step an agent had to remember to run: the records of the oh-my-pi fork's pushes on 2026-11-17
@@ -156,8 +157,8 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // pushRecords is everything a push would publish, as records, which the second and the third of
 // Push's passes both read, the third the records of files alone: one per ref name, and for each
 // commit the push would add, one for the author identity, one for the committer identity, one for
-// the message, one for each added or renamed path and one for each added line. A commit reached by
-// two of the push's refs is read once.
+// the message, one for each added or renamed path and one for each added line, each carrying the
+// commit's sha (Record.Commit). A commit reached by two of the push's refs is read once.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
 	var records []Record
 	read := map[string]bool{}
@@ -177,6 +178,9 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 			of, err := g.commitRecords(ctx, req.Dir, commit)
 			if err != nil {
 				return nil, err
+			}
+			for i := range of {
+				of[i].Commit = commit
 			}
 			records = append(records, of...)
 		}

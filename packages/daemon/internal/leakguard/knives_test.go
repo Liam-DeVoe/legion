@@ -397,6 +397,33 @@ func TestAKnivesTermInARefNameOrAMessageIsNotRead(t *testing.T) {
 	}
 }
 
+// A member's commit on top of a commit the upstream remote's tracking ref holds is read for its
+// own lines alone: the upstream commit adds a line holding a term as well, and the report names
+// only the member's. The refusal says, after its report, that a commit a remote-tracking ref holds
+// is not read and how to fetch the upstream, and it names no term.
+func TestAMemberCommitOnAnUpstreamCommitIsRefusedForItsOwnLinesAlone(t *testing.T) {
+	fixture, repo, base, upstream := knivesCommit(t, map[string]string{"upstream.md": "the QUILLWORTHY build\n"})
+	fixture.Run(repo, "git", "remote", "add", "upstream", "https://github.com/upstream-org/invented-repo")
+	fixture.Run(repo, "git", "update-ref", "refs/remotes/upstream/main", upstream)
+	if err := os.WriteFile(filepath.Join(repo, "member.md"), []byte("a line of ordinary prose\nthe member's bramblecote note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the member's commit")
+	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	path, listed, _ := servingKnives(t, theKnivesRow)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
+	err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin))
+	want := []string{"member.md:2: forbidden term 1"}
+	refused := knivesRefusal(t, err)
+	if !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+	if !strings.HasSuffix(err.Error(), "\n  "+want[0]+"\n"+knivesAdvice) || !strings.Contains(knivesAdvice, "git fetch upstream") {
+		t.Errorf("the refusal does not end with its report and then the advice to fetch the upstream:\n%v", err)
+	}
+}
+
 // knivesReadAt is when the first push of each kept-list test below reads the registries: an
 // invented moment, in UTC, which a notice names.
 var knivesReadAt = time.Date(2026, 11, 17, 9, 52, 0, 0, time.UTC)

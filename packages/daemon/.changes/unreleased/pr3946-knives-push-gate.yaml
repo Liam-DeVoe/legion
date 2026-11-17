@@ -9,6 +9,8 @@ body: |-
   file in that time; a read that fails refuses a push whose destination the kept list names and
   lets any other through with a notice on standard error, and with no good read kept every push
   to a public repository is refused.
+  The gate reads no commit a remote-tracking ref holds, an upstream's included, so a clone that has
+  not fetched its upstream refuses upstream's lines, and the refusal says to fetch it and push again.
   The daemon tells every role of an issue pod and the controller it launches the rows as
   `LEGION_KNIVES_REGISTRIES`; a tmux pane is told nothing, since its push runs no leak guard. The
   new `knives-push-gate` capability row is open while no registry is named, and under tmux, which

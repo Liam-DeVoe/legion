@@ -92,6 +92,16 @@ type knivesOverlayFile struct {
 // registry cannot be read. A push whose destination no entry names passes. A union of every
 // entry's terms would refuse the local bare pushes of this repository's own tests and of knives'
 // ledger rehearsals, which hold those terms by design.
+//
+// Of the push's commits, the pass reads none that a remote-tracking ref of the repository holds
+// (remoteHeld), any remote's, where the rule pass leaves out only the pushed remote's
+// (Guard.commits). A commit an upstream's ref holds is upstream's text, not the fork's: `knives
+// audit` reads none of it either, since its base for a branch is its fork point with upstream's
+// trunk, and a mirror sync of a fork's main, a release cut over a newer upstream base and a
+// member rebased onto one all push such commits. A clone that has not fetched its upstream holds
+// no ref of it, so it reads upstream's lines and refuses those that hold a term, and the refusal
+// says to fetch it (knivesAdvice). Only a push the pass would otherwise refuse asks git which of
+// its commits are held, so a push that adds no term runs no git for it.
 func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record) error {
 	listed := value(g.base(), KnivesRegistriesVar)
 	if listed == "" {
@@ -139,7 +149,61 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	if len(lines) == 0 {
 		return nil
 	}
-	return &Refusal{What: what, By: byKnives, Lines: lines}
+	tracked, err := g.remoteHeld(ctx, req.Dir, records)
+	if err != nil {
+		return &SetupFailure{What: what, Why: "the commits the repository's remote-tracking refs hold could not be read", Err: err}
+	}
+	if len(tracked) > 0 {
+		records = slices.DeleteFunc(slices.Clone(records), func(record Record) bool { return tracked[record.Commit] })
+		if lines = knivesLines(applying, records); len(lines) == 0 {
+			return nil
+		}
+	}
+	return &Refusal{What: what, By: byKnives, Lines: lines, Advice: knivesAdvice}
+}
+
+// knivesAdvice is what a refusal of the knives pass says after its report (Refusal.Advice). The
+// pass reads no commit a remote-tracking ref holds (Guard.knives), so where a refused line is one
+// an upstream wrote, the clone has not fetched that upstream. It names no repository and no term.
+const knivesAdvice = "A commit any remote-tracking ref holds is not read, so where a refused line is an upstream's own, " +
+	"fetch the upstream remote (git fetch upstream, after git remote add upstream <url> where the clone has none) and push again."
+
+// remoteHeld are the commits of records of files that a remote-tracking ref of the repository at
+// dir reaches, a ref reaching its own commit: the commits the knives pass does not read
+// (Guard.knives). One rev-list answers for all of them, fed them one a line on its standard input:
+//
+//	git rev-list --no-walk --stdin --not --remotes
+//
+// It prints every fed commit that no remote-tracking ref reaches, with any ancestor of one that
+// none reaches either, so a fed commit it does not print is held. git documents that --no-walk
+// has no effect where a range is given, and a remote-tracking ref after --not makes one, so
+// rev-list walks from the fed commits down to the refs; it is there for a repository with no
+// remote-tracking ref at all, where rev-list would otherwise print every ancestor of the fed
+// commits, and with it prints the fed commits alone. No git runs where no record of a file names
+// a commit. A rev-list that fails is an error, never a commit read as held.
+func (g *Guard) remoteHeld(ctx context.Context, dir string, records []Record) (map[string]bool, error) {
+	// held is every commit asked about, until rev-list names the ones no ref reaches.
+	held := map[string]bool{}
+	var fed strings.Builder
+	for _, record := range records {
+		if record.File == "" || record.Commit == "" || held[record.Commit] {
+			continue
+		}
+		held[record.Commit] = true
+		fed.WriteString(record.Commit)
+		fed.WriteString("\n")
+	}
+	if len(held) == 0 {
+		return nil, nil
+	}
+	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--no-walk", "--stdin", "--not", "--remotes")
+	if err != nil {
+		return nil, err
+	}
+	for _, unheld := range strings.Fields(out) {
+		delete(held, unheld)
+	}
+	return held, nil
 }
 
 // knivesKeptFor is how long the pass matches pushes against its kept list without reading a
